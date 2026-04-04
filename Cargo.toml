@@ -1,0 +1,52 @@
+[workspace]
+resolver = "2"
+members = [
+    "packages/server",
+    "packages/cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[workspace.dependencies]
+tokio = { version = "1", features = ["full"] }
+axum = { version = "0.8", features = ["ws"] }
+sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "uuid", "json", "chrono"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+anyhow = "1"
+lru = "0.12"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+chrono = { version = "0.4", features = ["serde"] }
+sha2 = "0.10"
+sha1 = "0.10"
+argon2 = "0.5"
+jsonwebtoken = "9"
+oauth2 = "5.0.0-rc.1"
+data-encoding = "2"
+rand = "0.8"
+dashmap = "6"
+hmac = "0.12"
+base64 = "0.22"
+url = "2"
+http = "1"
+tower = { version = "0.5", features = ["util"] }
+tower-http = { version = "0.6", features = ["cors"] }
+axum-extra = { version = "0.10", features = ["typed-header"] }
+pin-project-lite = "0.2"
+notify = { version = "7", features = ["macos_fsevent"] }
+cron = "0.15"
+rmp-serde = "1"
+tokio-stream = { version = "0.1", features = ["sync"] }
+clap = { version = "4", features = ["derive", "color"] }
+colored = "3"
+indicatif = "0.17"
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+dialoguer = "0.11"
+dirs = "6"
+toml = "0.8"

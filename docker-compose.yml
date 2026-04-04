@@ -1,0 +1,43 @@
+services:
+  darshandb:
+    build: .
+    ports:
+      - "7700:7700"
+    environment:
+      DATABASE_URL: postgres://darshan:darshan@postgres:5432/darshandb
+      DARSHAN_PORT: "7700"
+      DARSHAN_ADMIN_DIR: /usr/share/darshan/admin
+      DARSHAN_JWT_SECRET: ${DARSHAN_JWT_SECRET:-change-me-in-production}
+      RUST_LOG: info
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - darshandb
+
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: darshan
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-darshan}
+      POSTGRES_DB: darshandb
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U darshan -d darshandb"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - darshandb
+
+volumes:
+  pgdata:
+
+networks:
+  darshandb:
+    driver: bridge

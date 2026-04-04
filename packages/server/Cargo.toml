@@ -1,0 +1,40 @@
+[package]
+name = "darshandb-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "DarshanDB server — triple store, DarshanQL query engine, and reactive tracking"
+
+[dependencies]
+tokio.workspace = true
+axum.workspace = true
+sqlx.workspace = true
+uuid.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+lru.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+chrono.workspace = true
+sha2.workspace = true
+sha1.workspace = true
+argon2.workspace = true
+jsonwebtoken.workspace = true
+oauth2.workspace = true
+data-encoding.workspace = true
+rand.workspace = true
+dashmap.workspace = true
+hmac.workspace = true
+base64.workspace = true
+url.workspace = true
+http.workspace = true
+tower.workspace = true
+tower-http.workspace = true
+axum-extra.workspace = true
+pin-project-lite.workspace = true
+notify.workspace = true
+cron.workspace = true
+rmp-serde.workspace = true
+tokio-stream.workspace = true

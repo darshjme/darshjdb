@@ -1,0 +1,30 @@
+{
+  "name": "darshandb",
+  "version": "0.1.0",
+  "private": true,
+  "description": "DarshanDB — A reactive database with triple store, real-time sync, and server-side functions",
+  "author": "Darsh Joshi",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/darshjme/darshandb"
+  },
+  "workspaces": [
+    "packages/client-core",
+    "packages/react",
+    "packages/angular",
+    "packages/nextjs",
+    "packages/admin"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces",
+    "dev": "npm run dev --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "lint": "npm run lint --workspaces --if-present",
+    "clean": "npm run clean --workspaces --if-present"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

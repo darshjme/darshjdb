@@ -1,0 +1,81 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * {
+    border-color: theme("colors.zinc.800");
+  }
+
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: theme("colors.zinc.700");
+    border-radius: 3px;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: theme("colors.zinc.600");
+  }
+}
+
+@layer components {
+  .glass-panel {
+    @apply bg-zinc-900/80 backdrop-blur-sm border border-zinc-800 rounded-lg;
+  }
+
+  .sidebar-link {
+    @apply flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium
+           text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800/60
+           transition-colors duration-150;
+  }
+
+  .sidebar-link.active {
+    @apply text-amber-500 bg-amber-500/10;
+  }
+
+  .table-cell {
+    @apply px-4 py-3 text-sm text-zinc-300 border-b border-zinc-800/60;
+  }
+
+  .table-header {
+    @apply px-4 py-3 text-xs font-semibold uppercase tracking-wider
+           text-zinc-500 border-b border-zinc-800;
+  }
+
+  .badge {
+    @apply inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium;
+  }
+
+  .input-field {
+    @apply w-full bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2
+           text-sm text-zinc-100 placeholder-zinc-500
+           focus:outline-none focus:ring-2 focus:ring-amber-500/40 focus:border-amber-500/60
+           transition-all duration-150;
+  }
+
+  .btn-primary {
+    @apply inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium
+           bg-amber-500 text-zinc-950 hover:bg-amber-400
+           transition-colors duration-150;
+  }
+
+  .btn-secondary {
+    @apply inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium
+           bg-zinc-800 text-zinc-100 hover:bg-zinc-700 border border-zinc-700
+           transition-colors duration-150;
+  }
+
+  .btn-ghost {
+    @apply inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm
+           text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800/60
+           transition-colors duration-150;
+  }
+}

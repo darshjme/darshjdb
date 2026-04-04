@@ -1,0 +1,10 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: "darshandb"
+    static_configs:
+      - targets: ["darshandb:7700"]
+    metrics_path: /api/admin/metrics
+    scheme: http
