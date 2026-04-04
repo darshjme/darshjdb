@@ -673,7 +673,7 @@ async fn fn_invoke(
     State(_state): State<AppState>,
     Path(name): Path<String>,
     headers: HeaderMap,
-    axum::Json(args): axum::Json<Value>,
+    axum::Json(_args): axum::Json<Value>,
 ) -> Result<Response, ApiError> {
     let _token = extract_bearer_token(&headers)?;
 
@@ -988,7 +988,7 @@ mod tests {
         );
         let token = extract_bearer_token(&headers);
         assert!(token.is_ok());
-        assert_eq!(token.as_deref(), Ok("test_token_123"));
+        assert_eq!(token.as_deref().ok(), Some("test_token_123"));
     }
 
     #[test]
