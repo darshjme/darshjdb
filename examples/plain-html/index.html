@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DarshanDB Plain HTML Example</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: system-ui, sans-serif; max-width: 480px; margin: 40px auto; padding: 0 16px; }
+    h1 { margin-bottom: 8px; }
+    .subtitle { color: #666; margin-bottom: 16px; }
+    form { display: flex; gap: 8px; margin-bottom: 16px; }
+    input[type="text"] { flex: 1; padding: 8px 12px; font-size: 16px; border-radius: 6px; border: 1px solid #ddd; }
+    button { padding: 8px 16px; font-size: 16px; border-radius: 6px; cursor: pointer; }
+    .add-btn { background: #000; color: #fff; border: none; }
+    .del-btn { background: none; border: none; color: #999; font-size: 18px; }
+    ul { list-style: none; }
+    li { display: flex; align-items: center; gap: 8px; padding: 8px 0; border-bottom: 1px solid #eee; }
+    li span { flex: 1; }
+    .done span { text-decoration: line-through; color: #999; }
+    #status { padding: 8px; background: #f5f5f5; border-radius: 6px; margin-bottom: 16px; font-size: 14px; }
+  </style>
+</head>
+<body>
+
+<h1>DarshanDB Todos</h1>
+<div id="status">Connecting...</div>
+
+<form id="todo-form">
+  <input type="text" id="todo-input" placeholder="What needs to be done?" />
+  <button type="submit" class="add-btn">Add</button>
+</form>
+
+<ul id="todo-list"></ul>
+
+<script>
+  // DarshanDB Plain JavaScript Client
+  // No build tools, no frameworks — just fetch()
+
+  const API = 'http://localhost:7700/api';
+  let token = null;
+
+  // --- Auth ---
+
+  async function signIn() {
+    const resp = await fetch(`${API}/auth/signin`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        email: 'demo@example.com',
+        password: 'demo1234',
+      }),
+    });
+
+    if (!resp.ok) {
+      // Create user if not exists
+      const signup = await fetch(`${API}/auth/signup`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: 'demo@example.com',
+          password: 'demo1234',
+        }),
+      });
+
+      if (signup.ok) {
+        return signIn();
+      }
+      throw new Error('Auth failed');
+    }
+
+    const data = await resp.json();
+    token = data.accessToken;
+    document.getElementById('status').textContent = 'Connected as demo@example.com';
+  }
+
+  function headers() {
+    return {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    };
+  }
+
+  // --- CRUD ---
+
+  async function loadTodos() {
+    const resp = await fetch(`${API}/query`, {
+      method: 'POST',
+      headers: headers(),
+      body: JSON.stringify({
+        todos: { $order: { createdAt: 'desc' } },
+      }),
+    });
+
+    const data = await resp.json();
+    renderTodos(data.todos || []);
+  }
+
+  async function createTodo(title) {
+    await fetch(`${API}/data/todos`, {
+      method: 'POST',
+      headers: headers(),
+      body: JSON.stringify({
+        title,
+        done: false,
+        createdAt: Date.now(),
+      }),
+    });
+    loadTodos();
+  }
+
+  async function toggleTodo(id, done) {
+    await fetch(`${API}/data/todos/${id}`, {
+      method: 'PATCH',
+      headers: headers(),
+      body: JSON.stringify({ done }),
+    });
+    loadTodos();
+  }
+
+  async function deleteTodo(id) {
+    await fetch(`${API}/data/todos/${id}`, {
+      method: 'DELETE',
+      headers: headers(),
+    });
+    loadTodos();
+  }
+
+  // --- Render ---
+
+  function renderTodos(todos) {
+    const list = document.getElementById('todo-list');
+    list.innerHTML = todos.map(todo => `
+      <li class="${todo.done ? 'done' : ''}">
+        <input type="checkbox" ${todo.done ? 'checked' : ''}
+               onchange="toggleTodo('${todo.id}', ${!todo.done})" />
+        <span>${escapeHtml(todo.title)}</span>
+        <button class="del-btn" onclick="deleteTodo('${todo.id}')">x</button>
+      </li>
+    `).join('');
+  }
+
+  function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+  }
+
+  // --- Init ---
+
+  document.getElementById('todo-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const input = document.getElementById('todo-input');
+    const title = input.value.trim();
+    if (!title) return;
+    input.value = '';
+    await createTodo(title);
+  });
+
+  signIn()
+    .then(() => loadTodos())
+    .catch((err) => {
+      document.getElementById('status').textContent = 'Connection failed: ' + err.message;
+    });
+
+  // Poll for updates every 2 seconds (for simplicity — use SSE in production)
+  setInterval(loadTodos, 2000);
+</script>
+
+</body>
+</html>

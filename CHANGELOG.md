@@ -31,3 +31,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **REST API**: Full CRUD + query + auth + storage over HTTP with OpenAPI spec
 - **SSE Fallback**: Server-Sent Events for environments without WebSocket
 - **Security**: 11-layer defense-in-depth, OWASP API Top 10 coverage, zero-trust default
+- **CI/CD**: GitHub Actions for Rust/TypeScript CI, multi-platform release builds, Docker image publishing
+- **Examples**: React todo app, plain HTML example, cURL script collection

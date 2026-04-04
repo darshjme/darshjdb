@@ -43,7 +43,7 @@ notify = { version = "7", features = ["macos_fsevent"] }
 cron = "0.15"
 rmp-serde = "1"
 tokio-stream = { version = "0.1", features = ["sync"] }
-clap = { version = "4", features = ["derive", "color"] }
+clap = { version = "4", features = ["derive", "color", "env"] }
 colored = "3"
 indicatif = "0.17"
 reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
