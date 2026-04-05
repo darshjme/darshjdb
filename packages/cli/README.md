@@ -5,7 +5,10 @@ Command-line interface for DarshJDB -- development server, deployments, migratio
 ## Install
 
 ```bash
-curl -fsSL https://db.darshj.me/install | sh
+git clone https://github.com/darshjme/darshjdb.git
+cd darshjdb
+cargo build --release
+# Binary at ./target/release/ddb
 ```
 
 The CLI is a single Rust binary named `ddb`.

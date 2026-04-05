@@ -10,18 +10,22 @@ Get a complete backend running in under five minutes.
 
 ## Install
 
+> **Status: Alpha** — DarshJDB is not yet published to package registries. Install from source.
+
 ```bash
-# macOS / Linux
-curl -fsSL https://db.darshj.me/install | sh
+# Clone and build from source
+git clone https://github.com/darshjme/darshjdb.git
+cd darshjdb
+cargo build --release
 
 # Or with Docker (includes PostgreSQL 16 + pgvector)
 docker compose up -d
 ```
 
-Verify the installation:
+Verify the build:
 
 ```bash
-ddb --version
+./target/release/ddb-server --version
 # darshjdb 0.1.0
 ```
 
@@ -334,11 +338,12 @@ docker ps | grep postgres
 ddb dev --database-url "postgres://user:pass@localhost:5432/darshjdb"
 ```
 
-**Permission denied on install script:**
+**Permission denied when building:**
 
 ```bash
-# Run with explicit permissions
-curl -fsSL https://db.darshj.me/install | sudo sh
+# Ensure you have write access to the project directory
+sudo chown -R $(whoami) darshjdb/
+cargo build --release
 ```
 
 ### Client SDK won't connect
