@@ -1,7 +1,8 @@
-import { useState } from "react";
-import { Eye, GitBranch, List, ArrowRight, Key, Hash } from "lucide-react";
+import { useState, useEffect } from "react";
+import { Eye, GitBranch, List, ArrowRight, Key, Hash, AlertTriangle } from "lucide-react";
 import { Badge } from "../components/Badge";
 import { mockEntityTypes } from "../lib/mock-data";
+import { fetchSchema } from "../lib/api";
 import { cn } from "../lib/utils";
 import type { EntityType } from "../types";
 
@@ -14,8 +15,31 @@ const relationships = [
 ];
 
 export function Schema() {
+  const [entityTypes, setEntityTypes] = useState<EntityType[]>(mockEntityTypes);
   const [selectedEntity, setSelectedEntity] = useState<EntityType | null>(null);
   const [view, setView] = useState<"diagram" | "list">("diagram");
+  const [usingMock, setUsingMock] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const types = await fetchSchema();
+        if (cancelled) return;
+        if (types.length > 0) {
+          setEntityTypes(types);
+          setUsingMock(false);
+        } else {
+          setUsingMock(true);
+        }
+      } catch {
+        if (cancelled) return;
+        setEntityTypes(mockEntityTypes);
+        setUsingMock(true);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
 
   return (
     <div className="flex h-full">
@@ -25,7 +49,7 @@ export function Schema() {
           <div>
             <h2 className="text-lg font-semibold text-zinc-100">Schema</h2>
             <p className="text-sm text-zinc-500 mt-0.5">
-              {mockEntityTypes.length} entity types, {relationships.length} relationships
+              {entityTypes.length} entity types, {relationships.length} relationships
             </p>
           </div>
           <div className="flex items-center gap-1 bg-zinc-900 rounded-lg p-0.5 border border-zinc-800">
@@ -56,9 +80,16 @@ export function Schema() {
           </div>
         </div>
 
+        {usingMock && (
+          <div className="flex items-center gap-2 px-4 py-2 mb-4 rounded-lg bg-amber-500/10 border border-amber-500/20 text-amber-400 text-xs">
+            <AlertTriangle className="w-3.5 h-3.5" />
+            <span>Server unreachable -- showing mock schema</span>
+          </div>
+        )}
+
         {view === "diagram" ? (
           <div className="grid grid-cols-3 gap-4">
-            {mockEntityTypes.map((entity) => (
+            {entityTypes.map((entity) => (
               <button
                 key={entity.name}
                 onClick={() => setSelectedEntity(entity)}
@@ -124,7 +155,7 @@ export function Schema() {
           </div>
         ) : (
           <div className="space-y-3">
-            {mockEntityTypes.map((entity) => (
+            {entityTypes.map((entity) => (
               <div key={entity.name} className="glass-panel">
                 <div className="flex items-center justify-between px-4 py-3 border-b border-zinc-800/60">
                   <div className="flex items-center gap-3">
