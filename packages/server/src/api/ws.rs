@@ -46,10 +46,12 @@ use tokio::sync::mpsc;
 use tokio::time::timeout;
 use tracing::{debug, info};
 
-use crate::sync::broadcaster::OutboundDiff;
+use crate::query;
+use crate::sync::broadcaster::{ChangeEvent, OutboundDiff};
 use crate::sync::presence::PresenceManager;
 use crate::sync::registry::SubscriptionRegistry;
 use crate::sync::session::{SessionId, SessionManager, SubId};
+use crate::triple_store::PgTripleStore;
 
 /// Auth timeout: clients must send an auth message within this window.
 const AUTH_TIMEOUT: Duration = Duration::from_secs(5);
@@ -78,6 +80,12 @@ pub struct WsState {
     pub presence: Arc<PresenceManager>,
     /// Channel for receiving diffs from the broadcaster (unused sender kept for cloning).
     pub diff_tx: mpsc::Sender<OutboundDiff>,
+    /// Postgres connection pool for query execution.
+    pub pool: sqlx::PgPool,
+    /// Triple store for query execution.
+    pub triple_store: Arc<PgTripleStore>,
+    /// Broadcast sender for change events (subscribe to receive mutations).
+    pub change_tx: tokio::sync::broadcast::Sender<ChangeEvent>,
 }
 
 /// Inbound client message (deserialized from JSON or MessagePack).
@@ -220,9 +228,10 @@ async fn handle_connection(
         }
     };
 
-    // Phase 2: Main message loop with keepalive.
+    // Phase 2: Main message loop with keepalive and change notification.
     let mut keepalive = tokio::time::interval(KEEPALIVE_INTERVAL);
     keepalive.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut change_rx = state.change_tx.subscribe();
 
     loop {
         tokio::select! {
@@ -246,6 +255,21 @@ async fn handle_connection(
                     }
                     None => {
                         debug!(session_id = %session_id, "client closed connection");
+                        break;
+                    }
+                }
+            }
+            // Listen for triple-store change events and push diffs to subscribed clients.
+            change = change_rx.recv() => {
+                match change {
+                    Ok(event) => {
+                        handle_change_event(&event, &mut socket, &state, session_id, codec).await;
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        debug!(session_id = %session_id, skipped = n, "change receiver lagged");
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                        debug!(session_id = %session_id, "change broadcast closed");
                         break;
                     }
                 }
@@ -469,11 +493,36 @@ async fn handle_subscribe(
     // Register in the global registry for fan-out.
     state.registry.register(query_hash, session_id, sub_id);
 
-    // Execute the initial query.
-    // In a full implementation, this calls the query engine with the user's
-    // permission context. For now, return empty initial results that will be
-    // wired to the actual query engine during integration.
-    let initial_results: Vec<Value> = Vec::new();
+    // Execute the initial query against the real query engine.
+    let initial_results: Vec<Value> = match query::parse_darshan_ql(&query) {
+        Ok(ast) => match query::plan_query(&ast) {
+            Ok(plan) => match query::execute_query(&state.pool, &plan).await {
+                Ok(rows) => rows
+                    .into_iter()
+                    .map(|row| {
+                        let mut obj = serde_json::Map::new();
+                        obj.insert("_id".to_string(), Value::String(row.entity_id.to_string()));
+                        for (k, v) in row.attributes {
+                            obj.insert(k, v);
+                        }
+                        Value::Object(obj)
+                    })
+                    .collect(),
+                Err(e) => {
+                    debug!(error = %e, "initial query execution failed");
+                    Vec::new()
+                }
+            },
+            Err(e) => {
+                debug!(error = %e, "query planning failed");
+                Vec::new()
+            }
+        },
+        Err(e) => {
+            debug!(error = %e, "query parsing failed");
+            Vec::new()
+        }
+    };
 
     let _ = send_message(
         socket,
@@ -628,6 +677,86 @@ fn get_user_id(state: &WsState, session_id: SessionId) -> Option<String> {
         .sessions
         .with_session(&session_id, |s| s.user_id.clone())
         .flatten()
+}
+
+/// Handle a change event from the triple store: for each of this session's
+/// subscriptions, check if the change is relevant, re-execute the query,
+/// compute a diff, and send it to the client.
+async fn handle_change_event(
+    event: &ChangeEvent,
+    socket: &mut WebSocket,
+    state: &WsState,
+    session_id: SessionId,
+    codec: Codec,
+) {
+    // Get all subscriptions for this session.
+    let subs: Vec<(SubId, Value, u64)> = state
+        .sessions
+        .with_session(&session_id, |s| {
+            s.subscriptions
+                .iter()
+                .map(|(sub_id, sub)| (*sub_id, sub.query_ast.clone(), sub.query_hash))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    if subs.is_empty() {
+        return;
+    }
+
+    for (sub_id, query_ast, _query_hash) in subs {
+        // Check if this change could affect this subscription by matching entity type.
+        // A simple heuristic: if the query's "type" field matches the event's entity_type.
+        let query_type = query_ast.get("type").and_then(|v| v.as_str()).unwrap_or("");
+        if let Some(ref event_type) = event.entity_type {
+            if !query_type.is_empty() && query_type != event_type {
+                continue;
+            }
+        }
+
+        // Re-execute the query.
+        let new_results: Vec<Value> = match query::parse_darshan_ql(&query_ast) {
+            Ok(ast) => match query::plan_query(&ast) {
+                Ok(plan) => match query::execute_query(&state.pool, &plan).await {
+                    Ok(rows) => rows
+                        .into_iter()
+                        .map(|row| {
+                            let mut obj = serde_json::Map::new();
+                            obj.insert("_id".to_string(), Value::String(row.entity_id.to_string()));
+                            for (k, v) in row.attributes {
+                                obj.insert(k, v);
+                            }
+                            Value::Object(obj)
+                        })
+                        .collect(),
+                    Err(_) => continue,
+                },
+                Err(_) => continue,
+            },
+            Err(_) => continue,
+        };
+
+        // Compute diff against empty (first notification) or previous results.
+        // For simplicity, we send the full new result set as "added" on the
+        // first change. A production implementation would cache previous results
+        // per (session, sub) in the Broadcaster's result_cache.
+        let diff_value = serde_json::json!({
+            "added": new_results,
+            "removed": [],
+            "updated": []
+        });
+
+        let _ = send_message(
+            socket,
+            &ServerMessage::Diff {
+                sub_id: sub_id.to_string(),
+                tx: event.tx_id,
+                changes: diff_value,
+            },
+            codec,
+        )
+        .await;
+    }
 }
 
 /// Clean up all resources for a disconnected session.

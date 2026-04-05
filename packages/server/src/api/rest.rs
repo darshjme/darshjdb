@@ -44,6 +44,7 @@ use crate::auth::{
     build_default_engine, evaluate_rule_public, get_rule_with_fallback,
 };
 use crate::query::{self, QueryResultRow};
+use crate::sync::broadcaster::ChangeEvent;
 use crate::triple_store::{PgTripleStore, TripleInput, TripleStore};
 
 // ---------------------------------------------------------------------------
@@ -69,6 +70,8 @@ pub struct AppState {
     pub openapi_spec: Arc<Value>,
     /// Broadcast channel for SSE subscription fan-out.
     pub sse_tx: broadcast::Sender<SsePayload>,
+    /// Broadcast channel for triple-store change events (reactive subscriptions).
+    pub change_tx: broadcast::Sender<ChangeEvent>,
     /// Server boot instant for uptime reporting.
     pub started_at: Instant,
     /// Whether dev mode is active (DARSHAN_DEV=1).
@@ -83,6 +86,7 @@ impl AppState {
         pool: PgPool,
         triple_store: Arc<PgTripleStore>,
         session_manager: Arc<SessionManager>,
+        change_tx: broadcast::Sender<ChangeEvent>,
     ) -> Self {
         let dev_mode = std::env::var("DARSHAN_DEV")
             .map(|v| v == "1" || v == "true")
@@ -94,6 +98,7 @@ impl AppState {
             session_manager,
             openapi_spec: Arc::new(openapi::generate_openapi_spec()),
             sse_tx,
+            change_tx,
             started_at: Instant::now(),
             dev_mode,
             permissions: Arc::new(build_default_engine()),
@@ -107,6 +112,7 @@ impl AppState {
         // Tests that don't hit the database can use a dummy pool.
         // This preserves backward compatibility with existing unit tests.
         let (sse_tx, _) = broadcast::channel(1024);
+        let (change_tx, _) = broadcast::channel(1024);
         let pool = PgPool::connect_lazy("postgres://localhost/darshandb_test").expect("test pool");
         let triple_store = Arc::new(PgTripleStore::new_lazy(pool.clone()));
         let key_manager = crate::auth::KeyManager::generate();
@@ -117,6 +123,7 @@ impl AppState {
             session_manager,
             openapi_spec: Arc::new(openapi::generate_openapi_spec()),
             sse_tx,
+            change_tx,
             started_at: Instant::now(),
             dev_mode: true,
             permissions: Arc::new(build_default_engine()),
@@ -969,6 +976,17 @@ async fn mutate(
         }
     }
 
+    // Collect attributes touched (for change notification).
+    let mut touched_attributes: Vec<String> =
+        all_triples.iter().map(|t| t.attribute.clone()).collect();
+    touched_attributes.sort();
+    touched_attributes.dedup();
+
+    // Collect entity types touched.
+    let mut entity_types: Vec<String> = body.mutations.iter().map(|m| m.entity.clone()).collect();
+    entity_types.sort();
+    entity_types.dedup();
+
     // Write all insert/update triples in one batch.
     let tx_id = if !all_triples.is_empty() {
         state
@@ -979,6 +997,17 @@ async fn mutate(
     } else {
         0
     };
+
+    // Emit change event for reactive subscriptions.
+    if tx_id > 0 {
+        let _ = state.change_tx.send(ChangeEvent {
+            tx_id,
+            entity_ids: entity_ids.iter().map(|id| id.to_string()).collect(),
+            attributes: touched_attributes,
+            entity_type: entity_types.into_iter().next(),
+            actor_id: None,
+        });
+    }
 
     let response = serde_json::json!({
         "tx_id": tx_id,
@@ -1092,6 +1121,16 @@ async fn data_create(
         .set_triples(&triples)
         .await
         .map_err(|e| ApiError::internal(format!("Failed to create entity: {e}")))?;
+
+    // Emit change event for reactive subscriptions.
+    let attributes: Vec<String> = triples.iter().map(|t| t.attribute.clone()).collect();
+    let _ = state.change_tx.send(ChangeEvent {
+        tx_id,
+        entity_ids: vec![id.to_string()],
+        attributes,
+        entity_type: Some(entity.clone()),
+        actor_id: None,
+    });
 
     let response = serde_json::json!({
         "id": id,
@@ -1271,6 +1310,18 @@ async fn data_patch(
         0
     };
 
+    // Emit change event for reactive subscriptions.
+    if tx_id > 0 {
+        let attributes: Vec<String> = triples.iter().map(|t| t.attribute.clone()).collect();
+        let _ = state.change_tx.send(ChangeEvent {
+            tx_id,
+            entity_ids: vec![id.to_string()],
+            attributes,
+            entity_type: Some(entity.clone()),
+            actor_id: None,
+        });
+    }
+
     let response = serde_json::json!({
         "id": id,
         "entity": entity,
@@ -1330,6 +1381,8 @@ async fn data_delete(
         }
     }
 
+    let deleted_attributes: Vec<String> = existing.iter().map(|t| t.attribute.clone()).collect();
+
     for triple in &existing {
         state
             .triple_store
@@ -1337,6 +1390,15 @@ async fn data_delete(
             .await
             .map_err(|e| ApiError::internal(format!("Failed to retract triple: {e}")))?;
     }
+
+    // Emit change event for reactive subscriptions.
+    let _ = state.change_tx.send(ChangeEvent {
+        tx_id: 0, // Delete doesn't produce a new tx_id from set_triples
+        entity_ids: vec![id.to_string()],
+        attributes: deleted_attributes,
+        entity_type: Some(entity.clone()),
+        actor_id: None,
+    });
 
     Ok(StatusCode::NO_CONTENT.into_response())
 }
