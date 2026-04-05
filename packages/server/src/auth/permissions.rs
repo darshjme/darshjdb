@@ -1,4 +1,4 @@
-//! Fine-grained permission engine for DarshanDB.
+//! Fine-grained permission engine for DarshJDB.
 //!
 //! Permissions are expressed as composable rules that can:
 //! - Allow or deny operations outright.

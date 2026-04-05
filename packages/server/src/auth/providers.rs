@@ -1,4 +1,4 @@
-//! Authentication providers for DarshanDB.
+//! Authentication providers for DarshJDB.
 //!
 //! Supports three primary authentication flows:
 //!
@@ -563,7 +563,7 @@ impl OAuth2Provider for GenericOAuth2Provider {
             .bearer_auth(access_token)
             .header("Accept", "application/json")
             // GitHub API requires a User-Agent header.
-            .header("User-Agent", "DarshanDB")
+            .header("User-Agent", "DarshJDB")
             .send()
             .await
             .map_err(|e| AuthError::OAuth2(format!("userinfo request failed: {e}")))?;
@@ -602,7 +602,7 @@ impl OAuth2Provider for GenericOAuth2Provider {
                         .get("https://api.github.com/user/emails")
                         .bearer_auth(access_token)
                         .header("Accept", "application/json")
-                        .header("User-Agent", "DarshanDB")
+                        .header("User-Agent", "DarshJDB")
                         .send()
                         .await
                         && let Ok(emails) = emails_resp.json::<Vec<serde_json::Value>>().await

@@ -1,4 +1,4 @@
-//! Auto-embedding pipeline for DarshanDB.
+//! Auto-embedding pipeline for DarshJDB.
 //!
 //! Generates vector embeddings when text triples are written, enabling
 //! semantic search out of the box via pgvector. The pipeline listens on
@@ -15,12 +15,12 @@
 //!
 //! | Variable                           | Default                    | Description                                        |
 //! |------------------------------------|----------------------------|----------------------------------------------------|
-//! | `DARSHAN_EMBEDDING_PROVIDER`       | `none`                     | `openai`, `ollama`, or `none`                      |
-//! | `DARSHAN_OPENAI_API_KEY`           | —                          | Required when provider is `openai`                 |
-//! | `DARSHAN_EMBEDDING_MODEL`          | `text-embedding-ada-002`   | Model name for the chosen provider                 |
-//! | `DARSHAN_OLLAMA_URL`               | `http://localhost:11434`   | Ollama server URL                                  |
-//! | `DARSHAN_AUTO_EMBED_ATTRIBUTES`    | —                          | Comma-separated `type/attr` patterns to auto-embed |
-//! | `DARSHAN_EMBEDDING_DIMENSIONS`     | `1536`                     | Vector dimensions (must match model output)        |
+//! | `DDB_EMBEDDING_PROVIDER`       | `none`                     | `openai`, `ollama`, or `none`                      |
+//! | `DDB_OPENAI_API_KEY`           | —                          | Required when provider is `openai`                 |
+//! | `DDB_EMBEDDING_MODEL`          | `text-embedding-ada-002`   | Model name for the chosen provider                 |
+//! | `DDB_OLLAMA_URL`               | `http://localhost:11434`   | Ollama server URL                                  |
+//! | `DDB_AUTO_EMBED_ATTRIBUTES`    | —                          | Comma-separated `type/attr` patterns to auto-embed |
+//! | `DDB_EMBEDDING_DIMENSIONS`     | `1536`                     | Vector dimensions (must match model output)        |
 
 pub mod provider;
 
@@ -31,7 +31,7 @@ use tokio::sync::broadcast;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
-use crate::error::{DarshanError, Result};
+use crate::error::{DarshJError, Result};
 use crate::sync::ChangeEvent;
 use crate::triple_store::{PgTripleStore, TripleStore};
 
@@ -76,29 +76,27 @@ impl EmbeddingConfig {
     /// no auto-embed attributes are configured — i.e., embedding is fully
     /// disabled.
     pub fn from_env() -> Option<Self> {
-        let provider_str = std::env::var("DARSHAN_EMBEDDING_PROVIDER")
+        let provider_str = std::env::var("DDB_EMBEDDING_PROVIDER")
             .unwrap_or_else(|_| "none".to_string())
             .to_lowercase();
 
         let provider = match provider_str.as_str() {
             "openai" => {
-                let api_key = match std::env::var("DARSHAN_OPENAI_API_KEY") {
+                let api_key = match std::env::var("DDB_OPENAI_API_KEY") {
                     Ok(key) if !key.is_empty() => key,
                     _ => {
-                        warn!(
-                            "DARSHAN_EMBEDDING_PROVIDER=openai but DARSHAN_OPENAI_API_KEY is not set"
-                        );
+                        warn!("DDB_EMBEDDING_PROVIDER=openai but DDB_OPENAI_API_KEY is not set");
                         return None;
                     }
                 };
-                let model = std::env::var("DARSHAN_EMBEDDING_MODEL")
+                let model = std::env::var("DDB_EMBEDDING_MODEL")
                     .unwrap_or_else(|_| "text-embedding-ada-002".to_string());
                 ProviderConfig::OpenAI { api_key, model }
             }
             "ollama" => {
-                let url = std::env::var("DARSHAN_OLLAMA_URL")
+                let url = std::env::var("DDB_OLLAMA_URL")
                     .unwrap_or_else(|_| "http://localhost:11434".to_string());
-                let model = std::env::var("DARSHAN_EMBEDDING_MODEL")
+                let model = std::env::var("DDB_EMBEDDING_MODEL")
                     .unwrap_or_else(|_| "nomic-embed-text".to_string());
                 ProviderConfig::Ollama { url, model }
             }
@@ -109,14 +107,14 @@ impl EmbeddingConfig {
             return None;
         }
 
-        let auto_embed_attributes: Vec<String> = std::env::var("DARSHAN_AUTO_EMBED_ATTRIBUTES")
+        let auto_embed_attributes: Vec<String> = std::env::var("DDB_AUTO_EMBED_ATTRIBUTES")
             .unwrap_or_default()
             .split(',')
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
             .collect();
 
-        let dimensions: usize = std::env::var("DARSHAN_EMBEDDING_DIMENSIONS")
+        let dimensions: usize = std::env::var("DDB_EMBEDDING_DIMENSIONS")
             .ok()
             .and_then(|d| d.parse().ok())
             .unwrap_or(1536);
@@ -186,7 +184,7 @@ impl EmbeddingService {
         self.provider
             .embed(text.to_string())
             .await
-            .map_err(|e| DarshanError::Internal(format!("embedding generation failed: {e}")))
+            .map_err(|e| DarshJError::Internal(format!("embedding generation failed: {e}")))
     }
 
     /// Store an embedding for a specific entity + attribute pair.
@@ -223,7 +221,7 @@ impl EmbeddingService {
         .bind(self.config.dimensions as i32)
         .execute(&self.pool)
         .await
-        .map_err(DarshanError::Database)?;
+        .map_err(DarshJError::Database)?;
 
         Ok(())
     }
@@ -253,7 +251,7 @@ impl EmbeddingService {
         let embedding = self.embed_text(value).await?;
 
         if embedding.len() != self.config.dimensions {
-            return Err(DarshanError::Internal(format!(
+            return Err(DarshJError::Internal(format!(
                 "embedding dimension mismatch: expected {}, got {}",
                 self.config.dimensions,
                 embedding.len()
@@ -280,7 +278,7 @@ impl EmbeddingService {
             .execute(&self.pool)
             .await
             .map_err(|e| {
-                DarshanError::Internal(format!(
+                DarshJError::Internal(format!(
                     "failed to enable pgvector extension: {e}. \
                      Install pgvector: https://github.com/pgvector/pgvector"
                 ))
@@ -302,7 +300,7 @@ impl EmbeddingService {
         ))
         .execute(&self.pool)
         .await
-        .map_err(DarshanError::Database)?;
+        .map_err(DarshJError::Database)?;
 
         // Create an IVFFlat index for approximate nearest-neighbor search.
         // Uses cosine distance by default (most common for text embeddings).
@@ -316,7 +314,7 @@ impl EmbeddingService {
         )
         .execute(&self.pool)
         .await
-        .map_err(DarshanError::Database)?;
+        .map_err(DarshJError::Database)?;
 
         info!(
             dimensions = self.config.dimensions,

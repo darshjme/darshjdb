@@ -1,6 +1,6 @@
 //! Webhook connector — POSTs entity change payloads to a configured URL.
 //!
-//! Configure via the `DARSHAN_WEBHOOK_URL` environment variable.
+//! Configure via the `DDB_WEBHOOK_URL` environment variable.
 //! Retries up to 3 times with exponential backoff (1s, 2s, 4s) on
 //! transient failures (network errors, 5xx responses).
 
@@ -13,7 +13,7 @@ use tracing::{info, warn};
 use uuid::Uuid;
 
 use super::{Connector, EntityChangeEvent};
-use crate::error::{DarshanError, Result};
+use crate::error::{DarshJError, Result};
 
 /// Maximum number of delivery attempts (initial + retries).
 const MAX_ATTEMPTS: u32 = 3;
@@ -57,10 +57,10 @@ impl WebhookConnector {
         Self { url, client }
     }
 
-    /// Try to create a connector from the `DARSHAN_WEBHOOK_URL` env var.
+    /// Try to create a connector from the `DDB_WEBHOOK_URL` env var.
     /// Returns `None` if the variable is not set.
     pub fn from_env() -> Option<Self> {
-        std::env::var("DARSHAN_WEBHOOK_URL")
+        std::env::var("DDB_WEBHOOK_URL")
             .ok()
             .filter(|u| !u.is_empty())
             .map(Self::new)
@@ -80,7 +80,7 @@ impl WebhookConnector {
                 .client
                 .post(&self.url)
                 .header("Content-Type", "application/json")
-                .header("User-Agent", "DarshanDB-Webhook/1.0")
+                .header("User-Agent", "DarshJDB-Webhook/1.0")
                 .body(body.to_vec())
                 .send()
                 .await
@@ -101,7 +101,7 @@ impl WebhookConnector {
                 Ok(resp) => {
                     // 4xx — not retryable.
                     let status = resp.status();
-                    return Err(DarshanError::Internal(format!(
+                    return Err(DarshJError::Internal(format!(
                         "webhook returned non-retryable status {status}"
                     )));
                 }
@@ -118,7 +118,7 @@ impl WebhookConnector {
             }
         }
 
-        Err(DarshanError::Internal(format!(
+        Err(DarshJError::Internal(format!(
             "webhook delivery failed after {MAX_ATTEMPTS} attempts: {}",
             last_error.unwrap_or_default()
         )))
@@ -145,7 +145,7 @@ impl Connector for WebhookConnector {
             };
 
             let body = serde_json::to_vec(&payload).map_err(|e| {
-                DarshanError::Internal(format!("failed to serialize webhook payload: {e}"))
+                DarshJError::Internal(format!("failed to serialize webhook payload: {e}"))
             })?;
 
             self.post_with_retry(&body).await?;
@@ -175,7 +175,7 @@ impl Connector for WebhookConnector {
             };
 
             let body = serde_json::to_vec(&payload).map_err(|e| {
-                DarshanError::Internal(format!("failed to serialize webhook payload: {e}"))
+                DarshJError::Internal(format!("failed to serialize webhook payload: {e}"))
             })?;
 
             self.post_with_retry(&body).await?;

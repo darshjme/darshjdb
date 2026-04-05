@@ -1,4 +1,4 @@
-//! Authentication and authorization engine for DarshanDB.
+//! Authentication and authorization engine for DarshJDB.
 //!
 //! Provides a complete security stack: credential verification, session
 //! management, multi-factor authentication, fine-grained permissions,

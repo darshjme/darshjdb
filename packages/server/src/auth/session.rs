@@ -1,4 +1,4 @@
-//! JWT issuance, refresh rotation, and session lifecycle for DarshanDB.
+//! JWT issuance, refresh rotation, and session lifecycle for DarshJDB.
 //!
 //! # Token Architecture
 //!

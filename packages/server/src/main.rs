@@ -1,4 +1,4 @@
-//! DarshanDB server binary entry point.
+//! DarshJDB server binary entry point.
 //!
 //! Initializes all subsystems (triple store, auth, sync, functions, storage),
 //! builds the Axum router with middleware, and starts the HTTP server with
@@ -12,14 +12,14 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
-use darshandb_server::api::rest::{AppState, build_router};
-use darshandb_server::api::ws::{WsState, ws_routes};
-use darshandb_server::auth::middleware::RateLimiter;
-use darshandb_server::auth::session::{KeyManager, SessionManager};
-use darshandb_server::error::Result;
-use darshandb_server::sync::presence::PresenceManager;
-use darshandb_server::sync::registry::SubscriptionRegistry;
-use darshandb_server::sync::session::SessionManager as SyncSessionManager;
+use ddb_server::api::rest::{AppState, build_router};
+use ddb_server::api::ws::{WsState, ws_routes};
+use ddb_server::auth::middleware::RateLimiter;
+use ddb_server::auth::session::{KeyManager, SessionManager};
+use ddb_server::error::Result;
+use ddb_server::sync::presence::PresenceManager;
+use ddb_server::sync::registry::SubscriptionRegistry;
+use ddb_server::sync::session::SessionManager as SyncSessionManager;
 
 use sqlx::postgres::PgPoolOptions;
 use tokio::signal;
@@ -27,7 +27,7 @@ use tower_http::catch_panic::CatchPanicLayer;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::timeout::TimeoutLayer;
 
-/// Default server port when `DARSHAN_PORT` is not set.
+/// Default server port when `DDB_PORT` is not set.
 const DEFAULT_PORT: u16 = 7700;
 
 /// Maximum database connections in the pool.
@@ -49,7 +49,7 @@ async fn main() -> Result<()> {
         )
         .init();
 
-    tracing::info!("DarshanDB server starting");
+    tracing::info!("DarshJDB server starting");
 
     // -- Configuration from environment ---------------------------------------
     let database_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| {
@@ -57,19 +57,19 @@ async fn main() -> Result<()> {
         "postgres://darshan:darshan@localhost:5432/darshandb".to_string()
     });
 
-    let port: u16 = std::env::var("DARSHAN_PORT")
+    let port: u16 = std::env::var("DDB_PORT")
         .ok()
         .and_then(|p| p.parse().ok())
         .unwrap_or(DEFAULT_PORT);
 
-    let max_connections: u32 = std::env::var("DARSHAN_MAX_CONNECTIONS")
+    let max_connections: u32 = std::env::var("DDB_MAX_CONNECTIONS")
         .ok()
         .and_then(|p| p.parse().ok())
         .unwrap_or(DEFAULT_MAX_CONNECTIONS);
 
-    let jwt_secret = std::env::var("DARSHAN_JWT_SECRET").ok();
-    let jwt_private_key_path = std::env::var("DARSHAN_JWT_PRIVATE_KEY").ok();
-    let jwt_public_key_path = std::env::var("DARSHAN_JWT_PUBLIC_KEY").ok();
+    let jwt_secret = std::env::var("DDB_JWT_SECRET").ok();
+    let jwt_private_key_path = std::env::var("DDB_JWT_PRIVATE_KEY").ok();
+    let jwt_public_key_path = std::env::var("DDB_JWT_PUBLIC_KEY").ok();
 
     // -- Database Pool --------------------------------------------------------
     tracing::info!(database_url = %mask_url(&database_url), "connecting to database");
@@ -85,21 +85,21 @@ async fn main() -> Result<()> {
         .await
         .map_err(|e| {
             tracing::error!("Failed to connect to database: {e}");
-            darshandb_server::error::DarshanError::Database(e)
+            ddb_server::error::DarshJError::Database(e)
         })?;
 
     tracing::info!("database connection pool established");
 
     // -- Triple Store ---------------------------------------------------------
-    let triple_store = darshandb_server::triple_store::PgTripleStore::new(pool.clone()).await?;
+    let triple_store = ddb_server::triple_store::PgTripleStore::new(pool.clone()).await?;
     tracing::info!("triple store initialized (schema ensured)");
 
     // -- Auth Schema (users + sessions tables) --------------------------------
-    darshandb_server::api::rest::ensure_auth_schema(&pool)
+    ddb_server::api::rest::ensure_auth_schema(&pool)
         .await
         .map_err(|e| {
             tracing::error!("Failed to ensure auth schema: {e}");
-            darshandb_server::error::DarshanError::Database(e)
+            ddb_server::error::DarshJError::Database(e)
         })?;
     tracing::info!("auth schema ensured (users + sessions tables)");
 
@@ -108,17 +108,17 @@ async fn main() -> Result<()> {
         (Some(priv_path), Some(pub_path)) => {
             // Production: RS256 with PEM key files.
             let priv_pem = std::fs::read(priv_path).map_err(|e| {
-                darshandb_server::error::DarshanError::Internal(format!(
+                ddb_server::error::DarshJError::Internal(format!(
                     "failed to read JWT private key at {priv_path}: {e}"
                 ))
             })?;
             let pub_pem = std::fs::read(pub_path).map_err(|e| {
-                darshandb_server::error::DarshanError::Internal(format!(
+                ddb_server::error::DarshJError::Internal(format!(
                     "failed to read JWT public key at {pub_path}: {e}"
                 ))
             })?;
             KeyManager::new(&priv_pem, &pub_pem, "ddb-key-1".into(), None, None).map_err(|e| {
-                darshandb_server::error::DarshanError::Internal(format!(
+                ddb_server::error::DarshJError::Internal(format!(
                     "failed to initialize RSA key manager: {e}"
                 ))
             })?
@@ -127,7 +127,7 @@ async fn main() -> Result<()> {
             // Development: HS256 with shared secret or ephemeral keys.
             match jwt_secret {
                 Some(secret) => {
-                    tracing::info!("using HMAC (HS256) JWT signing with DARSHAN_JWT_SECRET");
+                    tracing::info!("using HMAC (HS256) JWT signing with DDB_JWT_SECRET");
                     KeyManager::from_secret(secret.as_bytes())
                 }
                 None => {
@@ -156,7 +156,7 @@ async fn main() -> Result<()> {
 
     // Broadcast channel for triple-store change events (REST -> WS fan-out).
     let (change_tx, _change_rx) =
-        tokio::sync::broadcast::channel::<darshandb_server::sync::ChangeEvent>(4096);
+        tokio::sync::broadcast::channel::<ddb_server::sync::ChangeEvent>(4096);
 
     let triple_store_arc = Arc::new(triple_store);
 
@@ -178,7 +178,7 @@ async fn main() -> Result<()> {
                             );
                             // Emit change events so WebSocket subscriptions update.
                             for entity_id in &expired_ids {
-                                let _ = ttl_change_tx.send(darshandb_server::sync::ChangeEvent {
+                                let _ = ttl_change_tx.send(ddb_server::sync::ChangeEvent {
                                     tx_id: 0,
                                     entity_ids: vec![entity_id.to_string()],
                                     attributes: vec![":ttl/expired".to_string()],
@@ -198,7 +198,7 @@ async fn main() -> Result<()> {
     }
 
     // Pub/sub engine for keyspace notifications (shared between WS and REST).
-    let (pubsub_engine, _pubsub_rx) = darshandb_server::sync::pubsub::PubSubEngine::new(4096);
+    let (pubsub_engine, _pubsub_rx) = ddb_server::sync::pubsub::PubSubEngine::new(4096);
 
     let ws_state = WsState {
         sessions: sync_sessions.clone(),
@@ -215,16 +215,16 @@ async fn main() -> Result<()> {
 
     // -- Connector Plugin System ----------------------------------------------
     {
-        use darshandb_server::connectors::log::LogConnector;
-        use darshandb_server::connectors::webhook::WebhookConnector;
-        use darshandb_server::connectors::{Connector, ConnectorManager};
+        use ddb_server::connectors::log::LogConnector;
+        use ddb_server::connectors::webhook::WebhookConnector;
+        use ddb_server::connectors::{Connector, ConnectorManager};
 
         let mut connectors: Vec<Box<dyn Connector>> = Vec::new();
 
         // Always register the log connector for observability.
         connectors.push(Box::new(LogConnector::new()));
 
-        // Optionally register the webhook connector if DARSHAN_WEBHOOK_URL is set.
+        // Optionally register the webhook connector if DDB_WEBHOOK_URL is set.
         if let Some(wh) = WebhookConnector::from_env() {
             tracing::info!("webhook connector enabled");
             connectors.push(Box::new(wh));
@@ -245,8 +245,8 @@ async fn main() -> Result<()> {
     }
 
     // -- Embedding Pipeline ---------------------------------------------------
-    if let Some(embed_config) = darshandb_server::embeddings::EmbeddingConfig::from_env() {
-        let embed_service = darshandb_server::embeddings::EmbeddingService::new(
+    if let Some(embed_config) = ddb_server::embeddings::EmbeddingConfig::from_env() {
+        let embed_service = ddb_server::embeddings::EmbeddingService::new(
             embed_config.clone(),
             pool.clone(),
             triple_store_arc.clone(),
@@ -256,9 +256,8 @@ async fn main() -> Result<()> {
         // Non-fatal: log warning and continue without embeddings if schema fails.
         match embed_service.ensure_schema().await {
             Ok(()) => {
-                let embed_manager = Arc::new(darshandb_server::embeddings::EmbeddingManager::new(
-                    embed_service,
-                ));
+                let embed_manager =
+                    Arc::new(ddb_server::embeddings::EmbeddingManager::new(embed_service));
                 let embed_rx = change_tx.subscribe();
                 tokio::spawn(embed_manager.run(embed_rx));
 
@@ -278,30 +277,30 @@ async fn main() -> Result<()> {
             }
         }
     } else {
-        tracing::info!("embedding pipeline disabled (DARSHAN_EMBEDDING_PROVIDER=none or unset)");
+        tracing::info!("embedding pipeline disabled (DDB_EMBEDDING_PROVIDER=none or unset)");
     }
 
     // -- Storage Engine -------------------------------------------------------
     let storage_dir =
-        std::env::var("DARSHAN_STORAGE_DIR").unwrap_or_else(|_| "./darshan/storage".to_string());
+        std::env::var("DDB_STORAGE_DIR").unwrap_or_else(|_| "./darshan/storage".to_string());
     let storage_backend = Arc::new(
-        darshandb_server::storage::LocalFsBackend::new(&storage_dir).unwrap_or_else(|e| {
+        ddb_server::storage::LocalFsBackend::new(&storage_dir).unwrap_or_else(|e| {
             tracing::warn!("Failed to create storage backend at {storage_dir}: {e}, using /tmp");
-            darshandb_server::storage::LocalFsBackend::new("/tmp/darshandb-storage")
+            ddb_server::storage::LocalFsBackend::new("/tmp/darshandb-storage")
                 .expect("fallback storage backend")
         }),
     );
     let storage_signing_key =
-        std::env::var("DARSHAN_STORAGE_KEY").unwrap_or_else(|_| "dev-signing-key".to_string());
-    let storage_engine = Arc::new(darshandb_server::storage::StorageEngine::new(
+        std::env::var("DDB_STORAGE_KEY").unwrap_or_else(|_| "dev-signing-key".to_string());
+    let storage_engine = Arc::new(ddb_server::storage::StorageEngine::new(
         storage_backend,
         storage_signing_key.into_bytes(),
     ));
     tracing::info!(%storage_dir, "storage engine initialized");
 
     // -- Function Runtime -----------------------------------------------------
-    let functions_dir = std::env::var("DARSHAN_FUNCTIONS_DIR")
-        .unwrap_or_else(|_| "./darshan/functions".to_string());
+    let functions_dir =
+        std::env::var("DDB_FUNCTIONS_DIR").unwrap_or_else(|_| "./darshan/functions".to_string());
     let functions_dir_path = std::path::PathBuf::from(&functions_dir);
 
     let (fn_registry, fn_runtime) = if functions_dir_path.is_dir() {
@@ -318,9 +317,7 @@ async fn main() -> Result<()> {
             );
             (None, None)
         } else {
-            match darshandb_server::functions::FunctionRegistry::new(functions_dir_path.clone())
-                .await
-            {
+            match ddb_server::functions::FunctionRegistry::new(functions_dir_path.clone()).await {
                 Ok(registry) => {
                     let fn_count = registry.count().await;
                     tracing::info!(
@@ -329,16 +326,16 @@ async fn main() -> Result<()> {
                         "function registry initialized"
                     );
 
-                    let process_runtime = darshandb_server::functions::runtime::ProcessRuntime::new(
-                        darshandb_server::functions::runtime::ProcessKind::Node,
+                    let process_runtime = ddb_server::functions::runtime::ProcessRuntime::new(
+                        ddb_server::functions::runtime::ProcessKind::Node,
                         harness_path,
                         functions_dir_path,
-                        darshandb_server::functions::ResourceLimits::default().max_concurrency,
+                        ddb_server::functions::ResourceLimits::default().max_concurrency,
                     );
 
-                    let runtime = darshandb_server::functions::FunctionRuntime::new(
+                    let runtime = ddb_server::functions::FunctionRuntime::new(
                         Box::new(process_runtime),
-                        darshandb_server::functions::ResourceLimits::default(),
+                        ddb_server::functions::ResourceLimits::default(),
                         database_url.clone(),
                         format!("http://127.0.0.1:{port}"),
                     );
@@ -364,16 +361,16 @@ async fn main() -> Result<()> {
 
     // -- Rule Engine ----------------------------------------------------------
     let rules_path = std::path::PathBuf::from(
-        std::env::var("DARSHAN_RULES_FILE").unwrap_or_else(|_| "./darshan/rules.json".to_string()),
+        std::env::var("DDB_RULES_FILE").unwrap_or_else(|_| "./darshan/rules.json".to_string()),
     );
-    let rules = darshandb_server::rules::load_rules_from_file(&rules_path).unwrap_or_else(|e| {
+    let rules = ddb_server::rules::load_rules_from_file(&rules_path).unwrap_or_else(|e| {
         tracing::error!(error = %e, "failed to load rules, continuing without rule engine");
         Vec::new()
     });
     let rule_engine = if rules.is_empty() {
         None
     } else {
-        Some(Arc::new(darshandb_server::rules::RuleEngine::new(
+        Some(Arc::new(ddb_server::rules::RuleEngine::new(
             rules,
             triple_store_arc.clone(),
         )))
@@ -397,7 +394,7 @@ async fn main() -> Result<()> {
     app_state = app_state.with_pubsub(pubsub_engine);
 
     // -- CORS Layer -----------------------------------------------------------
-    let dev_mode = std::env::var("DARSHAN_DEV")
+    let dev_mode = std::env::var("DDB_DEV")
         .map(|v| v == "1" || v == "true")
         .unwrap_or(false);
 
@@ -410,10 +407,10 @@ async fn main() -> Result<()> {
             .expose_headers(Any)
             .max_age(Duration::from_secs(86400))
     } else {
-        let cors_origins = std::env::var("DARSHAN_CORS_ORIGINS").unwrap_or_default();
+        let cors_origins = std::env::var("DDB_CORS_ORIGINS").unwrap_or_default();
         if cors_origins.is_empty() {
             tracing::warn!(
-                "DARSHAN_CORS_ORIGINS not set in production mode, denying cross-origin requests"
+                "DDB_CORS_ORIGINS not set in production mode, denying cross-origin requests"
             );
             // No allow_origin call = no Access-Control-Allow-Origin header = browser blocks.
             CorsLayer::new()
@@ -494,10 +491,10 @@ async fn main() -> Result<()> {
     // -- Start Server ---------------------------------------------------------
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
 
-    // Optional TLS termination: if DARSHAN_TLS_CERT and DARSHAN_TLS_KEY are set,
+    // Optional TLS termination: if DDB_TLS_CERT and DDB_TLS_KEY are set,
     // bind with rustls for native TLS 1.2/1.3 support. Otherwise, plain HTTP.
-    let tls_cert = std::env::var("DARSHAN_TLS_CERT");
-    let tls_key = std::env::var("DARSHAN_TLS_KEY");
+    let tls_cert = std::env::var("DDB_TLS_CERT");
+    let tls_key = std::env::var("DDB_TLS_KEY");
 
     if let (Ok(cert_path), Ok(key_path)) = (tls_cert, tls_key) {
         tracing::info!("TLS enabled: loading certificate from {cert_path}");
@@ -506,12 +503,12 @@ async fn main() -> Result<()> {
             axum_server::tls_rustls::RustlsConfig::from_pem_file(&cert_path, &key_path)
                 .await
                 .map_err(|e| {
-                    darshandb_server::error::DarshanError::Internal(format!(
+                    ddb_server::error::DarshJError::Internal(format!(
                         "failed to load TLS certificate/key ({cert_path}, {key_path}): {e}"
                     ))
                 })?;
 
-        tracing::info!(%addr, "DarshanDB server listening (TLS enabled)");
+        tracing::info!(%addr, "DarshJDB server listening (TLS enabled)");
         tracing::info!("  REST API:  https://{addr}/api");
         tracing::info!("  WebSocket: wss://{addr}/ws");
         tracing::info!("  Health:    https://{addr}/health");
@@ -521,17 +518,15 @@ async fn main() -> Result<()> {
         axum_server::bind_rustls(addr, rustls_config)
             .serve(app.into_make_service_with_connect_info::<SocketAddr>())
             .await
-            .map_err(|e| {
-                darshandb_server::error::DarshanError::Internal(format!("server error: {e}"))
-            })?;
+            .map_err(|e| ddb_server::error::DarshJError::Internal(format!("server error: {e}")))?;
     } else {
-        tracing::info!("TLS disabled (set DARSHAN_TLS_CERT and DARSHAN_TLS_KEY to enable)");
+        tracing::info!("TLS disabled (set DDB_TLS_CERT and DDB_TLS_KEY to enable)");
 
-        let listener = tokio::net::TcpListener::bind(addr).await.map_err(|e| {
-            darshandb_server::error::DarshanError::Internal(format!("bind error: {e}"))
-        })?;
+        let listener = tokio::net::TcpListener::bind(addr)
+            .await
+            .map_err(|e| ddb_server::error::DarshJError::Internal(format!("bind error: {e}")))?;
 
-        tracing::info!(%addr, "DarshanDB server listening");
+        tracing::info!(%addr, "DarshJDB server listening");
         tracing::info!("  REST API:  http://{addr}/api");
         tracing::info!("  WebSocket: ws://{addr}/ws");
         tracing::info!("  Health:    http://{addr}/health");
@@ -544,12 +539,10 @@ async fn main() -> Result<()> {
         )
         .with_graceful_shutdown(shutdown_signal())
         .await
-        .map_err(|e| {
-            darshandb_server::error::DarshanError::Internal(format!("server error: {e}"))
-        })?;
+        .map_err(|e| ddb_server::error::DarshJError::Internal(format!("server error: {e}")))?;
     }
 
-    tracing::info!("DarshanDB server shut down gracefully");
+    tracing::info!("DarshJDB server shut down gracefully");
 
     Ok(())
 }
@@ -567,7 +560,7 @@ async fn request_logging_middleware(req: Request<Body>, next: Next) -> Response 
     // We check both the auth context type and a simple string extension.
     let user_id: Option<String> = req
         .extensions()
-        .get::<darshandb_server::auth::AuthContext>()
+        .get::<ddb_server::auth::AuthContext>()
         .map(|ctx| ctx.user_id.to_string());
 
     let start = Instant::now();
@@ -623,7 +616,7 @@ async fn health_check(
     pool: sqlx::PgPool,
     ws_sessions: Arc<SyncSessionManager>,
     started_at: Instant,
-    pool_stats: Arc<darshandb_server::api::pool_stats::PoolStats>,
+    pool_stats: Arc<ddb_server::api::pool_stats::PoolStats>,
 ) -> Response {
     let pool_size = pool.size();
     let idle = pool.num_idle();

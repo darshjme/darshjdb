@@ -1,6 +1,6 @@
-//! REST API layer for DarshanDB.
+//! REST API layer for DarshJDB.
 //!
-//! Exposes the full DarshanDB feature set over HTTP using Axum:
+//! Exposes the full DarshJDB feature set over HTTP using Axum:
 //! authentication, data queries and mutations, server-side functions,
 //! file storage, real-time subscriptions (SSE), admin introspection,
 //! and auto-generated OpenAPI documentation.
@@ -9,7 +9,7 @@
 //!
 //! ```text
 //! /api/auth/*          Authentication (signup, signin, OAuth, etc.)
-//! /api/query           DarshanQL over HTTP
+//! /api/query           DarshJQL over HTTP
 //! /api/mutate          Transaction submission
 //! /api/data/:entity    REST-style CRUD
 //! /api/fn/:name        Server-side function invocation

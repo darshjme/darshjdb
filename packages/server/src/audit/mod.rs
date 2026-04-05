@@ -1,4 +1,4 @@
-//! Bitcoin-inspired Merkle tree audit trail for DarshanDB.
+//! Bitcoin-inspired Merkle tree audit trail for DarshJDB.
 //!
 //! Every mutation transaction produces a Merkle root hash over the set
 //! of triples it writes. Roots are chained: each new root incorporates

@@ -1,4 +1,4 @@
-//! Pub/Sub engine for DarshanDB keyspace notifications.
+//! Pub/Sub engine for DarshJDB keyspace notifications.
 //!
 //! Provides Redis-style channel subscriptions with glob pattern matching.
 //! Clients subscribe to channels like `entity:users:*` and receive events
@@ -57,7 +57,7 @@ impl ChannelPattern {
     /// # Examples
     ///
     /// ```
-    /// # use darshandb_server::sync::pubsub::ChannelPattern;
+    /// # use ddb_server::sync::pubsub::ChannelPattern;
     /// let p = ChannelPattern::parse("entity:users:*");
     /// assert!(p.matches("entity:users:abc-123"));
     /// assert!(!p.matches("entity:posts:abc-123"));

@@ -1,4 +1,4 @@
-//! Real-time sync engine for DarshanDB.
+//! Real-time sync engine for DarshJDB.
 //!
 //! Provides live query subscriptions, change broadcasting with delta diffs,
 //! presence tracking, and session management over WebSocket connections.

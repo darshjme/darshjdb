@@ -1,4 +1,4 @@
-//! Integration tests for DarshanDB against a real Postgres database.
+//! Integration tests for DarshJDB against a real Postgres database.
 //!
 //! These tests require a running Postgres instance. Set the `DATABASE_URL`
 //! environment variable to enable them:
@@ -10,8 +10,19 @@
 //! If `DATABASE_URL` is not set, every test silently passes (returns early).
 //! Each test creates its own data in isolated entity namespaces and cleans
 //! up after itself so tests can run in parallel without interference.
+//!
+//! **72 integration tests** across 9 categories:
+//! - Triple store core: 11
+//! - Auth password provider: 10
+//! - Auth session manager: 7
+//! - Data CRUD: 15
+//! - DarshJQL query engine: 10
+//! - Mutations: 5
+//! - Permissions: 5
+//! - Audit/Merkle: 4
+//! - Edge cases: 5
 
-use darshandb_server::triple_store::TripleStore;
+use ddb_server::triple_store::TripleStore;
 use serde_json::json;
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -20,60 +31,46 @@ use uuid::Uuid;
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Attempt to connect to the test database. Returns `None` if `DATABASE_URL`
-/// is not set or the connection fails, causing the calling test to skip.
 async fn setup_pool() -> Option<PgPool> {
     let url = std::env::var("DATABASE_URL").ok()?;
     let pool = PgPool::connect(&url).await.ok()?;
-
-    // Ensure the schema exists so tests don't fail on a blank database.
-    darshandb_server::triple_store::PgTripleStore::new(pool.clone())
+    ddb_server::triple_store::PgTripleStore::new(pool.clone())
         .await
         .ok()?;
-
-    // Ensure the auth tables exist.
-    darshandb_server::api::rest::ensure_auth_schema(&pool)
+    ddb_server::api::rest::ensure_auth_schema(&pool)
         .await
         .ok()?;
-
     Some(pool)
 }
 
-/// Delete all triples (and audit rows) that belong to the given entity ids.
-/// Used by tests to clean up after themselves.
-async fn cleanup_entities(pool: &PgPool, entity_ids: &[Uuid]) {
-    if entity_ids.is_empty() {
+async fn cleanup_entities(pool: &PgPool, ids: &[Uuid]) {
+    if ids.is_empty() {
         return;
     }
-    // Delete triples for these entities.
     sqlx::query("DELETE FROM triples WHERE entity_id = ANY($1)")
-        .bind(entity_ids)
+        .bind(ids)
         .execute(pool)
         .await
         .ok();
 }
 
-/// Delete audit rows for the given transaction ids.
-async fn cleanup_audit(pool: &PgPool, tx_ids: &[i64]) {
-    if tx_ids.is_empty() {
+async fn cleanup_audit(pool: &PgPool, ids: &[i64]) {
+    if ids.is_empty() {
         return;
     }
     sqlx::query("DELETE FROM tx_merkle_roots WHERE tx_id = ANY($1)")
-        .bind(tx_ids)
+        .bind(ids)
         .execute(pool)
         .await
         .ok();
 }
 
-/// Delete a test user by email.
 async fn cleanup_user(pool: &PgPool, email: &str) {
-    // Delete sessions first (FK constraint).
     sqlx::query("DELETE FROM sessions WHERE user_id IN (SELECT id FROM users WHERE email = $1)")
         .bind(email)
         .execute(pool)
         .await
         .ok();
-
     sqlx::query("DELETE FROM users WHERE email = $1")
         .bind(email)
         .execute(pool)
@@ -81,7 +78,6 @@ async fn cleanup_user(pool: &PgPool, email: &str) {
         .ok();
 }
 
-/// Delete entity_pool entries for the given UUIDs.
 async fn cleanup_entity_pool(pool: &PgPool, uuids: &[Uuid]) {
     if uuids.is_empty() {
         return;
@@ -93,647 +89,1605 @@ async fn cleanup_entity_pool(pool: &PgPool, uuids: &[Uuid]) {
         .ok();
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
-/// Write a triple, read it back, verify all fields match.
-#[tokio::test]
-async fn test_triple_store_roundtrip() {
-    let Some(pool) = setup_pool().await else {
-        return;
-    };
-
-    let store = darshandb_server::triple_store::PgTripleStore::new_lazy(pool.clone());
-    let entity_id = Uuid::new_v4();
-
-    // Write
-    let input = darshandb_server::triple_store::TripleInput {
-        entity_id,
-        attribute: "user/name".into(),
-        value: json!("Darshan"),
-        value_type: 0, // string
-        ttl_seconds: None,
-    };
-
-    let tx_id = store
-        .set_triples(&[input])
-        .await
-        .expect("set_triples failed");
-    assert!(tx_id > 0, "tx_id should be positive");
-
-    // Read back
-    let triples = store
-        .get_entity(entity_id)
-        .await
-        .expect("get_entity failed");
-
-    assert_eq!(triples.len(), 1);
-    assert_eq!(triples[0].entity_id, entity_id);
-    assert_eq!(triples[0].attribute, "user/name");
-    assert_eq!(triples[0].value, json!("Darshan"));
-    assert!(!triples[0].retracted);
-
-    // Cleanup
-    cleanup_entities(&pool, &[entity_id]).await;
-    cleanup_audit(&pool, &[tx_id]).await;
-}
-
-/// Write entities of different types, infer the schema, verify type presence.
-#[tokio::test]
-async fn test_schema_inference() {
-    let Some(pool) = setup_pool().await else {
-        return;
-    };
-
-    let store = darshandb_server::triple_store::PgTripleStore::new_lazy(pool.clone());
-    let e1 = Uuid::new_v4();
-    let e2 = Uuid::new_v4();
-
-    let inputs = vec![
-        darshandb_server::triple_store::TripleInput {
-            entity_id: e1,
-            attribute: ":db/type".into(),
-            value: json!("User"),
-            value_type: 0,
-            ttl_seconds: None,
-        },
-        darshandb_server::triple_store::TripleInput {
-            entity_id: e1,
-            attribute: "user/email".into(),
-            value: json!("test@darshjdb.test"),
-            value_type: 0,
-            ttl_seconds: None,
-        },
-        darshandb_server::triple_store::TripleInput {
-            entity_id: e2,
-            attribute: ":db/type".into(),
-            value: json!("Project"),
-            value_type: 0,
-            ttl_seconds: None,
-        },
-        darshandb_server::triple_store::TripleInput {
-            entity_id: e2,
-            attribute: "project/name".into(),
-            value: json!("DarshanDB"),
-            value_type: 0,
-            ttl_seconds: None,
-        },
-    ];
-
-    let tx_id = store
-        .set_triples(&inputs)
-        .await
-        .expect("set_triples failed");
-
-    let schema = store.get_schema().await.expect("get_schema failed");
-
-    // Schema should contain at least the entity types we wrote.
-    // Schema.entity_types is HashMap<String, EntityType> — keys are type names.
-    let type_names: Vec<&str> = schema.entity_types.keys().map(|k| k.as_str()).collect();
-    assert!(
-        type_names.contains(&"User"),
-        "Schema should contain User type, got: {:?}",
-        type_names
-    );
-    assert!(
-        type_names.contains(&"Project"),
-        "Schema should contain Project type, got: {:?}",
-        type_names
-    );
-
-    // Cleanup
-    cleanup_entities(&pool, &[e1, e2]).await;
-    cleanup_audit(&pool, &[tx_id]).await;
-}
-
-/// Write data, query with a where-clause filter, verify correct results.
-#[tokio::test]
-async fn test_query_with_where() {
-    let Some(pool) = setup_pool().await else {
-        return;
-    };
-
-    let store = darshandb_server::triple_store::PgTripleStore::new_lazy(pool.clone());
-    let e1 = Uuid::new_v4();
-    let e2 = Uuid::new_v4();
-    let e3 = Uuid::new_v4();
-
-    let inputs = vec![
-        // Entity 1: active user
-        darshandb_server::triple_store::TripleInput {
-            entity_id: e1,
-            attribute: ":db/type".into(),
-            value: json!("IntegTestUser"),
-            value_type: 0,
-            ttl_seconds: None,
-        },
-        darshandb_server::triple_store::TripleInput {
-            entity_id: e1,
-            attribute: "user/status".into(),
-            value: json!("active"),
-            value_type: 0,
-            ttl_seconds: None,
-        },
-        // Entity 2: inactive user
-        darshandb_server::triple_store::TripleInput {
-            entity_id: e2,
-            attribute: ":db/type".into(),
-            value: json!("IntegTestUser"),
-            value_type: 0,
-            ttl_seconds: None,
-        },
-        darshandb_server::triple_store::TripleInput {
-            entity_id: e2,
-            attribute: "user/status".into(),
-            value: json!("inactive"),
-            value_type: 0,
-            ttl_seconds: None,
-        },
-        // Entity 3: active user
-        darshandb_server::triple_store::TripleInput {
-            entity_id: e3,
-            attribute: ":db/type".into(),
-            value: json!("IntegTestUser"),
-            value_type: 0,
-            ttl_seconds: None,
-        },
-        darshandb_server::triple_store::TripleInput {
-            entity_id: e3,
-            attribute: "user/status".into(),
-            value: json!("active"),
-            value_type: 0,
-            ttl_seconds: None,
-        },
-    ];
-
-    let tx_id = store
-        .set_triples(&inputs)
-        .await
-        .expect("set_triples failed");
-
-    // Query: IntegTestUser where status = "active"
-    let query = json!({
-        "type": "IntegTestUser",
-        "$where": [
-            { "attribute": "user/status", "op": "=", "value": "active" }
-        ]
-    });
-
-    let ast = darshandb_server::query::parse_darshan_ql(&query).expect("parse failed");
-    let plan = darshandb_server::query::plan_query(&ast).expect("plan failed");
-    let results = darshandb_server::query::execute_query(&pool, &plan)
-        .await
-        .expect("execute failed");
-
-    // We should get exactly 2 active entities (e1 and e3).
-    let result_ids: Vec<Uuid> = results.iter().map(|r| r.entity_id).collect();
-    assert!(result_ids.contains(&e1), "Results should contain e1");
-    assert!(result_ids.contains(&e3), "Results should contain e3");
-    // e2 is inactive, should not appear
-    assert!(
-        !result_ids.contains(&e2),
-        "Results should NOT contain inactive e2"
-    );
-
-    // Cleanup
-    cleanup_entities(&pool, &[e1, e2, e3]).await;
-    cleanup_audit(&pool, &[tx_id]).await;
-}
-
-/// Write a triple, retract it, verify the entity reads as empty.
-#[tokio::test]
-async fn test_retraction() {
-    let Some(pool) = setup_pool().await else {
-        return;
-    };
-
-    let store = darshandb_server::triple_store::PgTripleStore::new_lazy(pool.clone());
-    let entity_id = Uuid::new_v4();
-
-    let input = darshandb_server::triple_store::TripleInput {
-        entity_id,
-        attribute: "temp/data".into(),
-        value: json!(42),
-        value_type: 1, // number
-        ttl_seconds: None,
-    };
-
-    let tx_id = store
-        .set_triples(&[input])
-        .await
-        .expect("set_triples failed");
-
-    // Verify it exists
-    let before = store
-        .get_entity(entity_id)
-        .await
-        .expect("get_entity failed");
-    assert_eq!(before.len(), 1);
-
-    // Retract
-    store
-        .retract(entity_id, "temp/data")
-        .await
-        .expect("retract failed");
-
-    // Verify entity is now empty (all triples retracted)
-    let after = store
-        .get_entity(entity_id)
-        .await
-        .expect("get_entity failed");
-    assert!(
-        after.is_empty(),
-        "Entity should have no active triples after retraction, got {}",
-        after.len()
-    );
-
-    // Cleanup
-    cleanup_entities(&pool, &[entity_id]).await;
-    cleanup_audit(&pool, &[tx_id]).await;
-}
-
-/// Register a UUID in the entity pool, get its internal ID, reverse-resolve
-/// back to the same UUID.
-#[tokio::test]
-async fn test_entity_pool_roundtrip() {
-    let Some(pool) = setup_pool().await else {
-        return;
-    };
-
-    let entity_pool = darshandb_server::triple_store::EntityPool::new(pool.clone());
-    entity_pool
-        .ensure_schema()
-        .await
-        .expect("ensure_schema failed");
-
-    let uuid = Uuid::new_v4();
-
-    // Forward: UUID -> internal_id
-    let internal_id = entity_pool
-        .get_or_create(uuid)
-        .await
-        .expect("get_or_create failed");
-    assert!(internal_id > 0);
-
-    // Idempotent: same UUID -> same internal_id
-    let internal_id_again = entity_pool
-        .get_or_create(uuid)
-        .await
-        .expect("get_or_create second call failed");
-    assert_eq!(internal_id, internal_id_again);
-
-    // Reverse: internal_id -> UUID
-    let resolved = entity_pool
-        .resolve(internal_id)
-        .await
-        .expect("resolve failed");
-    assert_eq!(resolved, uuid);
-
-    // Cleanup
-    cleanup_entity_pool(&pool, &[uuid]).await;
-}
-
-/// Bulk-load 1000 triples and verify the count matches.
-#[tokio::test]
-async fn test_bulk_load() {
-    let Some(pool) = setup_pool().await else {
-        return;
-    };
-
-    let store = darshandb_server::triple_store::PgTripleStore::new_lazy(pool.clone());
-
-    let count = 1000;
-    let entity_ids: Vec<Uuid> = (0..count).map(|_| Uuid::new_v4()).collect();
-
-    let inputs: Vec<darshandb_server::triple_store::TripleInput> = entity_ids
-        .iter()
-        .enumerate()
-        .map(|(i, eid)| darshandb_server::triple_store::TripleInput {
-            entity_id: *eid,
-            attribute: "bulk/item".into(),
-            value: json!({ "index": i }),
-            value_type: 0,
-            ttl_seconds: None,
-        })
-        .collect();
-
-    let result = store.bulk_load(inputs).await.expect("bulk_load failed");
-
-    assert_eq!(result.triples_loaded, count);
-    assert!(result.tx_id > 0);
-    assert!(result.duration_ms < 30_000, "Bulk load took too long");
-    assert!(result.rate_per_sec > 0.0, "Rate should be positive");
-
-    // Verify we can read back a sample triple
-    let sample = store
-        .get_entity(entity_ids[500])
-        .await
-        .expect("get_entity failed");
-    assert_eq!(sample.len(), 1);
-    assert_eq!(sample[0].attribute, "bulk/item");
-
-    // Cleanup
-    cleanup_entities(&pool, &entity_ids).await;
-    cleanup_audit(&pool, &[result.tx_id]).await;
-}
-
-/// Create a user via password provider, sign in, verify a JWT is returned.
-#[tokio::test]
-async fn test_auth_signup_signin() {
-    let Some(pool) = setup_pool().await else {
-        return;
-    };
-
-    let test_email = format!("integ-test-{}@darshjdb.test", Uuid::new_v4());
-    let test_password = "SuperSecure!Pass123";
-
-    // Hash the password
-    let hash = darshandb_server::auth::PasswordProvider::hash_password(test_password)
-        .expect("hash_password failed");
-
-    // Insert user directly (bypassing signup endpoint for isolation)
-    let user_id = Uuid::new_v4();
+async fn create_test_user(pool: &PgPool) -> (Uuid, String) {
+    let email = format!("integ-test-{}@darshan.db", Uuid::new_v4());
+    let hash = ddb_server::auth::PasswordProvider::hash_password("TestPass123!").expect("hash");
+    let uid = Uuid::new_v4();
     sqlx::query(
         "INSERT INTO users (id, email, password_hash, roles) VALUES ($1, $2, $3, $4::jsonb)",
     )
-    .bind(user_id)
-    .bind(&test_email)
+    .bind(uid)
+    .bind(&email)
+    .bind(&hash)
+    .bind(json!(["user"]))
+    .execute(pool)
+    .await
+    .expect("insert user");
+    (uid, email)
+}
+
+async fn create_test_admin(pool: &PgPool) -> (Uuid, String) {
+    let email = format!("integ-admin-{}@darshan.db", Uuid::new_v4());
+    let hash = ddb_server::auth::PasswordProvider::hash_password("TestPass123!").expect("hash");
+    let uid = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO users (id, email, password_hash, roles) VALUES ($1, $2, $3, $4::jsonb)",
+    )
+    .bind(uid)
+    .bind(&email)
+    .bind(&hash)
+    .bind(json!(["admin", "user"]))
+    .execute(pool)
+    .await
+    .expect("insert admin");
+    (uid, email)
+}
+
+fn create_session_manager(pool: PgPool) -> ddb_server::auth::SessionManager {
+    let km = ddb_server::auth::KeyManager::from_secret(
+        b"integration-test-secret-key-at-least-32-bytes-long",
+    );
+    ddb_server::auth::SessionManager::new(pool, km)
+}
+
+macro_rules! ti {
+    ($eid:expr, $attr:expr, $val:expr) => {
+        ddb_server::triple_store::TripleInput {
+            entity_id: $eid,
+            attribute: $attr.into(),
+            value: $val,
+            value_type: 0,
+            ttl_seconds: None,
+        }
+    };
+    ($eid:expr, $attr:expr, $val:expr, $vt:expr) => {
+        ddb_server::triple_store::TripleInput {
+            entity_id: $eid,
+            attribute: $attr.into(),
+            value: $val,
+            value_type: $vt,
+            ttl_seconds: None,
+        }
+    };
+    ($eid:expr, $attr:expr, $val:expr, $vt:expr, $ttl:expr) => {
+        ddb_server::triple_store::TripleInput {
+            entity_id: $eid,
+            attribute: $attr.into(),
+            value: $val,
+            value_type: $vt,
+            ttl_seconds: Some($ttl),
+        }
+    };
+}
+
+fn run_ql(
+    pool: &PgPool,
+    q: &serde_json::Value,
+) -> std::pin::Pin<
+    Box<dyn std::future::Future<Output = Vec<ddb_server::query::QueryResultRow>> + Send + '_>,
+> {
+    let q = q.clone();
+    Box::pin(async move {
+        let ast = ddb_server::query::parse_darshan_ql(&q).expect("parse");
+        let plan = ddb_server::query::plan_query(&ast).expect("plan");
+        ddb_server::query::execute_query(pool, &plan)
+            .await
+            .expect("exec")
+    })
+}
+
+// ===========================================================================
+// 1. TRIPLE STORE (11)
+// ===========================================================================
+
+#[tokio::test]
+async fn test_ts_roundtrip() {
+    let Some(pool) = setup_pool().await else {
+        return;
+    };
+    let store = ddb_server::triple_store::PgTripleStore::new_lazy(pool.clone());
+    let eid = Uuid::new_v4();
+    let tx = store
+        .set_triples(&[ti!(eid, "user/name", json!("Darshan"))])
+        .await
+        .expect("set");
+    assert!(tx > 0);
+    let t = store.get_entity(eid).await.expect("get");
+    assert_eq!(t.len(), 1);
+    assert_eq!(t[0].attribute, "user/name");
+    assert_eq!(t[0].value, json!("Darshan"));
+    assert!(!t[0].retracted);
+    cleanup_entities(&pool, &[eid]).await;
+    cleanup_audit(&pool, &[tx]).await;
+}
+
+#[tokio::test]
+async fn test_ts_schema_inference() {
+    let Some(pool) = setup_pool().await else {
+        return;
+    };
+    let store = ddb_server::triple_store::PgTripleStore::new_lazy(pool.clone());
+    let (e1, e2) = (Uuid::new_v4(), Uuid::new_v4());
+    let tx = store
+        .set_triples(&[
+            ti!(e1, ":db/type", json!("User")),
+            ti!(e1, "user/email", json!("t@d.db")),
+            ti!(e2, ":db/type", json!("Project")),
+            ti!(e2, "project/name", json!("DarshJDB")),
+        ])
+        .await
+        .expect("set");
+    let schema = store.get_schema().await.expect("schema");
+    let types: Vec<&str> = schema.entity_types.keys().map(|k| k.as_str()).collect();
+    assert!(types.contains(&"User"));
+    assert!(types.contains(&"Project"));
+    cleanup_entities(&pool, &[e1, e2]).await;
+    cleanup_audit(&pool, &[tx]).await;
+}
+
+#[tokio::test]
+async fn test_ts_retraction() {
+    let Some(pool) = setup_pool().await else {
+        return;
+    };
+    let store = ddb_server::triple_store::PgTripleStore::new_lazy(pool.clone());
+    let eid = Uuid::new_v4();
+    let tx = store
+        .set_triples(&[ti!(eid, "temp/data", json!(42), 1)])
+        .await
+        .expect("set");
+    assert_eq!(store.get_entity(eid).await.expect("get").len(), 1);
+    store.retract(eid, "temp/data").await.expect("retract");
+    assert!(store.get_entity(eid).await.expect("get").is_empty());
+    cleanup_entities(&pool, &[eid]).await;
+    cleanup_audit(&pool, &[tx]).await;
+}
+
+#[tokio::test]
+async fn test_ts_entity_pool() {
+    let Some(pool) = setup_pool().await else {
+        return;
+    };
+    let ep = ddb_server::triple_store::EntityPool::new(pool.clone());
+    ep.ensure_schema().await.expect("schema");
+    let uuid = Uuid::new_v4();
+    let id1 = ep.get_or_create(uuid).await.expect("create");
+    assert!(id1 > 0);
+    assert_eq!(ep.get_or_create(uuid).await.expect("idem"), id1);
+    assert_eq!(ep.resolve(id1).await.expect("resolve"), uuid);
+    cleanup_entity_pool(&pool, &[uuid]).await;
+}
+
+#[tokio::test]
+async fn test_ts_bulk_load() {
+    let Some(pool) = setup_pool().await else {
+        return;
+    };
+    let store = ddb_server::triple_store::PgTripleStore::new_lazy(pool.clone());
+    let eids: Vec<Uuid> = (0..1000).map(|_| Uuid::new_v4()).collect();
+    let inputs: Vec<_> = eids
+        .iter()
+        .enumerate()
+        .map(|(i, eid)| ti!(*eid, "bulk/item", json!({"index": i})))
+        .collect();
+    let result = store.bulk_load(inputs).await.expect("bulk");
+    assert_eq!(result.triples_loaded, 1000);
+    assert!(result.tx_id > 0);
+    assert_eq!(store.get_entity(eids[500]).await.expect("get").len(), 1);
+    cleanup_entities(&pool, &eids).await;
+    cleanup_audit(&pool, &[result.tx_id]).await;
+}
+
+#[tokio::test]
+async fn test_ts_ttl() {
+    let Some(pool) = setup_pool().await else {
+        return;
+    };
+    let store = ddb_server::triple_store::PgTripleStore::new_lazy(pool.clone());
+    let eid = Uuid::new_v4();
+    let tx = store
+        .set_triples(&[ti!(eid, "eph/tok", json!("x"), 0, 3600)])
+        .await
+        .expect("set");
+    let t = store.get_entity(eid).await.expect("get");
+    assert!(t[0].expires_at.is_some());
+    let diff = (t[0].expires_at.unwrap() - chrono::Utc::now()).num_seconds();
+    assert!((3590..=3610).contains(&diff), "got {diff}s");
+    cleanup_entities(&pool, &[eid]).await;
+    cleanup_audit(&pool, &[tx]).await;
+}
+
+#[tokio::test]
+async fn test_ts_point_in_time() {
+    let Some(pool) = setup_pool().await else {
+        return;
+    };
+    let store = ddb_server::triple_store::PgTripleStore::new_lazy(pool.clone());
+    let eid = Uuid::new_v4();
+    let tx1 = store
+        .set_triples(&[ti!(eid, "user/name", json!("Alice"))])
+        .await
+        .expect("w1");
+    let tx2 = store
+        .set_triples(&[ti!(eid, "user/name", json!("Bob"))])
+        .await
+        .expect("w2");
+    let at1 = store.get_entity_at(eid, tx1).await.expect("at");
+    let name = at1
+        .iter()
+        .find(|t| t.attribute == "user/name")
+        .expect("name");
+    assert_eq!(name.value, json!("Alice"));
+    assert!(store.get_entity(eid).await.expect("get").len() >= 2);
+    cleanup_entities(&pool, &[eid]).await;
+    cleanup_audit(&pool, &[tx1, tx2]).await;
+}
+
+#[tokio::test]
+async fn test_ts_query_by_attribute() {
+    let Some(pool) = setup_pool().await else {
+        return;
+    };
+    let store = ddb_server::triple_store::PgTripleStore::new_lazy(pool.clone());
+    let (e1, e2) = (Uuid::new_v4(), Uuid::new_v4());
+    let tx = store
+        .set_triples(&[
+            ti!(e1, "integ_test/color", json!("blue")),
+            ti!(e2, "integ_test/color", json!("red")),
+        ])
+        .await
+        .expect("set");
+    assert!(
+        store
+            .query_by_attribute("integ_test/color", None)
+            .await
+            .expect("q")
+            .len()
+            >= 2
+    );
+    let blue = store
+        .query_by_attribute("integ_test/color", Some(&json!("blue")))
+        .await
+        .expect("q");
+    assert!(blue.iter().all(|t| t.value == json!("blue")));
+    cleanup_entities(&pool, &[e1, e2]).await;
+    cleanup_audit(&pool, &[tx]).await;
+}
+
+#[tokio::test]
+async fn test_ts_get_attribute() {
+    let Some(pool) = setup_pool().await else {
+        return;
+    };
+    let store = ddb_server::triple_store::PgTripleStore::new_lazy(pool.clone());
+    let eid = Uuid::new_v4();
+    let tx = store
+        .set_triples(&[
+            ti!(eid, "user/name", json!("Alice")),
+            ti!(eid, "user/email", json!("a@t.com")),
+        ])
+        .await
+        .expect("set");
+    let email = store.get_attribute(eid, "user/email").await.expect("attr");
+    assert_eq!(email.len(), 1);
+    assert_eq!(email[0].value, json!("a@t.com"));
+    assert!(
+        store
+            .get_attribute(eid, "user/nope")
+            .await
+            .expect("attr")
+            .is_empty()
+    );
+    cleanup_entities(&pool, &[eid]).await;
+    cleanup_audit(&pool, &[tx]).await;
+}
+
+#[tokio::test]
+async fn test_ts_partial_retraction() {
+    let Some(pool) = setup_pool().await else {
+        return;
+    };
+    let store = ddb_server::triple_store::PgTripleStore::new_lazy(pool.clone());
+    let eid = Uuid::new_v4();
+    let tx = store
+        .set_triples(&[
+            ti!(eid, "p/keep", json!("stay")),
+            ti!(eid, "p/rm", json!("go")),
+        ])
+        .await
+        .expect("set");
+    store.retract(eid, "p/rm").await.expect("retract");
+    let r = store.get_entity(eid).await.expect("get");
+    assert_eq!(r.len(), 1);
+    assert_eq!(r[0].attribute, "p/keep");
+    cleanup_entities(&pool, &[eid]).await;
+    cleanup_audit(&pool, &[tx]).await;
+}
+
+#[tokio::test]
+async fn test_ts_20_attributes() {
+    let Some(pool) = setup_pool().await else {
+        return;
+    };
+    let store = ddb_server::triple_store::PgTripleStore::new_lazy(pool.clone());
+    let eid = Uuid::new_v4();
+    let inputs: Vec<_> = (0..20)
+        .map(|i| ti!(eid, format!("m/a_{i}"), json!(format!("v_{i}"))))
+        .collect();
+    let tx = store.set_triples(&inputs).await.expect("set");
+    assert_eq!(store.get_entity(eid).await.expect("get").len(), 20);
+    cleanup_entities(&pool, &[eid]).await;
+    cleanup_audit(&pool, &[tx]).await;
+}
+
+// ===========================================================================
+// 2. AUTH — Password Provider (10)
+// ===========================================================================
+
+#[tokio::test]
+async fn test_auth_signin_success() {
+    let Some(pool) = setup_pool().await else {
+        return;
+    };
+    let (uid, email) = create_test_user(&pool).await;
+    match ddb_server::auth::PasswordProvider::authenticate(&pool, &email, "TestPass123!")
+        .await
+        .expect("auth")
+    {
+        ddb_server::auth::AuthOutcome::Success { user_id, roles } => {
+            assert_eq!(user_id, uid);
+            assert!(roles.contains(&"user".to_string()));
+        }
+        other => panic!("Expected Success, got {:?}", other),
+    }
+    cleanup_user(&pool, &email).await;
+}
+
+#[tokio::test]
+async fn test_auth_duplicate_email() {
+    let Some(pool) = setup_pool().await else {
+        return;
+    };
+    let email = format!("dup-{}@darshan.db", Uuid::new_v4());
+    let hash = ddb_server::auth::PasswordProvider::hash_password("P@ss123!").expect("hash");
+    sqlx::query(
+        "INSERT INTO users (id, email, password_hash, roles) VALUES ($1, $2, $3, $4::jsonb)",
+    )
+    .bind(Uuid::new_v4())
+    .bind(&email)
     .bind(&hash)
     .bind(json!(["user"]))
     .execute(&pool)
     .await
-    .expect("insert user failed");
+    .expect("1st");
+    let r = sqlx::query(
+        "INSERT INTO users (id, email, password_hash, roles) VALUES ($1, $2, $3, $4::jsonb)",
+    )
+    .bind(Uuid::new_v4())
+    .bind(&email)
+    .bind(&hash)
+    .bind(json!(["user"]))
+    .execute(&pool)
+    .await;
+    assert!(r.is_err());
+    assert!(
+        r.unwrap_err().to_string().contains("duplicate")
+            || r.as_ref().unwrap_err().to_string().contains("unique")
+    );
+    cleanup_user(&pool, &email).await;
+}
 
-    // Authenticate via the PasswordProvider
-    let outcome =
-        darshandb_server::auth::PasswordProvider::authenticate(&pool, &test_email, test_password)
-            .await
-            .expect("authenticate failed");
+#[tokio::test]
+async fn test_auth_wrong_password() {
+    let Some(pool) = setup_pool().await else {
+        return;
+    };
+    let (_, email) = create_test_user(&pool).await;
+    let o = ddb_server::auth::PasswordProvider::authenticate(&pool, &email, "wrong")
+        .await
+        .expect("auth");
+    assert!(matches!(o, ddb_server::auth::AuthOutcome::Failed { .. }));
+    cleanup_user(&pool, &email).await;
+}
 
-    match outcome {
-        darshandb_server::auth::AuthOutcome::Success {
-            user_id: auth_uid,
-            roles,
-        } => {
-            assert_eq!(auth_uid, user_id);
+#[tokio::test]
+async fn test_auth_nonexistent_email() {
+    let Some(pool) = setup_pool().await else {
+        return;
+    };
+    let o = ddb_server::auth::PasswordProvider::authenticate(&pool, "no@darshan.db", "P!")
+        .await
+        .expect("auth");
+    assert!(matches!(o, ddb_server::auth::AuthOutcome::Failed { .. }));
+}
+
+#[tokio::test]
+async fn test_auth_correct_roles() {
+    let Some(pool) = setup_pool().await else {
+        return;
+    };
+    let (uid, email) = create_test_admin(&pool).await;
+    match ddb_server::auth::PasswordProvider::authenticate(&pool, &email, "TestPass123!")
+        .await
+        .expect("auth")
+    {
+        ddb_server::auth::AuthOutcome::Success { user_id, roles } => {
+            assert_eq!(user_id, uid);
+            assert!(roles.contains(&"admin".to_string()));
             assert!(roles.contains(&"user".to_string()));
         }
-        other => panic!("Expected AuthOutcome::Success, got {:?}", other),
+        other => panic!("Expected Success, got {:?}", other),
     }
+    cleanup_user(&pool, &email).await;
+}
 
-    // Verify wrong password fails
-    let bad_outcome = darshandb_server::auth::PasswordProvider::authenticate(
-        &pool,
-        &test_email,
-        "wrong-password",
+#[tokio::test]
+async fn test_auth_empty_password() {
+    let Some(pool) = setup_pool().await else {
+        return;
+    };
+    let (_, email) = create_test_user(&pool).await;
+    let o = ddb_server::auth::PasswordProvider::authenticate(&pool, &email, "")
+        .await
+        .expect("auth");
+    assert!(matches!(o, ddb_server::auth::AuthOutcome::Failed { .. }));
+    cleanup_user(&pool, &email).await;
+}
+
+#[tokio::test]
+async fn test_auth_deleted_user() {
+    let Some(pool) = setup_pool().await else {
+        return;
+    };
+    let (uid, email) = create_test_user(&pool).await;
+    sqlx::query("UPDATE users SET deleted_at = now() WHERE id = $1")
+        .bind(uid)
+        .execute(&pool)
+        .await
+        .expect("del");
+    let o = ddb_server::auth::PasswordProvider::authenticate(&pool, &email, "TestPass123!")
+        .await
+        .expect("auth");
+    assert!(matches!(o, ddb_server::auth::AuthOutcome::Failed { .. }));
+    sqlx::query("DELETE FROM sessions WHERE user_id = $1")
+        .bind(uid)
+        .execute(&pool)
+        .await
+        .ok();
+    sqlx::query("DELETE FROM users WHERE id = $1")
+        .bind(uid)
+        .execute(&pool)
+        .await
+        .ok();
+}
+
+#[tokio::test]
+async fn test_auth_email_exact_match() {
+    let Some(pool) = setup_pool().await else {
+        return;
+    };
+    let email = format!("case-{}@darshan.db", Uuid::new_v4());
+    let hash = ddb_server::auth::PasswordProvider::hash_password("TestPass123!").expect("hash");
+    sqlx::query(
+        "INSERT INTO users (id, email, password_hash, roles) VALUES ($1, $2, $3, $4::jsonb)",
     )
+    .bind(Uuid::new_v4())
+    .bind(&email)
+    .bind(&hash)
+    .bind(json!(["user"]))
+    .execute(&pool)
     .await
-    .expect("authenticate should not error on wrong password");
-
-    assert!(
-        matches!(
-            bad_outcome,
-            darshandb_server::auth::AuthOutcome::Failed { .. }
-        ),
-        "Wrong password should return Failed"
-    );
-
-    // Cleanup
-    cleanup_user(&pool, &test_email).await;
+    .expect("ins");
+    let o = ddb_server::auth::PasswordProvider::authenticate(&pool, &email, "TestPass123!")
+        .await
+        .expect("auth");
+    assert!(matches!(o, ddb_server::auth::AuthOutcome::Success { .. }));
+    cleanup_user(&pool, &email).await;
 }
 
-/// Perform multiple mutations, then verify the Merkle hash chain is intact.
 #[tokio::test]
-async fn test_merkle_audit_chain() {
+async fn test_auth_long_password() {
+    let pw = "A".repeat(128);
+    let hash = ddb_server::auth::PasswordProvider::hash_password(&pw).expect("hash");
+    assert!(ddb_server::auth::PasswordProvider::verify_password(&pw, &hash).expect("verify"));
+}
+
+#[tokio::test]
+async fn test_auth_special_chars() {
+    let pw = r#"p@$$w0rd!#%^&*()_+-={}[]|\":;'<>,.?/~`"#;
+    let hash = ddb_server::auth::PasswordProvider::hash_password(pw).expect("hash");
+    assert!(ddb_server::auth::PasswordProvider::verify_password(pw, &hash).expect("verify"));
+}
+
+// ===========================================================================
+// 3. AUTH — Session Manager (7)
+// ===========================================================================
+
+#[tokio::test]
+async fn test_session_create_validate() {
     let Some(pool) = setup_pool().await else {
         return;
     };
+    let (uid, email) = create_test_user(&pool).await;
+    let sm = create_session_manager(pool.clone());
+    let tp = sm
+        .create_session(uid, vec!["user".into()], "127.0.0.1", "agent", "fp")
+        .await
+        .expect("create");
+    assert!(!tp.access_token.is_empty());
+    assert!(!tp.refresh_token.is_empty());
+    assert_eq!(tp.token_type, "Bearer");
+    let ctx = sm
+        .validate_token(&tp.access_token, "127.0.0.1", "agent", "fp")
+        .expect("validate");
+    assert_eq!(ctx.user_id, uid);
+    cleanup_user(&pool, &email).await;
+}
 
-    let store = darshandb_server::triple_store::PgTripleStore::new_lazy(pool.clone());
+#[tokio::test]
+async fn test_session_refresh_rotation() {
+    let Some(pool) = setup_pool().await else {
+        return;
+    };
+    let (uid, email) = create_test_user(&pool).await;
+    let sm = create_session_manager(pool.clone());
+    let orig = sm
+        .create_session(uid, vec!["user".into()], "127.0.0.1", "a", "fp")
+        .await
+        .expect("c");
+    let fresh = sm
+        .refresh_session(&orig.refresh_token, "fp")
+        .await
+        .expect("r");
+    assert_ne!(orig.refresh_token, fresh.refresh_token);
+    assert_ne!(orig.access_token, fresh.access_token);
+    assert_eq!(
+        sm.validate_token(&fresh.access_token, "127.0.0.1", "a", "fp")
+            .expect("v")
+            .user_id,
+        uid
+    );
+    assert!(sm.refresh_session(&orig.refresh_token, "fp").await.is_err());
+    cleanup_user(&pool, &email).await;
+}
 
-    // Perform 3 sequential mutations that each get a Merkle root.
-    let mut tx_ids = Vec::new();
-    let mut entity_ids = Vec::new();
+#[tokio::test]
+async fn test_session_signout() {
+    let Some(pool) = setup_pool().await else {
+        return;
+    };
+    let (uid, email) = create_test_user(&pool).await;
+    let sm = create_session_manager(pool.clone());
+    let tp = sm
+        .create_session(uid, vec!["user".into()], "127.0.0.1", "a", "fp")
+        .await
+        .expect("c");
+    let ctx = sm
+        .validate_token(&tp.access_token, "127.0.0.1", "a", "fp")
+        .expect("v");
+    sm.revoke_session(ctx.session_id).await.expect("revoke");
+    assert!(sm.refresh_session(&tp.refresh_token, "fp").await.is_err());
+    cleanup_user(&pool, &email).await;
+}
 
+#[tokio::test]
+async fn test_session_revoke_all() {
+    let Some(pool) = setup_pool().await else {
+        return;
+    };
+    let (uid, email) = create_test_user(&pool).await;
+    let sm = create_session_manager(pool.clone());
     for i in 0..3 {
+        sm.create_session(
+            uid,
+            vec!["user".into()],
+            "127.0.0.1",
+            "a",
+            &format!("fp{i}"),
+        )
+        .await
+        .expect("c");
+    }
+    assert!(sm.list_sessions(uid).await.expect("list").len() >= 3);
+    assert!(sm.revoke_all_sessions(uid).await.expect("revoke") >= 3);
+    assert!(sm.list_sessions(uid).await.expect("list").is_empty());
+    cleanup_user(&pool, &email).await;
+}
+
+#[tokio::test]
+async fn test_session_fingerprint_mismatch() {
+    let Some(pool) = setup_pool().await else {
+        return;
+    };
+    let (uid, email) = create_test_user(&pool).await;
+    let sm = create_session_manager(pool.clone());
+    let tp = sm
+        .create_session(uid, vec!["user".into()], "127.0.0.1", "a", "devA")
+        .await
+        .expect("c");
+    assert!(sm.refresh_session(&tp.refresh_token, "devB").await.is_err());
+    assert!(sm.list_sessions(uid).await.expect("list").is_empty());
+    cleanup_user(&pool, &email).await;
+}
+
+#[tokio::test]
+async fn test_session_list_filters_revoked() {
+    let Some(pool) = setup_pool().await else {
+        return;
+    };
+    let (uid, email) = create_test_user(&pool).await;
+    let sm = create_session_manager(pool.clone());
+    let tp1 = sm
+        .create_session(uid, vec!["user".into()], "127.0.0.1", "a1", "f1")
+        .await
+        .expect("s1");
+    let _tp2 = sm
+        .create_session(uid, vec!["user".into()], "127.0.0.1", "a2", "f2")
+        .await
+        .expect("s2");
+    let ctx = sm
+        .validate_token(&tp1.access_token, "127.0.0.1", "a1", "f1")
+        .expect("v");
+    sm.revoke_session(ctx.session_id).await.expect("revoke");
+    assert_eq!(sm.list_sessions(uid).await.expect("list").len(), 1);
+    cleanup_user(&pool, &email).await;
+}
+
+#[tokio::test]
+async fn test_session_empty_fields() {
+    let Some(pool) = setup_pool().await else {
+        return;
+    };
+    let (uid, email) = create_test_user(&pool).await;
+    let sm = create_session_manager(pool.clone());
+    let tp = sm
+        .create_session(uid, vec!["user".into()], "", "", "")
+        .await
+        .expect("c");
+    assert!(!tp.access_token.is_empty());
+    cleanup_user(&pool, &email).await;
+}
+
+// ===========================================================================
+// 4. DATA CRUD (15)
+// ===========================================================================
+
+#[tokio::test]
+async fn test_data_create() {
+    let Some(pool) = setup_pool().await else {
+        return;
+    };
+    let store = ddb_server::triple_store::PgTripleStore::new_lazy(pool.clone());
+    let eid = Uuid::new_v4();
+    let tx = store
+        .set_triples(&[
+            ti!(eid, ":db/type", json!("Product")),
+            ti!(eid, "Product/name", json!("Widget")),
+            ti!(eid, "Product/price", json!(29.99), 1),
+            ti!(eid, "Product/in_stock", json!(true), 2),
+        ])
+        .await
+        .expect("set");
+    assert_eq!(store.get_entity(eid).await.expect("get").len(), 4);
+    cleanup_entities(&pool, &[eid]).await;
+    cleanup_audit(&pool, &[tx]).await;
+}
+
+#[tokio::test]
+async fn test_data_list() {
+    let Some(pool) = setup_pool().await else {
+        return;
+    };
+    let store = ddb_server::triple_store::PgTripleStore::new_lazy(pool.clone());
+    let ut = format!("L_{}", Uuid::new_v4().to_string().replace('-', ""));
+    let mut eids = Vec::new();
+    let mut txs = Vec::new();
+    for i in 0..5 {
         let eid = Uuid::new_v4();
-        entity_ids.push(eid);
-
-        let inputs: Vec<darshandb_server::triple_store::TripleInput> = (0..5)
-            .map(|j| darshandb_server::triple_store::TripleInput {
-                entity_id: eid,
-                attribute: format!("audit/field_{j}"),
-                value: json!({ "batch": i, "field": j }),
-                value_type: 0,
-                ttl_seconds: None,
-            })
-            .collect();
-
-        let tx_id = store
-            .set_triples(&inputs)
-            .await
-            .expect("set_triples failed");
-        tx_ids.push(tx_id);
-    }
-
-    // Verify each individual transaction's Merkle root.
-    for &tx_id in &tx_ids {
-        let verification = darshandb_server::audit::verify_tx(&pool, tx_id)
-            .await
-            .expect("verify_tx failed");
-        assert!(
-            verification.valid,
-            "Transaction {} should be valid: {}",
-            tx_id, verification.detail
+        eids.push(eid);
+        txs.push(
+            store
+                .set_triples(&[
+                    ti!(eid, ":db/type", json!(ut)),
+                    ti!(eid, format!("{ut}/i"), json!(i), 1),
+                ])
+                .await
+                .expect("set"),
         );
-        assert!(verification.triple_count > 0);
     }
-
-    // Verify the entire hash chain is intact.
-    let chain = darshandb_server::audit::verify_chain(&pool)
-        .await
-        .expect("verify_chain failed");
-    assert!(chain.valid, "Hash chain should be valid: {}", chain.detail);
-    assert!(chain.total_transactions >= 3);
-
-    // Cleanup
-    cleanup_entities(&pool, &entity_ids).await;
-    cleanup_audit(&pool, &tx_ids).await;
+    let results = run_ql(&pool, &json!({"type": ut})).await;
+    assert_eq!(results.len(), 5);
+    cleanup_entities(&pool, &eids).await;
+    for tx in &txs {
+        cleanup_audit(&pool, &[*tx]).await;
+    }
 }
 
-/// Write a triple with a TTL, verify it is created with an expiry timestamp.
 #[tokio::test]
-async fn test_ttl_expiry_set() {
+async fn test_data_get_single() {
     let Some(pool) = setup_pool().await else {
         return;
     };
-
-    let store = darshandb_server::triple_store::PgTripleStore::new_lazy(pool.clone());
-    let entity_id = Uuid::new_v4();
-
-    let input = darshandb_server::triple_store::TripleInput {
-        entity_id,
-        attribute: "ephemeral/token".into(),
-        value: json!("short-lived"),
-        value_type: 0,
-        ttl_seconds: Some(3600), // 1 hour
-    };
-
-    let tx_id = store
-        .set_triples(&[input])
+    let store = ddb_server::triple_store::PgTripleStore::new_lazy(pool.clone());
+    let eid = Uuid::new_v4();
+    let tx = store
+        .set_triples(&[
+            ti!(eid, ":db/type", json!("S")),
+            ti!(eid, "S/n", json!("Test")),
+        ])
         .await
-        .expect("set_triples failed");
-
-    let triples = store
-        .get_entity(entity_id)
-        .await
-        .expect("get_entity failed");
-    assert_eq!(triples.len(), 1);
+        .expect("set");
+    let r = store.get_entity(eid).await.expect("get");
     assert!(
-        triples[0].expires_at.is_some(),
-        "Triple with TTL should have expires_at set"
+        r.iter()
+            .any(|t| t.attribute == "S/n" && t.value == json!("Test"))
     );
-
-    // The expiry should be roughly 1 hour from now (within 10 seconds tolerance).
-    let expires = triples[0].expires_at.unwrap();
-    let now = chrono::Utc::now();
-    let diff = (expires - now).num_seconds();
-    assert!(
-        (3590..=3610).contains(&diff),
-        "expires_at should be ~3600s from now, got {}s",
-        diff
-    );
-
-    // Cleanup
-    cleanup_entities(&pool, &[entity_id]).await;
-    cleanup_audit(&pool, &[tx_id]).await;
+    cleanup_entities(&pool, &[eid]).await;
+    cleanup_audit(&pool, &[tx]).await;
 }
 
-/// Verify point-in-time reads: write at tx1, modify at tx2, read at tx1
-/// should return the original value.
 #[tokio::test]
-async fn test_point_in_time_read() {
+async fn test_data_update() {
     let Some(pool) = setup_pool().await else {
         return;
     };
-
-    let store = darshandb_server::triple_store::PgTripleStore::new_lazy(pool.clone());
-    let entity_id = Uuid::new_v4();
-
-    // Write initial value
-    let input1 = darshandb_server::triple_store::TripleInput {
-        entity_id,
-        attribute: "user/name".into(),
-        value: json!("Alice"),
-        value_type: 0,
-        ttl_seconds: None,
-    };
+    let store = ddb_server::triple_store::PgTripleStore::new_lazy(pool.clone());
+    let eid = Uuid::new_v4();
     let tx1 = store
-        .set_triples(&[input1])
+        .set_triples(&[
+            ti!(eid, ":db/type", json!("U")),
+            ti!(eid, "U/s", json!("draft")),
+        ])
         .await
-        .expect("first write failed");
-
-    // Write updated value (new triple, same attribute)
-    let input2 = darshandb_server::triple_store::TripleInput {
-        entity_id,
-        attribute: "user/name".into(),
-        value: json!("Bob"),
-        value_type: 0,
-        ttl_seconds: None,
-    };
+        .expect("set");
+    store.retract(eid, "U/s").await.expect("retract");
     let tx2 = store
-        .set_triples(&[input2])
+        .set_triples(&[ti!(eid, "U/s", json!("pub"))])
         .await
-        .expect("second write failed");
-
-    // Point-in-time read at tx1 should return Alice
-    let at_tx1 = store
-        .get_entity_at(entity_id, tx1)
+        .expect("set");
+    let s = store
+        .get_entity(eid)
         .await
-        .expect("get_entity_at failed");
-
-    assert!(!at_tx1.is_empty(), "Should have triples at tx1");
-    let name_at_tx1 = at_tx1
-        .iter()
-        .find(|t| t.attribute == "user/name")
-        .expect("should have user/name");
-    assert_eq!(name_at_tx1.value, json!("Alice"));
-
-    // Current read should include both Alice and Bob (append-only)
-    let current = store
-        .get_entity(entity_id)
-        .await
-        .expect("get_entity failed");
-    assert!(
-        current.len() >= 2,
-        "Current entity should have at least 2 triples (append-only)"
-    );
-
-    // Cleanup
-    cleanup_entities(&pool, &[entity_id]).await;
+        .expect("get")
+        .into_iter()
+        .find(|t| t.attribute == "U/s")
+        .expect("s");
+    assert_eq!(s.value, json!("pub"));
+    cleanup_entities(&pool, &[eid]).await;
     cleanup_audit(&pool, &[tx1, tx2]).await;
 }
 
-/// Verify that query_by_attribute finds triples by attribute name and
-/// optionally filters by value.
 #[tokio::test]
-async fn test_query_by_attribute() {
+async fn test_data_delete() {
     let Some(pool) = setup_pool().await else {
         return;
     };
-
-    let store = darshandb_server::triple_store::PgTripleStore::new_lazy(pool.clone());
-    let e1 = Uuid::new_v4();
-    let e2 = Uuid::new_v4();
-
-    let inputs = vec![
-        darshandb_server::triple_store::TripleInput {
-            entity_id: e1,
-            attribute: "integ_test/color".into(),
-            value: json!("blue"),
-            value_type: 0,
-            ttl_seconds: None,
-        },
-        darshandb_server::triple_store::TripleInput {
-            entity_id: e2,
-            attribute: "integ_test/color".into(),
-            value: json!("red"),
-            value_type: 0,
-            ttl_seconds: None,
-        },
-    ];
-
-    let tx_id = store
-        .set_triples(&inputs)
+    let store = ddb_server::triple_store::PgTripleStore::new_lazy(pool.clone());
+    let eid = Uuid::new_v4();
+    let tx = store
+        .set_triples(&[
+            ti!(eid, ":db/type", json!("D")),
+            ti!(eid, "D/n", json!("x")),
+        ])
         .await
-        .expect("set_triples failed");
+        .expect("set");
+    store.retract(eid, ":db/type").await.expect("r");
+    store.retract(eid, "D/n").await.expect("r");
+    assert!(store.get_entity(eid).await.expect("get").is_empty());
+    cleanup_entities(&pool, &[eid]).await;
+    cleanup_audit(&pool, &[tx]).await;
+}
 
-    // Query by attribute only
-    let all_colors = store
-        .query_by_attribute("integ_test/color", None)
+#[tokio::test]
+async fn test_data_get_after_delete() {
+    let Some(pool) = setup_pool().await else {
+        return;
+    };
+    let store = ddb_server::triple_store::PgTripleStore::new_lazy(pool.clone());
+    let eid = Uuid::new_v4();
+    let tx = store
+        .set_triples(&[ti!(eid, "e/d", json!("t"))])
         .await
-        .expect("query_by_attribute failed");
+        .expect("set");
+    store.retract(eid, "e/d").await.expect("r");
+    assert!(store.get_entity(eid).await.expect("get").is_empty());
     assert!(
-        all_colors.len() >= 2,
-        "Should find at least 2 color triples"
+        store
+            .get_entity(Uuid::new_v4())
+            .await
+            .expect("get")
+            .is_empty()
     );
+    cleanup_entities(&pool, &[eid]).await;
+    cleanup_audit(&pool, &[tx]).await;
+}
 
-    // Query by attribute + value
-    let blue_only = store
-        .query_by_attribute("integ_test/color", Some(&json!("blue")))
+#[tokio::test]
+async fn test_data_ttl() {
+    let Some(pool) = setup_pool().await else {
+        return;
+    };
+    let store = ddb_server::triple_store::PgTripleStore::new_lazy(pool.clone());
+    let eid = Uuid::new_v4();
+    let tx = store
+        .set_triples(&[
+            ti!(eid, ":db/type", json!("T"), 0, 7200),
+            ti!(eid, "T/d", json!("e"), 0, 7200),
+        ])
         .await
-        .expect("query_by_attribute with value failed");
-    assert!(
-        blue_only.iter().all(|t| t.value == json!("blue")),
-        "All results should be blue"
-    );
-    assert!(
-        blue_only.iter().any(|t| t.entity_id == e1),
-        "Should contain e1"
-    );
+        .expect("set");
+    let r = store.get_entity(eid).await.expect("get");
+    assert_eq!(r.len(), 2);
+    for t in &r {
+        assert!(t.expires_at.is_some());
+        let d = (t.expires_at.unwrap() - chrono::Utc::now()).num_seconds();
+        assert!((7100..=7300).contains(&d), "got {d}");
+    }
+    cleanup_entities(&pool, &[eid]).await;
+    cleanup_audit(&pool, &[tx]).await;
+}
 
-    // Cleanup
-    cleanup_entities(&pool, &[e1, e2]).await;
-    cleanup_audit(&pool, &[tx_id]).await;
+#[tokio::test]
+async fn test_data_bulk_100() {
+    let Some(pool) = setup_pool().await else {
+        return;
+    };
+    let store = ddb_server::triple_store::PgTripleStore::new_lazy(pool.clone());
+    let ut = format!("B_{}", Uuid::new_v4().to_string().replace('-', ""));
+    let mut all = Vec::new();
+    let mut eids = Vec::new();
+    for i in 0..100 {
+        let eid = Uuid::new_v4();
+        eids.push(eid);
+        all.push(ti!(eid, ":db/type", json!(ut)));
+        all.push(ti!(eid, format!("{ut}/i"), json!(i), 1));
+    }
+    let result = store.bulk_load(all).await.expect("bulk");
+    assert_eq!(result.triples_loaded, 200);
+    assert_eq!(run_ql(&pool, &json!({"type": ut})).await.len(), 100);
+    cleanup_entities(&pool, &eids).await;
+    cleanup_audit(&pool, &[result.tx_id]).await;
+}
+
+#[tokio::test]
+async fn test_data_upsert() {
+    let Some(pool) = setup_pool().await else {
+        return;
+    };
+    let store = ddb_server::triple_store::PgTripleStore::new_lazy(pool.clone());
+    let eid = Uuid::new_v4();
+    let tx1 = store
+        .set_triples(&[ti!(eid, "u/c", json!(1), 1)])
+        .await
+        .expect("w1");
+    store.retract(eid, "u/c").await.expect("r");
+    let tx2 = store
+        .set_triples(&[ti!(eid, "u/c", json!(2), 1)])
+        .await
+        .expect("w2");
+    assert_eq!(
+        store
+            .get_entity(eid)
+            .await
+            .expect("get")
+            .iter()
+            .find(|t| t.attribute == "u/c")
+            .unwrap()
+            .value,
+        json!(2)
+    );
+    cleanup_entities(&pool, &[eid]).await;
+    cleanup_audit(&pool, &[tx1, tx2]).await;
+}
+
+#[tokio::test]
+async fn test_data_json_object() {
+    let Some(pool) = setup_pool().await else {
+        return;
+    };
+    let store = ddb_server::triple_store::PgTripleStore::new_lazy(pool.clone());
+    let eid = Uuid::new_v4();
+    let val = json!({"a": {"b": "c"}, "tags": [1, 2], "x": 3.14});
+    let tx = store
+        .set_triples(&[ti!(eid, "u/meta", val.clone())])
+        .await
+        .expect("set");
+    assert_eq!(store.get_entity(eid).await.expect("get")[0].value, val);
+    cleanup_entities(&pool, &[eid]).await;
+    cleanup_audit(&pool, &[tx]).await;
+}
+
+#[tokio::test]
+async fn test_data_null_value() {
+    let Some(pool) = setup_pool().await else {
+        return;
+    };
+    let store = ddb_server::triple_store::PgTripleStore::new_lazy(pool.clone());
+    let eid = Uuid::new_v4();
+    let tx = store
+        .set_triples(&[ti!(eid, "t/null", json!(null))])
+        .await
+        .expect("set");
+    assert!(store.get_entity(eid).await.expect("get")[0].value.is_null());
+    cleanup_entities(&pool, &[eid]).await;
+    cleanup_audit(&pool, &[tx]).await;
+}
+
+#[tokio::test]
+async fn test_data_long_string() {
+    let Some(pool) = setup_pool().await else {
+        return;
+    };
+    let store = ddb_server::triple_store::PgTripleStore::new_lazy(pool.clone());
+    let eid = Uuid::new_v4();
+    let long = "x".repeat(100_000);
+    let tx = store
+        .set_triples(&[ti!(eid, "t/long", json!(long))])
+        .await
+        .expect("set");
+    assert_eq!(
+        store.get_entity(eid).await.expect("get")[0]
+            .value
+            .as_str()
+            .unwrap()
+            .len(),
+        100_000
+    );
+    cleanup_entities(&pool, &[eid]).await;
+    cleanup_audit(&pool, &[tx]).await;
+}
+
+#[tokio::test]
+async fn test_data_nonexistent_empty() {
+    let Some(pool) = setup_pool().await else {
+        return;
+    };
+    let store = ddb_server::triple_store::PgTripleStore::new_lazy(pool.clone());
+    assert!(
+        store
+            .get_entity(Uuid::new_v4())
+            .await
+            .expect("get")
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn test_data_types_roundtrip() {
+    let Some(pool) = setup_pool().await else {
+        return;
+    };
+    let store = ddb_server::triple_store::PgTripleStore::new_lazy(pool.clone());
+    let eid = Uuid::new_v4();
+    let tx = store
+        .set_triples(&[
+            ti!(eid, "t/bool", json!(true), 2),
+            ti!(eid, "t/int", json!(42), 1),
+            ti!(eid, "t/float", json!(3.14), 1),
+            ti!(eid, "t/arr", json!([1, 2, 3])),
+        ])
+        .await
+        .expect("set");
+    let t = store.get_entity(eid).await.expect("get");
+    assert_eq!(t.len(), 4);
+    assert!(
+        t.iter()
+            .any(|tr| tr.attribute == "t/bool" && tr.value == json!(true))
+    );
+    assert!(
+        t.iter()
+            .any(|tr| tr.attribute == "t/int" && tr.value == json!(42))
+    );
+    cleanup_entities(&pool, &[eid]).await;
+    cleanup_audit(&pool, &[tx]).await;
+}
+
+// ===========================================================================
+// 5. DARSHANQL QUERY (10)
+// ===========================================================================
+
+#[tokio::test]
+async fn test_ql_basic() {
+    let Some(pool) = setup_pool().await else {
+        return;
+    };
+    let store = ddb_server::triple_store::PgTripleStore::new_lazy(pool.clone());
+    let ut = format!("BQ_{}", Uuid::new_v4().to_string().replace('-', ""));
+    let eid = Uuid::new_v4();
+    let tx = store
+        .set_triples(&[
+            ti!(eid, ":db/type", json!(ut)),
+            ti!(eid, format!("{ut}/f"), json!("v")),
+        ])
+        .await
+        .expect("set");
+    assert!(
+        run_ql(&pool, &json!({"type": ut}))
+            .await
+            .iter()
+            .any(|r| r.entity_id == eid)
+    );
+    cleanup_entities(&pool, &[eid]).await;
+    cleanup_audit(&pool, &[tx]).await;
+}
+
+#[tokio::test]
+async fn test_ql_where() {
+    let Some(pool) = setup_pool().await else {
+        return;
+    };
+    let store = ddb_server::triple_store::PgTripleStore::new_lazy(pool.clone());
+    let ut = format!("WF_{}", Uuid::new_v4().to_string().replace('-', ""));
+    let (ey, en) = (Uuid::new_v4(), Uuid::new_v4());
+    let tx = store
+        .set_triples(&[
+            ti!(ey, ":db/type", json!(ut)),
+            ti!(ey, format!("{ut}/r"), json!("admin")),
+            ti!(en, ":db/type", json!(ut)),
+            ti!(en, format!("{ut}/r"), json!("viewer")),
+        ])
+        .await
+        .expect("set");
+    let ids: Vec<Uuid> = run_ql(&pool, &json!({"type": ut, "$where": [{"attribute": format!("{ut}/r"), "op": "Eq", "value": "admin"}]})).await.iter().map(|r| r.entity_id).collect();
+    assert!(ids.contains(&ey));
+    assert!(!ids.contains(&en));
+    cleanup_entities(&pool, &[ey, en]).await;
+    cleanup_audit(&pool, &[tx]).await;
+}
+
+#[tokio::test]
+async fn test_ql_limit_offset() {
+    let Some(pool) = setup_pool().await else {
+        return;
+    };
+    let store = ddb_server::triple_store::PgTripleStore::new_lazy(pool.clone());
+    let ut = format!("PG_{}", Uuid::new_v4().to_string().replace('-', ""));
+    let mut eids = Vec::new();
+    let mut inputs = Vec::new();
+    for i in 0..10 {
+        let eid = Uuid::new_v4();
+        eids.push(eid);
+        inputs.push(ti!(eid, ":db/type", json!(ut)));
+        inputs.push(ti!(eid, format!("{ut}/s"), json!(i), 1));
+    }
+    let tx = store.set_triples(&inputs).await.expect("set");
+    let p1 = run_ql(&pool, &json!({"type": ut, "$limit": 3})).await;
+    assert_eq!(p1.len(), 3);
+    let p2 = run_ql(&pool, &json!({"type": ut, "$limit": 3, "$offset": 3})).await;
+    assert_eq!(p2.len(), 3);
+    let ids1: Vec<Uuid> = p1.iter().map(|r| r.entity_id).collect();
+    let ids2: Vec<Uuid> = p2.iter().map(|r| r.entity_id).collect();
+    for id in &ids1 {
+        assert!(!ids2.contains(id));
+    }
+    cleanup_entities(&pool, &eids).await;
+    cleanup_audit(&pool, &[tx]).await;
+}
+
+#[tokio::test]
+async fn test_ql_search_no_error() {
+    let Some(pool) = setup_pool().await else {
+        return;
+    };
+    let store = ddb_server::triple_store::PgTripleStore::new_lazy(pool.clone());
+    let ut = format!("SQ_{}", Uuid::new_v4().to_string().replace('-', ""));
+    let eid = Uuid::new_v4();
+    let tx = store
+        .set_triples(&[
+            ti!(eid, ":db/type", json!(ut)),
+            ti!(eid, format!("{ut}/d"), json!("quick brown fox")),
+        ])
+        .await
+        .expect("set");
+    let _ = run_ql(&pool, &json!({"type": ut, "$search": "fox"})).await;
+    cleanup_entities(&pool, &[eid]).await;
+    cleanup_audit(&pool, &[tx]).await;
+}
+
+#[tokio::test]
+async fn test_ql_empty_result() {
+    let Some(pool) = setup_pool().await else {
+        return;
+    };
+    let ut = format!("NE_{}", Uuid::new_v4().to_string().replace('-', ""));
+    assert!(run_ql(&pool, &json!({"type": ut})).await.is_empty());
+}
+
+#[tokio::test]
+async fn test_ql_invalid_no_type() {
+    assert!(ddb_server::query::parse_darshan_ql(&json!({"$where": []})).is_err());
+}
+
+#[tokio::test]
+async fn test_ql_invalid_not_object() {
+    assert!(ddb_server::query::parse_darshan_ql(&json!("string")).is_err());
+}
+
+#[tokio::test]
+async fn test_ql_order() {
+    let Some(pool) = setup_pool().await else {
+        return;
+    };
+    let store = ddb_server::triple_store::PgTripleStore::new_lazy(pool.clone());
+    let ut = format!("OQ_{}", Uuid::new_v4().to_string().replace('-', ""));
+    let mut eids = Vec::new();
+    let mut inputs = Vec::new();
+    for i in 0..5 {
+        let eid = Uuid::new_v4();
+        eids.push(eid);
+        inputs.push(ti!(eid, ":db/type", json!(ut)));
+        inputs.push(ti!(eid, format!("{ut}/p"), json!(i * 10), 1));
+    }
+    let tx = store.set_triples(&inputs).await.expect("set");
+    let r = run_ql(
+        &pool,
+        &json!({"type": ut, "$order": [{"attribute": format!("{ut}/p"), "direction": "Desc"}]}),
+    )
+    .await;
+    assert_eq!(r.len(), 5);
+    cleanup_entities(&pool, &eids).await;
+    cleanup_audit(&pool, &[tx]).await;
+}
+
+#[tokio::test]
+async fn test_ql_multi_where() {
+    let Some(pool) = setup_pool().await else {
+        return;
+    };
+    let store = ddb_server::triple_store::PgTripleStore::new_lazy(pool.clone());
+    let ut = format!("MW_{}", Uuid::new_v4().to_string().replace('-', ""));
+    let (eb, eo) = (Uuid::new_v4(), Uuid::new_v4());
+    let tx = store
+        .set_triples(&[
+            ti!(eb, ":db/type", json!(ut)),
+            ti!(eb, format!("{ut}/c"), json!("red")),
+            ti!(eb, format!("{ut}/s"), json!("large")),
+            ti!(eo, ":db/type", json!(ut)),
+            ti!(eo, format!("{ut}/c"), json!("red")),
+            ti!(eo, format!("{ut}/s"), json!("small")),
+        ])
+        .await
+        .expect("set");
+    let ids: Vec<Uuid> = run_ql(
+        &pool,
+        &json!({"type": ut, "$where": [
+            {"attribute": format!("{ut}/c"), "op": "Eq", "value": "red"},
+            {"attribute": format!("{ut}/s"), "op": "Eq", "value": "large"}
+        ]}),
+    )
+    .await
+    .iter()
+    .map(|r| r.entity_id)
+    .collect();
+    assert!(ids.contains(&eb));
+    assert!(!ids.contains(&eo));
+    cleanup_entities(&pool, &[eb, eo]).await;
+    cleanup_audit(&pool, &[tx]).await;
+}
+
+#[tokio::test]
+async fn test_ql_neq() {
+    let Some(pool) = setup_pool().await else {
+        return;
+    };
+    let store = ddb_server::triple_store::PgTripleStore::new_lazy(pool.clone());
+    let ut = format!("NQ_{}", Uuid::new_v4().to_string().replace('-', ""));
+    let (ey, en) = (Uuid::new_v4(), Uuid::new_v4());
+    let tx = store
+        .set_triples(&[
+            ti!(ey, ":db/type", json!(ut)),
+            ti!(ey, format!("{ut}/s"), json!("active")),
+            ti!(en, ":db/type", json!(ut)),
+            ti!(en, format!("{ut}/s"), json!("deleted")),
+        ])
+        .await
+        .expect("set");
+    let ids: Vec<Uuid> = run_ql(&pool, &json!({"type": ut, "$where": [{"attribute": format!("{ut}/s"), "op": "Neq", "value": "deleted"}]})).await.iter().map(|r| r.entity_id).collect();
+    assert!(ids.contains(&ey));
+    assert!(!ids.contains(&en));
+    cleanup_entities(&pool, &[ey, en]).await;
+    cleanup_audit(&pool, &[tx]).await;
+}
+
+// ===========================================================================
+// 6. MUTATIONS (5)
+// ===========================================================================
+
+#[tokio::test]
+async fn test_mut_returns_tx() {
+    let Some(pool) = setup_pool().await else {
+        return;
+    };
+    let store = ddb_server::triple_store::PgTripleStore::new_lazy(pool.clone());
+    let eid = Uuid::new_v4();
+    let tx = store
+        .set_triples(&[
+            ti!(eid, ":db/type", json!("M")),
+            ti!(eid, "M/d", json!("v")),
+        ])
+        .await
+        .expect("set");
+    assert!(tx > 0);
+    let t = store.get_entity(eid).await.expect("get");
+    for triple in &t {
+        assert_eq!(triple.tx_id, tx);
+    }
+    cleanup_entities(&pool, &[eid]).await;
+    cleanup_audit(&pool, &[tx]).await;
+}
+
+#[tokio::test]
+async fn test_mut_batch_atomic() {
+    let Some(pool) = setup_pool().await else {
+        return;
+    };
+    let store = ddb_server::triple_store::PgTripleStore::new_lazy(pool.clone());
+    let (e1, e2, e3) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
+    let tx = store
+        .set_triples(&[
+            ti!(e1, "B/a", json!(1), 1),
+            ti!(e2, "B/a", json!(2), 1),
+            ti!(e3, "B/a", json!(3), 1),
+        ])
+        .await
+        .expect("set");
+    for eid in [e1, e2, e3] {
+        assert_eq!(store.get_entity(eid).await.expect("get")[0].tx_id, tx);
+    }
+    cleanup_entities(&pool, &[e1, e2, e3]).await;
+    cleanup_audit(&pool, &[tx]).await;
+}
+
+#[tokio::test]
+async fn test_mut_delete() {
+    let Some(pool) = setup_pool().await else {
+        return;
+    };
+    let store = ddb_server::triple_store::PgTripleStore::new_lazy(pool.clone());
+    let eid = Uuid::new_v4();
+    let tx = store
+        .set_triples(&[ti!(eid, "D/a", json!("x")), ti!(eid, "D/b", json!("y"))])
+        .await
+        .expect("set");
+    for t in &store.get_entity(eid).await.expect("get") {
+        store.retract(eid, &t.attribute).await.expect("r");
+    }
+    assert!(store.get_entity(eid).await.expect("get").is_empty());
+    cleanup_entities(&pool, &[eid]).await;
+    cleanup_audit(&pool, &[tx]).await;
+}
+
+#[tokio::test]
+async fn test_mut_sequential_tx_ids() {
+    let Some(pool) = setup_pool().await else {
+        return;
+    };
+    let store = ddb_server::triple_store::PgTripleStore::new_lazy(pool.clone());
+    let mut txs = Vec::new();
+    let mut eids = Vec::new();
+    for i in 0..5 {
+        let eid = Uuid::new_v4();
+        eids.push(eid);
+        txs.push(
+            store
+                .set_triples(&[ti!(eid, format!("s/{i}"), json!(i), 1)])
+                .await
+                .expect("set"),
+        );
+    }
+    for w in txs.windows(2) {
+        assert!(w[1] > w[0]);
+    }
+    cleanup_entities(&pool, &eids).await;
+    for tx in &txs {
+        cleanup_audit(&pool, &[*tx]).await;
+    }
+}
+
+#[tokio::test]
+async fn test_mut_empty_batch() {
+    let Some(pool) = setup_pool().await else {
+        return;
+    };
+    let store = ddb_server::triple_store::PgTripleStore::new_lazy(pool.clone());
+    let _ = store.set_triples(&[]).await; // Should not panic
+}
+
+// ===========================================================================
+// 7. PERMISSIONS (5)
+// ===========================================================================
+
+#[tokio::test]
+async fn test_perm_user_read() {
+    let e = ddb_server::auth::build_default_engine();
+    assert!(
+        ddb_server::auth::evaluate_permission(
+            &["user".into()],
+            "x",
+            ddb_server::auth::Operation::Read,
+            &e
+        )
+        .allowed
+    );
+}
+
+#[tokio::test]
+async fn test_perm_user_create() {
+    let e = ddb_server::auth::build_default_engine();
+    assert!(
+        ddb_server::auth::evaluate_permission(
+            &["user".into()],
+            "x",
+            ddb_server::auth::Operation::Create,
+            &e
+        )
+        .allowed
+    );
+}
+
+#[tokio::test]
+async fn test_perm_admin_all() {
+    let e = ddb_server::auth::build_default_engine();
+    for op in [
+        ddb_server::auth::Operation::Read,
+        ddb_server::auth::Operation::Create,
+        ddb_server::auth::Operation::Update,
+        ddb_server::auth::Operation::Delete,
+    ] {
+        assert!(ddb_server::auth::evaluate_permission(&["admin".into()], "x", op, &e).allowed);
+    }
+}
+
+#[tokio::test]
+async fn test_perm_unknown_role() {
+    let e = ddb_server::auth::build_default_engine();
+    let _ = ddb_server::auth::evaluate_permission(
+        &["xyz".into()],
+        "e",
+        ddb_server::auth::Operation::Read,
+        &e,
+    );
+}
+
+#[tokio::test]
+async fn test_perm_empty_roles() {
+    let e = ddb_server::auth::build_default_engine();
+    let _ = ddb_server::auth::evaluate_permission(&[], "e", ddb_server::auth::Operation::Read, &e);
+}
+
+// ===========================================================================
+// 8. AUDIT / MERKLE (4)
+// ===========================================================================
+
+#[tokio::test]
+async fn test_audit_single_tx() {
+    let Some(pool) = setup_pool().await else {
+        return;
+    };
+    let store = ddb_server::triple_store::PgTripleStore::new_lazy(pool.clone());
+    let eid = Uuid::new_v4();
+    let tx = store
+        .set_triples(&[ti!(eid, "au/a", json!("va")), ti!(eid, "au/b", json!("vb"))])
+        .await
+        .expect("set");
+    let v = ddb_server::audit::verify_tx(&pool, tx).await.expect("v");
+    assert!(v.valid);
+    assert_eq!(v.triple_count, 2);
+    cleanup_entities(&pool, &[eid]).await;
+    cleanup_audit(&pool, &[tx]).await;
+}
+
+#[tokio::test]
+async fn test_audit_chain() {
+    let Some(pool) = setup_pool().await else {
+        return;
+    };
+    let store = ddb_server::triple_store::PgTripleStore::new_lazy(pool.clone());
+    let mut txs = Vec::new();
+    let mut eids = Vec::new();
+    for i in 0..3 {
+        let eid = Uuid::new_v4();
+        eids.push(eid);
+        let inputs: Vec<_> = (0..5)
+            .map(|j| ti!(eid, format!("au/f_{j}"), json!({"b": i, "f": j})))
+            .collect();
+        txs.push(store.set_triples(&inputs).await.expect("set"));
+    }
+    for &tx in &txs {
+        assert!(
+            ddb_server::audit::verify_tx(&pool, tx)
+                .await
+                .expect("v")
+                .valid
+        );
+    }
+    let chain = ddb_server::audit::verify_chain(&pool).await.expect("chain");
+    assert!(chain.valid);
+    assert!(chain.total_transactions >= 3);
+    cleanup_entities(&pool, &eids).await;
+    cleanup_audit(&pool, &txs).await;
+}
+
+#[tokio::test]
+async fn test_audit_5_sequential() {
+    let Some(pool) = setup_pool().await else {
+        return;
+    };
+    let store = ddb_server::triple_store::PgTripleStore::new_lazy(pool.clone());
+    let mut txs = Vec::new();
+    let mut eids = Vec::new();
+    for _ in 0..5 {
+        let eid = Uuid::new_v4();
+        eids.push(eid);
+        txs.push(
+            store
+                .set_triples(&[ti!(eid, "ch/d", json!("e"))])
+                .await
+                .expect("set"),
+        );
+    }
+    let chain = ddb_server::audit::verify_chain(&pool).await.expect("chain");
+    assert!(chain.valid);
+    assert!(chain.total_transactions >= 5);
+    cleanup_entities(&pool, &eids).await;
+    for tx in &txs {
+        cleanup_audit(&pool, &[*tx]).await;
+    }
+}
+
+#[tokio::test]
+async fn test_audit_triple_count() {
+    let Some(pool) = setup_pool().await else {
+        return;
+    };
+    let store = ddb_server::triple_store::PgTripleStore::new_lazy(pool.clone());
+    let eid = Uuid::new_v4();
+    let tx = store
+        .set_triples(&[
+            ti!(eid, "ac/x", json!(1), 1),
+            ti!(eid, "ac/y", json!(2), 1),
+            ti!(eid, "ac/z", json!(3), 1),
+        ])
+        .await
+        .expect("set");
+    let v = ddb_server::audit::verify_tx(&pool, tx).await.expect("v");
+    assert!(v.valid);
+    assert_eq!(v.triple_count, 3);
+    cleanup_entities(&pool, &[eid]).await;
+    cleanup_audit(&pool, &[tx]).await;
+}
+
+// ===========================================================================
+// 9. EDGE CASES (5)
+// ===========================================================================
+
+#[tokio::test]
+async fn test_concurrent_writes() {
+    let Some(pool) = setup_pool().await else {
+        return;
+    };
+    let store = std::sync::Arc::new(ddb_server::triple_store::PgTripleStore::new_lazy(
+        pool.clone(),
+    ));
+    let mut handles = Vec::new();
+    for i in 0..10 {
+        let s = store.clone();
+        handles.push(tokio::spawn(async move {
+            let eid = Uuid::new_v4();
+            let tx = s
+                .set_triples(&[ti!(eid, format!("cc/{i}"), json!(i), 1)])
+                .await
+                .expect("w");
+            (eid, tx)
+        }));
+    }
+    let mut results = Vec::new();
+    for h in handles {
+        results.push(h.await.expect("join"));
+    }
+    let txs: std::collections::HashSet<i64> = results.iter().map(|(_, tx)| *tx).collect();
+    assert_eq!(txs.len(), 10);
+    for (eid, _) in &results {
+        assert_eq!(store.get_entity(*eid).await.expect("get").len(), 1);
+    }
+    let eids: Vec<Uuid> = results.iter().map(|(e, _)| *e).collect();
+    cleanup_entities(&pool, &eids).await;
+    for (_, tx) in &results {
+        cleanup_audit(&pool, &[*tx]).await;
+    }
+}
+
+#[tokio::test]
+async fn test_schema_custom_type() {
+    let Some(pool) = setup_pool().await else {
+        return;
+    };
+    let store = ddb_server::triple_store::PgTripleStore::new_lazy(pool.clone());
+    let ut = format!("SC_{}", Uuid::new_v4().to_string().replace('-', ""));
+    let eid = Uuid::new_v4();
+    let tx = store
+        .set_triples(&[
+            ti!(eid, ":db/type", json!(ut)),
+            ti!(eid, format!("{ut}/n"), json!("t")),
+        ])
+        .await
+        .expect("set");
+    assert!(
+        store
+            .get_schema()
+            .await
+            .expect("schema")
+            .entity_types
+            .contains_key(&ut)
+    );
+    cleanup_entities(&pool, &[eid]).await;
+    cleanup_audit(&pool, &[tx]).await;
+}
+
+#[tokio::test]
+async fn test_retract_nonexistent() {
+    let Some(pool) = setup_pool().await else {
+        return;
+    };
+    let store = ddb_server::triple_store::PgTripleStore::new_lazy(pool.clone());
+    assert!(
+        store
+            .retract(Uuid::new_v4(), "does/not/exist")
+            .await
+            .is_ok()
+    );
+}
+
+#[tokio::test]
+async fn test_query_with_all_where_ops() {
+    let Some(pool) = setup_pool().await else {
+        return;
+    };
+    let store = ddb_server::triple_store::PgTripleStore::new_lazy(pool.clone());
+    let ut = format!("WO_{}", Uuid::new_v4().to_string().replace('-', ""));
+    let eid = Uuid::new_v4();
+    let tx = store
+        .set_triples(&[
+            ti!(eid, ":db/type", json!(ut)),
+            ti!(eid, format!("{ut}/val"), json!(50), 1),
+        ])
+        .await
+        .expect("set");
+    // Test Eq
+    let r = run_ql(&pool, &json!({"type": ut, "$where": [{"attribute": format!("{ut}/val"), "op": "Eq", "value": 50}]})).await;
+    assert!(r.iter().any(|row| row.entity_id == eid));
+    // Test Neq
+    let r = run_ql(&pool, &json!({"type": ut, "$where": [{"attribute": format!("{ut}/val"), "op": "Neq", "value": 999}]})).await;
+    assert!(r.iter().any(|row| row.entity_id == eid));
+    cleanup_entities(&pool, &[eid]).await;
+    cleanup_audit(&pool, &[tx]).await;
+}
+
+#[tokio::test]
+async fn test_multiple_entity_types_isolated() {
+    let Some(pool) = setup_pool().await else {
+        return;
+    };
+    let store = ddb_server::triple_store::PgTripleStore::new_lazy(pool.clone());
+    let ut_a = format!("TA_{}", Uuid::new_v4().to_string().replace('-', ""));
+    let ut_b = format!("TB_{}", Uuid::new_v4().to_string().replace('-', ""));
+    let ea = Uuid::new_v4();
+    let eb = Uuid::new_v4();
+    let tx = store
+        .set_triples(&[
+            ti!(ea, ":db/type", json!(ut_a)),
+            ti!(ea, format!("{ut_a}/x"), json!("a")),
+            ti!(eb, ":db/type", json!(ut_b)),
+            ti!(eb, format!("{ut_b}/x"), json!("b")),
+        ])
+        .await
+        .expect("set");
+    let ra = run_ql(&pool, &json!({"type": ut_a})).await;
+    let rb = run_ql(&pool, &json!({"type": ut_b})).await;
+    assert!(ra.iter().any(|r| r.entity_id == ea));
+    assert!(!ra.iter().any(|r| r.entity_id == eb));
+    assert!(rb.iter().any(|r| r.entity_id == eb));
+    assert!(!rb.iter().any(|r| r.entity_id == ea));
+    cleanup_entities(&pool, &[ea, eb]).await;
+    cleanup_audit(&pool, &[tx]).await;
 }

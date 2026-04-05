@@ -1,4 +1,4 @@
-//! Storage engine for DarshanDB.
+//! Storage engine for DarshJDB.
 //!
 //! Provides a unified interface for file storage with pluggable backends:
 //! local filesystem, Amazon S3, Cloudflare R2, and MinIO. All backends
@@ -599,11 +599,11 @@ pub struct S3Config {
 ///
 /// # Environment Variables
 ///
-/// - `DARSHAN_S3_BUCKET` — bucket name (overrides config)
-/// - `DARSHAN_S3_REGION` — AWS region (overrides config)
-/// - `DARSHAN_S3_ACCESS_KEY` — access key ID (overrides config)
-/// - `DARSHAN_S3_SECRET_KEY` — secret access key (overrides config)
-/// - `DARSHAN_S3_ENDPOINT` — custom endpoint for R2/MinIO (overrides config)
+/// - `DDB_S3_BUCKET` — bucket name (overrides config)
+/// - `DDB_S3_REGION` — AWS region (overrides config)
+/// - `DDB_S3_ACCESS_KEY` — access key ID (overrides config)
+/// - `DDB_S3_SECRET_KEY` — secret access key (overrides config)
+/// - `DDB_S3_ENDPOINT` — custom endpoint for R2/MinIO (overrides config)
 pub struct S3Backend {
     client: aws_sdk_s3::Client,
     bucket: String,
@@ -617,14 +617,13 @@ impl S3Backend {
     /// allowing runtime override without recompilation.
     pub async fn new(config: S3Config) -> Self {
         // Environment overrides for 12-factor compat.
-        let endpoint =
-            std::env::var("DARSHAN_S3_ENDPOINT").unwrap_or_else(|_| config.endpoint.clone());
-        let region = std::env::var("DARSHAN_S3_REGION").unwrap_or_else(|_| config.region.clone());
+        let endpoint = std::env::var("DDB_S3_ENDPOINT").unwrap_or_else(|_| config.endpoint.clone());
+        let region = std::env::var("DDB_S3_REGION").unwrap_or_else(|_| config.region.clone());
         let access_key =
-            std::env::var("DARSHAN_S3_ACCESS_KEY").unwrap_or_else(|_| config.access_key_id.clone());
-        let secret_key = std::env::var("DARSHAN_S3_SECRET_KEY")
-            .unwrap_or_else(|_| config.secret_access_key.clone());
-        let bucket = std::env::var("DARSHAN_S3_BUCKET").unwrap_or_else(|_| config.bucket.clone());
+            std::env::var("DDB_S3_ACCESS_KEY").unwrap_or_else(|_| config.access_key_id.clone());
+        let secret_key =
+            std::env::var("DDB_S3_SECRET_KEY").unwrap_or_else(|_| config.secret_access_key.clone());
+        let bucket = std::env::var("DDB_S3_BUCKET").unwrap_or_else(|_| config.bucket.clone());
 
         let creds = aws_credential_types::Credentials::new(
             &access_key,
@@ -1514,7 +1513,7 @@ mod tests {
         let backend = LocalFsBackend::new(&dir).expect("create backend");
 
         let path = "test/hello.txt";
-        let data = b"Hello, DarshanDB!";
+        let data = b"Hello, DarshJDB!";
         let meta = HashMap::new();
 
         let etag = backend
@@ -1541,7 +1540,7 @@ mod tests {
         let backend = LocalFsBackend::new(&dir).expect("create backend");
 
         let path = "docs/readme.md";
-        let data = b"# DarshanDB";
+        let data = b"# DarshJDB";
         backend
             .put_object(path, data, "text/markdown", &HashMap::new())
             .await

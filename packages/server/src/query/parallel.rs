@@ -1,8 +1,8 @@
-//! Solana-inspired parallel query execution for DarshanDB.
+//! Solana-inspired parallel query execution for DarshJDB.
 //!
 //! Sealevel (Solana's runtime) executes non-conflicting transactions in parallel
 //! by analyzing which accounts each transaction touches. This module applies the
-//! same principle to DarshanQL batch operations: queries and mutations that touch
+//! same principle to DarshJQL batch operations: queries and mutations that touch
 //! different entity types run concurrently, while conflicting operations are
 //! serialized into sequential waves.
 //!
@@ -201,9 +201,9 @@ pub fn profile_op(index: usize, op: &BatchOp) -> OpProfile {
     }
 }
 
-/// Extract entity types from a DarshanQL query body.
+/// Extract entity types from a DarshJQL query body.
 ///
-/// DarshanQL queries use a `"type"` field to specify the entity type.
+/// DarshJQL queries use a `"type"` field to specify the entity type.
 /// Older-style queries use top-level keys as entity type names.
 fn extract_entity_types_from_query(body: &Value) -> HashSet<String> {
     let mut types = HashSet::new();

@@ -7,7 +7,7 @@ use std::path::PathBuf;
 /// Resolved configuration for the CLI session.
 #[derive(Debug, Clone)]
 pub struct Config {
-    /// Base URL of the DarshanDB server.
+    /// Base URL of the DarshJDB server.
     pub url: String,
     /// Authentication token (may be empty for local-only commands).
     pub token: String,
@@ -20,7 +20,7 @@ impl Config {
         if self.token.is_empty() {
             anyhow::bail!(
                 "No authentication token configured.\n\
-                 Set DARSHAN_TOKEN, pass --token, or add [server].token to ddb.toml."
+                 Set DDB_TOKEN, pass --token, or add [server].token to ddb.toml."
             );
         }
         Ok(&self.token)
@@ -51,13 +51,13 @@ impl Config {
 
         let url = cli_url
             .map(String::from)
-            .or_else(|| std::env::var("DARSHAN_URL").ok())
+            .or_else(|| std::env::var("DDB_URL").ok())
             .or_else(|| file_cfg.server.as_ref().and_then(|s| s.url.clone()))
             .unwrap_or_else(|| "http://localhost:4820".to_string());
 
         let token = cli_token
             .map(String::from)
-            .or_else(|| std::env::var("DARSHAN_TOKEN").ok())
+            .or_else(|| std::env::var("DDB_TOKEN").ok())
             .or_else(|| file_cfg.server.as_ref().and_then(|s| s.token.clone()))
             .unwrap_or_default();
 

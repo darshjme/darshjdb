@@ -1,4 +1,4 @@
-//! Forward-chaining rule engine for DarshanDB.
+//! Forward-chaining rule engine for DarshJDB.
 //!
 //! Inspired by GraphDB's TRREE engine, this module implements automatic
 //! triple inference: when a triple is inserted, rules evaluate against
@@ -26,7 +26,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use uuid::Uuid;
 
-use crate::error::{DarshanError, Result};
+use crate::error::{DarshJError, Result};
 use crate::query::WhereOp;
 use crate::triple_store::schema::ValueType;
 use crate::triple_store::{PgTripleStore, Triple, TripleInput, TripleStore};
@@ -587,7 +587,7 @@ pub fn load_rules_from_file(path: &std::path::Path) -> Result<Vec<Rule>> {
     }
 
     let content = std::fs::read_to_string(path).map_err(|e| {
-        DarshanError::Internal(format!("failed to read rules file {}: {e}", path.display()))
+        DarshJError::Internal(format!("failed to read rules file {}: {e}", path.display()))
     })?;
 
     let rules: Vec<Rule> = serde_json::from_str(&content)?;

@@ -96,7 +96,7 @@ pub enum FunctionKind {
 }
 
 impl FunctionKind {
-    /// Returns the DarshanDB wrapper function name that declares this kind
+    /// Returns the DarshJDB wrapper function name that declares this kind
     /// (e.g. `"query"`, `"mutation"`), used during export parsing.
     pub fn wrapper_name(&self) -> &'static str {
         match self {

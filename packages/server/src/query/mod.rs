@@ -1,4 +1,4 @@
-//! DarshanQL query engine: parse, plan, and execute queries over the triple store.
+//! DarshJQL query engine: parse, plan, and execute queries over the triple store.
 //!
 //! Queries are expressed as JSON objects using a declarative syntax inspired
 //! by Datomic pull and GraphQL. The engine converts these into SQL plans
@@ -14,7 +14,7 @@ use sqlx::PgPool;
 use std::num::NonZeroUsize;
 use std::sync::Mutex;
 
-use crate::error::{DarshanError, Result};
+use crate::error::{DarshJError, Result};
 
 // ── AST ─────────────────────────────────────────────────────────────
 
@@ -154,7 +154,7 @@ pub struct NestedQuery {
 
 // ── Parsing ─────────────────────────────────────────────────────────
 
-/// Parse a DarshanQL JSON value into a [`QueryAST`].
+/// Parse a DarshJQL JSON value into a [`QueryAST`].
 ///
 /// # Expected format
 ///
@@ -173,23 +173,23 @@ pub struct NestedQuery {
 pub fn parse_darshan_ql(input: &serde_json::Value) -> Result<QueryAST> {
     let obj = input
         .as_object()
-        .ok_or_else(|| DarshanError::InvalidQuery("query must be a JSON object".into()))?;
+        .ok_or_else(|| DarshJError::InvalidQuery("query must be a JSON object".into()))?;
 
     let entity_type = obj
         .get("type")
         .and_then(|v| v.as_str())
-        .ok_or_else(|| DarshanError::InvalidQuery("missing 'type' field".into()))?
+        .ok_or_else(|| DarshJError::InvalidQuery("missing 'type' field".into()))?
         .to_string();
 
     let where_clauses: Vec<WhereClause> = match obj.get("$where") {
         Some(v) => serde_json::from_value(v.clone())
-            .map_err(|e| DarshanError::InvalidQuery(format!("invalid $where: {e}")))?,
+            .map_err(|e| DarshJError::InvalidQuery(format!("invalid $where: {e}")))?,
         None => Vec::new(),
     };
 
     let order: Vec<OrderClause> = match obj.get("$order") {
         Some(v) => serde_json::from_value(v.clone())
-            .map_err(|e| DarshanError::InvalidQuery(format!("invalid $order: {e}")))?,
+            .map_err(|e| DarshJError::InvalidQuery(format!("invalid $order: {e}")))?,
         None => Vec::new(),
     };
 
@@ -216,11 +216,11 @@ pub fn parse_darshan_ql(input: &serde_json::Value) -> Result<QueryAST> {
             // Rich form: { "$semantic": { "vector": [...], "limit": 10 } }
             Some(
                 serde_json::from_value(v.clone())
-                    .map_err(|e| DarshanError::InvalidQuery(format!("invalid $semantic: {e}")))?,
+                    .map_err(|e| DarshJError::InvalidQuery(format!("invalid $semantic: {e}")))?,
             )
         }
         Some(_) => {
-            return Err(DarshanError::InvalidQuery(
+            return Err(DarshJError::InvalidQuery(
                 "$semantic must be a string, object, or null".into(),
             ));
         }
@@ -231,14 +231,14 @@ pub fn parse_darshan_ql(input: &serde_json::Value) -> Result<QueryAST> {
         Some(v) if v.is_null() => None,
         Some(v) => Some(
             serde_json::from_value(v.clone())
-                .map_err(|e| DarshanError::InvalidQuery(format!("invalid $hybrid: {e}")))?,
+                .map_err(|e| DarshJError::InvalidQuery(format!("invalid $hybrid: {e}")))?,
         ),
         None => None,
     };
 
     let nested: Vec<NestedQuery> = match obj.get("$nested") {
         Some(v) => serde_json::from_value(v.clone())
-            .map_err(|e| DarshanError::InvalidQuery(format!("invalid $nested: {e}")))?,
+            .map_err(|e| DarshJError::InvalidQuery(format!("invalid $nested: {e}")))?,
         None => Vec::new(),
     };
 
@@ -491,7 +491,7 @@ pub fn plan_hybrid_query(ast: &QueryAST) -> Result<QueryPlan> {
     let hybrid = ast
         .hybrid
         .as_ref()
-        .ok_or_else(|| DarshanError::InvalidQuery("$hybrid clause is required".into()))?;
+        .ok_or_else(|| DarshJError::InvalidQuery("$hybrid clause is required".into()))?;
 
     let vec_literal = format_vector_literal(&hybrid.vector);
     let text_w = hybrid.text_weight;
@@ -573,7 +573,7 @@ ORDER BY rm.rrf_score DESC
 
 // ── Execution ───────────────────────────────────────────────────────
 
-/// Result row from a DarshanQL query.
+/// Result row from a DarshJQL query.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QueryResultRow {
     /// The entity UUID.
@@ -856,7 +856,7 @@ impl PlanCache {
     }
 }
 
-/// Parse, plan, and execute a DarshanQL query using the plan cache.
+/// Parse, plan, and execute a DarshJQL query using the plan cache.
 ///
 /// This is the main entry point for query execution. It checks the
 /// cache first, falling back to [`plan_query`] on a miss.
@@ -913,7 +913,7 @@ mod tests {
         }
     }
 
-    // ── Parsing: every DarshanQL operator ───────────────────────────
+    // ── Parsing: every DarshJQL operator ───────────────────────────
 
     #[test]
     fn parse_minimal_query() {
@@ -1089,7 +1089,7 @@ mod tests {
     #[test]
     fn parse_nested_with_sub_query() {
         // Note: sub_query is deserialized via serde, so it uses struct field
-        // names (entity_type, where_clauses) rather than the DarshanQL JSON
+        // names (entity_type, where_clauses) rather than the DarshJQL JSON
         // operators ($where, $order). Only the top-level parse_darshan_ql
         // translates the $ operators.
         let input = serde_json::json!({
@@ -1213,7 +1213,7 @@ mod tests {
         // Build 5 levels of nesting. Sub-queries use serde struct field
         // names (entity_type, nested) because they are deserialized, not
         // parsed via parse_darshan_ql. Only the outermost level uses the
-        // DarshanQL JSON keys (type, $nested).
+        // DarshJQL JSON keys (type, $nested).
         let mut inner = serde_json::json!({ "entity_type": "Leaf" });
         for depth in (0..5).rev() {
             let nested_arr = serde_json::json!([{
@@ -1221,7 +1221,7 @@ mod tests {
                 "sub_query": inner
             }]);
             if depth == 0 {
-                // Top level: use DarshanQL syntax
+                // Top level: use DarshJQL syntax
                 inner = serde_json::json!({
                     "type": format!("Level{depth}"),
                     "$nested": nested_arr

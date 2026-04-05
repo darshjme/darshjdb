@@ -1,14 +1,14 @@
-//! Unified error types for DarshanDB server.
+//! Unified error types for DarshJDB server.
 //!
 //! All fallible operations across the triple store and query engine
-//! surface errors through [`DarshanError`], which maps cleanly to
+//! surface errors through [`DarshJError`], which maps cleanly to
 //! both internal handling (via `thiserror`) and HTTP responses.
 
 use thiserror::Error;
 
-/// Top-level error type for all DarshanDB server operations.
+/// Top-level error type for all DarshJDB server operations.
 #[derive(Debug, Error)]
-pub enum DarshanError {
+pub enum DarshJError {
     /// A database query or connection failed.
     #[error("database error: {0}")]
     Database(#[from] sqlx::Error),
@@ -48,4 +48,4 @@ pub enum DarshanError {
 }
 
 /// Convenience alias used throughout the crate.
-pub type Result<T> = std::result::Result<T, DarshanError>;
+pub type Result<T> = std::result::Result<T, DarshJError>;

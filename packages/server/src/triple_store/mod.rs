@@ -1,4 +1,4 @@
-//! Core triple store: the foundational storage layer for DarshanDB.
+//! Core triple store: the foundational storage layer for DarshJDB.
 //!
 //! Every piece of data is stored as an (entity, attribute, value) triple
 //! tagged with a transaction id and a value-type discriminator. This
@@ -16,7 +16,7 @@ use std::sync::Arc;
 use std::time::Instant;
 use uuid::Uuid;
 
-use crate::error::{DarshanError, Result};
+use crate::error::{DarshJError, Result};
 use schema::{AttributeInfo, EntityType, ReferenceInfo, Schema, ValueType};
 
 // ── Bulk load result ───────────────────────────────────────────────
@@ -88,18 +88,18 @@ impl TripleInput {
     /// - `value_type` is a known [`ValueType`] discriminator
     pub fn validate(&self) -> Result<()> {
         if self.attribute.is_empty() {
-            return Err(DarshanError::InvalidAttribute(
+            return Err(DarshJError::InvalidAttribute(
                 "attribute name must not be empty".into(),
             ));
         }
         if self.attribute.len() > 512 {
-            return Err(DarshanError::InvalidAttribute(format!(
+            return Err(DarshJError::InvalidAttribute(format!(
                 "attribute name exceeds 512 bytes: {} bytes",
                 self.attribute.len()
             )));
         }
         if ValueType::from_i16(self.value_type).is_none() {
-            return Err(DarshanError::TypeMismatch {
+            return Err(DarshJError::TypeMismatch {
                 expected: format!("value_type 0..={}", ValueType::max_discriminator()),
                 actual: format!("{}", self.value_type),
             });
@@ -246,7 +246,7 @@ impl PgTripleStore {
         // Ensure the Merkle audit trail table exists.
         crate::audit::ensure_audit_schema(&self.pool)
             .await
-            .map_err(DarshanError::Database)?;
+            .map_err(DarshJError::Database)?;
 
         Ok(())
     }
@@ -379,7 +379,7 @@ impl PgTripleStore {
     /// 5. Returns a [`BulkLoadResult`] with count, tx_id, timing, and rate.
     pub async fn bulk_load(&self, triples: Vec<TripleInput>) -> Result<BulkLoadResult> {
         if triples.is_empty() {
-            return Err(DarshanError::InvalidQuery(
+            return Err(DarshJError::InvalidQuery(
                 "cannot bulk-load an empty triple batch".into(),
             ));
         }
@@ -492,7 +492,7 @@ impl TripleStore for PgTripleStore {
 
     async fn set_triples(&self, triples: &[TripleInput]) -> Result<i64> {
         if triples.is_empty() {
-            return Err(DarshanError::InvalidQuery(
+            return Err(DarshJError::InvalidQuery(
                 "cannot write an empty triple batch".into(),
             ));
         }
@@ -835,10 +835,10 @@ impl EntityPool {
                 .fetch_one(&self.pool)
                 .await
                 .map_err(|e| match e {
-                    sqlx::Error::RowNotFound => DarshanError::Internal(format!(
+                    sqlx::Error::RowNotFound => DarshJError::Internal(format!(
                         "entity pool: no mapping for internal_id {internal_id}"
                     )),
-                    other => DarshanError::Database(other),
+                    other => DarshJError::Database(other),
                 })?;
 
         let uuid = row.0;
@@ -894,7 +894,7 @@ impl EntityPool {
 
         for (idx, uuid) in miss_indices.iter().zip(miss_uuids.iter()) {
             let internal_id = *fetched.get(uuid).ok_or_else(|| {
-                DarshanError::Internal(format!(
+                DarshJError::Internal(format!(
                     "entity pool: batch insert succeeded but SELECT missed UUID {uuid}"
                 ))
             })?;
@@ -941,7 +941,7 @@ impl EntityPool {
 
         for (idx, id) in miss_indices.iter().zip(miss_ids.iter()) {
             let uuid = *fetched.get(id).ok_or_else(|| {
-                DarshanError::Internal(format!("entity pool: no mapping for internal_id {id}"))
+                DarshJError::Internal(format!("entity pool: no mapping for internal_id {id}"))
             })?;
             results[*idx] = uuid;
             self.fwd.insert(uuid, *id);
@@ -1030,10 +1030,10 @@ impl AttributePool {
                 .fetch_one(&self.pool)
                 .await
                 .map_err(|e| match e {
-                    sqlx::Error::RowNotFound => DarshanError::Internal(format!(
+                    sqlx::Error::RowNotFound => DarshJError::Internal(format!(
                         "attribute pool: no mapping for internal_id {internal_id}"
                     )),
-                    other => DarshanError::Database(other),
+                    other => DarshJError::Database(other),
                 })?;
 
         let name = row.0;
@@ -1212,7 +1212,7 @@ mod tests {
         };
         let err = input.validate().unwrap_err();
         assert!(
-            matches!(err, DarshanError::InvalidAttribute(ref msg) if msg.contains("empty")),
+            matches!(err, DarshJError::InvalidAttribute(ref msg) if msg.contains("empty")),
             "expected InvalidAttribute(empty), got: {err}"
         );
     }
@@ -1228,7 +1228,7 @@ mod tests {
         };
         let err = input.validate().unwrap_err();
         assert!(
-            matches!(err, DarshanError::InvalidAttribute(ref msg) if msg.contains("512")),
+            matches!(err, DarshJError::InvalidAttribute(ref msg) if msg.contains("512")),
             "expected InvalidAttribute(512), got: {err}"
         );
     }
@@ -1244,7 +1244,7 @@ mod tests {
         };
         let err = input.validate().unwrap_err();
         assert!(
-            matches!(err, DarshanError::TypeMismatch { .. }),
+            matches!(err, DarshJError::TypeMismatch { .. }),
             "expected TypeMismatch, got: {err}"
         );
     }
