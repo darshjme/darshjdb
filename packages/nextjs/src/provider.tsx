@@ -221,8 +221,10 @@ export function DarshanProvider({
   }, [dehydratedState, client]);
 
   // Build the inner provider props
+  // DarshanDB class implements the client interface expected by the React provider
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const providerProps: DarshanReactProviderProps = {
-    client,
+    client: client as any,
     children,
   };
 
@@ -233,4 +235,4 @@ export function DarshanProvider({
 // Re-exports for convenience
 // ---------------------------------------------------------------------------
 
-export { DarshanReactProvider } from '@darshan/react';
+export { DarshanProvider } from '@darshan/react';
