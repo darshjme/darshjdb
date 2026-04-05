@@ -1327,18 +1327,17 @@ mod tests {
             ..bare_ast("T")
         };
         let plan = plan_query(&ast).expect("should plan");
-        // Limit and offset should appear as $N placeholders, not literals
+        // Limit and offset are inlined as integer literals (safe: parsed usize values).
         assert!(
-            plan.sql.contains("LIMIT $"),
-            "LIMIT should be parameterised"
+            plan.sql.contains("LIMIT 50"),
+            "LIMIT should be inlined: {}",
+            plan.sql
         );
         assert!(
-            plan.sql.contains("OFFSET $"),
-            "OFFSET should be parameterised"
+            plan.sql.contains("OFFSET 10"),
+            "OFFSET should be inlined: {}",
+            plan.sql
         );
-        // Values should be in the params vec
-        assert!(plan.params.iter().any(|p| p == &serde_json::json!(50)));
-        assert!(plan.params.iter().any(|p| p == &serde_json::json!(10)));
     }
 
     #[test]
