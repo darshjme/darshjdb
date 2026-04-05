@@ -124,11 +124,11 @@ export function getAdminDb(): DarshanDB {
 
   // Dynamic import avoided — @darshan/client is a direct dependency.
   // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const { createClient } = require('@darshan/client') as typeof import('@darshan/client');
+  const { DarshanDB } = require('@darshan/client') as typeof import('@darshan/client');
 
-  _adminDb = createClient({
-    url,
-    token,
+  _adminDb = new DarshanDB({
+    serverUrl: url,
+    appId: token,
   });
 
   return _adminDb;
