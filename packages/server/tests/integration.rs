@@ -163,7 +163,9 @@ macro_rules! ti {
 async fn run_ql(pool: &PgPool, q: &serde_json::Value) -> Vec<ddb_server::query::QueryResultRow> {
     let ast = ddb_server::query::parse_darshan_ql(q).expect("parse");
     let plan = ddb_server::query::plan_query(&ast).expect("plan");
-    ddb_server::query::execute_query(pool, &plan).await.expect("exec")
+    ddb_server::query::execute_query(pool, &plan)
+        .await
+        .expect("exec")
 }
 
 // ===========================================================================
@@ -1403,14 +1405,32 @@ fn make_auth_ctx(roles: Vec<String>) -> ddb_server::auth::AuthContext {
 async fn test_perm_user_read() {
     let e = ddb_server::auth::build_default_engine();
     let ctx = make_auth_ctx(vec!["user".into()]);
-    assert!(ddb_server::auth::evaluate_permission(&ctx, "x", ddb_server::auth::Operation::Read, None, &e).allowed);
+    assert!(
+        ddb_server::auth::evaluate_permission(
+            &ctx,
+            "x",
+            ddb_server::auth::Operation::Read,
+            None,
+            &e
+        )
+        .allowed
+    );
 }
 
 #[tokio::test]
 async fn test_perm_user_create() {
     let e = ddb_server::auth::build_default_engine();
     let ctx = make_auth_ctx(vec!["user".into()]);
-    assert!(ddb_server::auth::evaluate_permission(&ctx, "x", ddb_server::auth::Operation::Create, None, &e).allowed);
+    assert!(
+        ddb_server::auth::evaluate_permission(
+            &ctx,
+            "x",
+            ddb_server::auth::Operation::Create,
+            None,
+            &e
+        )
+        .allowed
+    );
 }
 
 #[tokio::test]
@@ -1431,14 +1451,26 @@ async fn test_perm_admin_all() {
 async fn test_perm_unknown_role() {
     let e = ddb_server::auth::build_default_engine();
     let ctx = make_auth_ctx(vec!["xyz".into()]);
-    let _ = ddb_server::auth::evaluate_permission(&ctx, "e", ddb_server::auth::Operation::Read, None, &e);
+    let _ = ddb_server::auth::evaluate_permission(
+        &ctx,
+        "e",
+        ddb_server::auth::Operation::Read,
+        None,
+        &e,
+    );
 }
 
 #[tokio::test]
 async fn test_perm_empty_roles() {
     let e = ddb_server::auth::build_default_engine();
     let ctx = make_auth_ctx(vec![]);
-    let _ = ddb_server::auth::evaluate_permission(&ctx, "e", ddb_server::auth::Operation::Read, None, &e);
+    let _ = ddb_server::auth::evaluate_permission(
+        &ctx,
+        "e",
+        ddb_server::auth::Operation::Read,
+        None,
+        &e,
+    );
 }
 
 // ===========================================================================
