@@ -163,7 +163,7 @@ params.push(serde_json::Value::String(format!("%{escaped}%")));
 
 3. **Plan cache re-planning on hit:** On cache hit, `run_query` calls `plan_query` to get fresh params then overwrites SQL with cached SQL. This works correctly (shape equivalence guarantees matching param slots) but the fresh plan's SQL construction is wasted work. A future optimisation could store only the SQL string in cache and always compute params from the AST directly.
 
-4. **N+1 nested query execution:** `execute_query` resolves nested references one entity at a time in a loop. For large result sets this creates N additional database round-trips. Consider batching nested entity IDs into a single `WHERE entity_id = ANY($1)` query.
+4. ~~**N+1 nested query execution:**~~ **RESOLVED.** `execute_query` now calls `batch_resolve_nested` which collects all referenced UUIDs per nested plan into a `HashSet`, batch-fetches them in a single `WHERE entity_id = ANY($1::uuid[])` query, groups results by entity_id, and recursively resolves sub-nested references up to `MAX_NESTING_DEPTH` (3). This turns N+1 into 1+P where P = number of nested plans. Tests: `nested_plan_sql_uses_any_batch`, `nested_plan_builds_sub_nested`, `nested_plan_respects_max_depth`.
 
 ---
 
