@@ -1,5 +1,5 @@
 # ── Stage 1: Build the Rust server and CLI ───────────────────────────
-FROM rust:1.86-alpine AS builder
+FROM rust:1.88-alpine AS builder
 
 RUN apk add --no-cache musl-dev openssl-dev openssl-libs-static pkgconf
 
