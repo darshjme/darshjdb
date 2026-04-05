@@ -245,3 +245,136 @@ export async function queryDarshanQL(
     return record;
   });
 }
+
+// ---------------------------------------------------------------------------
+// Auth Users
+// ---------------------------------------------------------------------------
+
+export interface SignupRequest {
+  email: string;
+  password: string;
+  name?: string;
+}
+
+export interface SignupResponse {
+  user_id: string;
+  email: string;
+  access_token: string;
+  refresh_token: string;
+  expires_in: number;
+  token_type: string;
+}
+
+/**
+ * `POST /api/auth/signup` -- create a new user account.
+ */
+export async function createUser(body: SignupRequest): Promise<SignupResponse> {
+  return apiFetch<SignupResponse>("/api/auth/signup", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Admin: Functions
+// ---------------------------------------------------------------------------
+
+export interface ServerFunctionInfo {
+  name: string;
+  type?: string;
+  module?: string;
+  args?: Record<string, string>;
+  returns?: string;
+}
+
+export interface AdminFunctionsResponse {
+  functions: ServerFunctionInfo[];
+}
+
+/**
+ * `GET /api/admin/functions` -- list registered server-side functions.
+ * The endpoint exists but currently returns an empty array (TODO on server).
+ */
+export async function fetchFunctions(): Promise<AdminFunctionsResponse> {
+  return apiFetch<AdminFunctionsResponse>("/api/admin/functions");
+}
+
+// ---------------------------------------------------------------------------
+// Admin: Cache stats
+// ---------------------------------------------------------------------------
+
+export interface CacheStats {
+  cache: Record<string, unknown>;
+}
+
+/**
+ * `GET /api/admin/cache` -- hot-cache statistics (size, hit/miss, evictions).
+ */
+export async function fetchCacheStats(): Promise<CacheStats> {
+  return apiFetch<CacheStats>("/api/admin/cache");
+}
+
+// ---------------------------------------------------------------------------
+// Admin: Audit chain
+// ---------------------------------------------------------------------------
+
+export interface AuditChainResult {
+  valid: boolean;
+  total_transactions: number;
+  first_broken_tx: number | null;
+  detail: string | null;
+}
+
+/**
+ * `GET /api/admin/audit/chain` -- verify the full audit hash chain.
+ */
+export async function fetchAuditChain(): Promise<AuditChainResult> {
+  return apiFetch<AuditChainResult>("/api/admin/audit/chain");
+}
+
+// ---------------------------------------------------------------------------
+// Admin: Sessions
+// ---------------------------------------------------------------------------
+
+export interface AdminSessionsResponse {
+  sessions: unknown[];
+  count: number;
+}
+
+/**
+ * `GET /api/admin/sessions` -- list active sync sessions.
+ */
+export async function fetchSessions(): Promise<AdminSessionsResponse> {
+  return apiFetch<AdminSessionsResponse>("/api/admin/sessions");
+}
+
+// ---------------------------------------------------------------------------
+// Health (detailed)
+// ---------------------------------------------------------------------------
+
+export interface HealthResponse {
+  status: string;
+  service: string;
+  version: string;
+  uptime_secs: number;
+  pool: {
+    size: number;
+    idle: number;
+    active: number;
+    max: number;
+  };
+  pool_stats: Record<string, unknown>;
+  websockets: {
+    active_connections: number;
+  };
+  triples: number;
+  database: string;
+}
+
+/**
+ * `GET /health` -- detailed health check (unauthenticated).
+ * Returns the full health response object instead of just a boolean.
+ */
+export async function fetchHealthDetailed(): Promise<HealthResponse> {
+  return publicFetch<HealthResponse>("/health");
+}

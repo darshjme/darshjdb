@@ -40,7 +40,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha512};
 use uuid::Uuid;
 
-use crate::triple_store::Triple;
+use crate::triple_store::{Triple, TripleInput};
 
 // ── Merkle proof types ─────────────────────────────────────────────
 
@@ -113,6 +113,49 @@ pub fn merkle_root(triples: &[Triple]) -> [u8; 64] {
     // Build the tree bottom-up.
     while hashes.len() > 1 {
         // If odd number of leaves, duplicate the last (Bitcoin convention).
+        if hashes.len() % 2 != 0 {
+            let last = *hashes.last().unwrap();
+            hashes.push(last);
+        }
+
+        let mut next_level = Vec::with_capacity(hashes.len() / 2);
+        for chunk in hashes.chunks(2) {
+            next_level.push(hash_pair(&chunk[0], &chunk[1]));
+        }
+        hashes = next_level;
+    }
+
+    hashes[0]
+}
+
+/// Hash a single triple input (pre-write) using the same scheme as
+/// [`hash_triple`]. Since `hash_triple` only consumes `entity_id`,
+/// `attribute`, `value`, `value_type`, and `tx_id`, we can produce an
+/// identical digest without the database-assigned `id` or `created_at`.
+pub fn hash_triple_input(input: &TripleInput, tx_id: i64) -> [u8; 64] {
+    let mut hasher = Sha512::new();
+    hasher.update(input.entity_id.as_bytes());
+    hasher.update(input.attribute.as_bytes());
+    hasher.update(input.value.to_string().as_bytes());
+    hasher.update(input.value_type.to_le_bytes());
+    hasher.update(tx_id.to_le_bytes());
+    let result = hasher.finalize();
+    let mut out = [0u8; 64];
+    out.copy_from_slice(&result);
+    out
+}
+
+/// Compute the Merkle root from in-memory [`TripleInput`]s and a known
+/// `tx_id`, avoiding a round-trip to Postgres. Produces the same root
+/// as [`merkle_root`] would for the equivalent committed [`Triple`]s.
+pub fn merkle_root_from_inputs(inputs: &[TripleInput], tx_id: i64) -> [u8; 64] {
+    if inputs.is_empty() {
+        return [0u8; 64];
+    }
+
+    let mut hashes: Vec<[u8; 64]> = inputs.iter().map(|t| hash_triple_input(t, tx_id)).collect();
+
+    while hashes.len() > 1 {
         if hashes.len() % 2 != 0 {
             let last = *hashes.last().unwrap();
             hashes.push(last);
@@ -275,17 +318,18 @@ pub async fn ensure_audit_schema(pool: &sqlx::PgPool) -> Result<(), sqlx::Error>
     Ok(())
 }
 
-/// Record a Merkle root for a completed transaction.
+/// Record a pre-computed Merkle root for a completed transaction.
 ///
-/// `prev_root` is fetched from the most recent entry in the chain.
-/// If no previous entry exists, the null root (all zeros) is used.
+/// The caller computes the Merkle root from in-memory data and passes it
+/// here, avoiding a redundant round-trip to Postgres. `prev_root` is
+/// fetched from the most recent entry in the chain. If no previous entry
+/// exists, the null root (all zeros) is used.
 pub async fn record_merkle_root(
     pool: &sqlx::PgPool,
     tx_id: i64,
-    triples: &[Triple],
+    root: &[u8; 64],
+    triple_count: usize,
 ) -> Result<[u8; 64], sqlx::Error> {
-    let root = merkle_root(triples);
-
     // Fetch the previous chained root (most recent tx).
     let prev: Option<(Vec<u8>,)> =
         sqlx::query_as("SELECT chained_root FROM tx_merkle_roots ORDER BY tx_id DESC LIMIT 1")
@@ -301,7 +345,7 @@ pub async fn record_merkle_root(
         _ => [0u8; 64],
     };
 
-    let chain_root = chained_root(&root, &prev_root_bytes);
+    let chain_root = chained_root(root, &prev_root_bytes);
 
     sqlx::query(
         r#"
@@ -314,7 +358,7 @@ pub async fn record_merkle_root(
     .bind(root.as_slice())
     .bind(chain_root.as_slice())
     .bind(prev_root_bytes.as_slice())
-    .bind(triples.len() as i32)
+    .bind(triple_count as i32)
     .execute(pool)
     .await?;
 

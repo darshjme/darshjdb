@@ -493,24 +493,61 @@ async fn main() -> Result<()> {
 
     // -- Start Server ---------------------------------------------------------
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
-    let listener = tokio::net::TcpListener::bind(addr)
+
+    // Optional TLS termination: if DARSHAN_TLS_CERT and DARSHAN_TLS_KEY are set,
+    // bind with rustls for native TLS 1.2/1.3 support. Otherwise, plain HTTP.
+    let tls_cert = std::env::var("DARSHAN_TLS_CERT");
+    let tls_key = std::env::var("DARSHAN_TLS_KEY");
+
+    if let (Ok(cert_path), Ok(key_path)) = (tls_cert, tls_key) {
+        tracing::info!("TLS enabled: loading certificate from {cert_path}");
+
+        let rustls_config =
+            axum_server::tls_rustls::RustlsConfig::from_pem_file(&cert_path, &key_path)
+                .await
+                .map_err(|e| {
+                    darshandb_server::error::DarshanError::Internal(format!(
+                        "failed to load TLS certificate/key ({cert_path}, {key_path}): {e}"
+                    ))
+                })?;
+
+        tracing::info!(%addr, "DarshanDB server listening (TLS enabled)");
+        tracing::info!("  REST API:  https://{addr}/api");
+        tracing::info!("  WebSocket: wss://{addr}/ws");
+        tracing::info!("  Health:    https://{addr}/health");
+        tracing::info!("  Ready:     https://{addr}/health/ready");
+        tracing::info!("  API Docs:  https://{addr}/api/docs");
+
+        axum_server::bind_rustls(addr, rustls_config)
+            .serve(app.into_make_service_with_connect_info::<SocketAddr>())
+            .await
+            .map_err(|e| {
+                darshandb_server::error::DarshanError::Internal(format!("server error: {e}"))
+            })?;
+    } else {
+        tracing::info!("TLS disabled (set DARSHAN_TLS_CERT and DARSHAN_TLS_KEY to enable)");
+
+        let listener = tokio::net::TcpListener::bind(addr).await.map_err(|e| {
+            darshandb_server::error::DarshanError::Internal(format!("bind error: {e}"))
+        })?;
+
+        tracing::info!(%addr, "DarshanDB server listening");
+        tracing::info!("  REST API:  http://{addr}/api");
+        tracing::info!("  WebSocket: ws://{addr}/ws");
+        tracing::info!("  Health:    http://{addr}/health");
+        tracing::info!("  Ready:     http://{addr}/health/ready");
+        tracing::info!("  API Docs:  http://{addr}/api/docs");
+
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .with_graceful_shutdown(shutdown_signal())
         .await
-        .map_err(|e| darshandb_server::error::DarshanError::Internal(format!("bind error: {e}")))?;
-
-    tracing::info!(%addr, "DarshanDB server listening");
-    tracing::info!("  REST API:  http://{addr}/api");
-    tracing::info!("  WebSocket: ws://{addr}/ws");
-    tracing::info!("  Health:    http://{addr}/health");
-    tracing::info!("  Ready:     http://{addr}/health/ready");
-    tracing::info!("  API Docs:  http://{addr}/api/docs");
-
-    axum::serve(
-        listener,
-        app.into_make_service_with_connect_info::<SocketAddr>(),
-    )
-    .with_graceful_shutdown(shutdown_signal())
-    .await
-    .map_err(|e| darshandb_server::error::DarshanError::Internal(format!("server error: {e}")))?;
+        .map_err(|e| {
+            darshandb_server::error::DarshanError::Internal(format!("server error: {e}"))
+        })?;
+    }
 
     tracing::info!("DarshanDB server shut down gracefully");
 

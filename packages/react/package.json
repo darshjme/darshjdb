@@ -61,5 +61,13 @@
     "database",
     "sync",
     "offline"
-  ]
+  ],
+  "author": "Darsh Joshi",
+  "homepage": "https://github.com/darshjme/darshandb/tree/main/packages/react#readme",
+  "bugs": {
+    "url": "https://github.com/darshjme/darshandb/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
 }

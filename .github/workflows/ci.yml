@@ -43,6 +43,41 @@ jobs:
         env:
           DATABASE_URL: postgres://darshan:darshan@localhost:5432/darshandb_test
 
+      - name: Smoke test (build server binary and verify it starts)
+        run: |
+          cargo build --release --bin darshandb-server
+          # Verify the binary exists and is executable
+          test -x ./target/release/darshandb-server
+          echo "Binary built successfully at ./target/release/darshandb-server"
+
+          # Start the server and verify it responds to /health
+          DATABASE_URL=postgres://darshan:darshan@localhost:5432/darshandb_test \
+          DARSHAN_PORT=7799 \
+          DARSHAN_DEV=1 \
+          DARSHAN_JWT_SECRET=ci-smoke-test-secret \
+          RUST_LOG=error \
+            ./target/release/darshandb-server &
+          SMOKE_PID=$!
+
+          # Wait up to 30s for health check
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:7799/health >/dev/null 2>&1; then
+              echo "Server responded to /health after ${i}s"
+              kill "$SMOKE_PID" 2>/dev/null || true
+              wait "$SMOKE_PID" 2>/dev/null || true
+              echo "Smoke test passed"
+              exit 0
+            fi
+            if ! kill -0 "$SMOKE_PID" 2>/dev/null; then
+              echo "::error::Server exited before responding to /health"
+              exit 1
+            fi
+            sleep 1
+          done
+          kill "$SMOKE_PID" 2>/dev/null || true
+          echo "::error::Server did not respond to /health within 30s"
+          exit 1
+
   typescript:
     name: TypeScript (typecheck + lint + test + build)
     runs-on: ubuntu-latest

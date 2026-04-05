@@ -3,18 +3,18 @@
   "version": "0.1.0",
   "description": "Angular SDK for DarshanDB \u2014 Signals, Observables, SSR, and standalone component support",
   "type": "module",
-  "main": "./dist/index.cjs",
-  "module": "./dist/index.js",
-  "types": "./dist/index.d.ts",
+  "main": "./dist/public-api.cjs",
+  "module": "./dist/public-api.js",
+  "types": "./dist/public-api.d.ts",
   "exports": {
     ".": {
       "import": {
-        "types": "./dist/index.d.ts",
-        "default": "./dist/index.js"
+        "types": "./dist/public-api.d.ts",
+        "default": "./dist/public-api.js"
       },
       "require": {
-        "types": "./dist/index.d.cts",
-        "default": "./dist/index.cjs"
+        "types": "./dist/public-api.d.cts",
+        "default": "./dist/public-api.cjs"
       }
     }
   },
@@ -70,5 +70,13 @@
     "realtime",
     "sync",
     "ssr"
-  ]
+  ],
+  "author": "Darsh Joshi",
+  "homepage": "https://github.com/darshjme/darshandb/tree/main/packages/angular#readme",
+  "bugs": {
+    "url": "https://github.com/darshjme/darshandb/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
 }

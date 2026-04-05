@@ -120,5 +120,13 @@
     "sdk",
     "realtime",
     "sync"
-  ]
+  ],
+  "author": "Darsh Joshi",
+  "homepage": "https://github.com/darshjme/darshandb/tree/main/packages/nextjs#readme",
+  "bugs": {
+    "url": "https://github.com/darshjme/darshandb/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
 }

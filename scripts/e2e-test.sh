@@ -23,6 +23,11 @@
 
 set -euo pipefail
 
+# Global timeout: kill the entire script after 5 minutes to prevent CI hangs
+E2E_TIMEOUT="${E2E_TIMEOUT:-300}"
+( sleep "$E2E_TIMEOUT" && echo "ERROR: E2E test timed out after ${E2E_TIMEOUT}s" && kill -TERM $$ 2>/dev/null ) &
+TIMEOUT_PID=$!
+
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
@@ -59,6 +64,8 @@ step() { echo -e "\n${BOLD}--- $* ---${NC}"; }
 
 cleanup() {
     log "Cleaning up..."
+    # Kill the timeout watchdog
+    kill "$TIMEOUT_PID" 2>/dev/null || true
     if [ -n "$SERVER_PID" ] && kill -0 "$SERVER_PID" 2>/dev/null; then
         kill "$SERVER_PID" 2>/dev/null || true
         wait "$SERVER_PID" 2>/dev/null || true
@@ -114,7 +121,12 @@ assert_json_field() {
 
 echo -e "\n${BOLD}=== DarshanDB End-to-End Test ===${NC}\n"
 
-for cmd in curl jq docker; do
+REQUIRED_CMDS="curl jq"
+if [ "${SKIP_POSTGRES:-0}" != "1" ]; then
+    REQUIRED_CMDS="$REQUIRED_CMDS docker"
+fi
+
+for cmd in $REQUIRED_CMDS; do
     if ! command -v "$cmd" &>/dev/null; then
         echo "ERROR: $cmd is required but not found in PATH"
         exit 1
@@ -180,12 +192,36 @@ fi
 
 step "Starting DarshanDB server"
 
-DATABASE_URL="$DB_URL" \
-DARSHAN_PORT="$SERVER_PORT" \
-DARSHAN_JWT_SECRET="e2e-test-secret-do-not-use-in-production" \
-RUST_LOG="info" \
-    cargo run --bin darshandb-server &
-SERVER_PID=$!
+# Find the server binary — prefer release, fall back to debug
+SERVER_BIN=""
+for candidate in \
+    ./target/release/darshandb-server \
+    ./target/debug/darshandb-server; do
+    if [ -x "$candidate" ]; then
+        SERVER_BIN="$candidate"
+        break
+    fi
+done
+
+if [ -z "$SERVER_BIN" ]; then
+    log "No pre-built binary found, using cargo run"
+    DATABASE_URL="$DB_URL" \
+    DARSHAN_PORT="$SERVER_PORT" \
+    DARSHAN_DEV=1 \
+    DARSHAN_JWT_SECRET="e2e-test-secret-do-not-use-in-production" \
+    RUST_LOG="info" \
+        cargo run --bin darshandb-server &
+    SERVER_PID=$!
+else
+    log "Using binary: $SERVER_BIN"
+    DATABASE_URL="$DB_URL" \
+    DARSHAN_PORT="$SERVER_PORT" \
+    DARSHAN_DEV=1 \
+    DARSHAN_JWT_SECRET="e2e-test-secret-do-not-use-in-production" \
+    RUST_LOG="info" \
+        "$SERVER_BIN" &
+    SERVER_PID=$!
+fi
 
 log "Server starting (PID $SERVER_PID), waiting for /health..."
 
