@@ -1,12 +1,12 @@
 [package]
-name = "darshan-cli"
+name = "ddb-cli"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "CLI for DarshanDB — dev server, deploy, migrations, and administration"
+description = "CLI for DarshJDB — dev server, deploy, migrations, and administration"
 
 [[bin]]
-name = "darshan"
+name = "ddb"
 path = "src/main.rs"
 
 [dependencies]

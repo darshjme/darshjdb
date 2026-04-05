@@ -20,14 +20,14 @@ impl Config {
         if self.token.is_empty() {
             anyhow::bail!(
                 "No authentication token configured.\n\
-                 Set DARSHAN_TOKEN, pass --token, or add [server].token to darshan.toml."
+                 Set DARSHAN_TOKEN, pass --token, or add [server].token to ddb.toml."
             );
         }
         Ok(&self.token)
     }
 }
 
-/// On-disk configuration format (`darshan.toml`).
+/// On-disk configuration format (`ddb.toml`).
 #[derive(Debug, Deserialize, Default)]
 struct FileConfig {
     server: Option<ServerConfig>,
@@ -64,7 +64,7 @@ impl Config {
         Ok(Self { url, token })
     }
 
-    /// Locate and parse `darshan.toml` by walking up from the current directory.
+    /// Locate and parse `ddb.toml` by walking up from the current directory.
     fn load_file() -> Result<FileConfig> {
         let path = Self::find_config_file()?;
         let content = std::fs::read_to_string(&path)
@@ -74,16 +74,16 @@ impl Config {
         Ok(cfg)
     }
 
-    /// Walk up from CWD looking for `darshan.toml`.
+    /// Walk up from CWD looking for `ddb.toml`.
     fn find_config_file() -> Result<PathBuf> {
         let mut dir = std::env::current_dir()?;
         loop {
-            let candidate = dir.join("darshan.toml");
+            let candidate = dir.join("ddb.toml");
             if candidate.exists() {
                 return Ok(candidate);
             }
             if !dir.pop() {
-                anyhow::bail!("No darshan.toml found (searched from CWD to root)");
+                anyhow::bail!("No ddb.toml found (searched from CWD to root)");
             }
         }
     }

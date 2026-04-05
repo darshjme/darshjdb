@@ -605,21 +605,20 @@ impl OAuth2Provider for GenericOAuth2Provider {
                         .header("User-Agent", "DarshanDB")
                         .send()
                         .await
+                        && let Ok(emails) = emails_resp.json::<Vec<serde_json::Value>>().await
                     {
-                        if let Ok(emails) = emails_resp.json::<Vec<serde_json::Value>>().await {
-                            email = emails
-                                .iter()
-                                .find(|e| {
-                                    e["primary"].as_bool() == Some(true)
-                                        && e["verified"].as_bool() == Some(true)
-                                })
-                                .or_else(|| {
-                                    emails
-                                        .iter()
-                                        .find(|e| e["verified"].as_bool() == Some(true))
-                                })
-                                .and_then(|e| e["email"].as_str().map(String::from));
-                        }
+                        email = emails
+                            .iter()
+                            .find(|e| {
+                                e["primary"].as_bool() == Some(true)
+                                    && e["verified"].as_bool() == Some(true)
+                            })
+                            .or_else(|| {
+                                emails
+                                    .iter()
+                                    .find(|e| e["verified"].as_bool() == Some(true))
+                            })
+                            .and_then(|e| e["email"].as_str().map(String::from));
                     }
                 }
 

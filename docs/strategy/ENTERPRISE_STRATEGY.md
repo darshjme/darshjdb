@@ -1,4 +1,4 @@
-# DarshanDB Enterprise Strategy: Self-Hosted + Managed SaaS/BaaS
+# DarshJDB Enterprise Strategy: Self-Hosted + Managed SaaS/BaaS
 
 > **Version:** 1.0  
 > **Date:** 2026-04-05  
@@ -9,9 +9,9 @@
 
 ## Executive Summary
 
-DarshanDB is a single-binary, self-hosted Backend-as-a-Service built in Rust. This document defines the strategy for expanding DarshanDB into a dual-mode platform: retaining full self-hosted sovereignty while introducing DarshanDB Cloud as a managed multi-tenant SaaS. The thesis is simple -- the open-source self-hosted product builds trust and adoption; the managed cloud product builds revenue. Both feed each other.
+DarshJDB is a single-binary, self-hosted Backend-as-a-Service built in Rust. This document defines the strategy for expanding DarshJDB into a dual-mode platform: retaining full self-hosted sovereignty while introducing DarshJDB Cloud as a managed multi-tenant SaaS. The thesis is simple -- the open-source self-hosted product builds trust and adoption; the managed cloud product builds revenue. Both feed each other.
 
-The model follows the playbook proven by PostgreSQL (open core) -> Supabase/Neon (managed), Redis -> Redis Cloud, and Grafana -> Grafana Cloud. DarshanDB's advantage is tighter: a single Rust binary with zero external service dependencies means the self-hosted-to-cloud gap is narrower than any competitor.
+The model follows the playbook proven by PostgreSQL (open core) -> Supabase/Neon (managed), Redis -> Redis Cloud, and Grafana -> Grafana Cloud. DarshJDB's advantage is tighter: a single Rust binary with zero external service dependencies means the self-hosted-to-cloud gap is narrower than any competitor.
 
 ---
 
@@ -30,15 +30,15 @@ The model follows the playbook proven by PostgreSQL (open core) -> Supabase/Neon
 
 ## 1. Dual-Mode Architecture
 
-DarshanDB operates across four deployment modes. Every mode runs the same core binary -- the differentiation is in orchestration, not in forked codebases.
+DarshJDB operates across four deployment modes. Every mode runs the same core binary -- the differentiation is in orchestration, not in forked codebases.
 
 ### 1.1 Deployment Modes
 
 | Mode | Who Runs It | Data Location | Control Plane | Target Customer |
 |------|-------------|---------------|---------------|-----------------|
 | **Self-Hosted** | Customer | Customer's server | None (CLI only) | Indie devs, startups, hobbyists |
-| **DarshanDB Cloud** | DarshanDB Inc. | DarshanDB-managed infra | Cloud dashboard | Teams wanting zero-ops |
-| **Hybrid** | Both | Customer's infra | DarshanDB Cloud | Mid-market, regulated industries |
+| **DarshJDB Cloud** | DarshJDB Inc. | DarshJDB-managed infra | Cloud dashboard | Teams wanting zero-ops |
+| **Hybrid** | Both | Customer's infra | DarshJDB Cloud | Mid-market, regulated industries |
 | **Air-Gapped** | Customer | Isolated network | On-prem dashboard | Government, defense, healthcare |
 
 ### 1.2 Architecture Overview
@@ -46,13 +46,13 @@ DarshanDB operates across four deployment modes. Every mode runs the same core b
 ```mermaid
 graph TB
     subgraph SelfHosted["Self-Hosted Mode"]
-        SH_CLI["darshan CLI"]
-        SH_BIN["DarshanDB Binary"]
+        SH_CLI["ddb CLI"]
+        SH_BIN["DarshJDB Binary"]
         SH_PG[("PostgreSQL")]
         SH_CLI --> SH_BIN --> SH_PG
     end
 
-    subgraph Cloud["DarshanDB Cloud Mode"]
+    subgraph Cloud["DarshJDB Cloud Mode"]
         CP["Cloud Control Plane"]
         API["Tenant API Gateway"]
         POOL["Instance Pool Manager"]
@@ -77,9 +77,9 @@ graph TB
     end
 
     subgraph Hybrid["Hybrid Mode"]
-        H_CP["Cloud Control Plane\n(DarshanDB-managed)"]
+        H_CP["Cloud Control Plane\n(DarshJDB-managed)"]
         H_DP["Data Plane\n(Customer-managed)"]
-        H_BIN["DarshanDB Binary"]
+        H_BIN["DarshJDB Binary"]
         H_PG[("Customer's PostgreSQL)"]
         H_CP -->|"Config + Telemetry\n(encrypted)"| H_DP
         H_DP --> H_BIN --> H_PG
@@ -87,7 +87,7 @@ graph TB
 
     subgraph AirGapped["Air-Gapped Mode"]
         AG_DASH["On-Prem Dashboard"]
-        AG_BIN["DarshanDB Binary"]
+        AG_BIN["DarshJDB Binary"]
         AG_PG[("Isolated PostgreSQL")]
         AG_LICENSE["License Server\n(offline activation)"]
         AG_DASH --> AG_BIN --> AG_PG
@@ -107,8 +107,8 @@ graph TB
 The foundation. MIT-licensed, single binary, runs on anything from a $5 VPS to a bare-metal cluster. No phone-home, no telemetry, no license checks. This never changes -- it is the trust anchor for the entire ecosystem.
 
 **What ships:**
-- `darshan` CLI (Rust)
-- DarshanDB server binary
+- `ddb` CLI (Rust)
+- DarshJDB server binary
 - Docker Compose for one-command setup
 - Helm chart for Kubernetes
 - Admin dashboard (bundled)
@@ -119,11 +119,11 @@ The foundation. MIT-licensed, single binary, runs on anything from a $5 VPS to a
 - Backups
 - Scaling
 
-### 1.4 DarshanDB Cloud
+### 1.4 DarshJDB Cloud
 
 Fully managed. The user signs up, gets a project URL, drops the SDK into their app. Zero infrastructure decisions.
 
-**What DarshanDB manages:**
+**What DarshJDB manages:**
 - Provisioning (instant project creation)
 - PostgreSQL with automated failover
 - TLS, DNS, CDN for static assets
@@ -138,7 +138,7 @@ Fully managed. The user signs up, gets a project URL, drops the SDK into their a
 
 ### 1.5 Hybrid Mode
 
-The cloud control plane manages configuration, monitoring, updates, and billing. The data plane runs on the customer's infrastructure. Data never leaves the customer's network. The control plane communicates via an encrypted, outbound-only tunnel (customer initiates; DarshanDB Cloud never connects inward).
+The cloud control plane manages configuration, monitoring, updates, and billing. The data plane runs on the customer's infrastructure. Data never leaves the customer's network. The control plane communicates via an encrypted, outbound-only tunnel (customer initiates; DarshJDB Cloud never connects inward).
 
 This is the wedge into regulated industries. Banks and healthcare companies want managed convenience but cannot allow data to leave their VPC.
 
@@ -152,7 +152,7 @@ For government, defense, and high-security enterprise. The entire stack -- inclu
 
 ### 2.1 Isolation Models
 
-DarshanDB Cloud supports three isolation tiers. The choice is per-tenant, configurable at provisioning time.
+DarshJDB Cloud supports three isolation tiers. The choice is per-tenant, configurable at provisioning time.
 
 ```mermaid
 graph LR
@@ -195,7 +195,7 @@ graph LR
 
 ### 2.2 Namespace Isolation (Current Model, Extended)
 
-DarshanDB already uses namespace isolation for multi-tenancy. In the SaaS context, this extends as follows:
+DarshJDB already uses namespace isolation for multi-tenancy. In the SaaS context, this extends as follows:
 
 - Every tenant gets a unique `tenant_id` (UUIDv7 for time-ordering)
 - All triple-store EAV rows are prefixed with the tenant's namespace
@@ -212,7 +212,7 @@ Each tenant gets a dedicated PostgreSQL schema within a shared database:
 ```sql
 CREATE SCHEMA tenant_abc123;
 SET search_path TO tenant_abc123;
--- All DarshanDB tables created within this schema
+-- All DarshJDB tables created within this schema
 ```
 
 Benefits:
@@ -259,9 +259,9 @@ Response:
 ```json
 {
   "tenant_id": "01HZXYZ...",
-  "project_url": "wss://acme-corp.darshandb.cloud",
+  "project_url": "wss://acme-corp.darshjdb.cloud",
   "api_key": "dk_live_...",
-  "admin_url": "https://acme-corp.darshandb.cloud/admin",
+  "admin_url": "https://acme-corp.darshjdb.cloud/admin",
   "status": "provisioning",
   "estimated_ready": "2026-04-05T12:00:05Z"
 }
@@ -271,7 +271,7 @@ Provisioning SLA: < 5 seconds for namespace/schema tiers, < 60 seconds for datab
 
 ### 2.6 Usage Metering and Billing Hooks
 
-Metering is built into the DarshanDB core as a Rust module, not bolted on externally. Every operation increments atomic counters that flush to a metering table every 10 seconds.
+Metering is built into the DarshJDB core as a Rust module, not bolted on externally. Every operation increments atomic counters that flush to a metering table every 10 seconds.
 
 **Metered dimensions:**
 
@@ -289,7 +289,7 @@ Metering is built into the DarshanDB core as a Rust module, not bolted on extern
 
 ```mermaid
 sequenceDiagram
-    participant DB as DarshanDB Core
+    participant DB as DarshJDB Core
     participant M as Metering Service
     participant S as Stripe/Billing
     participant T as Tenant Dashboard
@@ -322,17 +322,17 @@ Continuous, automated, zero-trust verification:
 ```mermaid
 sequenceDiagram
     participant U as User
-    participant D as DarshanDB
+    participant D as DarshJDB
     participant IdP as Enterprise IdP
     
-    U->>D: Access DarshanDB Dashboard
+    U->>D: Access DarshJDB Dashboard
     D->>D: Tenant has SSO configured?
     D->>IdP: SAML AuthnRequest / OIDC Auth Redirect
     IdP->>U: Login prompt (Okta, Azure AD, etc.)
     U->>IdP: Credentials + MFA
     IdP->>D: SAML Response / OIDC Callback
     D->>D: Validate assertion / token
-    D->>D: Map groups to DarshanDB roles
+    D->>D: Map groups to DarshJDB roles
     D->>D: Create/update user record
     D-->>U: Session established
 ```
@@ -342,7 +342,7 @@ sequenceDiagram
 - OIDC Authorization Code flow with PKCE
 - Support for Okta, Azure AD, Google Workspace, OneLogin, PingIdentity, and generic SAML/OIDC
 - JIT (Just-in-Time) user provisioning from SAML attributes
-- Group-to-role mapping configured in DarshanDB admin
+- Group-to-role mapping configured in DarshJDB admin
 - Enforced SSO: option to disable password auth entirely for a tenant
 
 ### 3.2 SCIM 2.0 Directory Sync
@@ -369,7 +369,7 @@ When a user is removed from the IdP directory, SCIM deactivation triggers:
 
 ### 3.3 Audit Log Export and SIEM Integration
 
-Every mutation in DarshanDB already produces an audit record (actor, timestamp, diff). Enterprise audit extends this to:
+Every mutation in DarshJDB already produces an audit record (actor, timestamp, diff). Enterprise audit extends this to:
 
 **Audit event schema:**
 
@@ -417,9 +417,9 @@ Audit logs are immutable and append-only. Retention: configurable per tenant (mi
 
 #### SOC 2 Type II
 
-DarshanDB Cloud will pursue SOC 2 Type II certification covering:
+DarshJDB Cloud will pursue SOC 2 Type II certification covering:
 
-| Trust Service Criteria | DarshanDB Implementation |
+| Trust Service Criteria | DarshJDB Implementation |
 |----------------------|--------------------------|
 | **Security** | 11-layer defense-in-depth, Argon2id, RS256 JWT, TLS 1.3, V8 sandboxing |
 | **Availability** | Multi-AZ PostgreSQL, automated failover, 99.95% SLA |
@@ -450,27 +450,27 @@ For healthcare customers on Enterprise plans with database-per-tenant isolation:
 
 ```mermaid
 graph TB
-    subgraph Global["DarshanDB Cloud Global"]
+    subgraph Global["DarshJDB Cloud Global"]
         CP["Global Control Plane\nus-east-1"]
     end
 
     subgraph US["US Region"]
         US_LB["Load Balancer"]
-        US_N1["DarshanDB Node"]
+        US_N1["DarshJDB Node"]
         US_PG[("PostgreSQL\nus-east-1")]
         US_LB --> US_N1 --> US_PG
     end
 
     subgraph EU["EU Region"]
         EU_LB["Load Balancer"]
-        EU_N1["DarshanDB Node"]
+        EU_N1["DarshJDB Node"]
         EU_PG[("PostgreSQL\neu-west-1")]
         EU_LB --> EU_N1 --> EU_PG
     end
 
     subgraph APAC["APAC Region"]
         AP_LB["Load Balancer"]
-        AP_N1["DarshanDB Node"]
+        AP_N1["DarshJDB Node"]
         AP_PG[("PostgreSQL\nap-south-1")]
         AP_LB --> AP_N1 --> AP_PG
     end
@@ -510,7 +510,7 @@ graph TB
 | Enterprise | 99.95% | Dedicated Slack, < 1h for P0 | 25% for breach, 50% for extended |
 | Enterprise+ | 99.99% | Named engineer, < 15min for P0 | Custom |
 
-The 99.99% SLA requires database-per-tenant isolation with multi-AZ PostgreSQL and active-passive DarshanDB failover.
+The 99.99% SLA requires database-per-tenant isolation with multi-AZ PostgreSQL and active-passive DarshJDB failover.
 
 ---
 
@@ -548,7 +548,7 @@ graph LR
 
 | Feature | Free (Self-Hosted) | Starter ($29/mo) | Pro ($99/mo) | Enterprise (Custom) |
 |---------|:------------------:|:-----------------:|:------------:|:-------------------:|
-| **Deployment** | Your server | DarshanDB Cloud | DarshanDB Cloud | Dedicated / Hybrid / Air-gapped |
+| **Deployment** | Your server | DarshJDB Cloud | DarshJDB Cloud | Dedicated / Hybrid / Air-gapped |
 | **Records** | Unlimited | 10,000 | 100,000 | Unlimited |
 | **Storage** | Unlimited | 1 GB | 10 GB | Custom |
 | **Bandwidth** | Unlimited | 5 GB/mo | 50 GB/mo | Custom |
@@ -587,7 +587,7 @@ The pricing is designed around a 70-80% gross margin target for cloud operations
 - **Pro ($99/mo):** Infrastructure cost ~$15-25/tenant (dedicated schema, more resources). Margin: ~78%.
 - **Enterprise ($X,XXX/mo):** Infrastructure cost varies. Target margin: 70%+. The margin comes from the software, not hosting.
 
-The self-hosted free tier is the growth engine. It costs DarshanDB Inc. nothing to serve (no infrastructure) while building the community, ecosystem, and hiring pipeline that feed the cloud business.
+The self-hosted free tier is the growth engine. It costs DarshJDB Inc. nothing to serve (no infrastructure) while building the community, ecosystem, and hiring pipeline that feed the cloud business.
 
 ---
 
@@ -615,9 +615,9 @@ graph TB
             LB1["Load Balancer"]
             
             subgraph Pool1["Instance Pool"]
-                I1["DarshanDB Instance 1\nTenants: A, B, C"]
-                I2["DarshanDB Instance 2\nTenants: D, E, F"]
-                I3["DarshanDB Instance 3\nTenant: G (Enterprise)"]
+                I1["DarshJDB Instance 1\nTenants: A, B, C"]
+                I2["DarshJDB Instance 2\nTenants: D, E, F"]
+                I3["DarshJDB Instance 3\nTenant: G (Enterprise)"]
             end
             
             subgraph PGPool1["PostgreSQL Pool"]
@@ -656,7 +656,7 @@ graph TB
 
 ### 5.2 Tenant Management Dashboard
 
-The tenant management dashboard is the internal operations view (not the per-tenant admin dashboard that already ships with DarshanDB).
+The tenant management dashboard is the internal operations view (not the per-tenant admin dashboard that already ships with DarshJDB).
 
 **Capabilities:**
 
@@ -683,7 +683,7 @@ graph LR
         D1["Scale Up Instance\n(more CPU/RAM)"]
         D2["Scale Out\n(add read replicas)"]
         D3["Migrate to\nDedicated Postgres"]
-        D4["Add DarshanDB Node\n(horizontal)"]
+        D4["Add DarshJDB Node\n(horizontal)"]
     end
 
     subgraph Actions["Automated Actions"]
@@ -708,13 +708,13 @@ graph LR
 | Query latency p99 | > 200ms for 5 min | Add read replica | 15 min |
 | CPU | > 80% for 10 min | Vertical scale (more CPU) | 30 min |
 | Memory | > 85% for 5 min | Vertical scale (more RAM) | 30 min |
-| Sync queue depth | > 10,000 pending | Add DarshanDB node | 15 min |
+| Sync queue depth | > 10,000 pending | Add DarshJDB node | 15 min |
 
 **Enterprise auto-scaling** is fully automatic. Starter/Pro scaling is manual (user-initiated upgrade) with alerts at 80% of limits.
 
 ### 5.4 Resource Quotas and Limits
 
-Enforced at the DarshanDB core level (not just billing -- hard limits that prevent noisy neighbor issues):
+Enforced at the DarshJDB core level (not just billing -- hard limits that prevent noisy neighbor issues):
 
 ```rust
 // Conceptual -- enforced in the query engine and connection handler
@@ -763,13 +763,13 @@ For Enterprise tenants requiring geographic redundancy:
 ```mermaid
 graph LR
     subgraph Primary["Primary Region: us-east-1"]
-        P_N["DarshanDB Node\n(read/write)"]
+        P_N["DarshJDB Node\n(read/write)"]
         P_PG[("PostgreSQL Primary")]
         P_N --> P_PG
     end
 
     subgraph Secondary["Secondary Region: eu-west-1"]
-        S_N["DarshanDB Node\n(read-only)"]
+        S_N["DarshJDB Node\n(read-only)"]
         S_PG[("PostgreSQL Replica")]
         S_N --> S_PG
     end
@@ -799,22 +799,22 @@ graph LR
 
 ### 6.1 Principle
 
-DarshanDB does not lock in customers. Data portability is a core product value, not a reluctant compliance checkbox. Any customer can export 100% of their data at any time, in standard formats, with zero intervention from DarshanDB.
+DarshJDB does not lock in customers. Data portability is a core product value, not a reluctant compliance checkbox. Any customer can export 100% of their data at any time, in standard formats, with zero intervention from DarshJDB.
 
 ### 6.2 Migration Paths
 
 ```mermaid
 graph TB
     subgraph SH["Self-Hosted"]
-        SH1["darshan CLI\nLocal instance"]
+        SH1["ddb CLI\nLocal instance"]
     end
 
-    subgraph Cloud["DarshanDB Cloud"]
+    subgraph Cloud["DarshJDB Cloud"]
         CL1["Managed instance"]
     end
 
-    SH1 -->|"darshan push --to cloud"| CL1
-    CL1 -->|"darshan pull --to local"| SH1
+    SH1 -->|"ddb push --to cloud"| CL1
+    CL1 -->|"ddb pull --to local"| SH1
 
     subgraph External["External Systems"]
         PG["Raw PostgreSQL"]
@@ -823,10 +823,10 @@ graph TB
         CSV["CSV / JSON"]
     end
 
-    External -->|"darshan import"| SH1
-    External -->|"darshan import"| CL1
-    SH1 -->|"darshan export"| External
-    CL1 -->|"darshan export"| External
+    External -->|"ddb import"| SH1
+    External -->|"ddb import"| CL1
+    SH1 -->|"ddb export"| External
+    CL1 -->|"ddb export"| External
 
     style SH fill:#14532d,stroke:#86efac,color:#fff
     style Cloud fill:#1a1a2e,stroke:#F59E0B,color:#fff
@@ -837,13 +837,13 @@ graph TB
 
 ```bash
 # On the self-hosted instance
-darshan push --to cloud \
+ddb push --to cloud \
   --project "my-project" \
   --region "eu-west-1" \
   --plan "pro"
 
 # What happens:
-# 1. darshan CLI authenticates with DarshanDB Cloud
+# 1. ddb CLI authenticates with DarshJDB Cloud
 # 2. Creates a new tenant with specified plan and region
 # 3. Snapshots local PostgreSQL (triple store + auth + files metadata)
 # 4. Streams snapshot to cloud instance via encrypted channel
@@ -856,13 +856,13 @@ darshan push --to cloud \
 ### 6.4 Cloud to Self-Hosted
 
 ```bash
-# On any machine with darshan CLI
-darshan pull --from cloud \
+# On any machine with ddb CLI
+ddb pull --from cloud \
   --project "my-project" \
   --target-pg "postgres://localhost:5432/mydb"
 
 # What happens:
-# 1. Authenticates with DarshanDB Cloud
+# 1. Authenticates with DarshJDB Cloud
 # 2. Creates a consistent snapshot of the tenant
 # 3. Streams triple store data to local PostgreSQL
 # 4. Syncs blob storage to local S3-compatible target
@@ -870,43 +870,43 @@ darshan pull --from cloud \
 # 6. Exports server functions
 # 7. Exports permission rules
 # 8. Verifies integrity
-# 9. Outputs `darshan.toml` configured for the local setup
+# 9. Outputs `ddb.toml` configured for the local setup
 ```
 
 ### 6.5 Import from Competitors
 
 ```bash
 # Firebase
-darshan import firebase \
+ddb import firebase \
   --credentials service-account.json \
   --collections "users,todos,comments"
 
 # Supabase
-darshan import supabase \
+ddb import supabase \
   --connection-string "postgres://..." \
   --tables "public.*"
 
 # Raw PostgreSQL
-darshan import postgres \
+ddb import postgres \
   --connection-string "postgres://..." \
   --tables "users,orders,products"
 
 # CSV / JSON
-darshan import csv --file data.csv --namespace "products"
-darshan import json --file data.json --namespace "users"
+ddb import csv --file data.csv --namespace "products"
+ddb import json --file data.json --namespace "users"
 ```
 
 ### 6.6 Export to Standard Formats
 
 ```bash
 # Full export (all namespaces, all data)
-darshan export --format sql --output backup.sql
-darshan export --format json --output backup.json
-darshan export --format csv --output-dir ./csv-export/
+ddb export --format sql --output backup.sql
+ddb export --format json --output backup.json
+ddb export --format csv --output-dir ./csv-export/
 
 # Selective export
-darshan export --namespace "users" --format json
-darshan export --namespace "orders" --where "created_at > '2026-01-01'"
+ddb export --namespace "users" --format json
+ddb export --namespace "orders" --where "created_at > '2026-01-01'"
 ```
 
 ---
@@ -947,9 +947,9 @@ graph TB
    - Key differentiator: self-hosted, relational, real-time, single binary
 
 2. **Developer content**
-   - "Build a real-time todo app in 5 minutes with DarshanDB" (video + blog)
+   - "Build a real-time todo app in 5 minutes with DarshJDB" (video + blog)
    - "Why we chose Rust for a BaaS" (technical deep-dive)
-   - "DarshanDB vs Firebase vs Supabase: honest comparison" (SEO play)
+   - "DarshJDB vs Firebase vs Supabase: honest comparison" (SEO play)
    - "From zero to production on a $5 VPS" (self-hosted appeal)
 
 3. **SDK ecosystem quality**
@@ -974,12 +974,12 @@ graph TB
 **Tactics:**
 
 1. **Waitlist during Phase 1**
-   - Collect emails on darshandb.dev/cloud
+   - Collect emails on db.darshj.me/cloud
    - Priority access for active self-hosted users and contributors
 
 2. **Free-to-paid conversion**
-   - One-command migration: `darshan push --to cloud`
-   - "Your self-hosted DarshanDB, but we handle the ops"
+   - One-command migration: `ddb push --to cloud`
+   - "Your self-hosted DarshJDB, but we handle the ops"
    - Target: developers who love the product but don't want to manage PostgreSQL
 
 3. **Startup program**
@@ -988,7 +988,7 @@ graph TB
 
 4. **Integration partnerships**
    - Vercel: one-click deploy template
-   - Railway, Fly.io, Render: managed DarshanDB add-on
+   - Railway, Fly.io, Render: managed DarshJDB add-on
    - Cloudflare: R2 integration for blob storage
 
 ### 7.4 Phase 3: Enterprise Sales (Months 12-24)
@@ -1003,7 +1003,7 @@ graph TB
    - This is the business model: open core + enterprise features
 
 2. **Sales motion**
-   - Inbound-led: developer at BigCo uses self-hosted DarshanDB for a side project, introduces it to their team, team needs SSO/compliance, becomes Enterprise customer
+   - Inbound-led: developer at BigCo uses self-hosted DarshJDB for a side project, introduces it to their team, team needs SSO/compliance, becomes Enterprise customer
    - This is the Datadog/Grafana playbook
 
 3. **Compliance certifications**
@@ -1023,10 +1023,10 @@ graph TB
 
 1. **Function marketplace**
    - Third-party server functions (auth providers, payment integrations, AI/ML)
-   - Revenue share: 70/30 (developer/DarshanDB)
+   - Revenue share: 70/30 (developer/DarshJDB)
 
 2. **Managed services partners**
-   - Consulting firms that deploy and manage DarshanDB for enterprises
+   - Consulting firms that deploy and manage DarshJDB for enterprises
    - Certification program for partners
 
 3. **Regional expansion**
@@ -1041,7 +1041,7 @@ graph TB
 
 ```mermaid
 gantt
-    title DarshanDB Enterprise Implementation Roadmap
+    title DarshJDB Enterprise Implementation Roadmap
     dateFormat  YYYY-MM
     axisFormat  %b %Y
 
@@ -1087,7 +1087,7 @@ gantt
 | P0 | Namespace hardening | Required for SaaS | Low (extend existing) | None |
 | P1 | Control plane API | Manages fleet | High | Provisioning API |
 | P1 | Auto-backup | Customer expectation | Medium | Control plane |
-| P1 | `darshan push/pull` | Conversion enabler | Medium | Provisioning API |
+| P1 | `ddb push/pull` | Conversion enabler | Medium | Provisioning API |
 | P2 | SSO/SCIM | Enterprise gate | Medium | Auth engine extension |
 | P2 | Schema-per-tenant | Pro plan enabler | Medium | Provisioning API |
 | P2 | Audit export | Enterprise gate | Low | Existing audit logs |
@@ -1099,9 +1099,9 @@ gantt
 
 What stays MIT (open source forever):
 
-- DarshanDB server binary (all current features)
+- DarshJDB server binary (all current features)
 - All SDKs (React, Next.js, Angular, Vue, Svelte, PHP, Python)
-- CLI (`darshan dev`, `darshan start`, `darshan deploy`)
+- CLI (`ddb dev`, `ddb start`, `ddb deploy`)
 - Admin dashboard
 - Single-node and cluster deployment
 - Namespace multi-tenancy
@@ -1113,7 +1113,7 @@ What stays MIT (open source forever):
 
 What is cloud/enterprise only (proprietary):
 
-- DarshanDB Cloud control plane
+- DarshJDB Cloud control plane
 - Tenant management dashboard
 - Auto-scaling and fleet management
 - SSO (SAML 2.0, OIDC)
@@ -1132,7 +1132,7 @@ This boundary ensures the open-source product is genuinely complete and useful. 
 
 ## Appendix A: Competitive Positioning
 
-| Competitor | Model | Self-Hosted | DarshanDB Advantage |
+| Competitor | Model | Self-Hosted | DarshJDB Advantage |
 |-----------|-------|-------------|---------------------|
 | Firebase | Proprietary SaaS | No | Self-hosted option, relational, open source |
 | Supabase | Open core + Cloud | Difficult (10+ services) | Single binary, native real-time, offline-first |
@@ -1141,7 +1141,7 @@ This boundary ensures the open-source product is genuinely complete and useful. 
 | PocketBase | Open source, self-hosted only | Yes | Cloud offering, enterprise features, SDKs |
 | Appwrite | Open source + Cloud | Yes | Single binary (vs Docker Compose), Rust performance |
 
-DarshanDB's unique position: the only BaaS that is simultaneously a single Rust binary for self-hosting AND a managed cloud service, with full data portability between the two.
+DarshJDB's unique position: the only BaaS that is simultaneously a single Rust binary for self-hosting AND a managed cloud service, with full data portability between the two.
 
 ## Appendix B: Key Metrics to Track
 

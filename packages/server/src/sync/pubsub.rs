@@ -265,10 +265,7 @@ impl PubSubEngine {
     /// This is used by the `POST /api/events/publish` endpoint for
     /// user-initiated events (webhooks, notifications, etc.).
     pub fn publish(&self, event: PubSubEvent) -> usize {
-        match self.event_tx.send(event) {
-            Ok(n) => n,
-            Err(_) => 0, // No active receivers.
-        }
+        self.event_tx.send(event).unwrap_or_default()
     }
 
     /// Process a [`ChangeEvent`] from the triple-store broadcaster.

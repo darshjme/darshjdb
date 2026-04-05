@@ -1,8 +1,8 @@
-# DarshanDB Web3 Strategy
+# DarshJDB Web3 Strategy
 
-**Making DarshanDB the default backend for decentralized applications.**
+**Making DarshJDB the default backend for decentralized applications.**
 
-> DarshanDB already solves the hardest problems in backend engineering: real-time sync, offline-first, permissions, server functions, and single-binary deployment. Web3 dApps need all of this *plus* wallet auth, on-chain data, token-gated access, and verifiable state. This document lays out how DarshanDB becomes the self-hosted Firebase replacement that Web3 has been waiting for.
+> DarshJDB already solves the hardest problems in backend engineering: real-time sync, offline-first, permissions, server functions, and single-binary deployment. Web3 dApps need all of this *plus* wallet auth, on-chain data, token-gated access, and verifiable state. This document lays out how DarshJDB becomes the self-hosted Firebase replacement that Web3 has been waiting for.
 
 ---
 
@@ -26,16 +26,16 @@ dApp users do not have email/password credentials. Their identity *is* their wal
 
 ### Design
 
-DarshanDB's Auth Engine currently supports email/password, magic links, OAuth, MFA, and WebAuthn. Wallet auth slots in as a new auth provider at the same level as OAuth, reusing the existing JWT issuance, refresh token rotation, and session management infrastructure.
+DarshJDB's Auth Engine currently supports email/password, magic links, OAuth, MFA, and WebAuthn. Wallet auth slots in as a new auth provider at the same level as OAuth, reusing the existing JWT issuance, refresh token rotation, and session management infrastructure.
 
 #### Sign-In with Ethereum (SIWE / EIP-4361)
 
-The SIWE standard defines a human-readable message format that the user signs with their Ethereum private key. The server verifies the signature, extracts the wallet address, and issues a DarshanDB session.
+The SIWE standard defines a human-readable message format that the user signs with their Ethereum private key. The server verifies the signature, extracts the wallet address, and issues a DarshJDB session.
 
 **Flow:**
 
 ```
-Client                          DarshanDB
+Client                          DarshJDB
   |                                |
   |-- GET /auth/wallet/nonce ----->|  Generate random nonce, store with expiry
   |<---- { nonce, expiresAt } -----|
@@ -79,17 +79,17 @@ pub async fn verify_siwe(
 **Client SDK usage:**
 
 ```typescript
-import { DarshanDB } from '@darshan/react';
+import { DarshJDB } from '@darshjdb/react';
 import { useAccount, useSignMessage } from 'wagmi';
 
-const db = DarshanDB.init({ appId: 'my-dapp' });
+const db = DarshJDB.init({ appId: 'my-dapp' });
 
 function WalletLogin() {
   const { address } = useAccount();
   const { signMessageAsync } = useSignMessage();
 
   const login = async () => {
-    // 1. Get nonce from DarshanDB
+    // 1. Get nonce from DarshJDB
     const { nonce } = await db.auth.wallet.getNonce();
 
     // 2. Build SIWE message
@@ -115,7 +115,7 @@ function WalletLogin() {
 
 #### Sign-In with Solana
 
-Same pattern, different cryptography. Solana uses Ed25519 instead of secp256k1. DarshanDB already uses Ed25519 for JWT signing, so the verification primitives are already in the codebase.
+Same pattern, different cryptography. Solana uses Ed25519 instead of secp256k1. DarshJDB already uses Ed25519 for JWT signing, so the verification primitives are already in the codebase.
 
 ```typescript
 const loginSolana = async () => {
@@ -153,7 +153,7 @@ ALTER TABLE users ADD COLUMN wallet_linked_at TIMESTAMPTZ;
 
 #### Multi-Chain Identity Linking
 
-A single DarshanDB user can link multiple wallets across chains. This mirrors how OAuth lets you link Google + GitHub to one account.
+A single DarshJDB user can link multiple wallets across chains. This mirrors how OAuth lets you link Google + GitHub to one account.
 
 ```typescript
 // Already logged in with Ethereum wallet
@@ -185,20 +185,20 @@ const { data } = db.useQuery({
 
 ### Problem
 
-dApps need their off-chain database to reflect on-chain state. Currently, developers run separate indexing infrastructure (The Graph, custom node scripts, Alchemy webhooks) and manually sync data into their database. This is fragile, slow, and duplicates work DarshanDB could handle natively.
+dApps need their off-chain database to reflect on-chain state. Currently, developers run separate indexing infrastructure (The Graph, custom node scripts, Alchemy webhooks) and manually sync data into their database. This is fragile, slow, and duplicates work DarshJDB could handle natively.
 
 ### Design
 
-DarshanDB's Sync Engine already watches for database mutations and pushes diffs to connected clients. On-chain data sync extends this in the opposite direction: DarshanDB watches blockchain events and writes them into the triple store, triggering the same reactive query pipeline.
+DarshJDB's Sync Engine already watches for database mutations and pushes diffs to connected clients. On-chain data sync extends this in the opposite direction: DarshJDB watches blockchain events and writes them into the triple store, triggering the same reactive query pipeline.
 
 #### Event Listener Framework
 
 A new `ChainListener` service runs alongside the existing services. It maintains WebSocket/HTTP connections to RPC providers and filters for relevant events.
 
-**Configuration (darshan.config.ts):**
+**Configuration (ddb.config.ts):**
 
 ```typescript
-import { defineConfig } from '@darshan/server';
+import { defineConfig } from '@darshjdb/server';
 
 export default defineConfig({
   chains: {
@@ -246,7 +246,7 @@ export default defineConfig({
 
 ```typescript
 // functions/onNftTransfer.ts
-import { chainEvent } from '@darshan/server';
+import { chainEvent } from '@darshjdb/server';
 
 export default chainEvent('Transfer', async (ctx, event) => {
   const { from, to, tokenId } = event.args;
@@ -268,10 +268,10 @@ export default chainEvent('Transfer', async (ctx, event) => {
 
 #### Indexer Integration
 
-For historical data and complex queries across multiple contracts, DarshanDB integrates with The Graph as a data source rather than replacing it.
+For historical data and complex queries across multiple contracts, DarshJDB integrates with The Graph as a data source rather than replacing it.
 
 ```typescript
-// darshan.config.ts
+// ddb.config.ts
 export default defineConfig({
   indexers: {
     uniswapV3: {
@@ -290,15 +290,15 @@ export default defineConfig({
 });
 ```
 
-The key insight: The Graph provides the data, DarshanDB provides the real-time reactivity, permissions, and offline sync. They complement each other.
+The key insight: The Graph provides the data, DarshJDB provides the real-time reactivity, permissions, and offline sync. They complement each other.
 
 #### Chain-State Caching
 
-Every RPC call costs money (Alchemy, Infura) and adds latency. DarshanDB caches on-chain state in PostgreSQL and serves it from there.
+Every RPC call costs money (Alchemy, Infura) and adds latency. DarshJDB caches on-chain state in PostgreSQL and serves it from there.
 
 ```typescript
 // Server function: cached chain read
-import { chainRead } from '@darshan/server';
+import { chainRead } from '@darshjdb/server';
 
 export const getTokenBalance = chainRead({
   chain: 'ethereum',
@@ -342,7 +342,7 @@ All EVM chains share the same listener code. Solana requires a separate adapter 
 
 ### Problem
 
-DarshanDB's Storage Engine currently supports S3-compatible backends (local FS, S3, R2, MinIO). Web3 applications need content-addressable storage that is censorship-resistant and permanent. IPFS, Arweave, and Filecoin serve different needs -- DarshanDB should support all three as first-class storage backends.
+DarshJDB's Storage Engine currently supports S3-compatible backends (local FS, S3, R2, MinIO). Web3 applications need content-addressable storage that is censorship-resistant and permanent. IPFS, Arweave, and Filecoin serve different needs -- DarshJDB should support all three as first-class storage backends.
 
 ### Design
 
@@ -365,7 +365,7 @@ StorageEngine
 IPFS is ideal for content-addressable, deduplicated storage. When a file is uploaded, its CID (Content Identifier) becomes the reference.
 
 ```typescript
-// darshan.config.ts
+// ddb.config.ts
 export default defineConfig({
   storage: {
     default: 's3',
@@ -422,7 +422,7 @@ const { txId, url } = await db.storage.upload(metadata, {
 
 #### Filecoin for Large Datasets
 
-Filecoin is cost-effective for large datasets (datasets, model weights, archives). DarshanDB integrates via Lighthouse or web3.storage.
+Filecoin is cost-effective for large datasets (datasets, model weights, archives). DarshJDB integrates via Lighthouse or web3.storage.
 
 ```typescript
 const { dealId, cid } = await db.storage.upload(largeDataset, {
@@ -458,7 +458,7 @@ Web3 access control is fundamentally different from Web2. Instead of database-st
 
 ### Design
 
-DarshanDB's Permission Engine already evaluates rules at query time via SQL WHERE injection. Token-gated permissions extend the Role Resolution step (step 2 in the pipeline) to query on-chain state.
+DarshJDB's Permission Engine already evaluates rules at query time via SQL WHERE injection. Token-gated permissions extend the Role Resolution step (step 2 in the pipeline) to query on-chain state.
 
 **Permission evaluation pipeline (extended):**
 
@@ -477,7 +477,7 @@ DarshanDB's Permission Engine already evaluates rules at query time via SQL WHER
 
 ```typescript
 // permissions.ts
-import { definePermissions } from '@darshan/server';
+import { definePermissions } from '@darshjdb/server';
 
 export default definePermissions({
   // Only holders of Bored Ape #1234 can access VIP content
@@ -575,7 +575,7 @@ export default definePermissions({
 
 #### On-Chain Role Resolution
 
-The Role Resolution step becomes async when token gates are involved. To avoid latency on every query, DarshanDB caches on-chain roles with smart invalidation.
+The Role Resolution step becomes async when token gates are involved. To avoid latency on every query, DarshJDB caches on-chain roles with smart invalidation.
 
 ```rust
 // Rust-side role resolution (pseudocode)
@@ -636,7 +636,7 @@ function DaoForum() {
 }
 ```
 
-The client code is identical to any other DarshanDB query. The Permission Engine handles token verification transparently. If the user's wallet does not hold the required token, they get a 403 -- same as any other permission denial.
+The client code is identical to any other DarshJDB query. The Permission Engine handles token verification transparently. If the user's wallet does not hold the required token, they get a 403 -- same as any other permission denial.
 
 ---
 
@@ -644,13 +644,13 @@ The client code is identical to any other DarshanDB query. The Permission Engine
 
 ### Problem
 
-Web3's trust model is "don't trust, verify." When DarshanDB serves query results, a dApp should be able to prove that the data is authentic and untampered -- without trusting the DarshanDB server.
+Web3's trust model is "don't trust, verify." When DarshJDB serves query results, a dApp should be able to prove that the data is authentic and untampered -- without trusting the DarshJDB server.
 
 ### Design
 
 #### Merkle Proof Generation for Query Results
 
-DarshanDB's triple store writes are ACID transactions against PostgreSQL. Each transaction produces a deterministic state root using a Merkle tree over the affected entities.
+DarshJDB's triple store writes are ACID transactions against PostgreSQL. Each transaction produces a deterministic state root using a Merkle tree over the affected entities.
 
 ```
                     State Root
@@ -689,18 +689,18 @@ const valid = db.verifyProof(data, proof);
 
 #### Data Attestations (EAS Integration)
 
-The Ethereum Attestation Service (EAS) provides a standard for on-chain attestations. DarshanDB can automatically create attestations for critical data.
+The Ethereum Attestation Service (EAS) provides a standard for on-chain attestations. DarshJDB can automatically create attestations for critical data.
 
 ```typescript
 // Server function: attest data on-chain
-import { action } from '@darshan/server';
+import { action } from '@darshjdb/server';
 import { EAS } from '@ethereum-attestation-service/eas-sdk';
 
 export const attestRecord = action(async (ctx, { entityId, schema }) => {
   const entity = await ctx.db.query({ [schema]: { $where: { id: entityId } } });
 
   const attestation = await eas.attest({
-    schema: DARSHAN_SCHEMA_UID,
+    schema: DDB_SCHEMA_UID,
     data: {
       recipient: entity.owner,
       data: encodeDarshanAttestation(entity),
@@ -722,7 +722,7 @@ export const attestRecord = action(async (ctx, { entityId, schema }) => {
 
 #### Audit Trail On-Chain Anchoring
 
-DarshanDB already logs every mutation with actor, timestamp, and diff (Layer 9: Audit Logging). On-chain anchoring extends this by periodically posting a hash of the audit log to a smart contract.
+DarshJDB already logs every mutation with actor, timestamp, and diff (Layer 9: Audit Logging). On-chain anchoring extends this by periodically posting a hash of the audit log to a smart contract.
 
 ```
 Every N minutes (configurable):
@@ -736,7 +736,7 @@ This provides tamper-evidence without putting raw data on-chain. If someone modi
 
 #### Zero-Knowledge Proof Verification for Private Queries
 
-For sensitive data, DarshanDB can verify ZK proofs that attest to data properties without revealing the data itself.
+For sensitive data, DarshJDB can verify ZK proofs that attest to data properties without revealing the data itself.
 
 ```typescript
 // Server function: verify a ZK proof about user's age
@@ -774,7 +774,7 @@ Use cases:
 
 ### The Firebase-for-Web3 Architecture
 
-DarshanDB replaces Firebase/Supabase for dApps by providing a unified off-chain layer that stays synchronized with on-chain state.
+DarshJDB replaces Firebase/Supabase for dApps by providing a unified off-chain layer that stays synchronized with on-chain state.
 
 ```
                        +-------------------+
@@ -785,7 +785,7 @@ DarshanDB replaces Firebase/Supabase for dApps by providing a unified off-chain 
                          Events | State Reads
                                 |
                 +---------------v--------------+
-                |         DarshanDB            |
+                |         DarshJDB            |
                 |  +-----------------------+   |
                 |  | Chain Listener Service |   |  <-- Watches contracts
                 |  +-----------+-----------+   |
@@ -808,13 +808,13 @@ DarshanDB replaces Firebase/Supabase for dApps by providing a unified off-chain 
                                 |
                 +---------------v--------------+
                 |        dApp Frontend         |
-                |  @darshan/react + wagmi      |
+                |  @darshjdb/react + wagmi      |
                 +------------------------------+
 ```
 
 ### Off-Chain Data with On-Chain Verification
 
-Most dApp data does not belong on-chain. User profiles, messages, preferences, metadata, analytics -- all of this is off-chain data that references on-chain state. DarshanDB is the off-chain layer.
+Most dApp data does not belong on-chain. User profiles, messages, preferences, metadata, analytics -- all of this is off-chain data that references on-chain state. DarshJDB is the off-chain layer.
 
 **Pattern: hybrid data model**
 
@@ -823,7 +823,7 @@ Most dApp data does not belong on-chain. User profiles, messages, preferences, m
 // Off-chain: NFT metadata, comments, likes, user profiles
 
 function NftDetailPage({ tokenId }: { tokenId: number }) {
-  // DarshanDB query -- pulls from triple store
+  // DarshJDB query -- pulls from triple store
   // NFT ownership was synced by ChainListener
   const { data } = db.useQuery({
     nfts: {
@@ -850,14 +850,14 @@ function NftDetailPage({ tokenId }: { tokenId: number }) {
 
 ### Real-Time Updates from Chain Events
 
-This is where DarshanDB's reactive query engine becomes a superpower for dApps. Chain events write to the triple store, which triggers the Sync Engine, which pushes diffs to subscribed clients.
+This is where DarshJDB's reactive query engine becomes a superpower for dApps. Chain events write to the triple store, which triggers the Sync Engine, which pushes diffs to subscribed clients.
 
 **End-to-end flow:**
 
 ```
 1. User places bid on NFT via smart contract
 2. Transaction confirmed on Ethereum (~12s)
-3. DarshanDB ChainListener receives BidPlaced event
+3. DarshJDB ChainListener receives BidPlaced event
 4. Handler writes bid to triple store
 5. Sync Engine detects change, matches against subscribed queries
 6. All clients viewing that NFT receive a real-time diff
@@ -874,11 +874,11 @@ This is where DarshanDB's reactive query engine becomes a superpower for dApps. 
 | WebSocket push to client | ~1ms |
 | **Total after confirmation** | **~102ms** |
 
-Compare this to the current dApp experience: poll an API every 5 seconds, hope the indexer has caught up, manually refetch. DarshanDB makes chain events feel as instant as database writes.
+Compare this to the current dApp experience: poll an API every 5 seconds, hope the indexer has caught up, manually refetch. DarshJDB makes chain events feel as instant as database writes.
 
 ### Why This Beats the Alternatives
 
-| Capability | Firebase + Moralis | Supabase + Alchemy | DarshanDB |
+| Capability | Firebase + Moralis | Supabase + Alchemy | DarshJDB |
 |-----------|:-----------------:|:------------------:|:---------:|
 | Self-hosted | No | Partial | Yes |
 | Wallet auth (native) | Plugin | Plugin | Built-in |
@@ -912,14 +912,14 @@ Compare this to the current dApp experience: poll an API every 5 seconds, hope t
 - `ethers-core` (or `alloy-primitives`) -- address types, checksums
 
 **Success criteria:**
-- `darshan dev` starts with wallet auth enabled
+- `ddb dev` starts with wallet auth enabled
 - A React dApp can sign in with MetaMask and query token-gated data
 - Permission rules can reference on-chain NFT/token ownership
 - All existing auth (email, OAuth, MFA) continues to work unchanged
 
 ### Phase 2: On-Chain Sync + Decentralized Storage (Weeks 7-14)
 
-**Priority: MEDIUM -- Makes DarshanDB a complete dApp backend.**
+**Priority: MEDIUM -- Makes DarshJDB a complete dApp backend.**
 
 | Week | Deliverable | Effort |
 |------|-------------|--------|
@@ -937,7 +937,7 @@ Compare this to the current dApp experience: poll an API every 5 seconds, hope t
 - Arweave wallet with AR tokens for permanent storage
 
 **Success criteria:**
-- Chain events on Ethereum/Polygon/Base trigger real-time updates in DarshanDB
+- Chain events on Ethereum/Polygon/Base trigger real-time updates in DarshJDB
 - Files uploaded to IPFS/Arweave via `db.storage.upload()` with correct CID references
 - Chain state cached in Postgres with smart invalidation
 
@@ -983,15 +983,15 @@ Phase 3: Verifiable Data
 
 ### Non-Goals (Explicitly Out of Scope)
 
-- **DarshanDB is not a blockchain.** It does not run consensus, mint tokens, or replace smart contracts.
-- **DarshanDB is not an indexer.** It integrates with indexers (The Graph, Ponder) but does not replace them for full-chain indexing.
-- **DarshanDB does not store private keys.** Wallet signatures happen client-side. The server only verifies.
-- **DarshanDB does not submit transactions.** Server functions can prepare transactions but signing happens in the user's wallet.
+- **DarshJDB is not a blockchain.** It does not run consensus, mint tokens, or replace smart contracts.
+- **DarshJDB is not an indexer.** It integrates with indexers (The Graph, Ponder) but does not replace them for full-chain indexing.
+- **DarshJDB does not store private keys.** Wallet signatures happen client-side. The server only verifies.
+- **DarshJDB does not submit transactions.** Server functions can prepare transactions but signing happens in the user's wallet.
 
 ---
 
 ## Summary
 
-DarshanDB's existing architecture -- reactive queries, triple store, permission engine, V8 sandboxed functions, offline-first sync -- maps almost perfectly onto what dApp developers need. The gap is wallet auth, chain event ingestion, decentralized storage, and on-chain verification. Filling that gap with three focused phases turns DarshanDB into the definitive self-hosted backend for Web3.
+DarshJDB's existing architecture -- reactive queries, triple store, permission engine, V8 sandboxed functions, offline-first sync -- maps almost perfectly onto what dApp developers need. The gap is wallet auth, chain event ingestion, decentralized storage, and on-chain verification. Filling that gap with three focused phases turns DarshJDB into the definitive self-hosted backend for Web3.
 
-The developer in Ahmedabad building a DeFi dashboard, the student in Lagos shipping an NFT marketplace, the freelancer in Sao Paulo launching a DAO tool -- they all need the same thing: a backend that speaks both Web2 and Web3 natively. DarshanDB makes that real.
+The developer in Ahmedabad building a DeFi dashboard, the student in Lagos shipping an NFT marketplace, the freelancer in Sao Paulo launching a DAO tool -- they all need the same thing: a backend that speaks both Web2 and Web3 natively. DarshJDB makes that real.

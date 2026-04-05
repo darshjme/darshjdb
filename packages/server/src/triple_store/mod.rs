@@ -318,7 +318,7 @@ impl PgTripleStore {
         .bind(&attributes)
         .bind(&values)
         .bind(&value_types)
-        .bind(&vec![tx_id; count])
+        .bind(vec![tx_id; count])
         .bind(&expires_at_vec)
         .execute(&mut **tx)
         .await?;
@@ -429,7 +429,7 @@ impl PgTripleStore {
         .bind(&attributes)
         .bind(&values)
         .bind(&value_types)
-        .bind(&vec![tx_id; count])
+        .bind(vec![tx_id; count])
         .bind(&expires_at_vec)
         .execute(&self.pool)
         .await?;
@@ -538,7 +538,7 @@ impl TripleStore for PgTripleStore {
         .bind(&attributes)
         .bind(&values)
         .bind(&value_types)
-        .bind(&vec![tx_id; count])
+        .bind(vec![tx_id; count])
         .bind(&expires_at_vec)
         .execute(&mut *tx)
         .await?;

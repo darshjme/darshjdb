@@ -1,19 +1,19 @@
 /**
- * @module darshan.module
+ * @module ddb.module
  * @description NgModule-based configuration for DarshanDB.
  *
- * Use `DarshanModule.forRoot()` in traditional NgModule-based Angular
+ * Use `DarshJDBModule.forRoot()` in traditional NgModule-based Angular
  * applications (Angular 14+). For standalone components (Angular 16+),
  * prefer the `provideDarshan()` function from `./providers`.
  *
  * @example
  * ```typescript
  * // app.module.ts
- * import { DarshanModule } from '@darshan/angular';
+ * import { DarshJDBModule } from '@darshan/angular';
  *
  * @NgModule({
  *   imports: [
- *     DarshanModule.forRoot({
+ *     DarshJDBModule.forRoot({
  *       serverUrl: 'https://db.example.com',
  *       appId: 'my-app',
  *     }),
@@ -49,12 +49,12 @@ function initDarshanFactory(client: DarshanClient): () => Promise<void> {
 /**
  * Angular module that configures and provides the DarshanDB client.
  *
- * Call `DarshanModule.forRoot(config)` **once** in your root module.
+ * Call `DarshJDBModule.forRoot(config)` **once** in your root module.
  * Child modules that need DarshanDB services should simply inject
  * the tokens — no additional imports required.
  */
 @NgModule()
-export class DarshanModule implements OnDestroy {
+export class DarshJDBModule implements OnDestroy {
   /**
    * Configure the DarshanDB client for the root injector.
    *
@@ -63,16 +63,16 @@ export class DarshanModule implements OnDestroy {
    *
    * @example
    * ```typescript
-   * DarshanModule.forRoot({
+   * DarshJDBModule.forRoot({
    *   serverUrl: 'https://db.example.com',
    *   appId: 'my-app',
    *   debug: environment.production === false,
    * })
    * ```
    */
-  static forRoot(config: DarshanConfig): ModuleWithProviders<DarshanModule> {
+  static forRoot(config: DarshanConfig): ModuleWithProviders<DarshJDBModule> {
     return {
-      ngModule: DarshanModule,
+      ngModule: DarshJDBModule,
       providers: [
         { provide: DARSHAN_CONFIG, useValue: config },
         {
@@ -93,7 +93,7 @@ export class DarshanModule implements OnDestroy {
   private readonly _client: DarshanClient | null;
 
   constructor() {
-    // The client is optional here since DarshanModule may be imported
+    // The client is optional here since DarshJDBModule may be imported
     // without forRoot() in lazy-loaded child modules.
     this._client = null;
   }

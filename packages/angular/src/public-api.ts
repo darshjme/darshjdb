@@ -26,11 +26,11 @@
  * ### NgModule
  *
  * ```typescript
- * import { DarshanModule } from '@darshan/angular';
+ * import { DarshJDBModule } from '@darshan/angular';
  *
  * @NgModule({
  *   imports: [
- *     DarshanModule.forRoot({
+ *     DarshJDBModule.forRoot({
  *       serverUrl: 'https://db.example.com',
  *       appId: 'my-app',
  *     }),
@@ -57,7 +57,7 @@
 
 // ── Configuration ──────────────────────────────────────────────────
 
-export { DarshanModule } from './darshan.module';
+export { DarshJDBModule } from './ddb.module';
 export { provideDarshan } from './providers';
 
 // ── Injection Tokens ───────────────────────────────────────────────

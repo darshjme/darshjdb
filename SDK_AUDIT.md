@@ -1,4 +1,4 @@
-# DarshanDB SDK Audit Report
+# DarshJDB SDK Audit Report
 
 **Date:** 2026-04-05
 **Auditor:** Claude Opus 4.6 (1M context)
@@ -8,13 +8,13 @@
 
 ## Executive Summary
 
-The DarshanDB SDK suite is **well-architected and production-quality**. All six packages demonstrate strong typing, consistent error handling, proper documentation, and good separation of concerns. The codebase follows modern best practices for each language/framework ecosystem.
+The DarshJDB SDK suite is **well-architected and production-quality**. All six packages demonstrate strong typing, consistent error handling, proper documentation, and good separation of concerns. The codebase follows modern best practices for each language/framework ecosystem.
 
 **Fixes applied during this audit:** 4 bugs fixed, 1 type annotation improved.
 
 ---
 
-## 1. `@darshan/client` (packages/client-core)
+## 1. `@darshjdb/client` (packages/client-core)
 
 ### Files Audited
 - `types.ts` - Core type definitions
@@ -50,13 +50,13 @@ The DarshanDB SDK suite is **well-architected and production-quality**. All six 
 - Token refresh failure clears session (prevents stale auth state)
 
 **Potential Improvements (non-blocking):**
-- `query.ts`: The global `_privateActiveSubs` map is module-scoped, meaning multiple `DarshanDB` instances share subscription deduplication. This is likely intentional but could cause cross-client interference in edge cases (e.g., test suites)
+- `query.ts`: The global `_privateActiveSubs` map is module-scoped, meaning multiple `DarshJDB` instances share subscription deduplication. This is likely intentional but could cause cross-client interference in edge cases (e.g., test suites)
 - `client.ts` line 280: The `onclose` handler rejects the initial connect promise even when `_privateState` comparison is against the *already-updated* reconnecting state. The condition `this._privateState !== 'connected'` will always be true since `_privateSetState('reconnecting')` was just called. This is harmless (the reject is caught) but the intent check is misleading
 - `storage.ts`: The XHR-based simple upload doesn't support cancellation (AbortController). The resumable upload doesn't support resuming from the last successful chunk after failure
 
 ---
 
-## 2. `@darshan/react` (packages/react)
+## 2. `@darshjdb/react` (packages/react)
 
 ### Files Audited
 - `provider.tsx` - Context provider with lifecycle management
@@ -99,13 +99,13 @@ The DarshanDB SDK suite is **well-architected and production-quality**. All six 
 
 ---
 
-## 3. `@darshan/angular` (packages/angular)
+## 3. `@darshjdb/angular` (packages/angular)
 
 ### Files Audited
 - `tokens.ts` - Injection tokens and client interface
 - `types.ts` - Type definitions
 - `providers.ts` - Standalone provider function
-- `darshan.module.ts` - NgModule configuration
+- `ddb.module.ts` - NgModule configuration
 - `client.factory.ts` - Client factory
 - `inject.ts` - Convenience injection functions with signals
 - `query.signal.ts` - Signal-based reactive queries
@@ -118,9 +118,9 @@ The DarshanDB SDK suite is **well-architected and production-quality**. All six 
 ### Verdict: EXCELLENT
 
 **Angular Injection Patterns:**
-- `DARSHAN_CONFIG` and `DARSHAN_CLIENT` properly typed `InjectionToken<T>`
+- `DDB_CONFIG` and `DDB_CLIENT` properly typed `InjectionToken<T>`
 - `provideDarshan()` returns `EnvironmentProviders` (Angular 16+ standalone pattern)
-- `DarshanModule.forRoot()` returns `ModuleWithProviders<DarshanModule>` (legacy pattern)
+- `DarshJDBModule.forRoot()` returns `ModuleWithProviders<DarshJDBModule>` (legacy pattern)
 - Both paths correctly register `APP_INITIALIZER` for connection setup
 - `ENVIRONMENT_INITIALIZER` used for `beforeunload` cleanup (browser safety net)
 
@@ -139,7 +139,7 @@ The DarshanDB SDK suite is **well-architected and production-quality**. All six 
 
 **Observable API:**
 - `shareReplay({ bufferSize: 1, refCount: true })` prevents memory leaks
-- Teardown function in Observable constructor cleans up DarshanDB subscription
+- Teardown function in Observable constructor cleans up DarshJDB subscription
 - `debounceTime` conditionally applied via operator pipeline
 
 **Auth Guards:**
@@ -148,11 +148,11 @@ The DarshanDB SDK suite is **well-architected and production-quality**. All six 
 - `darshanAuthInterceptor` correctly scopes token attachment to `config.serverUrl` origin only (prevents token leakage)
 
 **Minor Observation:**
-- `darshan.module.ts` constructor sets `this._client = null` but never assigns the injected client. The `ngOnDestroy` therefore never calls `disconnect()`. This is a dead code path -- cleanup is handled by the `ENVIRONMENT_INITIALIZER` in the standalone path and `beforeunload` in the module path. Not a bug, but the `_client` field is misleading.
+- `ddb.module.ts` constructor sets `this._client = null` but never assigns the injected client. The `ngOnDestroy` therefore never calls `disconnect()`. This is a dead code path -- cleanup is handled by the `ENVIRONMENT_INITIALIZER` in the standalone path and `beforeunload` in the module path. Not a bug, but the `_client` field is misleading.
 
 ---
 
-## 4. `@darshan/nextjs` (packages/nextjs)
+## 4. `@darshjdb/nextjs` (packages/nextjs)
 
 ### Files Audited
 - `server.ts` - Server Component queries, Server Actions, admin client
@@ -172,7 +172,7 @@ The DarshanDB SDK suite is **well-architected and production-quality**. All six 
 
 **Cookie Security:**
 - `setSessionCookie()` defaults: `httpOnly: true`, `sameSite: 'lax'`, `secure: true` in production
-- Session token injected into `x-darshan-session` header for downstream consumption
+- Session token injected into `x-ddb-session` header for downstream consumption
 - Invalid sessions are cleared (cookie deleted) before redirect
 
 **Fix Applied -- `server.ts`:**
@@ -192,13 +192,13 @@ The DarshanDB SDK suite is **well-architected and production-quality**. All six 
 - Missing URL produces a clear error message with env var name
 
 **Pages Router:**
-- `queryServerSide()` wraps `getServerSideProps` with DarshanDB client injection
+- `queryServerSide()` wraps `getServerSideProps` with DarshJDB client injection
 - `queryStaticProps()` wraps `getStaticProps` with ISR revalidation support
 - Both serialize output via `JSON.parse(JSON.stringify(result))` to strip non-serializable values
 - `null` return triggers Next.js 404
 
 **Observation:**
-- `server.ts` uses `require('@darshan/client')` which may not resolve correctly in all bundler configurations. A dynamic `import()` would be more compatible with ESM-first bundlers, but `require` works in the Node.js runtime context where these server functions execute.
+- `server.ts` uses `require('@darshjdb/client')` which may not resolve correctly in all bundler configurations. A dynamic `import()` would be more compatible with ESM-first bundlers, but `require` works in the Node.js runtime context where these server functions execute.
 
 ---
 
@@ -241,7 +241,7 @@ The DarshanDB SDK suite is **well-architected and production-quality**. All six 
 - Facade extends `Illuminate\Support\Facades\Facade` with correct PHPDoc `@method` annotations
 
 **Observations:**
-- `QueryBuilder::update()` uses POST instead of PUT/PATCH. This follows the DarshanDB server convention (mutation via POST) but deviates from REST conventions. Documented in usage examples, so this is intentional.
+- `QueryBuilder::update()` uses POST instead of PUT/PATCH. This follows the DarshJDB server convention (mutation via POST) but deviates from REST conventions. Documented in usage examples, so this is intentional.
 - `StorageClient::getUrl()` returns empty string on missing key: `return $result['url'] ?? ''`. Should arguably throw or return null for missing responses.
 
 ---
@@ -269,7 +269,7 @@ The DarshanDB SDK suite is **well-architected and production-quality**. All six 
 - `DarshanAdmin.subscribe()` is `async def` returning `AsyncIterator[dict[str, Any]]`
 - Uses `httpx.AsyncClient` with `timeout=None` for long-lived SSE
 - Optional `httpx-sse` dependency with clear error message on import failure
-- Main `DarshanDB` client is synchronous (correct for the common case)
+- Main `DarshJDB` client is synchronous (correct for the common case)
 
 **httpx Usage:**
 - `httpx.Client` with `base_url` and default headers
@@ -293,12 +293,12 @@ The DarshanDB SDK suite is **well-architected and production-quality**. All six 
    - **Fix:** Added `data: dict[str, str] | None = None` parameter, passed to `httpx` as `data=` alongside `files=`.
 
 **Context Manager Support:**
-- Both `DarshanDB` and `DarshanAdmin` implement `__enter__`/`__exit__` for `with` statement usage
+- Both `DarshJDB` and `DarshanAdmin` implement `__enter__`/`__exit__` for `with` statement usage
 - `close()` properly closes the underlying httpx client
 
 **Observations:**
-- No async version of the main `DarshanDB` client. Users who need async queries must use the admin client or wrap sync calls. Consider adding an `AsyncDarshanDB` class in a future release.
-- `DarshanAdmin._request()` duplicates most of `DarshanDB._request()`. Consider extracting a shared base class or mixin.
+- No async version of the main `DarshJDB` client. Users who need async queries must use the admin client or wrap sync calls. Consider adding an `AsyncDarshJDB` class in a future release.
+- `DarshanAdmin._request()` duplicates most of `DarshJDB._request()`. Consider extracting a shared base class or mixin.
 - `admin.py` `as_user()` heuristic for detecting tokens (`"." in email_or_token and "@" not in email_or_token`) is fragile. Email addresses can't contain bare dots before the `@`, but display names used as identifiers could. This edge case is unlikely but worth documenting.
 
 ---
@@ -311,14 +311,14 @@ The DarshanDB SDK suite is **well-architected and production-quality**. All six 
 |---------|:-----------:|:-----:|:-------:|:-------:|:---:|:------:|
 | Query | QueryBuilder | useQuery | darshanQuery/$ | queryServer | QueryBuilder | query()/get() |
 | Mutation | transact() | useMutation | darshanMutate$ | mutateServer | transact() | transact() |
-| Auth | AuthClient | useAuth | injectDarshanAuth | withDarshan | AuthClient | AuthClient |
+| Auth | AuthClient | useAuth | injectDarshJDBAuth | withDarshan | AuthClient | AuthClient |
 | Presence | PresenceRoom | usePresence | injectDarshanPresence | -- | -- | -- |
 | Storage | StorageClient | useStorage | -- | -- | StorageClient | StorageClient |
 | SSR | -- | -- | darshanTransferQuery | queryServer | -- | -- |
 | Offline | SyncEngine | -- | -- | -- | -- | -- |
 
 ### Naming Consistency
-- All SDKs use "DarshanDB" or "Darshan" prefix consistently
+- All SDKs use "DarshJDB" or "Darshan" prefix consistently
 - Server-side SDKs (PHP, Python) use `sign_in`/`signIn` convention matching their language idioms
 - TypeScript SDKs consistently use camelCase
 - PHP uses camelCase methods (PSR convention)
@@ -351,10 +351,10 @@ All SDKs consistently:
 
 ## Recommendations (Future Work)
 
-1. **Python async client:** Add `AsyncDarshanDB` class wrapping `httpx.AsyncClient` for native async/await support in FastAPI, Starlette, etc.
-2. **Python admin code dedup:** Extract shared HTTP logic from `DarshanDB` and `DarshanAdmin` into a base class.
+1. **Python async client:** Add `AsyncDarshJDB` class wrapping `httpx.AsyncClient` for native async/await support in FastAPI, Starlette, etc.
+2. **Python admin code dedup:** Extract shared HTTP logic from `DarshJDB` and `DarshanAdmin` into a base class.
 3. **Angular storage:** Add a `StorageClient` or `injectDarshanStorage()` to match PHP/Python feature parity.
 4. **React operator alignment:** Document the `WhereClause.op` difference between React types (`'=='`) and client-core types (`'='`) -- or unify them.
 5. **client-core subscription scoping:** Consider scoping `_privateActiveSubs` per-client instance rather than globally, to prevent cross-client deduplication interference in test environments.
 6. **PHP `StorageClient::getUrl()`:** Return `null` or throw instead of returning empty string when the server response is missing the `url` key.
-7. **Next.js ESM compatibility:** Consider replacing `require('@darshan/client')` with dynamic `import()` for better ESM bundler compatibility in `server.ts` and `client.factory.ts`.
+7. **Next.js ESM compatibility:** Consider replacing `require('@darshjdb/client')` with dynamic `import()` for better ESM bundler compatibility in `server.ts` and `client.factory.ts`.

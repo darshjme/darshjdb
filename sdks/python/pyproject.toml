@@ -3,16 +3,16 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "darshandb"
+name = "darshjdb"
 version = "0.1.0"
-description = "Official Python SDK for DarshanDB — real-time database with auth, storage, and server-side functions."
+description = "Official Python SDK for DarshJDB — real-time database with auth, storage, and server-side functions."
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.9"
 authors = [
-    { name = "DarshanDB", email = "dev@darshandb.com" },
+    { name = "DarshJDB", email = "dev@db.darshj.me" },
 ]
-keywords = ["darshandb", "database", "realtime", "sdk"]
+keywords = ["darshjdb", "database", "realtime", "sdk"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
@@ -41,4 +41,4 @@ dev = [
 testpaths = ["tests"]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/darshandb"]
+packages = ["src/darshjdb"]

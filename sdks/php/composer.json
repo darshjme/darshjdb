@@ -1,10 +1,10 @@
 {
-    "name": "darshan/darshan-php",
-    "description": "Official PHP SDK for DarshanDB — real-time database with auth, storage, and server-side functions.",
+    "name": "darshan/darshjdb-php",
+    "description": "Official PHP SDK for DarshJDB — real-time database with auth, storage, and server-side functions.",
     "type": "library",
     "license": "MIT",
-    "keywords": ["darshandb", "database", "realtime", "sdk", "laravel"],
-    "homepage": "https://github.com/darshandb/darshan-php",
+    "keywords": ["darshjdb", "database", "realtime", "sdk", "laravel"],
+    "homepage": "https://github.com/darshjdb/darshjdb-php",
     "require": {
         "php": ">=8.1",
         "guzzlehttp/guzzle": "^7.5"

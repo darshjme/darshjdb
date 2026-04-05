@@ -1,17 +1,17 @@
 # Admin Dashboard
 
-The DarshanDB admin dashboard is a built-in web interface for managing your database, users, functions, storage, and server configuration. It is accessible at `http://localhost:7700/admin` when the server is running.
+The DarshJDB admin dashboard is a built-in web interface for managing your database, users, functions, storage, and server configuration. It is accessible at `http://localhost:7700/admin` when the server is running.
 
 ## Overview
 
-The dashboard is a React + Vite + Tailwind CSS single-page application bundled with the server binary. It communicates with DarshanDB via the same REST and WebSocket APIs available to your application.
+The dashboard is a React + Vite + Tailwind CSS single-page application bundled with the server binary. It communicates with DarshJDB via the same REST and WebSocket APIs available to your application.
 
 ### Authentication
 
-The admin dashboard requires an admin token to access. On first run, `darshan dev` generates an admin token and prints it to the console:
+The admin dashboard requires an admin token to access. On first run, `ddb dev` generates an admin token and prints it to the console:
 
 ```
-DarshanDB dev server running on http://localhost:7700
+DarshJDB dev server running on http://localhost:7700
 Admin dashboard: http://localhost:7700/admin
 Admin token: drshn_admin_abc123...
 ```
@@ -19,7 +19,7 @@ Admin token: drshn_admin_abc123...
 In production, set the token via environment variable:
 
 ```bash
-DARSHAN_ADMIN_TOKEN=your-secure-admin-token
+DDB_ADMIN_TOKEN=your-secure-admin-token
 ```
 
 ## Pages
@@ -150,18 +150,18 @@ Press `Cmd+K` (or `Ctrl+K`) anywhere in the dashboard to open the command palett
 
 ## Embedding in Production
 
-The admin dashboard is compiled to static files during the Docker build. In production, DarshanDB serves these files from `DARSHAN_ADMIN_DIR`.
+The admin dashboard is compiled to static files during the Docker build. In production, DarshJDB serves these files from `DDB_ADMIN_DIR`.
 
 To disable the admin dashboard in production (security hardening):
 
 ```bash
-DARSHAN_ADMIN_ENABLED=false
+DDB_ADMIN_ENABLED=false
 ```
 
 To restrict admin dashboard access by IP:
 
 ```bash
-DARSHAN_ADMIN_ALLOWED_IPS=10.0.0.0/8,192.168.1.0/24
+DDB_ADMIN_ALLOWED_IPS=10.0.0.0/8,192.168.1.0/24
 ```
 
 ## Development

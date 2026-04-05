@@ -9,7 +9,7 @@
 
 ## Executive Summary
 
-The DarshanDB storage engine provides a well-structured pluggable backend architecture with local filesystem, S3, R2, and MinIO support. The audit identified **9 security and correctness issues**, of which **6 were fixed** in this pass. The remaining 3 are documented as recommendations for future work.
+The DarshJDB storage engine provides a well-structured pluggable backend architecture with local filesystem, S3, R2, and MinIO support. The audit identified **9 security and correctness issues**, of which **6 were fixed** in this pass. The remaining 3 are documented as recommendations for future work.
 
 ---
 

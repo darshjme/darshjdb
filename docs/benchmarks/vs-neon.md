@@ -1,6 +1,6 @@
-# DarshanDB vs Neon: A Honest Technical Comparison
+# DarshJDB vs Neon: A Honest Technical Comparison
 
-Neon and DarshanDB occupy different layers of the backend stack. Neon is a serverless Postgres provider -- it makes PostgreSQL cheaper, more elastic, and more developer-friendly. DarshanDB is a Backend-as-a-Service -- it replaces the entire backend layer between your frontend and your database.
+Neon and DarshJDB occupy different layers of the backend stack. Neon is a serverless Postgres provider -- it makes PostgreSQL cheaper, more elastic, and more developer-friendly. DarshJDB is a Backend-as-a-Service -- it replaces the entire backend layer between your frontend and your database.
 
 Comparing them directly is like comparing Heroku Postgres to Firebase. They overlap in that they both store data, but the problems they solve are fundamentally different.
 
@@ -10,7 +10,7 @@ This document examines where they genuinely compete, where they complement each 
 
 ## 1. Positioning
 
-| | Neon | DarshanDB |
+| | Neon | DarshJDB |
 |---|---|---|
 | **Category** | Serverless Postgres hosting | Self-hosted BaaS |
 | **Core promise** | Postgres that scales to zero and branches instantly | A single binary that replaces your entire backend |
@@ -18,9 +18,9 @@ This document examines where they genuinely compete, where they complement each 
 | **Business model** | Cloud service (free tier + paid plans) | Open-source (MIT), self-hosted |
 | **Replaces** | RDS, Cloud SQL, self-managed Postgres | Firebase, Supabase, Convex, custom backend APIs |
 
-Neon competes with Amazon RDS, Google Cloud SQL, PlanetScale, and CockroachDB. DarshanDB competes with Firebase, Supabase, Convex, and InstantDB.
+Neon competes with Amazon RDS, Google Cloud SQL, PlanetScale, and CockroachDB. DarshJDB competes with Firebase, Supabase, Convex, and InstantDB.
 
-The overlap is narrow: both involve PostgreSQL, and both serve application developers. But Neon gives you a better database. DarshanDB gives you a backend that happens to use a database internally.
+The overlap is narrow: both involve PostgreSQL, and both serve application developers. But Neon gives you a better database. DarshJDB gives you a backend that happens to use a database internally.
 
 ---
 
@@ -51,9 +51,9 @@ JOIN todos t ON t.user_id = u.id
 WHERE u.email = 'alice@example.com';
 ```
 
-### DarshanDB: Triple Store (EAV) over Postgres
+### DarshJDB: Triple Store (EAV) over Postgres
 
-DarshanDB stores data as `(entity_id, attribute, value)` triples. Collections are logical groupings. Relationships are triples where the value references another entity. Queries use DarshanQL, a purpose-built language that compiles down to SQL internally.
+DarshJDB stores data as `(entity_id, attribute, value)` triples. Collections are logical groupings. Relationships are triples where the value references another entity. Queries use DarshanQL, a purpose-built language that compiles down to SQL internally.
 
 ```bash
 # Write data -- no schema required
@@ -66,7 +66,7 @@ GET /api/data/users?where=email:eq:alice@example.com
 
 ### Comparison for App Development
 
-| Dimension | Neon (SQL) | DarshanDB (Triples) |
+| Dimension | Neon (SQL) | DarshJDB (Triples) |
 |---|---|---|
 | **Schema flexibility** | Rigid -- schema defined upfront, migrations required | Flexible -- write first, enforce later with strict mode |
 | **Query power** | Full SQL with CTEs, window functions, recursive queries | DarshanQL covers common CRUD patterns; complex analytics require workarounds |
@@ -75,7 +75,7 @@ GET /api/data/users?where=email:eq:alice@example.com
 | **Production strictness** | Inherent -- schema is the contract | Opt-in -- strict mode locks the model |
 | **Tooling ecosystem** | Decades of SQL tooling, ORMs, migration frameworks | Purpose-built SDKs, admin dashboard |
 
-**Honest assessment:** For analytics, reporting, and complex relational queries, Neon (standard Postgres) wins. For rapid application development where the schema is evolving daily, DarshanDB's schema-later approach removes friction. The triple store trades query expressiveness for development velocity.
+**Honest assessment:** For analytics, reporting, and complex relational queries, Neon (standard Postgres) wins. For rapid application development where the schema is evolving daily, DarshJDB's schema-later approach removes friction. The triple store trades query expressiveness for development velocity.
 
 ---
 
@@ -95,15 +95,15 @@ This is genuinely valuable for:
 - Side projects with sporadic traffic
 - Multi-tenant platforms with thousands of low-traffic databases
 
-### DarshanDB: Always-On Binary
+### DarshJDB: Always-On Binary
 
-DarshanDB is a single Rust binary (Axum + Tokio) that starts and stays running. It maintains WebSocket connections for real-time subscriptions, holds JWT signing keys in memory, and keeps permission rule caches warm.
+DarshJDB is a single Rust binary (Axum + Tokio) that starts and stays running. It maintains WebSocket connections for real-time subscriptions, holds JWT signing keys in memory, and keeps permission rule caches warm.
 
 There is no scale-to-zero. The binary needs to be running to serve requests.
 
 ### Tradeoffs
 
-| Factor | Neon (serverless) | DarshanDB (always-on) |
+| Factor | Neon (serverless) | DarshJDB (always-on) |
 |---|---|---|
 | **Idle cost** | $0 (scales to zero) | $5-10/month minimum (VPS + Postgres) |
 | **Cold start latency** | ~500ms on first connection | None -- already running |
@@ -111,7 +111,7 @@ There is no scale-to-zero. The binary needs to be running to serve requests.
 | **Connection handling** | Built-in pooling via proxy | Application-level connection pool |
 | **Burst scaling** | Auto-scales compute up to limits | Manual -- single binary, single machine (horizontal scaling planned) |
 
-**Honest assessment:** If your workload is bursty or idle most of the time, Neon's serverless model saves real money. DarshanDB's always-on model is the correct tradeoff for real-time applications where WebSocket connections must persist -- you cannot scale a subscription server to zero without disconnecting every client.
+**Honest assessment:** If your workload is bursty or idle most of the time, Neon's serverless model saves real money. DarshJDB's always-on model is the correct tradeoff for real-time applications where WebSocket connections must persist -- you cannot scale a subscription server to zero without disconnecting every client.
 
 ---
 
@@ -124,7 +124,7 @@ Neon's branching creates instant, copy-on-write clones of your entire database. 
 - **Development**: Each developer works against an isolated branch
 - **Point-in-time recovery**: Branch from any moment in the WAL history
 
-DarshanDB has no branching. To create a test environment, you stand up a second instance with a separate Postgres database and seed it.
+DarshJDB has no branching. To create a test environment, you stand up a second instance with a separate Postgres database and seed it.
 
 ### How Important Is This?
 
@@ -136,17 +136,17 @@ Branching is a workflow feature, not a data feature. It matters enormously for t
 It matters less for:
 - Solo developers or small teams
 - Applications where test data is generated programmatically
-- Projects using DarshanDB's schema-later model (no migrations to branch around)
+- Projects using DarshJDB's schema-later model (no migrations to branch around)
 
-**Honest assessment:** Branching is one of Neon's strongest differentiators in the Postgres hosting market. DarshanDB doesn't need it as urgently because its triple store model avoids the migration-heavy workflow that makes branching essential in traditional SQL. But it would still be useful, and its absence is a gap.
+**Honest assessment:** Branching is one of Neon's strongest differentiators in the Postgres hosting market. DarshJDB doesn't need it as urgently because its triple store model avoids the migration-heavy workflow that makes branching essential in traditional SQL. But it would still be useful, and its absence is a gap.
 
 ---
 
-## 5. Features Neon Lacks (That DarshanDB Provides)
+## 5. Features Neon Lacks (That DarshJDB Provides)
 
-Neon is a database. DarshanDB is a backend. The feature gap reflects that difference:
+Neon is a database. DarshJDB is a backend. The feature gap reflects that difference:
 
-| Feature | Neon | DarshanDB |
+| Feature | Neon | DarshJDB |
 |---|---|---|
 | **Authentication** | None -- bring your own auth service | Built-in: signup, signin, JWT (RS256), refresh tokens, Argon2id password hashing |
 | **Row-level permissions** | Postgres RLS exists, but you write and maintain the policies yourself | Declarative permission rules stored as data, evaluated on every request automatically |
@@ -164,13 +164,13 @@ To build a complete application backend on Neon, you still need:
 - Permission logic in your application code
 - An admin interface
 
-DarshanDB ships all of this in the binary.
+DarshJDB ships all of this in the binary.
 
 ---
 
-## 6. Features DarshanDB Lacks (That Neon Provides)
+## 6. Features DarshJDB Lacks (That Neon Provides)
 
-| Feature | DarshanDB | Neon |
+| Feature | DarshJDB | Neon |
 |---|---|---|
 | **Scale to zero** | No -- always-on binary | Yes -- compute shuts down when idle |
 | **Compute/storage separation** | No -- single process, standard Postgres | Yes -- independent scaling of compute and storage |
@@ -182,7 +182,7 @@ DarshanDB ships all of this in the binary.
 | **Postgres extensions** | Whatever your local Postgres supports | Curated set of supported extensions |
 | **Multi-region** | Not yet | Available on paid plans |
 
-**Honest assessment:** DarshanDB's infrastructure story is early-stage. It runs on one machine, on one Postgres instance, with no auto-scaling. For a BaaS used by individual developers or small teams building applications, this is fine. For a platform serving thousands of concurrent users across regions, you would need to put significant engineering effort into scaling -- or use a managed database like Neon underneath.
+**Honest assessment:** DarshJDB's infrastructure story is early-stage. It runs on one machine, on one Postgres instance, with no auto-scaling. For a BaaS used by individual developers or small teams building applications, this is fine. For a platform serving thousands of concurrent users across regions, you would need to put significant engineering effort into scaling -- or use a managed database like Neon underneath.
 
 ---
 
@@ -194,9 +194,9 @@ Neon runs actual Postgres with a modified storage layer. Query performance is es
 
 For hot workloads, Neon performs within 5-15% of self-managed Postgres. The gap comes from network-attached storage versus local NVMe.
 
-### DarshanDB
+### DarshJDB
 
-DarshanDB adds layers on top of Postgres:
+DarshJDB adds layers on top of Postgres:
 
 1. **Triple store reconstruction**: A query for "all users" requires reconstructing entities from individual `(entity, attribute, value)` rows. A user with 5 fields requires 5 rows read and assembled. This is inherently more work than `SELECT * FROM users`.
 
@@ -208,16 +208,16 @@ DarshanDB adds layers on top of Postgres:
 
 ### Estimated Overhead
 
-| Operation | Neon (raw Postgres) | DarshanDB | Overhead Source |
+| Operation | Neon (raw Postgres) | DarshJDB | Overhead Source |
 |---|---|---|---|
 | Simple read (1 entity, 5 fields) | ~1ms | ~3-5ms | Triple reconstruction + permission check |
 | Bulk read (1000 entities) | ~5ms | ~15-30ms | 5000 triples reassembled + batch permission evaluation |
 | Write (1 entity) | ~2ms | ~4-8ms | Triple decomposition + permission check + subscription notification |
 | Complex join (3 tables) | ~5-10ms | ~20-50ms | Graph traversal through triples vs. native Postgres JOIN |
 
-These are estimated ranges based on architectural analysis, not published benchmarks. DarshanDB's benchmark suite against Firebase, Supabase, and Convex is on the roadmap but not yet completed.
+These are estimated ranges based on architectural analysis, not published benchmarks. DarshJDB's benchmark suite against Firebase, Supabase, and Convex is on the roadmap but not yet completed.
 
-**Honest assessment:** DarshanDB will always be slower than raw Postgres for equivalent queries. The triple store abstraction, permission system, and real-time engine all add overhead. The question is whether that overhead matters -- for most CRUD applications, the difference between 3ms and 1ms is invisible to users. For analytical workloads processing millions of rows, use Postgres directly.
+**Honest assessment:** DarshJDB will always be slower than raw Postgres for equivalent queries. The triple store abstraction, permission system, and real-time engine all add overhead. The question is whether that overhead matters -- for most CRUD applications, the difference between 3ms and 1ms is invisible to users. For analytical workloads processing millions of rows, use Postgres directly.
 
 ---
 
@@ -239,65 +239,65 @@ Choose Neon when:
 
 ---
 
-## 9. When to Use DarshanDB
+## 9. When to Use DarshJDB
 
-Choose DarshanDB when:
+Choose DarshJDB when:
 
 - **You need a complete backend, not just a database.** Auth, permissions, real-time subscriptions, SDKs, admin dashboard -- all from a single binary. No glue code.
 
 - **You want to self-host.** Run on a $5 VPS, your own hardware, or air-gapped infrastructure. No cloud dependency, no vendor lock-in, no monthly database bill.
 
-- **You're building a real-time application.** Chat, collaborative editing, live dashboards, multiplayer features. DarshanDB's WebSocket subscription engine pushes diffs to clients as data changes.
+- **You're building a real-time application.** Chat, collaborative editing, live dashboards, multiplayer features. DarshJDB's WebSocket subscription engine pushes diffs to clients as data changes.
 
-- **Your schema is evolving rapidly.** Early-stage products where the data model changes daily. DarshanDB's triple store lets you write data first and formalize the schema when you're ready.
+- **Your schema is evolving rapidly.** Early-stage products where the data model changes daily. DarshJDB's triple store lets you write data first and formalize the schema when you're ready.
 
 - **You want client-side SDKs that handle the plumbing.** React hooks, Angular signals, Next.js integration -- optimistic updates, auth state management, and subscription lifecycle handled by the SDK.
 
-- **You need row-level permissions without writing Postgres RLS policies.** DarshanDB's permission rules are declarative and evaluated automatically.
+- **You need row-level permissions without writing Postgres RLS policies.** DarshJDB's permission rules are declarative and evaluated automatically.
 
 ---
 
 ## 10. Can They Work Together?
 
-### DarshanDB on Top of Neon Postgres
+### DarshJDB on Top of Neon Postgres
 
-DarshanDB uses PostgreSQL 16+ as its storage engine. There is no hard coupling to a specific Postgres deployment -- any Postgres instance accessible via `DATABASE_URL` works.
+DarshJDB uses PostgreSQL 16+ as its storage engine. There is no hard coupling to a specific Postgres deployment -- any Postgres instance accessible via `DATABASE_URL` works.
 
-Running DarshanDB against a Neon Postgres instance is technically feasible:
+Running DarshJDB against a Neon Postgres instance is technically feasible:
 
 ```bash
 DATABASE_URL=postgres://user:password@ep-cool-name-123456.us-east-2.aws.neon.tech/neondb \
-  cargo run --bin darshandb-server
+  cargo run --bin ddb-server
 ```
 
 ### What You'd Gain
 
-- **Neon's branching for DarshanDB data.** Branch the underlying Neon database to create instant snapshots of your entire DarshanDB state -- entities, permissions, user accounts, everything.
-- **Neon's storage scaling.** Neon handles storage growth, compaction, and durability. DarshanDB focuses on the application layer.
-- **Neon's PITR.** Recover DarshanDB to any point in time via Neon's WAL-based recovery.
-- **Neon's read replicas.** If DarshanDB adds read-replica-aware connection routing, Neon could serve read traffic from regional replicas.
+- **Neon's branching for DarshJDB data.** Branch the underlying Neon database to create instant snapshots of your entire DarshJDB state -- entities, permissions, user accounts, everything.
+- **Neon's storage scaling.** Neon handles storage growth, compaction, and durability. DarshJDB focuses on the application layer.
+- **Neon's PITR.** Recover DarshJDB to any point in time via Neon's WAL-based recovery.
+- **Neon's read replicas.** If DarshJDB adds read-replica-aware connection routing, Neon could serve read traffic from regional replicas.
 
 ### What You'd Lose
 
-- **Scale-to-zero becomes irrelevant.** DarshanDB is always-on. The Neon compute can't sleep because DarshanDB maintains a persistent connection pool. You'd be paying for always-on Neon compute, eliminating the cost advantage.
-- **Latency.** Network hop between DarshanDB (your server) and Neon (their cloud) adds latency to every triple operation. Co-locating in the same region helps but doesn't eliminate it.
-- **Self-hosted simplicity.** One of DarshanDB's selling points is running everything on a single machine. Adding a cloud dependency for the database layer undermines that.
+- **Scale-to-zero becomes irrelevant.** DarshJDB is always-on. The Neon compute can't sleep because DarshJDB maintains a persistent connection pool. You'd be paying for always-on Neon compute, eliminating the cost advantage.
+- **Latency.** Network hop between DarshJDB (your server) and Neon (their cloud) adds latency to every triple operation. Co-locating in the same region helps but doesn't eliminate it.
+- **Self-hosted simplicity.** One of DarshJDB's selling points is running everything on a single machine. Adding a cloud dependency for the database layer undermines that.
 
 ### Verdict
 
-DarshanDB on Neon works for teams that want DarshanDB's BaaS features but prefer managed Postgres over self-managed Postgres. The combination makes the most sense when:
+DarshJDB on Neon works for teams that want DarshJDB's BaaS features but prefer managed Postgres over self-managed Postgres. The combination makes the most sense when:
 
 1. You're already using Neon for other services
-2. You want Neon's branching for DarshanDB development workflows
+2. You want Neon's branching for DarshJDB development workflows
 3. You don't mind the network latency and cost of always-on compute
 
-For most DarshanDB users, running Postgres locally (or via Docker) alongside the DarshanDB binary on the same machine is simpler, cheaper, and faster.
+For most DarshJDB users, running Postgres locally (or via Docker) alongside the DarshJDB binary on the same machine is simpler, cheaper, and faster.
 
 ---
 
 ## Summary Table
 
-| Dimension | Neon | DarshanDB |
+| Dimension | Neon | DarshJDB |
 |---|---|---|
 | **What it is** | Serverless Postgres | Self-hosted BaaS |
 | **Data model** | Relational SQL | Triple store (EAV) over Postgres |
@@ -319,10 +319,10 @@ For most DarshanDB users, running Postgres locally (or via Docker) alongside the
 
 ## The Honest Bottom Line
 
-Neon and DarshanDB are not competitors. They solve different problems at different layers.
+Neon and DarshJDB are not competitors. They solve different problems at different layers.
 
-If you need a database, use Neon (or Supabase, or RDS, or self-managed Postgres). If you need a backend, use DarshanDB (or Firebase, or Convex, or Supabase).
+If you need a database, use Neon (or Supabase, or RDS, or self-managed Postgres). If you need a backend, use DarshJDB (or Firebase, or Convex, or Supabase).
 
-The comparison becomes interesting only at the margins: Neon + your own auth + your own API + your own WebSocket layer + your own permission system will eventually approximate what DarshanDB gives you out of the box. The question is whether you want to build that yourself or use a system designed for it.
+The comparison becomes interesting only at the margins: Neon + your own auth + your own API + your own WebSocket layer + your own permission system will eventually approximate what DarshJDB gives you out of the box. The question is whether you want to build that yourself or use a system designed for it.
 
-DarshanDB is alpha. Neon is production-hardened. That gap matters today and will matter less over time. Choose based on what your project needs now, not what either project promises for the future.
+DarshJDB is alpha. Neon is production-hardened. That gap matters today and will matter less over time. Choose based on what your project needs now, not what either project promises for the future.

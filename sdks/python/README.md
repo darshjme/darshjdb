@@ -1,6 +1,6 @@
-# DarshanDB Python SDK
+# DarshJDB Python SDK
 
-Official Python SDK for [DarshanDB](https://github.com/darshandb/darshandb) with sync and async support.
+Official Python SDK for [DarshJDB](https://github.com/darshjdb/darshjdb) with sync and async support.
 
 ## Requirements
 
@@ -10,21 +10,21 @@ Official Python SDK for [DarshanDB](https://github.com/darshandb/darshandb) with
 ## Installation
 
 ```bash
-pip install darshandb
+pip install darshjdb
 ```
 
 For real-time SSE subscriptions:
 
 ```bash
-pip install darshandb[sse]
+pip install darshjdb[sse]
 ```
 
 ## Quick Start
 
 ```python
-from darshandb import DarshanDB
+from darshjdb import DarshJDB
 
-db = DarshanDB(server_url="https://db.example.com", api_key="your-key")
+db = DarshJDB(server_url="https://db.example.com", api_key="your-key")
 
 # Auth
 db.auth.sign_up("alice@example.com", "password123", display_name="Alice")
@@ -66,7 +66,7 @@ db.close()
 ## Context Manager
 
 ```python
-with DarshanDB(server_url="https://db.example.com", api_key="key") as db:
+with DarshJDB(server_url="https://db.example.com", api_key="key") as db:
     db.auth.sign_in("user@example.com", "password")
     posts = db.get("posts", limit=10)
 # HTTP client is automatically closed
@@ -75,7 +75,7 @@ with DarshanDB(server_url="https://db.example.com", api_key="key") as db:
 ## Admin Client
 
 ```python
-from darshandb import DarshanAdmin
+from darshjdb import DarshanAdmin
 
 admin = DarshanAdmin(
     server_url="https://db.example.com",
@@ -89,7 +89,7 @@ posts = user_db.query({"collection": "posts"})
 # Admin-level queries (bypass permissions)
 all_users = admin.query({"collection": "users", "limit": 1000})
 
-# Real-time subscriptions (async, requires darshandb[sse])
+# Real-time subscriptions (async, requires darshjdb[sse])
 import asyncio
 
 async def watch_orders():
@@ -104,14 +104,14 @@ asyncio.run(watch_orders())
 ```python
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Depends, HTTPException
-from darshandb import DarshanDB
+from darshjdb import DarshJDB
 
-db: DarshanDB | None = None
+db: DarshJDB | None = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global db
-    db = DarshanDB(
+    db = DarshJDB(
         server_url="https://db.example.com",
         api_key="your-key",
     )
@@ -120,13 +120,13 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
-def get_db() -> DarshanDB:
+def get_db() -> DarshJDB:
     assert db is not None
     return db
 
 @app.get("/posts")
-def list_posts(darshan: DarshanDB = Depends(get_db)):
-    result = darshan.get(
+def list_posts(db: DarshJDB = Depends(get_db)):
+    result = db.get(
         "posts",
         where=[{"field": "published", "op": "=", "value": True}],
         order=[{"field": "createdAt", "direction": "desc"}],
@@ -135,14 +135,14 @@ def list_posts(darshan: DarshanDB = Depends(get_db)):
     return result["data"]
 
 @app.post("/posts")
-def create_post(title: str, body: str, darshan: DarshanDB = Depends(get_db)):
-    post = darshan.create("posts", {"title": title, "body": body, "published": False})
+def create_post(title: str, body: str, db: DarshJDB = Depends(get_db)):
+    post = db.create("posts", {"title": title, "body": body, "published": False})
     return post
 
 @app.post("/auth/signin")
-def sign_in(email: str, password: str, darshan: DarshanDB = Depends(get_db)):
+def sign_in(email: str, password: str, db: DarshJDB = Depends(get_db)):
     try:
-        result = darshan.auth.sign_in(email, password)
+        result = db.auth.sign_in(email, password)
         return {"token": result["accessToken"], "user": result["user"]}
     except Exception:
         raise HTTPException(status_code=401, detail="Invalid credentials")
@@ -155,16 +155,16 @@ def sign_in(email: str, password: str, darshan: DarshanDB = Depends(get_db)):
 DARSHAN_SERVER_URL = "https://db.example.com"
 DARSHAN_API_KEY = "your-key"
 
-# darshan_client.py
+# ddb_client.py
 from django.conf import settings
-from darshandb import DarshanDB
+from darshjdb import DarshJDB
 
-_client: DarshanDB | None = None
+_client: DarshJDB | None = None
 
-def get_darshan() -> DarshanDB:
+def get_ddb() -> DarshJDB:
     global _client
     if _client is None:
-        _client = DarshanDB(
+        _client = DarshJDB(
             server_url=settings.DARSHAN_SERVER_URL,
             api_key=settings.DARSHAN_API_KEY,
         )
@@ -173,11 +173,11 @@ def get_darshan() -> DarshanDB:
 # views.py
 from django.http import JsonResponse
 from django.views import View
-from .darshan_client import get_darshan
+from .ddb_client import get_ddb
 
 class PostListView(View):
     def get(self, request):
-        db = get_darshan()
+        db = get_ddb()
         result = db.get(
             "posts",
             where=[{"field": "published", "op": "=", "value": True}],
@@ -189,7 +189,7 @@ class PostListView(View):
     def post(self, request):
         import json
         data = json.loads(request.body)
-        db = get_darshan()
+        db = get_ddb()
         post = db.create("posts", {
             "title": data["title"],
             "body": data["body"],
@@ -197,7 +197,7 @@ class PostListView(View):
         return JsonResponse(post, status=201)
 
 # middleware.py
-from .darshan_client import get_darshan
+from .ddb_client import get_ddb
 
 class DarshanAuthMiddleware:
     def __init__(self, get_response):
@@ -206,7 +206,7 @@ class DarshanAuthMiddleware:
     def __call__(self, request):
         token = request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
         if token:
-            db = get_darshan()
+            db = get_ddb()
             db.auth.set_token(token)
             request.darshan_db = db
         return self.get_response(request)
@@ -215,9 +215,9 @@ class DarshanAuthMiddleware:
 ## Error Handling
 
 ```python
-from darshandb import DarshanDB, DarshanAPIError
+from darshjdb import DarshJDB, DarshanAPIError
 
-db = DarshanDB(server_url="https://db.example.com", api_key="key")
+db = DarshJDB(server_url="https://db.example.com", api_key="key")
 
 try:
     db.auth.sign_in("user@example.com", "wrong-password")
@@ -231,7 +231,7 @@ except DarshanAPIError as e:
 
 | Parameter    | Type  | Default | Description                      |
 | ------------ | ----- | ------- | -------------------------------- |
-| `server_url` | str   | --      | DarshanDB server URL (required)  |
+| `server_url` | str   | --      | DarshJDB server URL (required)  |
 | `api_key`    | str   | --      | Application API key (required)   |
 | `timeout`    | float | 30.0    | HTTP timeout in seconds          |
 

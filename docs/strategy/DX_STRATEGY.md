@@ -1,4 +1,4 @@
-# DarshanDB Developer Experience (DX) Strategy
+# DarshJDB Developer Experience (DX) Strategy
 
 **Author:** DX Research Audit  
 **Date:** 2026-04-05  
@@ -9,7 +9,7 @@
 
 ## Executive Summary
 
-DarshanDB has strong architectural foundations and an ambitious SDK ecosystem. The README is compelling and the feature matrix positions the product well against Firebase, Supabase, InstantDB, and Convex. However, the developer experience has friction points that will determine whether the "three commands to real-time backend" promise converts into sustained adoption. This audit identifies 47 specific improvements across seven categories, prioritized by developer impact.
+DarshJDB has strong architectural foundations and an ambitious SDK ecosystem. The README is compelling and the feature matrix positions the product well against Firebase, Supabase, InstantDB, and Convex. However, the developer experience has friction points that will determine whether the "three commands to real-time backend" promise converts into sustained adoption. This audit identifies 47 specific improvements across seven categories, prioritized by developer impact.
 
 ---
 
@@ -20,7 +20,7 @@ DarshanDB has strong architectural foundations and an ambitious SDK ecosystem. T
 The onboarding flow today:
 
 ```
-curl install script --> darshan dev --> copy React snippet --> hope it works
+curl install script --> ddb dev --> copy React snippet --> hope it works
 ```
 
 **Friction points identified:**
@@ -29,9 +29,9 @@ curl install script --> darshan dev --> copy React snippet --> hope it works
 |---|----------|----------|-------|
 | F1 | Install script requires `curl | sh` (trust barrier) | High | README, getting-started.md |
 | F2 | No `npx` / `brew` / `cargo install` alternatives listed | Medium | README |
-| F3 | Docker is a hidden prerequisite for Postgres, not explicit until `darshan dev` runs | High | getting-started.md line 7 |
-| F4 | `darshan dev` defaults to port 4820 (CLI) but README says 7700 --- contradictory | Critical | main.rs:41 vs README:117 |
-| F5 | No guided interactive setup --- `darshan init` creates files silently with no prompts | Medium | main.rs:967-1049 |
+| F3 | Docker is a hidden prerequisite for Postgres, not explicit until `ddb dev` runs | High | getting-started.md line 7 |
+| F4 | `ddb dev` defaults to port 4820 (CLI) but README says 7700 --- contradictory | Critical | main.rs:41 vs README:117 |
+| F5 | No guided interactive setup --- `ddb init` creates files silently with no prompts | Medium | main.rs:967-1049 |
 | F6 | The React example in README uses a declarative query syntax (`db.useQuery({ todos: {...} })`) but the actual `useQuery` hook in code expects a `Query<T>` object with `collection`, `where` array, `orderBy` --- different API | Critical | README:129 vs use-query.ts:10-27 |
 | F7 | No "hello world" verification --- developer has no way to confirm it worked | High | getting-started.md |
 | F8 | `appId: 'my-app'` appears with no explanation of where this value comes from | Medium | getting-started.md:52 |
@@ -45,18 +45,18 @@ Target: working real-time app in under 3 minutes, zero confusion.
 ```
                          DISCOVERY (30s)
                               |
-                    npm create darshan@latest
+                    npm create darshjdb@latest
                               |
                    +----------+----------+
                    |                     |
              Interactive            Quick start
-             (prompts for           (darshan init
+             (prompts for           (ddb init
               framework,             --template react
               auth, features)        --no-prompt)
                    |                     |
                    +----------+----------+
                               |
-                       darshan dev (auto)
+                       ddb dev (auto)
                               |
                     +------ VERIFY ------+
                     |                    |
@@ -72,14 +72,14 @@ Target: working real-time app in under 3 minutes, zero confusion.
                         "Getting Started" tab)
 ```
 
-### 1.3 Recommended: `npm create darshan@latest`
+### 1.3 Recommended: `npm create darshjdb@latest`
 
 The single highest-impact DX improvement. A scaffolding tool that:
 
 ```bash
-$ npm create darshan@latest
+$ npm create darshjdb@latest
 
-  DarshanDB  v0.1.0
+  DarshJDB  v0.1.0
 
   Where should we create your project?
   > ./my-app
@@ -98,10 +98,10 @@ $ npm create darshan@latest
   Generating TypeScript types...
   Starting dev server...
 
-  Done! Your DarshanDB project is ready.
+  Done! Your DarshJDB project is ready.
 
     cd my-app
-    darshan dev       (already running)
+    ddb dev       (already running)
     
     Dashboard:  http://localhost:4820/admin
     API:        http://localhost:4820
@@ -110,18 +110,18 @@ $ npm create darshan@latest
   Next steps:
     1. Open the dashboard to see your data
     2. Edit src/App.tsx to see live reload
-    3. Read the docs: https://darshandb.dev/docs
+    3. Read the docs: https://db.darshj.me/docs
 ```
 
-**Implementation:** Create `packages/create-darshan/` as a Node.js package using `@clack/prompts` (the library behind `create-svelte`, `create-astro`). Each template is a directory under `templates/{framework}/`. The scaffolder copies the template, runs string replacements for project name and config, installs deps, and optionally starts `darshan dev`.
+**Implementation:** Create `packages/create-darshjdb/` as a Node.js package using `@clack/prompts` (the library behind `create-svelte`, `create-astro`). Each template is a directory under `templates/{framework}/`. The scaffolder copies the template, runs string replacements for project name and config, installs deps, and optionally starts `ddb dev`.
 
 ### 1.4 Interactive Tutorial / Playground
 
-**Browser playground at `darshandb.dev/playground`:**
+**Browser playground at `db.darshj.me/playground`:**
 
 ```
 +---------------------------------------------------------------+
-|  DarshanDB Playground                          [Share] [Reset] |
+|  DarshJDB Playground                          [Share] [Reset] |
 +---------------------------------------------------------------+
 |                        |                                       |
 |   QUERY EDITOR         |   LIVE RESULTS                       |
@@ -152,11 +152,11 @@ $ npm create darshan@latest
 +---------------------------------------------------------------+
 ```
 
-**Implementation:** Use Sandpack (CodeSandbox's embeddable editor) with a hosted DarshanDB instance that resets every 30 minutes. The playground backend is a shared read-write DarshanDB server with ephemeral data, showing real-time sync across browser tabs.
+**Implementation:** Use Sandpack (CodeSandbox's embeddable editor) with a hosted DarshJDB instance that resets every 30 minutes. The playground backend is a shared read-write DarshJDB server with ephemeral data, showing real-time sync across browser tabs.
 
-### 1.5 `darshan init` Improvements
+### 1.5 `ddb init` Improvements
 
-Current `darshan init` creates files but doesn't guide. Proposed enhancements:
+Current `ddb init` creates files but doesn't guide. Proposed enhancements:
 
 ```rust
 // Add to Commands enum:
@@ -199,11 +199,11 @@ After scaffolding, print a verification command:
 
 ### 2.1 API Surface Consistency Audit
 
-The core promise of DarshanDB is "one API across every framework." The current reality:
+The core promise of DarshJDB is "one API across every framework." The current reality:
 
 | Concept | React | Angular | Vue | PHP | Python | Consistent? |
 |---------|-------|---------|-----|-----|--------|-------------|
-| Init | `DarshanDB.init({})` | `provideDarshan({})` | Not shown | `new Client([])` | `DarshanDB(url, key)` | NO |
+| Init | `DarshJDB.init({})` | `provideDarshan({})` | Not shown | `new Client([])` | `DarshJDB(url, key)` | NO |
 | Query | `db.useQuery({...})` | `injectQuery({...})` | Not shown | `$db->query([...])` | `db.query({...})` | Partial |
 | Mutation | `db.transact(db.tx...)` | Not shown | Not shown | `$db->transact([...])` | `db.transact([...])` | Partial |
 | Auth | Not shown | Not shown | Not shown | Not shown | Not shown | N/A |
@@ -261,7 +261,7 @@ reject(new Error(`Request ${id} timed out after ${timeoutMs}ms`));
 - No error codes, just string messages
 - No suggestions for resolution
 - No links to documentation
-- `console.warn('[DarshanDB] Server error:', msg.payload)` on line 347 silently drops errors
+- `console.warn('[DarshJDB] Server error:', msg.payload)` on line 347 silently drops errors
 
 **Recommended: DarshanError class**
 
@@ -271,7 +271,7 @@ export class DarshanError extends Error {
     public readonly code: string,       // "AUTH_FAILED", "CONN_TIMEOUT", etc.
     message: string,
     public readonly hint?: string,      // "Did you forget to call db.auth.signIn()?"
-    public readonly docsUrl?: string,   // "https://darshandb.dev/docs/auth#troubleshooting"
+    public readonly docsUrl?: string,   // "https://db.darshj.me/docs/auth#troubleshooting"
     public readonly context?: Record<string, unknown>,
   ) {
     super(`[${code}] ${message}${hint ? `\n\n  Hint: ${hint}` : ''}`);
@@ -284,7 +284,7 @@ throw new DarshanError(
   'AUTH_FAILED',
   'WebSocket authentication was rejected by the server.',
   'Check that your appId matches the one in your dashboard, and that your auth token is valid.',
-  'https://darshandb.dev/docs/auth#troubleshooting',
+  'https://db.darshj.me/docs/auth#troubleshooting',
   { appId: this.appId, serverUrl: this.serverUrl }
 );
 ```
@@ -300,10 +300,10 @@ const { data } = db.useQuery({ todos: { $where: { done: false } } });
 // data[0].title is `unknown` --- requires cast
 ```
 
-**Target (full inference via `darshan pull` codegen):**
+**Target (full inference via `ddb pull` codegen):**
 ```typescript
 // darshan/generated/schema.ts (auto-generated)
-import type { DB } from '@darshan/react';
+import type { DB } from '@darshjdb/react';
 
 export interface Schema {
   todos: { id: string; title: string; done: boolean; createdAt: number; ownerId: string };
@@ -311,7 +311,7 @@ export interface Schema {
 }
 
 // App code:
-const db = DarshanDB.init<Schema>({ appId: 'my-app' });
+const db = DarshJDB.init<Schema>({ appId: 'my-app' });
 
 const { data } = db.useQuery({ todos: { $where: { done: false } } });
 // data.todos[0].title is `string` --- full autocomplete
@@ -319,8 +319,8 @@ const { data } = db.useQuery({ todos: { $where: { done: false } } });
 ```
 
 **Implementation path:**
-1. `darshan pull` already generates types (main.rs line 453-518). Extend it to generate a `Schema` interface.
-2. Make `DarshanDB.init<S>()` accept a schema generic that flows through `useQuery`, `transact`, etc.
+1. `ddb pull` already generates types (main.rs line 453-518). Extend it to generate a `Schema` interface.
+2. Make `DarshJDB.init<S>()` accept a schema generic that flows through `useQuery`, `transact`, etc.
 3. The `tx` proxy builder should be schema-aware: `db.tx.todos` only autocompletes valid entity names.
 
 ### 2.4 IntelliSense / Autocomplete Experience
@@ -364,22 +364,22 @@ dev, deploy, push, pull, seed, migrate, logs, auth, backup, restore, status, ini
 
 | Command | Purpose | Priority |
 |---------|---------|----------|
-| `darshan doctor` | Diagnose environment issues | P0 |
-| `darshan console` | Interactive REPL for queries | P1 |
-| `darshan open` | Open dashboard in browser | P1 |
-| `darshan env` | Show/set environment variables | P2 |
-| `darshan upgrade` | Self-update the CLI binary | P2 |
-| `darshan reset` | Drop and recreate dev database | P2 |
-| `darshan completion` | Generate shell completions (bash/zsh/fish) | P2 |
+| `ddb doctor` | Diagnose environment issues | P0 |
+| `ddb console` | Interactive REPL for queries | P1 |
+| `ddb open` | Open dashboard in browser | P1 |
+| `ddb env` | Show/set environment variables | P2 |
+| `ddb upgrade` | Self-update the CLI binary | P2 |
+| `ddb reset` | Drop and recreate dev database | P2 |
+| `ddb completion` | Generate shell completions (bash/zsh/fish) | P2 |
 
-### 3.2 `darshan doctor` --- Diagnose Common Issues
+### 3.2 `ddb doctor` --- Diagnose Common Issues
 
 This is the highest-value missing command. When things don't work, developers need a single command that tells them what's wrong.
 
 ```
-$ darshan doctor
+$ ddb doctor
 
-  DarshanDB Doctor  v0.1.0
+  DarshJDB Doctor  v0.1.0
 
   Checks:
     [PASS]  Rust toolchain installed (rustc 1.82.0)
@@ -387,25 +387,25 @@ $ darshan doctor
     [PASS]  Docker running (Docker 27.0.3)
     [FAIL]  PostgreSQL connection
               Cannot connect to postgres://localhost:5432
-              Hint: Run `docker compose up -d` or `darshan dev` to start Postgres
+              Hint: Run `docker compose up -d` or `ddb dev` to start Postgres
     [PASS]  Port 4820 available
-    [PASS]  darshan.toml found
+    [PASS]  ddb.toml found
     [WARN]  No .env file found
               Hint: Copy .env.example to .env for local config
     [PASS]  darshan/functions/ directory exists (3 functions)
     [PASS]  SDK versions compatible
-              @darshan/react 0.1.0 <-> server 0.1.0
+              @darshjdb/react 0.1.0 <-> server 0.1.0
 
   Result: 1 failure, 1 warning
 
-  Fix the failure above, then run `darshan doctor` again.
+  Fix the failure above, then run `ddb doctor` again.
 ```
 
 **Implementation sketch (Rust):**
 
 ```rust
 Commands::Doctor => {
-    println!("\n  {} DarshanDB Doctor\n", ">>>".bright_cyan().bold());
+    println!("\n  {} DarshJDB Doctor\n", ">>>".bright_cyan().bold());
     
     let checks = vec![
         check_rust_toolchain().await,
@@ -446,12 +446,12 @@ The current CLI output uses `colored` and `indicatif` well. The `>>>` prefix and
 
 1. **Add `--json` flag to all commands** for CI/scripting:
    ```bash
-   darshan status --json | jq .version
+   ddb status --json | jq .version
    ```
 
 2. **Add `--quiet` flag** that suppresses decorative output:
    ```bash
-   darshan push --quiet  # only errors go to stderr
+   ddb push --quiet  # only errors go to stderr
    ```
 
 3. **Table formatting for `auth list-users`** --- currently dumps raw JSON. Use `comfy-table` or `tabled` crate:
@@ -471,12 +471,12 @@ The current CLI output uses `colored` and `indicatif` well. The `>>>` prefix and
 
 ### 3.4 Progress Indicators
 
-Current implementation is solid --- `indicatif` spinners for single operations, progress bars for batch operations. One gap: **`darshan dev` has no startup progress.** The developer sees "Starting server..." and then waits with no feedback on what's happening (Postgres startup, schema creation, function compilation, etc.).
+Current implementation is solid --- `indicatif` spinners for single operations, progress bars for batch operations. One gap: **`ddb dev` has no startup progress.** The developer sees "Starting server..." and then waits with no feedback on what's happening (Postgres startup, schema creation, function compilation, etc.).
 
 Proposed startup sequence:
 
 ```
-  >>> DarshanDB dev server
+  >>> DarshJDB dev server
 
     [1/5] Checking Postgres...          done (Docker, pg16)
     [2/5] Applying schema...            done (4 entity types)
@@ -524,7 +524,7 @@ Proposed startup sequence:
 +------------------------------------------------------------------+
 | _id          | title             | done    | createdAt            |
 |--------------|-------------------|---------|----------------------|
-| abc123       | Learn DarshanDB   | [x]     | 2026-04-01 10:30     |
+| abc123       | Learn DarshJDB   | [x]     | 2026-04-01 10:30     |
 | def456       | Build app         | [ ]     | 2026-04-02 14:15     |
 |              |                   |         |                      |
 | ghi789       | Write tests       | [ ]     | 2026-04-03 09:00     |
@@ -636,7 +636,7 @@ Current Logs page has search, level filter, and live mode. Add:
 |  > 14:25:04  DEBUG  broadcast  2 subscribers notified (0.3ms)     |
 |  14:25:05  WARN   auth     -          -       anon     req_x3    |
 |    "Anonymous connection rejected (appId: unknown-app)"           |
-|    Hint: Check your DarshanDB.init({ appId }) matches dashboard   |
+|    Hint: Check your DarshJDB.init({ appId }) matches dashboard   |
 +------------------------------------------------------------------+
 ```
 
@@ -686,7 +686,7 @@ docs/
 
 ```
 docs/
-  index.md                    "What is DarshanDB?"
+  index.md                    "What is DarshJDB?"
   getting-started/
     installation.md
     quickstart-react.md
@@ -729,7 +729,7 @@ docs/
       php.md
       python.md
     error-codes.md
-    config.md                 (darshan.toml reference)
+    config.md                 (ddb.toml reference)
     wire-protocol.md
   troubleshooting.md
   performance.md
@@ -770,9 +770,9 @@ Apply at https://docsearch.algolia.com/apply/. Provides:
 [ React | Next.js | Angular | Vue | PHP | Python | cURL ]   <-- framework tabs
 
 ```tsx
-import { DarshanDB } from '@darshan/react';
+import { DarshJDB } from '@darshjdb/react';
 
-const db = DarshanDB.init({ appId: 'my-app' });
+const db = DarshJDB.init({ appId: 'my-app' });
 
 function UserList() {
   const { data, isLoading, error } = db.useQuery({
@@ -815,24 +815,24 @@ Embed Sandpack-powered code playgrounds directly in documentation pages. Develop
 |  CODE EDITOR                    |  PREVIEW                        |
 |                                 |                                  |
 |  function TodoApp() {           |  +----------------------------+  |
-|    const { data } = db.useQ..  |  | [ ] Learn DarshanDB        |  |
+|    const { data } = db.useQ..  |  | [ ] Learn DarshJDB        |  |
 |                                 |  | [ ] Build something great  |  |
 |    return (                     |  | [Add Todo: ___________]    |  |
 |      <ul>                       |  +----------------------------+  |
 |        {data.todos.map(...      |                                  |
 |  }                              |  Console:                        |
-|                                 |  > Connected to DarshanDB       |
+|                                 |  > Connected to DarshJDB       |
 |  [Reset] [Fork]                 |  > Query subscribed (2 results) |
 +------------------------------------------------------------------+
 ```
 
-**Implementation:** Use `@codesandbox/sandpack-react` with a custom DarshanDB template. The template pre-installs `@darshan/react` and connects to a shared playground server. Each tutorial page gets an embedded playground with the relevant example pre-loaded.
+**Implementation:** Use `@codesandbox/sandpack-react` with a custom DarshJDB template. The template pre-installs `@darshjdb/react` and connects to a shared playground server. Each tutorial page gets an embedded playground with the relevant example pre-loaded.
 
 ### 5.5 API Reference Auto-Generation
 
 | SDK | Source Format | Tool | Output |
 |-----|--------------|------|--------|
-| TypeScript (`@darshan/client`, `@darshan/react`, etc.) | TSDoc comments | `typedoc` | HTML/Markdown |
+| TypeScript (`@darshjdb/client`, `@darshjdb/react`, etc.) | TSDoc comments | `typedoc` | HTML/Markdown |
 | PHP | PHPDoc | `phpDocumentor` | HTML/Markdown |
 | Python | Google-style docstrings | `sphinx` + `autodoc` | HTML/Markdown |
 | REST API | OpenAPI spec (server-generated) | `redocly` or `scalar` | Interactive HTML |
@@ -870,9 +870,9 @@ Categories:
 | DDB-AUTH-001 | Authentication failed | Check appId and auth token | /docs/auth#troubleshooting |
 | DDB-AUTH-002 | Token expired | Call db.auth.refresh() or re-authenticate | /docs/auth#token-refresh |
 | DDB-AUTH-003 | Invalid OAuth provider | Supported: google, github, apple, discord | /docs/auth#oauth |
-| DDB-CONN-001 | WebSocket connection refused | Is the server running? Try `darshan status` | /docs/troubleshooting#connection |
+| DDB-CONN-001 | WebSocket connection refused | Is the server running? Try `ddb status` | /docs/troubleshooting#connection |
 | DDB-CONN-002 | Connection timeout | Server may be overloaded or unreachable | /docs/troubleshooting#timeout |
-| DDB-CONN-003 | Protocol version mismatch | Update your SDK: npm update @darshan/react | /docs/troubleshooting#version |
+| DDB-CONN-003 | Protocol version mismatch | Update your SDK: npm update @darshjdb/react | /docs/troubleshooting#version |
 | DDB-QUERY-001 | Unknown entity type | Entity "{name}" not found. Available: {list} | /docs/query-language#entities |
 | DDB-QUERY-002 | Invalid where clause | Field "{field}" does not exist on "{entity}" | /docs/query-language#where |
 | DDB-QUERY-003 | Query too complex | Reduce nesting depth or add $limit | /docs/performance#query-limits |
@@ -881,7 +881,7 @@ Categories:
 | DDB-PERM-001 | Permission denied (table) | Role "{role}" cannot access "{entity}" | /docs/permissions#table-rules |
 | DDB-PERM-002 | Permission denied (row) | RLS policy filtered this entity | /docs/permissions#row-level |
 | DDB-PERM-003 | Permission denied (field) | Field "{field}" is restricted for role "{role}" | /docs/permissions#field-level |
-| DDB-FUNC-001 | Function not found | No function named "{name}". Run `darshan push` | /docs/server-functions#deploy |
+| DDB-FUNC-001 | Function not found | No function named "{name}". Run `ddb push` | /docs/server-functions#deploy |
 | DDB-FUNC-002 | Function timeout | Exceeded {limit}ms. Optimize or increase timeout | /docs/server-functions#limits |
 | DDB-FUNC-003 | Function runtime error | {stack trace} | /docs/server-functions#debugging |
 
@@ -899,7 +899,7 @@ db.useQuery({ todo: { $where: { done: false } } });
 //   Did you mean "todos"?
 //
 //   Available entity types: todos, users, sessions, files
-//   Docs: https://darshandb.dev/docs/query-language#entities
+//   Docs: https://db.darshj.me/docs/query-language#entities
 ```
 
 **Implementation:** Levenshtein distance with a threshold of 2 edits. If exactly one candidate is within threshold, show "Did you mean?". If multiple, show "Similar: ...". This applies to entity names, field names, function names, and CLI subcommands.
@@ -907,7 +907,7 @@ db.useQuery({ todo: { $where: { done: false } } });
 For the CLI, `clap` already provides "Did you mean?" for subcommands. Extend this to flag values:
 
 ```bash
-$ darshan logs --level warning
+$ ddb logs --level warning
 error: invalid value "warning" for --level
   Did you mean "warn"?
   Valid levels: debug, info, warn, error
@@ -926,7 +926,7 @@ eprintln!(
     "Hint:".bright_yellow(),
     "Run `docker compose up -d` or provide --database-url",
     "Docs:".dimmed(),
-    "https://darshandb.dev/docs/troubleshooting#postgres".underline()
+    "https://db.darshj.me/docs/troubleshooting#postgres".underline()
 );
 ```
 
@@ -949,23 +949,23 @@ try {
 Add a `debug` option to the client config that enables verbose logging:
 
 ```typescript
-const db = DarshanDB.init({
+const db = DarshJDB.init({
   appId: 'my-app',
   debug: true, // or process.env.NODE_ENV === 'development'
 });
 
 // With debug: true, the SDK logs:
-// [DarshanDB:conn] Connecting to ws://localhost:4820/v1/apps/my-app/ws
-// [DarshanDB:conn] WebSocket opened, authenticating...
-// [DarshanDB:auth] Sending anonymous auth for appId=my-app
-// [DarshanDB:auth] Auth OK (user: null, anonymous: true)
-// [DarshanDB:conn] Connected (latency: 3ms)
-// [DarshanDB:query] Subscribe { todos: { $where: { done: false } } }  hash=a1b2c3
-// [DarshanDB:query] q-init received (2 results, tx=42, 1.2ms)
-// [DarshanDB:sync] Mutation: set todos/abc123 { done: true }
-// [DarshanDB:sync] Optimistic update applied
-// [DarshanDB:sync] Server confirmed tx=43 (3.4ms)
-// [DarshanDB:sync] q-diff received: 1 updated, 0 added, 0 removed
+// [DarshJDB:conn] Connecting to ws://localhost:4820/v1/apps/my-app/ws
+// [DarshJDB:conn] WebSocket opened, authenticating...
+// [DarshJDB:auth] Sending anonymous auth for appId=my-app
+// [DarshJDB:auth] Auth OK (user: null, anonymous: true)
+// [DarshJDB:conn] Connected (latency: 3ms)
+// [DarshJDB:query] Subscribe { todos: { $where: { done: false } } }  hash=a1b2c3
+// [DarshJDB:query] q-init received (2 results, tx=42, 1.2ms)
+// [DarshJDB:sync] Mutation: set todos/abc123 { done: true }
+// [DarshJDB:sync] Optimistic update applied
+// [DarshJDB:sync] Server confirmed tx=43 (3.4ms)
+// [DarshJDB:sync] q-diff received: 1 updated, 0 added, 0 removed
 ```
 
 This eliminates the "what is happening internally?" question that drives developers to give up. Debug mode should be the default in development and disabled in production.
@@ -998,7 +998,7 @@ DARSHANDB DISCORD
 |
 +-- DISCUSSION
 |   #feature-requests        (ideas + voting via emoji)
-|   #show-and-tell           (apps built with DarshanDB)
+|   #show-and-tell           (apps built with DarshJDB)
 |   #architecture            (deep technical discussion)
 |   #off-topic
 |
@@ -1069,8 +1069,8 @@ Level 3: Core Contribution
 **Dev setup should be one command:**
 
 ```bash
-git clone https://github.com/darshjme/darshandb.git
-cd darshandb
+git clone https://github.com/darshjme/darshjdb.git
+cd darshjdb
 make dev-setup    # installs Rust, Node, starts Postgres, runs tests
 ```
 
@@ -1079,7 +1079,7 @@ Or, for the devcontainer crowd:
 ```json
 // .devcontainer/devcontainer.json
 {
-  "name": "DarshanDB Dev",
+  "name": "DarshJDB Dev",
   "image": "mcr.microsoft.com/devcontainers/rust:1",
   "features": {
     "ghcr.io/devcontainers/features/node:1": { "version": "22" },
@@ -1092,11 +1092,11 @@ Or, for the devcontainer crowd:
 
 ### 7.4 Showcase / Gallery
 
-Create a `darshandb.dev/showcase` page where developers submit their apps:
+Create a `db.darshj.me/showcase` page where developers submit their apps:
 
 ```
 +------------------------------------------------------------------+
-|  Built with DarshanDB                                             |
+|  Built with DarshJDB                                             |
 +------------------------------------------------------------------+
 |                                                                   |
 |  +-------------+  +-------------+  +-------------+               |
@@ -1128,15 +1128,15 @@ Submissions via GitHub PR to a `showcase/` directory (JSON files with metadata +
 | 2 | Reconcile query API (README declarative vs SDK builder) | Critical | 3d |
 | 3 | Wire admin dashboard to real API (replace mock data) | Critical | 1w |
 | 4 | Create `DarshanError` class with codes and hints | High | 2d |
-| 5 | Fix `darshan init` to match the framework the dev is using | High | 2d |
+| 5 | Fix `ddb init` to match the framework the dev is using | High | 2d |
 
 ### Phase 2: High-Impact DX (Week 3-6)
 
 | # | Item | Impact | Effort |
 |---|------|--------|--------|
-| 6 | `npm create darshan@latest` scaffolder | High | 1w |
-| 7 | `darshan doctor` command | High | 3d |
-| 8 | Schema-aware TypeScript generics (`DarshanDB.init<Schema>`) | High | 1w |
+| 6 | `npm create darshjdb@latest` scaffolder | High | 1w |
+| 7 | `ddb doctor` command | High | 3d |
+| 8 | Schema-aware TypeScript generics (`DarshJDB.init<Schema>`) | High | 1w |
 | 9 | Error code registry (all 20+ codes) | High | 3d |
 | 10 | Debug mode for SDK | Medium | 2d |
 | 11 | `--json` and `--quiet` flags on all CLI commands | Medium | 2d |
@@ -1146,7 +1146,7 @@ Submissions via GitHub PR to a `showcase/` directory (JSON files with metadata +
 
 | # | Item | Impact | Effort |
 |---|------|--------|--------|
-| 13 | Interactive playground at darshandb.dev/playground | High | 2w |
+| 13 | Interactive playground at db.darshj.me/playground | High | 2w |
 | 14 | Sandpack-embedded docs examples | Medium | 1w |
 | 15 | Visual query builder in admin dashboard | Medium | 1w |
 | 16 | Inline editing in Data Explorer | Medium | 1w |
@@ -1166,7 +1166,7 @@ Submissions via GitHub PR to a `showcase/` directory (JSON files with metadata +
 | Metric | Target | How to Measure |
 |--------|--------|----------------|
 | Time to first query | < 3 minutes | User testing, onboarding analytics |
-| `darshan doctor` pass rate | > 90% on first try | CLI telemetry (opt-in) |
+| `ddb doctor` pass rate | > 90% on first try | CLI telemetry (opt-in) |
 | Docs search success rate | > 80% | Algolia analytics |
 | Error resolution rate | > 70% self-serve | Error code page views vs support tickets |
 | NPM install to working app | < 5 minutes | User testing |
@@ -1178,7 +1178,7 @@ Submissions via GitHub PR to a `showcase/` directory (JSON files with metadata +
 
 ## Appendix A: Competitive DX Benchmarks
 
-| Aspect | Firebase | Supabase | Convex | DarshanDB (target) |
+| Aspect | Firebase | Supabase | Convex | DarshJDB (target) |
 |--------|----------|----------|--------|---------------------|
 | Time to first query | ~2 min | ~5 min | ~3 min | < 3 min |
 | CLI doctor command | No | No | No | Yes |
@@ -1190,11 +1190,11 @@ Submissions via GitHub PR to a `showcase/` directory (JSON files with metadata +
 
 ## Appendix B: User Personas for DX Prioritization
 
-**Persona 1: "Quick Start Quinn"** --- Junior dev, follows README literally, expects things to work on first try. Blocked by F4 (port mismatch) and F6 (API mismatch). Needs `npm create darshan@latest`.
+**Persona 1: "Quick Start Quinn"** --- Junior dev, follows README literally, expects things to work on first try. Blocked by F4 (port mismatch) and F6 (API mismatch). Needs `npm create darshjdb@latest`.
 
-**Persona 2: "Enterprise Eva"** --- Senior dev evaluating DarshanDB for team adoption. Needs TypeScript inference, error codes, self-hosting docs, security audit docs. Will judge DX by the quality of error messages and API reference.
+**Persona 2: "Enterprise Eva"** --- Senior dev evaluating DarshJDB for team adoption. Needs TypeScript inference, error codes, self-hosting docs, security audit docs. Will judge DX by the quality of error messages and API reference.
 
-**Persona 3: "Indie Dev Idris"** --- Solo developer in Lagos shipping a SaaS on a $5 VPS. Needs `darshan doctor`, clear self-hosting guides, offline-first documentation, and the showcase gallery for inspiration.
+**Persona 3: "Indie Dev Idris"** --- Solo developer in Lagos shipping a SaaS on a $5 VPS. Needs `ddb doctor`, clear self-hosting guides, offline-first documentation, and the showcase gallery for inspiration.
 
 **Persona 4: "Contributor Carlos"** --- Open source enthusiast in Sao Paulo. Needs devcontainer, good-first-issue labels, contribution ladder, and a welcoming Discord.
 

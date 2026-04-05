@@ -1,6 +1,6 @@
 # Security Architecture
 
-DarshanDB implements 11 layers of defense-in-depth security.
+DarshJDB implements 11 layers of defense-in-depth security.
 
 ## Threat Model
 
@@ -13,7 +13,7 @@ flowchart TD
         NW[Network Eavesdropper]
     end
 
-    subgraph Defenses["DarshanDB Defenses"]
+    subgraph Defenses["DarshJDB Defenses"]
         TLS[TLS 1.3 Mandatory]
         RL[Rate Limiting]
         IV[Input Validation]
@@ -83,7 +83,7 @@ flowchart TD
 
 ## OWASP API Top 10 Coverage
 
-| OWASP Risk | DarshanDB Mitigation |
+| OWASP Risk | DarshJDB Mitigation |
 |-----------|----------------------|
 | **API1: BOLA** (Broken Object Level Auth) | Permission rules are SQL WHERE clauses -- unauthorized data never leaves the database |
 | **API2: Broken Authentication** | Argon2id + RS256 JWT + device fingerprint + brute-force lockout + MFA |
@@ -98,11 +98,11 @@ flowchart TD
 
 ## Encryption at Rest
 
-DarshanDB supports AES-256-GCM encryption for sensitive fields stored in the database:
+DarshJDB supports AES-256-GCM encryption for sensitive fields stored in the database:
 
 ```typescript
 // darshan/schema.ts
-import { defineSchema, defineTable, v } from '@darshan/server';
+import { defineSchema, defineTable, v } from '@darshjdb/server';
 
 export default defineSchema({
   users: defineTable({
@@ -113,17 +113,17 @@ export default defineSchema({
 });
 ```
 
-Encryption keys are derived from `DARSHAN_ENCRYPTION_KEY`. Rotate keys with:
+Encryption keys are derived from `DDB_ENCRYPTION_KEY`. Rotate keys with:
 
 ```bash
-darshan keys rotate --old-key $OLD_KEY --new-key $NEW_KEY
+ddb keys rotate --old-key $OLD_KEY --new-key $NEW_KEY
 ```
 
 Key rotation re-encrypts all encrypted fields in the background without downtime.
 
 ## Security Headers
 
-DarshanDB sets the following response headers by default:
+DarshJDB sets the following response headers by default:
 
 | Header | Value |
 |--------|-------|
@@ -154,8 +154,8 @@ curl "http://localhost:7700/api/admin/audit?entity=users&from=2026-04-01&to=2026
 
 ### GDPR
 
-- **Data export**: Use `darshan export --user user@example.com` to export all data for a user
-- **Right to deletion**: Use `darshan delete-user --email user@example.com` to permanently remove all user data
+- **Data export**: Use `ddb export --user user@example.com` to export all data for a user
+- **Right to deletion**: Use `ddb delete-user --email user@example.com` to permanently remove all user data
 - **Audit trail**: All data access and mutations are logged
 - **Encryption at rest**: Available for sensitive fields via `.encrypted()` schema modifier
 
@@ -171,13 +171,13 @@ curl "http://localhost:7700/api/admin/audit?entity=users&from=2026-04-01&to=2026
 - **PHI protection**: Use `.encrypted()` for all PHI fields
 - **Access controls**: Row-level and field-level security with audit logging
 - **Audit trail**: Complete mutation history with actor and timestamp
-- **Note**: DarshanDB provides the technical controls; you must also implement organizational controls (BAA, training, etc.)
+- **Note**: DarshJDB provides the technical controls; you must also implement organizational controls (BAA, training, etc.)
 
 ## Security Checklist for Production
 
-- [ ] Set `DARSHAN_JWT_SECRET` to a unique RS256 key pair (do not use auto-generated)
-- [ ] Set `DARSHAN_ENCRYPTION_KEY` for at-rest encryption of sensitive fields
-- [ ] Configure CORS origins (`DARSHAN_CORS_ORIGINS`)
+- [ ] Set `DDB_JWT_SECRET` to a unique RS256 key pair (do not use auto-generated)
+- [ ] Set `DDB_ENCRYPTION_KEY` for at-rest encryption of sensitive fields
+- [ ] Configure CORS origins (`DDB_CORS_ORIGINS`)
 - [ ] Enable TLS (via reverse proxy or the `--tls` flag)
 - [ ] Configure rate limits appropriate for your traffic
 - [ ] Review all permission rules -- ensure no entity has overly permissive rules
@@ -188,7 +188,7 @@ curl "http://localhost:7700/api/admin/audit?entity=users&from=2026-04-01&to=2026
 
 ## Reporting Vulnerabilities
 
-If you discover a security vulnerability, please report it responsibly via email to security@darshandb.dev. Do not file a public GitHub issue.
+If you discover a security vulnerability, please report it responsibly via email to security@db.darshj.me. Do not file a public GitHub issue.
 
 We will acknowledge receipt within 48 hours and aim to provide a fix within 7 days for critical vulnerabilities.
 

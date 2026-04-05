@@ -223,7 +223,7 @@ impl EmbeddingService {
         .bind(self.config.dimensions as i32)
         .execute(&self.pool)
         .await
-        .map_err(|e| DarshanError::Database(e))?;
+        .map_err(DarshanError::Database)?;
 
         Ok(())
     }
@@ -415,18 +415,17 @@ impl EmbeddingManager {
                     .find(|t| t.attribute == *attr_name && !t.retracted)
                     .and_then(|t| t.value.as_str().map(|s| s.to_string()));
 
-                if let Some(text) = value {
-                    if let Err(e) = service
+                if let Some(text) = value
+                    && let Err(e) = service
                         .on_triple_written(entity_id, &entity_type, attr_name, &text)
                         .await
-                    {
-                        error!(
-                            entity_id = %entity_id,
-                            attribute = %attr_name,
-                            error = %e,
-                            "auto-embedding failed for attribute"
-                        );
-                    }
+                {
+                    error!(
+                        entity_id = %entity_id,
+                        attribute = %attr_name,
+                        error = %e,
+                        "auto-embedding failed for attribute"
+                    );
                 }
             }
         }

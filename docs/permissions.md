@@ -1,6 +1,6 @@
 # Permissions
 
-DarshanDB uses a **zero-trust** model: everything is denied unless explicitly allowed.
+DarshJDB uses a **zero-trust** model: everything is denied unless explicitly allowed.
 
 ## Permission Evaluation Flow
 
@@ -277,7 +277,7 @@ In the admin dashboard, use the "Impersonate" feature to test as any user. This 
 ### Admin SDK
 
 ```typescript
-const adminDb = DarshanDB.admin({ adminToken: '...' });
+const adminDb = DarshJDB.admin({ adminToken: '...' });
 const asUser = adminDb.asUser('user@example.com');
 const data = await asUser.query({ todos: {} });
 // Returns only what that user would see
@@ -287,7 +287,7 @@ const data = await asUser.query({ todos: {} });
 
 ```typescript
 // darshan/functions/__tests__/permissions.test.ts
-import { testPermissions } from '@darshan/server/testing';
+import { testPermissions } from '@darshjdb/server/testing';
 
 describe('todo permissions', () => {
   it('users can only read their own todos', async () => {
@@ -321,7 +321,7 @@ describe('todo permissions', () => {
 
 ## Default Permissions
 
-When no permissions are defined for an entity, DarshanDB denies all access. You must explicitly allow operations:
+When no permissions are defined for an entity, DarshJDB denies all access. You must explicitly allow operations:
 
 ```typescript
 // Minimum viable permissions for a new entity
@@ -340,7 +340,7 @@ export default {
 Enable permission debug logging to see which rules are evaluated:
 
 ```bash
-RUST_LOG=darshandb_server::permissions=debug darshan dev
+RUST_LOG=ddb_server::permissions=debug ddb dev
 ```
 
 This logs every permission check with the rule that was matched, the resulting SQL WHERE clause, and whether access was granted or denied.

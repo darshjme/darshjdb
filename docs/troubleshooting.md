@@ -1,10 +1,10 @@
 # Troubleshooting
 
-Common errors and their solutions when working with DarshanDB.
+Common errors and their solutions when working with DarshJDB.
 
 ## Installation Issues
 
-### `darshan: command not found`
+### `ddb: command not found`
 
 The binary was not added to your PATH.
 
@@ -29,7 +29,7 @@ lsof -i :7700
 lsof -i :5432
 
 # Use different ports
-DARSHAN_PORT=7701 docker compose up -d
+DDB_PORT=7701 docker compose up -d
 # Or edit docker-compose.yml ports mapping
 ```
 
@@ -50,7 +50,7 @@ uname -m
 
 ## Development Server
 
-### `darshan dev` hangs on "Waiting for PostgreSQL..."
+### `ddb dev` hangs on "Waiting for PostgreSQL..."
 
 PostgreSQL is not running or not reachable.
 
@@ -72,10 +72,10 @@ psql "$DATABASE_URL" -c "CREATE EXTENSION IF NOT EXISTS vector"
 The database was not initialized. Run:
 
 ```bash
-darshan migrate up
+ddb migrate up
 
 # Or drop and recreate the database:
-darshan reset --force
+ddb reset --force
 ```
 
 ### Hot reload not working
@@ -98,12 +98,12 @@ sudo sysctl -p
 **Symptom:** Browser console shows "Access to XMLHttpRequest has been blocked by CORS policy"
 
 ```bash
-# Development: darshan dev allows localhost by default
+# Development: ddb dev allows localhost by default
 # If using a different port:
-DARSHAN_CORS_ORIGINS=http://localhost:3000 darshan dev
+DDB_CORS_ORIGINS=http://localhost:3000 ddb dev
 
 # Production: explicitly set allowed origins
-DARSHAN_CORS_ORIGINS=https://myapp.com,https://admin.myapp.com darshan start --prod
+DDB_CORS_ORIGINS=https://myapp.com,https://admin.myapp.com ddb start --prod
 ```
 
 ### WebSocket connection drops
@@ -120,7 +120,7 @@ proxy_send_timeout 86400s;
 
 2. **Cloudflare:** WebSocket connections are limited to 100 seconds on the free plan. Upgrade to Pro or use a different proxy.
 
-3. **Network firewall:** Some corporate firewalls block WebSocket. DarshanDB will fall back to SSE automatically if WebSocket fails.
+3. **Network firewall:** Some corporate firewalls block WebSocket. DarshJDB will fall back to SSE automatically if WebSocket fails.
 
 ### "PROTOCOL_VERSION_MISMATCH"
 
@@ -131,7 +131,7 @@ Your client SDK version is incompatible with the server.
 curl http://localhost:7700/api/admin/health | jq .version
 
 # Update client SDKs
-npm update @darshan/react @darshan/nextjs @darshan/client
+npm update @darshjdb/react @darshjdb/nextjs @darshjdb/client
 ```
 
 ### Queries return empty data
@@ -139,7 +139,7 @@ npm update @darshan/react @darshan/nextjs @darshan/client
 1. **Check permissions:** Are your permission rules returning the right filter?
 
 ```bash
-RUST_LOG=darshandb_server::permissions=debug darshan dev
+RUST_LOG=ddb_server::permissions=debug ddb dev
 # Watch the logs for which WHERE clause is being injected
 ```
 
@@ -202,8 +202,8 @@ https://api.example.com/api/auth/callback/google (production)
 
 2. Verify environment variables are set:
 ```bash
-echo $DARSHAN_OAUTH_GOOGLE_CLIENT_ID
-echo $DARSHAN_OAUTH_GOOGLE_CLIENT_SECRET
+echo $DDB_OAUTH_GOOGLE_CLIENT_ID
+echo $DDB_OAUTH_GOOGLE_CLIENT_SECRET
 ```
 
 3. Check the OAuth provider's console for error logs.
@@ -253,7 +253,7 @@ export default defineSchema({
 3. **Reduce query depth:**
 
 ```bash
-DARSHAN_MAX_QUERY_DEPTH=6  # reduce from default 12
+DDB_MAX_QUERY_DEPTH=6  # reduce from default 12
 ```
 
 ### Memory usage growing over time
@@ -272,7 +272,7 @@ room.leave();
 2. **Reduce query cache size:**
 
 ```bash
-DARSHAN_QUERY_CACHE_SIZE=500
+DDB_QUERY_CACHE_SIZE=500
 ```
 
 3. **Check PostgreSQL connection pool:**
@@ -288,7 +288,7 @@ curl http://localhost:7700/metrics | grep pg_pool
 
 ```bash
 # Increase send buffer
-DARSHAN_WS_BUFFER_SIZE=4194304  # 4MB
+DDB_WS_BUFFER_SIZE=4194304  # 4MB
 
 # Or reduce subscription density by splitting queries
 ```
@@ -299,23 +299,23 @@ DARSHAN_WS_BUFFER_SIZE=4194304  # 4MB
 
 ```bash
 # Check migration state
-darshan migrate status
+ddb migrate status
 
 # Mark as applied without running
-darshan migrate resolve --applied 20260405_000001_add_priority_to_todos
+ddb migrate resolve --applied 20260405_000001_add_priority_to_todos
 ```
 
 ### Schema drift in production
 
 ```bash
 # Generate a reconciliation migration
-darshan migrate generate --name reconcile-schema --from-database
+ddb migrate generate --name reconcile-schema --from-database
 
 # Review the generated SQL before applying
 cat darshan/migrations/TIMESTAMP_reconcile_schema.sql
 
 # Apply
-darshan migrate up
+ddb migrate up
 ```
 
 ### PostgreSQL connection pool exhausted
@@ -327,7 +327,7 @@ darshan migrate up
 psql "$DATABASE_URL" -c "SELECT count(*) FROM pg_stat_activity"
 
 # Increase pool size (carefully)
-DARSHAN_PG_POOL_SIZE=30
+DDB_PG_POOL_SIZE=30
 
 # Better: use PgBouncer
 ```
@@ -356,7 +356,7 @@ client_max_body_size 50m;
 
 1. Check that the storage backend credentials are correct.
 2. Check clock skew -- signed URLs are time-sensitive. Ensure your server clock is synced (use NTP).
-3. Verify the URL hasn't expired (`DARSHAN_STORAGE_URL_EXPIRY`).
+3. Verify the URL hasn't expired (`DDB_STORAGE_URL_EXPIRY`).
 
 ## Diagnostic Commands
 
@@ -365,22 +365,22 @@ client_max_body_size 50m;
 curl http://localhost:7700/api/admin/health
 
 # Server version
-darshan --version
+ddb --version
 
 # View logs (Docker)
-docker compose logs darshandb -f
+docker compose logs darshjdb -f
 
 # View logs (systemd)
-journalctl -u darshandb -f
+journalctl -u darshjdb -f
 
 # Check PostgreSQL connectivity
-darshan db ping
+ddb db ping
 
 # Run built-in benchmark
-darshan bench --connections 10 --duration 10s
+ddb bench --connections 10 --duration 10s
 
 # Export diagnostic info
-darshan debug-info > darshandb-debug.txt
+ddb debug-info > darshjdb-debug.txt
 ```
 
 ---

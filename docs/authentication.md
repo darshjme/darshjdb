@@ -1,13 +1,13 @@
 # Authentication
 
-DarshanDB includes a complete auth system. No third-party services required.
+DarshJDB includes a complete auth system. No third-party services required.
 
 ## Auth Flow Overview
 
 ```mermaid
 sequenceDiagram
     participant C as Client
-    participant S as DarshanDB
+    participant S as DarshJDB
     participant PG as PostgreSQL
 
     C->>S: POST /auth/signin { email, password }
@@ -80,15 +80,15 @@ await db.auth.signInWithOAuth('discord');
 Set OAuth credentials via environment variables:
 
 ```bash
-DARSHAN_OAUTH_GOOGLE_CLIENT_ID=...
-DARSHAN_OAUTH_GOOGLE_CLIENT_SECRET=...
-DARSHAN_OAUTH_GITHUB_CLIENT_ID=...
-DARSHAN_OAUTH_GITHUB_CLIENT_SECRET=...
-DARSHAN_OAUTH_APPLE_CLIENT_ID=...
-DARSHAN_OAUTH_APPLE_TEAM_ID=...
-DARSHAN_OAUTH_APPLE_KEY_ID=...
-DARSHAN_OAUTH_DISCORD_CLIENT_ID=...
-DARSHAN_OAUTH_DISCORD_CLIENT_SECRET=...
+DDB_OAUTH_GOOGLE_CLIENT_ID=...
+DDB_OAUTH_GOOGLE_CLIENT_SECRET=...
+DDB_OAUTH_GITHUB_CLIENT_ID=...
+DDB_OAUTH_GITHUB_CLIENT_SECRET=...
+DDB_OAUTH_APPLE_CLIENT_ID=...
+DDB_OAUTH_APPLE_TEAM_ID=...
+DDB_OAUTH_APPLE_KEY_ID=...
+DDB_OAUTH_DISCORD_CLIENT_ID=...
+DDB_OAUTH_DISCORD_CLIENT_SECRET=...
 ```
 
 ### OAuth Callback URL
@@ -230,7 +230,7 @@ function AuthButton() {
 
 ```typescript
 import { Component, inject } from '@angular/core';
-import { DarshanAuthService } from '@darshan/angular';
+import { DarshJDBAuthService } from '@darshjdb/angular';
 
 @Component({
   template: `
@@ -242,7 +242,7 @@ import { DarshanAuthService } from '@darshan/angular';
   `
 })
 export class AuthComponent {
-  auth = inject(DarshanAuthService);
+  auth = inject(DarshJDBAuthService);
 }
 ```
 
@@ -252,7 +252,7 @@ Attach custom data to the user's JWT token:
 
 ```typescript
 // In a server function
-import { mutation, v } from '@darshan/server';
+import { mutation, v } from '@darshjdb/server';
 
 export const setUserRole = mutation({
   args: { userId: v.id(), role: v.string() },
@@ -283,9 +283,9 @@ console.log(user.claims.plan); // 'pro'
 
 ```typescript
 // middleware.ts
-import { darshanMiddleware } from '@darshan/nextjs/middleware';
+import { ddbMiddleware } from '@darshjdb/nextjs/middleware';
 
-export default darshanMiddleware({
+export default ddbMiddleware({
   publicRoutes: ['/', '/about', '/api/public(.*)'],
   signInUrl: '/sign-in',
 });
@@ -293,7 +293,7 @@ export default darshanMiddleware({
 
 ```typescript
 // app/page.tsx (Server Component)
-import { getAuth } from '@darshan/nextjs/server';
+import { getAuth } from '@darshjdb/nextjs/server';
 
 export default async function Dashboard() {
   const auth = await getAuth();
@@ -307,14 +307,14 @@ export default async function Dashboard() {
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `DARSHAN_JWT_SECRET` | auto-generated | RS256 signing key (provide your own for multi-instance) |
-| `DARSHAN_ACCESS_TOKEN_EXPIRY` | `900` | Access token lifetime in seconds (15 min) |
-| `DARSHAN_REFRESH_TOKEN_EXPIRY` | `2592000` | Refresh token lifetime in seconds (30 days) |
-| `DARSHAN_MFA_ISSUER` | `DarshanDB` | TOTP issuer name shown in authenticator apps |
-| `DARSHAN_LOCKOUT_ATTEMPTS` | `5` | Failed login attempts before lockout |
-| `DARSHAN_LOCKOUT_DURATION` | `1800` | Lockout duration in seconds (30 min) |
-| `DARSHAN_MAGIC_LINK_EXPIRY` | `900` | Magic link token lifetime in seconds (15 min) |
-| `DARSHAN_EMAIL_FROM` | `noreply@darshandb.dev` | From address for auth emails |
+| `DDB_JWT_SECRET` | auto-generated | RS256 signing key (provide your own for multi-instance) |
+| `DDB_ACCESS_TOKEN_EXPIRY` | `900` | Access token lifetime in seconds (15 min) |
+| `DDB_REFRESH_TOKEN_EXPIRY` | `2592000` | Refresh token lifetime in seconds (30 days) |
+| `DDB_MFA_ISSUER` | `DarshJDB` | TOTP issuer name shown in authenticator apps |
+| `DDB_LOCKOUT_ATTEMPTS` | `5` | Failed login attempts before lockout |
+| `DDB_LOCKOUT_DURATION` | `1800` | Lockout duration in seconds (30 min) |
+| `DDB_MAGIC_LINK_EXPIRY` | `900` | Magic link token lifetime in seconds (15 min) |
+| `DDB_EMAIL_FROM` | `noreply@db.darshj.me` | From address for auth emails |
 
 ---
 

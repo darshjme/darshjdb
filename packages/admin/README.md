@@ -1,6 +1,6 @@
-# @darshan/admin
+# @darshjdb/admin
 
-Admin dashboard for DarshanDB -- data explorer, schema viewer, function registry, user management, storage browser, and real-time log viewer.
+Admin dashboard for DarshJDB -- data explorer, schema viewer, function registry, user management, storage browser, and real-time log viewer.
 
 ## Stack
 
@@ -43,16 +43,16 @@ Admin dashboard for DarshanDB -- data explorer, schema viewer, function registry
 npm install
 
 # Start dev server (port 3100, proxies /api to localhost:7700)
-npm run dev --workspace=@darshan/admin
+npm run dev --workspace=@darshjdb/admin
 
 # Type check
-npm run typecheck --workspace=@darshan/admin
+npm run typecheck --workspace=@darshjdb/admin
 
 # Production build
-npm run build --workspace=@darshan/admin
+npm run build --workspace=@darshjdb/admin
 ```
 
-The dev server proxies `/api` requests to `http://localhost:7700` (the DarshanDB server). Make sure `darshan dev` is running.
+The dev server proxies `/api` requests to `http://localhost:7700` (the DarshJDB server). Make sure `ddb dev` is running.
 
 ## Project Structure
 
@@ -84,7 +84,7 @@ src/
 
 ## Build Output
 
-Production build goes to `dist/` with source maps enabled. The output is a static SPA that gets bundled into the DarshanDB server binary and served at `/admin`.
+Production build goes to `dist/` with source maps enabled. The output is a static SPA that gets bundled into the DarshJDB server binary and served at `/admin`.
 
 ## Keyboard Shortcuts
 

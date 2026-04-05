@@ -143,7 +143,7 @@ pub fn get_rule_with_fallback<'a>(
 mod tests {
     use super::*;
     use crate::auth::AuthContext;
-    use crate::auth::permissions::{PermissionResult, evaluate_permission};
+    use crate::auth::permissions::PermissionResult;
     use uuid::Uuid;
 
     fn ctx_with_roles(roles: &[&str]) -> AuthContext {

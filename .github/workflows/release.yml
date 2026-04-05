@@ -18,19 +18,19 @@ jobs:
         include:
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
-            artifact: darshan-linux-amd64
+            artifact: ddb-linux-amd64
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-latest
-            artifact: darshan-linux-arm64
+            artifact: ddb-linux-arm64
           - target: x86_64-apple-darwin
             os: macos-latest
-            artifact: darshan-macos-amd64
+            artifact: ddb-macos-amd64
           - target: aarch64-apple-darwin
             os: macos-latest
-            artifact: darshan-macos-arm64
+            artifact: ddb-macos-arm64
           - target: x86_64-pc-windows-msvc
             os: windows-latest
-            artifact: darshan-windows-amd64.exe
+            artifact: ddb-windows-amd64.exe
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -55,11 +55,11 @@ jobs:
         run: |
           mkdir -p staging
           if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
-            cp target/${{ matrix.target }}/release/darshandb-server.exe staging/ 2>/dev/null || true
-            cp target/${{ matrix.target }}/release/darshan.exe staging/ 2>/dev/null || true
+            cp target/${{ matrix.target }}/release/ddb-server.exe staging/ 2>/dev/null || true
+            cp target/${{ matrix.target }}/release/ddb.exe staging/ 2>/dev/null || true
           else
-            cp target/${{ matrix.target }}/release/darshandb-server staging/ 2>/dev/null || true
-            cp target/${{ matrix.target }}/release/darshan staging/ 2>/dev/null || true
+            cp target/${{ matrix.target }}/release/ddb-server staging/ 2>/dev/null || true
+            cp target/${{ matrix.target }}/release/ddb staging/ 2>/dev/null || true
             strip staging/* 2>/dev/null || true
           fi
       - name: Upload artifact
@@ -79,8 +79,8 @@ jobs:
         with:
           generate_release_notes: true
           files: |
-            darshan-linux-amd64/*
-            darshan-linux-arm64/*
-            darshan-macos-amd64/*
-            darshan-macos-arm64/*
-            darshan-windows-amd64.exe/*
+            ddb-linux-amd64/*
+            ddb-linux-arm64/*
+            ddb-macos-amd64/*
+            ddb-macos-arm64/*
+            ddb-windows-amd64.exe/*

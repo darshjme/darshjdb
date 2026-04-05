@@ -1,6 +1,6 @@
-# darshandb-server
+# ddb-server
 
-The DarshanDB server -- a single Rust binary that provides the complete backend: triple-store database engine, DarshanQL query compiler, reactive sync engine, authentication, permissions, file storage, and the V8 function runtime.
+The DarshJDB server -- a single Rust binary that provides the complete backend: triple-store database engine, DarshanQL query compiler, reactive sync engine, authentication, permissions, file storage, and the V8 function runtime.
 
 ## Architecture
 
@@ -74,22 +74,22 @@ src/
 
 ```bash
 # From the workspace root
-cargo build --release -p darshandb-server
+cargo build --release -p ddb-server
 ```
 
-The binary is output to `target/release/darshandb-server`.
+The binary is output to `target/release/ddb-server`.
 
 ## Running
 
 ```bash
 # Development
-DATABASE_URL="postgres://localhost/darshandb" cargo run -p darshandb-server
+DATABASE_URL="postgres://localhost/darshjdb" cargo run -p ddb-server
 
 # Production
-DATABASE_URL="postgres://user:pass@db:5432/darshandb" \
-  DARSHAN_PORT=7700 \
+DATABASE_URL="postgres://user:pass@db:5432/darshjdb" \
+  DDB_PORT=7700 \
   RUST_LOG=warn \
-  ./target/release/darshandb-server
+  ./target/release/ddb-server
 ```
 
 ## Configuration
@@ -115,10 +115,10 @@ All configuration is via environment variables. See the [Self-Hosting Guide](../
 
 ```bash
 # Run server tests
-cargo test -p darshandb-server
+cargo test -p ddb-server
 
 # Run with logging
-RUST_LOG=debug cargo test -p darshandb-server -- --nocapture
+RUST_LOG=debug cargo test -p ddb-server -- --nocapture
 ```
 
 ## Documentation

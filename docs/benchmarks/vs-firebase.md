@@ -1,6 +1,6 @@
-# DarshanDB vs Firebase: An Honest Architectural Comparison
+# DarshJDB vs Firebase: An Honest Architectural Comparison
 
-> **Disclosure**: This document was written by the DarshanDB team. We have made every effort to be factually accurate about both systems. Where Firebase excels, we say so plainly. Where DarshanDB is immature, we say that too. Claims about DarshanDB are verified against source code in the repository.
+> **Disclosure**: This document was written by the DarshJDB team. We have made every effort to be factually accurate about both systems. Where Firebase excels, we say so plainly. Where DarshJDB is immature, we say that too. Claims about DarshJDB are verified against source code in the repository.
 
 ---
 
@@ -8,9 +8,9 @@
 
 Firebase is a mature, battle-tested Backend-as-a-Service operated by Google. It powers hundreds of thousands of production applications and offers a breadth of integrated services (auth, database, storage, hosting, analytics, crash reporting, remote config) that no single open-source project can match today.
 
-DarshanDB is an alpha-stage, self-hosted BaaS built in Rust over PostgreSQL. Its triple-store data model handles relational data natively, it runs as a single binary you own, and it will never send Google a bill. But it is new, unproven at scale, and missing ecosystem surface area that Firebase has spent a decade building.
+DarshJDB is an alpha-stage, self-hosted BaaS built in Rust over PostgreSQL. Its triple-store data model handles relational data natively, it runs as a single binary you own, and it will never send Google a bill. But it is new, unproven at scale, and missing ecosystem surface area that Firebase has spent a decade building.
 
-The right choice depends on what you value: Firebase if you need production-grade infrastructure today with minimal ops. DarshanDB if you need data sovereignty, relational queries, vendor independence, or a $5/month deployment in a region Firebase does not serve.
+The right choice depends on what you value: Firebase if you need production-grade infrastructure today with minimal ops. DarshJDB if you need data sovereignty, relational queries, vendor independence, or a $5/month deployment in a region Firebase does not serve.
 
 ---
 
@@ -25,9 +25,9 @@ Firebase offers two databases, neither of which is relational:
 
 Neither supports foreign keys, referential integrity, or cross-entity joins at the database level. The standard Firebase advice is "model your data for your queries" -- which means duplicating data and accepting the consistency burden.
 
-### DarshanDB
+### DarshJDB
 
-DarshanDB uses a **triple store** (Entity-Attribute-Value) backed by PostgreSQL. Every fact is stored as an `(entity_id, attribute, value, value_type, tx_id)` tuple in an append-only `triples` table.
+DarshJDB uses a **triple store** (Entity-Attribute-Value) backed by PostgreSQL. Every fact is stored as an `(entity_id, attribute, value, value_type, tx_id)` tuple in an append-only `triples` table.
 
 ```
 entity_id: uuid    | attribute: "user/email" | value: "alice@example.com" | tx_id: 42
@@ -46,7 +46,7 @@ The trade-off: EAV over a relational database is not the most storage-efficient 
 
 ### Verdict
 
-Firebase's document model is simpler to learn and faster for flat, read-heavy workloads. DarshanDB's triple store is fundamentally more flexible for relational data, temporal queries, and schema-fluid development. If your data has relationships (which most data does), DarshanDB's model eliminates the denormalization tax that Firebase imposes.
+Firebase's document model is simpler to learn and faster for flat, read-heavy workloads. DarshJDB's triple store is fundamentally more flexible for relational data, temporal queries, and schema-fluid development. If your data has relationships (which most data does), DarshJDB's model eliminates the denormalization tax that Firebase imposes.
 
 ---
 
@@ -62,9 +62,9 @@ Firebase pioneered real-time database sync. It remains the gold standard:
 
 This is production-proven at scale: Firebase handles billions of concurrent connections across Google's infrastructure.
 
-### DarshanDB
+### DarshJDB
 
-DarshanDB implements real-time via WebSocket subscriptions with a purpose-built sync architecture (source: `packages/server/src/sync/`):
+DarshJDB implements real-time via WebSocket subscriptions with a purpose-built sync architecture (source: `packages/server/src/sync/`):
 
 - **Broadcaster**: Listens for triple-store mutations, identifies affected queries by hash, re-executes with the subscriber's permission context, and pushes diffs.
 - **DiffEngine** (`sync/diff.rs`): Computes minimal delta patches (`EntityPatch`, `QueryDiff`) between result snapshots rather than sending full results.
@@ -72,14 +72,14 @@ DarshanDB implements real-time via WebSocket subscriptions with a purpose-built 
 - **Presence** (`sync/presence.rs`): Ephemeral per-room user state with auto-expiry and rate limiting.
 - **PubSub** (`sync/pubsub.rs`): Additional pub/sub engine for custom event channels beyond query subscriptions.
 
-What DarshanDB does not yet have:
+What DarshJDB does not yet have:
 - Proven behavior under thousands of concurrent connections (no published benchmarks).
 - Graceful degradation under network partitions at scale.
 - Multi-region fan-out (single-server architecture today).
 
 ### Verdict
 
-Firebase's real-time is the industry benchmark. DarshanDB's architecture is sound -- diff-based broadcasting with deduplication is the right design -- but it is unproven at Firebase-level scale. For small-to-medium deployments (hundreds of concurrent connections), DarshanDB's approach should perform well. For tens of thousands of simultaneous connections with global distribution, Firebase is the safer choice today.
+Firebase's real-time is the industry benchmark. DarshJDB's architecture is sound -- diff-based broadcasting with deduplication is the right design -- but it is unproven at Firebase-level scale. For small-to-medium deployments (hundreds of concurrent connections), DarshJDB's approach should perform well. For tens of thousands of simultaneous connections with global distribution, Firebase is the safer choice today.
 
 ---
 
@@ -95,16 +95,16 @@ Firebase has excellent offline support across all platforms:
 
 This is one of Firebase's strongest features. Developers can build offline-capable apps without thinking about sync logic.
 
-### DarshanDB
+### DarshJDB
 
-DarshanDB's client SDK includes a `SyncEngine` class (`packages/client-core/src/sync.ts`) with:
+DarshJDB's client SDK includes a `SyncEngine` class (`packages/client-core/src/sync.ts`) with:
 
 - **IndexedDB cache**: Query results cached locally by query hash. Three object stores: `queryCache`, `offlineQueue`, `meta`.
 - **Optimistic updates**: `applyOptimistic()` / `confirmOptimistic()` / `rollbackOptimistic()` API for instant UI feedback before server confirmation.
 - **Offline queue**: Mutations enqueued via `enqueue()` when offline. `replayQueue()` sends them in order when connectivity returns. Failed entries retry up to 5 times before being discarded.
 - **Transaction cursor tracking**: `setLastTxId()` / `getLastTxId()` for reconnection catch-up.
 
-What DarshanDB does not yet have:
+What DarshJDB does not yet have:
 - Mobile SDKs (no iOS or Android). The sync engine is JavaScript/TypeScript only.
 - Automatic conflict resolution beyond last-write-wins.
 - Transparent offline mode (the developer must call `enqueue` and `replayQueue` explicitly rather than having writes automatically queue when offline).
@@ -112,7 +112,7 @@ What DarshanDB does not yet have:
 
 ### Verdict
 
-Firebase wins decisively here. Its offline support is automatic, cross-platform, and battle-tested. DarshanDB has the right building blocks (IndexedDB cache, offline queue, optimistic updates) but requires manual orchestration by the developer and lacks mobile SDK support entirely.
+Firebase wins decisively here. Its offline support is automatic, cross-platform, and battle-tested. DarshJDB has the right building blocks (IndexedDB cache, offline queue, optimistic updates) but requires manual orchestration by the developer and lacks mobile SDK support entirely.
 
 ---
 
@@ -138,11 +138,11 @@ Firebase Auth is comprehensive and mature:
 
 Firebase Auth also integrates with Identity Platform for enterprise SAML/OIDC, tenant isolation, and blocking functions.
 
-### DarshanDB Auth
+### DarshJDB Auth
 
-DarshanDB implements authentication in Rust (source: `packages/server/src/auth/`):
+DarshJDB implements authentication in Rust (source: `packages/server/src/auth/`):
 
-| Feature | DarshanDB | Source verification |
+| Feature | DarshJDB | Source verification |
 |---------|-----------|---------------------|
 | Email/password | Yes, Argon2id (64MB, 3 iterations, parallelism 4) | `providers.rs` -- `PasswordProvider` |
 | OAuth providers | Google, GitHub, Apple, Discord | `providers.rs` -- `GenericOAuth2Provider` with per-provider configs |
@@ -157,7 +157,7 @@ DarshanDB implements authentication in Rust (source: `packages/server/src/auth/`
 | Permission engine | Row-level, composable rules with WHERE injection | `permissions.rs` -- `PermissionEngine` |
 | Timing-safe auth | Yes, dummy verify on unknown emails | `providers.rs` line 99-101 |
 
-What DarshanDB auth does **not** have:
+What DarshJDB auth does **not** have:
 - Phone/SMS authentication
 - Anonymous auth
 - Facebook, Twitter/X, Microsoft OAuth (only Google, GitHub, Apple, Discord)
@@ -167,7 +167,7 @@ What DarshanDB auth does **not** have:
 
 ### Verdict
 
-Firebase Auth covers more ground, especially for mobile (phone auth, anonymous auth) and enterprise (SAML, multi-tenant). DarshanDB's auth implementation is cryptographically solid -- Argon2id with OWASP parameters, mandatory PKCE, HMAC-signed state, timing-safe comparisons -- but covers fewer authentication methods. For web applications using email + OAuth + MFA, DarshanDB is sufficient. For mobile-first apps needing phone auth or enterprise SSO, Firebase Auth is necessary.
+Firebase Auth covers more ground, especially for mobile (phone auth, anonymous auth) and enterprise (SAML, multi-tenant). DarshJDB's auth implementation is cryptographically solid -- Argon2id with OWASP parameters, mandatory PKCE, HMAC-signed state, timing-safe comparisons -- but covers fewer authentication methods. For web applications using email + OAuth + MFA, DarshJDB is sufficient. For mobile-first apps needing phone auth or enterprise SSO, Firebase Auth is necessary.
 
 ---
 
@@ -196,9 +196,9 @@ The cost curve is not linear. Real-world examples from the Firebase community:
 
 Firebase's pricing penalizes read-heavy patterns, which is ironic given that its document model encourages denormalization (which means more reads).
 
-### DarshanDB
+### DarshJDB
 
-DarshanDB is MIT-licensed, open-source, self-hosted:
+DarshJDB is MIT-licensed, open-source, self-hosted:
 
 | Component | Cost |
 |-----------|------|
@@ -215,11 +215,11 @@ Realistic hosting costs:
 | Medium production | Dedicated server + Postgres | $50-200 |
 | Large production | Multiple servers + Postgres cluster | $200-1000+ |
 
-At every scale tier, DarshanDB costs a fraction of equivalent Firebase usage. The trade-off is operational overhead: you manage the server, backups, monitoring, and upgrades yourself.
+At every scale tier, DarshJDB costs a fraction of equivalent Firebase usage. The trade-off is operational overhead: you manage the server, backups, monitoring, and upgrades yourself.
 
 ### Verdict
 
-Firebase is cheaper to start (free tier is generous for prototypes). DarshanDB is dramatically cheaper at scale. The crossover point typically happens at 100K-500K daily active operations, where Firebase bills start climbing while DarshanDB's cost remains the fixed price of your server.
+Firebase is cheaper to start (free tier is generous for prototypes). DarshJDB is dramatically cheaper at scale. The crossover point typically happens at 100K-500K daily active operations, where Firebase bills start climbing while DarshJDB's cost remains the fixed price of your server.
 
 ---
 
@@ -238,17 +238,17 @@ Firebase lock-in operates at multiple levels:
 
 If Google deprecates a Firebase product (as they did with Fabric, Firebase Predictions, Firebase Invites, and Firebase Job Dispatcher), you migrate on their timeline.
 
-### DarshanDB
+### DarshJDB
 
 - **Data format**: Standard PostgreSQL. Your data is in a `triples` table you can query with `psql`. Export with `pg_dump`. Transform with SQL.
-- **Auth**: Argon2id password hashes in standard PHC format. OAuth tokens are standard JWT. Any system that reads JWTs can validate DarshanDB tokens.
+- **Auth**: Argon2id password hashes in standard PHC format. OAuth tokens are standard JWT. Any system that reads JWTs can validate DarshJDB tokens.
 - **SDKs**: Open-source TypeScript, Python, PHP clients. If the project disappeared tomorrow, you still have PostgreSQL with your data in a documented schema.
 - **Deployment**: Single Rust binary + PostgreSQL. Runs on any Linux/macOS server, any cloud provider, any VPS, bare metal, Raspberry Pi.
-- **No telemetry**: DarshanDB sends nothing to any external service. Zero phone-home behavior.
+- **No telemetry**: DarshJDB sends nothing to any external service. Zero phone-home behavior.
 
 ### Verdict
 
-This is not close. Firebase is deep lock-in to Google's ecosystem. DarshanDB is PostgreSQL underneath -- the most portable database on earth. If DarshanDB ceased to exist, your data is still in Postgres. If Firebase ceased to exist, you have a migration project.
+This is not close. Firebase is deep lock-in to Google's ecosystem. DarshJDB is PostgreSQL underneath -- the most portable database on earth. If DarshJDB ceased to exist, your data is still in Postgres. If Firebase ceased to exist, you have a migration project.
 
 ---
 
@@ -266,9 +266,9 @@ This is Firebase's most criticized limitation:
 
 The Realtime Database is worse: no query engine at all beyond `.orderByChild()` and `.equalTo()` on a single field.
 
-### DarshanDB
+### DarshJDB
 
-DarshanDB's query engine (`packages/server/src/query/`) compiles DarshanQL into SQL that joins across the triples table:
+DarshJDB's query engine (`packages/server/src/query/`) compiles DarshanQL into SQL that joins across the triples table:
 
 - **Cross-entity resolution**: Reference-typed attributes are followed as joins. "Get all posts by users in role X" is a single query.
 - **WHERE clauses**: Standard comparison operators, combined with `And`/`Or` compositors. Permission rules inject additional WHERE clauses for row-level security.
@@ -283,7 +283,7 @@ Because the underlying store is PostgreSQL, you can also bypass DarshanQL and ru
 
 ### Verdict
 
-DarshanDB wins comprehensively on relational queries. Firebase's document model makes joins structurally impossible at the database level. DarshanDB's triple store treats references as first-class citizens, and the PostgreSQL foundation means you always have SQL as an escape hatch.
+DarshJDB wins comprehensively on relational queries. Firebase's document model makes joins structurally impossible at the database level. DarshJDB's triple store treats references as first-class citizens, and the PostgreSQL foundation means you always have SQL as an escape hatch.
 
 ---
 
@@ -295,9 +295,9 @@ DarshanDB wins comprehensively on relational queries. Firebase's document model 
 - **Image resizing**: Via Extensions (Firebase Resize Images extension runs a Cloud Function on upload).
 - **CDN**: Integrated with Google's CDN for static hosting.
 
-### DarshanDB
+### DarshJDB
 
-DarshanDB has a storage module (`packages/server/src/storage/mod.rs`) with:
+DarshJDB has a storage module (`packages/server/src/storage/mod.rs`) with:
 
 - **Pluggable backends**: Local filesystem, S3, Cloudflare R2, MinIO.
 - **Signed URLs**: HMAC-authenticated, time-limited download links.
@@ -309,7 +309,7 @@ However, the storage module is at an earlier stage of maturity than the auth or 
 
 ### Verdict
 
-Firebase Storage is more mature and globally distributed. DarshanDB's storage has a solid interface design with pluggable backends (S3, R2, MinIO give you flexibility Firebase does not), but it needs production hardening.
+Firebase Storage is more mature and globally distributed. DarshJDB's storage has a solid interface design with pluggable backends (S3, R2, MinIO give you flexibility Firebase does not), but it needs production hardening.
 
 ---
 
@@ -323,9 +323,9 @@ Cloud Functions for Firebase:
 - Auto-scaling, zero server management.
 - Cold starts are a known pain point (can add seconds of latency).
 
-### DarshanDB
+### DarshJDB
 
-DarshanDB has a functions module (`packages/server/src/functions/`) with:
+DarshJDB has a functions module (`packages/server/src/functions/`) with:
 
 - **Registry**: Discovers `.ts`/`.js` function files with hot reload.
 - **Function kinds**: Queries, mutations, actions, scheduled jobs, HTTP endpoints.
@@ -337,7 +337,7 @@ The architecture is designed but the runtime is not production-ready. Firebase C
 
 ### Verdict
 
-Firebase wins on server functions maturity. DarshanDB's function architecture is well-designed (the registry, validator, and scheduler are implemented) but the actual execution runtime is incomplete.
+Firebase wins on server functions maturity. DarshJDB's function architecture is well-designed (the registry, validator, and scheduler are implemented) but the actual execution runtime is incomplete.
 
 ---
 
@@ -353,7 +353,7 @@ Firebase wins on server functions maturity. DarshanDB's function architecture is
 - **Documentation**: Extensive, with guides for every framework
 - **Community**: Millions of developers, thousands of tutorials, StackOverflow answers for every edge case
 
-### DarshanDB
+### DarshJDB
 
 - **Client SDKs**: React hooks, Angular signals, Next.js (App + Pages Router), core TypeScript client, Python (sync + async, FastAPI + Django), PHP (Composer, Laravel)
 - **Admin**: React + Vite + Tailwind dashboard
@@ -364,37 +364,37 @@ Firebase wins on server functions maturity. DarshanDB's function architecture is
 
 ### Verdict
 
-Firebase's ecosystem is orders of magnitude larger. This is the natural consequence of a decade of Google investment and millions of developers. DarshanDB has respectable SDK coverage for an alpha project (TypeScript, Python, PHP across multiple frameworks), but it cannot compete with Firebase's breadth today.
+Firebase's ecosystem is orders of magnitude larger. This is the natural consequence of a decade of Google investment and millions of developers. DarshJDB has respectable SDK coverage for an alpha project (TypeScript, Python, PHP across multiple frameworks), but it cannot compete with Firebase's breadth today.
 
 ---
 
 ## 11. What Firebase Does Better
 
-1. **Maturity**: 12+ years of production use. Billions of operations per day across its fleet. DarshanDB is alpha software with 731 tests but zero production deployments at scale.
+1. **Maturity**: 12+ years of production use. Billions of operations per day across its fleet. DarshJDB is alpha software with 731 tests but zero production deployments at scale.
 
-2. **Mobile SDKs**: Native iOS and Android SDKs with offline persistence, push notifications integration, analytics, and crash reporting. DarshanDB has no mobile SDKs.
+2. **Mobile SDKs**: Native iOS and Android SDKs with offline persistence, push notifications integration, analytics, and crash reporting. DarshJDB has no mobile SDKs.
 
-3. **Global infrastructure**: Firebase runs on Google Cloud's global network with automatic multi-region replication. DarshanDB runs on your single server.
+3. **Global infrastructure**: Firebase runs on Google Cloud's global network with automatic multi-region replication. DarshJDB runs on your single server.
 
-4. **Analytics and observability**: Firebase Analytics, Crashlytics, Performance Monitoring, and Remote Config are integrated services with no self-hosted equivalent in DarshanDB.
+4. **Analytics and observability**: Firebase Analytics, Crashlytics, Performance Monitoring, and Remote Config are integrated services with no self-hosted equivalent in DarshJDB.
 
 5. **Zero ops**: No servers to manage, no PostgreSQL to tune, no backups to configure, no SSL certificates to rotate. Firebase handles all of this.
 
-6. **Phone authentication**: SMS OTP with global carrier coverage is a service that requires carrier agreements and infrastructure DarshanDB cannot replicate.
+6. **Phone authentication**: SMS OTP with global carrier coverage is a service that requires carrier agreements and infrastructure DarshJDB cannot replicate.
 
-7. **Emulator Suite**: Firebase's local emulator lets you develop against Firestore, Auth, and Functions without a network connection. DarshanDB requires a running PostgreSQL instance.
+7. **Emulator Suite**: Firebase's local emulator lets you develop against Firestore, Auth, and Functions without a network connection. DarshJDB requires a running PostgreSQL instance.
 
 8. **Extensions marketplace**: Pre-built integrations with Stripe, SendGrid, Algolia, and dozens of other services.
 
 ---
 
-## 12. What DarshanDB Does Better
+## 12. What DarshJDB Does Better
 
 1. **Self-hosted data sovereignty**: Your data lives on your server, in your jurisdiction, under your control. No third party can access, mine, or monetize it. For GDPR, HIPAA, or data residency requirements, this is not a feature -- it is a requirement.
 
 2. **Relational data model**: The triple store handles relationships natively. No denormalization, no data duplication, no client-side joins. For any application with connected data (which is most applications), this eliminates an entire class of complexity that Firebase forces onto the developer.
 
-3. **Cost at scale**: A $40/month Hetzner server running DarshanDB can handle workloads that would cost $5,000+/month on Firebase. The cost curve is flat, not exponential.
+3. **Cost at scale**: A $40/month Hetzner server running DarshJDB can handle workloads that would cost $5,000+/month on Firebase. The cost curve is flat, not exponential.
 
 4. **No vendor lock-in**: PostgreSQL underneath. Standard JWT tokens. MIT-licensed code. You can fork it, extend it, or migrate away from it without asking anyone's permission.
 
@@ -404,15 +404,15 @@ Firebase's ecosystem is orders of magnitude larger. This is the natural conseque
 
 7. **Full-text and vector search**: Built-in tsvector + pgvector support. Firebase requires a third-party service (Algolia, Typesense) for full-text search and has no vector search.
 
-8. **Single binary deployment**: `./darshandb` and a PostgreSQL connection string. No SDK initialization, no project configuration, no Google account required.
+8. **Single binary deployment**: `./darshjdb` and a PostgreSQL connection string. No SDK initialization, no project configuration, no Google account required.
 
 9. **Open source**: Read the source, audit the security, fix a bug, add a feature. Firebase is a black box.
 
-10. **Diff-based real-time**: DarshanDB computes and sends minimal diffs rather than full document snapshots. For large documents with small changes, this is significantly more efficient on bandwidth.
+10. **Diff-based real-time**: DarshJDB computes and sends minimal diffs rather than full document snapshots. For large documents with small changes, this is significantly more efficient on bandwidth.
 
 ---
 
-## 13. Migration Path: Firebase to DarshanDB
+## 13. Migration Path: Firebase to DarshJDB
 
 ### When to consider migrating
 
@@ -432,15 +432,15 @@ gcloud firestore export gs://your-bucket/firestore-export
 
 # Download and transform
 # Firestore export is in protobuf format -- you'll need a transformer
-# to convert documents to DarshanDB triple format
+# to convert documents to DarshJDB triple format
 ```
 
 **2. Schema mapping**
 
-Firestore collections map to DarshanDB entity types. Document fields map to attributes. Subcollections become reference-typed attributes pointing to new entities.
+Firestore collections map to DarshJDB entity types. Document fields map to attributes. Subcollections become reference-typed attributes pointing to new entities.
 
 ```
-Firestore:                          DarshanDB triples:
+Firestore:                          DarshJDB triples:
 users/alice {                       (alice-uuid, "user/name", "Alice")
   name: "Alice",                    (alice-uuid, "user/email", "alice@...")
   email: "alice@..."                (post-uuid, "post/title", "Hello")
@@ -460,21 +460,21 @@ OAuth users can re-authenticate since the tokens are provider-issued, not Fireba
 
 **4. Real-time subscriptions**
 
-Replace `onSnapshot` listeners with DarshanDB WebSocket subscriptions. The subscription model is similar (query-based, push updates) but the client API differs.
+Replace `onSnapshot` listeners with DarshJDB WebSocket subscriptions. The subscription model is similar (query-based, push updates) but the client API differs.
 
 **5. Cloud Functions**
 
-Firebase Cloud Functions map to DarshanDB server functions. The function types align:
+Firebase Cloud Functions map to DarshJDB server functions. The function types align:
 - `onCall` -> `action`
 - `onRequest` -> `httpEndpoint`
 - `onDocumentWritten` -> `mutation` trigger
 - `pubsub.schedule` -> `scheduled` with cron
 
-Note: DarshanDB's function runtime is not production-ready. Plan to run functions externally (FastAPI, Express, etc.) until the V8 runtime matures.
+Note: DarshJDB's function runtime is not production-ready. Plan to run functions externally (FastAPI, Express, etc.) until the V8 runtime matures.
 
 **6. Storage**
 
-Firebase Cloud Storage -> DarshanDB storage with S3/R2/MinIO backend. Security rules need manual translation to DarshanDB permission rules.
+Firebase Cloud Storage -> DarshJDB storage with S3/R2/MinIO backend. Security rules need manual translation to DarshJDB permission rules.
 
 ### What you lose
 
@@ -483,7 +483,7 @@ Firebase Cloud Storage -> DarshanDB storage with S3/R2/MinIO backend. Security r
 - Crash reporting (implement via Sentry)
 - Remote Config (implement via feature flags in the triple store)
 - Push notifications (implement via Firebase Cloud Messaging separately, or use ntfy/Pushover)
-- Global CDN (use Cloudflare in front of DarshanDB)
+- Global CDN (use Cloudflare in front of DarshJDB)
 
 ### What you gain
 
@@ -497,25 +497,25 @@ Firebase Cloud Storage -> DarshanDB storage with S3/R2/MinIO backend. Security r
 
 ## Summary Table
 
-| Dimension | Firebase | DarshanDB | Winner |
+| Dimension | Firebase | DarshJDB | Winner |
 |-----------|----------|-----------|--------|
-| Data model | Document (NoSQL) | Triple store (EAV over Postgres) | DarshanDB (relational flexibility) |
+| Data model | Document (NoSQL) | Triple store (EAV over Postgres) | DarshJDB (relational flexibility) |
 | Real-time sync | Industry gold standard | WebSocket + diff broadcasting | Firebase (maturity) |
 | Offline-first | Automatic, cross-platform | IndexedDB + manual queue | Firebase (significantly) |
 | Auth methods | 10+ providers, phone, anonymous | Email, OAuth (4), magic link, TOTP | Firebase (breadth) |
-| Auth security | Managed, opaque | Argon2id, PKCE, HMAC state, auditable | DarshanDB (transparency) |
+| Auth security | Managed, opaque | Argon2id, PKCE, HMAC state, auditable | DarshJDB (transparency) |
 | Pricing (prototype) | Free tier | $5/month VPS | Firebase |
-| Pricing (scale) | $1K-10K+/month | $40-200/month | DarshanDB (dramatically) |
-| Vendor lock-in | Deep (Google) | None (PostgreSQL + MIT) | DarshanDB |
-| Relational queries | Not possible | Native triple references + SQL | DarshanDB |
-| Full-text search | Requires Algolia/Typesense | Built-in tsvector | DarshanDB |
-| Vector search | Not available | Built-in pgvector | DarshanDB |
+| Pricing (scale) | $1K-10K+/month | $40-200/month | DarshJDB (dramatically) |
+| Vendor lock-in | Deep (Google) | None (PostgreSQL + MIT) | DarshJDB |
+| Relational queries | Not possible | Native triple references + SQL | DarshJDB |
+| Full-text search | Requires Algolia/Typesense | Built-in tsvector | DarshJDB |
+| Vector search | Not available | Built-in pgvector | DarshJDB |
 | Server functions | Production-ready | Architecture designed, runtime WIP | Firebase |
 | Mobile SDKs | iOS, Android, Flutter, Unity | None | Firebase |
 | Ecosystem | Massive | Early stage | Firebase |
 | Observability | Analytics, Crashlytics, Perf | Bring your own | Firebase |
-| Data sovereignty | Google's servers | Your servers | DarshanDB |
-| Time-travel queries | Not available | Native (tx_id history) | DarshanDB |
+| Data sovereignty | Google's servers | Your servers | DarshJDB |
+| Time-travel queries | Not available | Native (tx_id history) | DarshJDB |
 
 ---
 
@@ -523,10 +523,10 @@ Firebase Cloud Storage -> DarshanDB storage with S3/R2/MinIO backend. Security r
 
 If you are building a mobile app that needs to ship next month, use Firebase. Its mobile SDKs, offline support, and managed infrastructure will save you months of work.
 
-If you are building a web application with relational data, care about cost at scale, or need data sovereignty, DarshanDB is the architecture you want. But understand that you are adopting alpha software. You will encounter rough edges. You will need to self-host. You will be an early adopter, not a consumer of a finished product.
+If you are building a web application with relational data, care about cost at scale, or need data sovereignty, DarshJDB is the architecture you want. But understand that you are adopting alpha software. You will encounter rough edges. You will need to self-host. You will be an early adopter, not a consumer of a finished product.
 
-The two systems are not truly competitors today -- they serve different values and different stages of project maturity. Firebase sells convenience and speed-to-market. DarshanDB offers ownership and architectural correctness. The market needs both.
+The two systems are not truly competitors today -- they serve different values and different stages of project maturity. Firebase sells convenience and speed-to-market. DarshJDB offers ownership and architectural correctness. The market needs both.
 
 ---
 
-*Last updated: 2026-04-05. DarshanDB version: 0.1.0 (alpha). Firebase references based on publicly documented features and pricing as of early 2026.*
+*Last updated: 2026-04-05. DarshJDB version: 0.1.0 (alpha). Firebase references based on publicly documented features and pricing as of early 2026.*

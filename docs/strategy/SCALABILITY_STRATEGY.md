@@ -1,9 +1,9 @@
-# DarshanDB Scalability and Reliability Engineering Strategy
+# DarshJDB Scalability and Reliability Engineering Strategy
 
 > Version 1.0 | April 2026
-> Authors: Darsh Joshi, DarshanDB Core Team
+> Authors: Darsh Joshi, DarshJDB Core Team
 
-This document defines the engineering strategy for scaling DarshanDB from a single-node deployment serving hundreds of connections to a geo-distributed cluster handling millions. Every recommendation is grounded in the current architecture: a stateless Rust (Axum + Tokio) server, PostgreSQL 16+ triple store, MsgPack-over-WebSocket wire protocol, and the in-process sync engine that powers reactive queries.
+This document defines the engineering strategy for scaling DarshJDB from a single-node deployment serving hundreds of connections to a geo-distributed cluster handling millions. Every recommendation is grounded in the current architecture: a stateless Rust (Axum + Tokio) server, PostgreSQL 16+ triple store, MsgPack-over-WebSocket wire protocol, and the in-process sync engine that powers reactive queries.
 
 ---
 
@@ -21,7 +21,7 @@ This document defines the engineering strategy for scaling DarshanDB from a sing
 
 ## 1. Scale Tiers Overview
 
-DarshanDB defines four operational tiers. Each tier has an architecture diagram, a set of infrastructure requirements, and clear criteria for when to graduate to the next tier.
+DarshJDB defines four operational tiers. Each tier has an architecture diagram, a set of infrastructure requirements, and clear criteria for when to graduate to the next tier.
 
 | Tier | Connections | Queries/sec | Mutations/sec | Nodes | Postgres |
 |------|------------|-------------|---------------|-------|----------|
@@ -38,7 +38,7 @@ DarshanDB defines four operational tiers. Each tier has an architecture diagram,
 graph TB
     Client["Clients\n(up to 500 WS)"]
     LB["Reverse Proxy\nCaddy / Nginx"]
-    DDB["DarshanDB\n(single binary)"]
+    DDB["DarshJDB\n(single binary)"]
     PG[("PostgreSQL 16+\nsingle instance")]
 
     Client --> LB --> DDB --> PG
@@ -57,7 +57,7 @@ graph TB
     LB["Load Balancer\nsticky sessions\n(IP hash or cookie)"]
     NATS["NATS JetStream\nsubscription fanout"]
 
-    subgraph Nodes["DarshanDB Nodes"]
+    subgraph Nodes["DarshJDB Nodes"]
         N1["Node 1"]
         N2["Node 2"]
     end
@@ -94,7 +94,7 @@ graph TB
     subgraph Region["Region A"]
         LB["L7 LB\nsticky WS"]
 
-        subgraph AppNodes["DarshanDB Nodes x4-16"]
+        subgraph AppNodes["DarshJDB Nodes x4-16"]
             N1["Node 1"]
             N2["Node 2"]
             N3["Node N"]
@@ -192,7 +192,7 @@ graph TB
 
 ### 2.1 Stateless Node Architecture
 
-The current DarshanDB binary is designed to be stateless at the process level. All durable state lives in PostgreSQL. The in-process sync engine (the `SubscriptionRegistry`, `SyncSessionManager`, and `PresenceManager` visible in `main.rs`) holds ephemeral subscription and presence state in memory. This is correct for T0 and manageable at T1, but requires shared state infrastructure starting at T2.
+The current DarshJDB binary is designed to be stateless at the process level. All durable state lives in PostgreSQL. The in-process sync engine (the `SubscriptionRegistry`, `SyncSessionManager`, and `PresenceManager` visible in `main.rs`) holds ephemeral subscription and presence state in memory. This is correct for T0 and manageable at T1, but requires shared state infrastructure starting at T2.
 
 **Current state (T0):**
 - `SubscriptionRegistry` -- in-process `DashMap<QueryHash, Vec<SessionId>>`
@@ -204,13 +204,13 @@ The current DarshanDB binary is designed to be stateless at the process level. A
 
 ### 2.2 Sticky Sessions for WebSocket (T1+)
 
-WebSocket connections are long-lived and stateful at the transport layer. When running multiple DarshanDB nodes behind a load balancer, a client must reconnect to the same node for the lifetime of its session (or perform a coordinated migration -- see 2.5).
+WebSocket connections are long-lived and stateful at the transport layer. When running multiple DarshJDB nodes behind a load balancer, a client must reconnect to the same node for the lifetime of its session (or perform a coordinated migration -- see 2.5).
 
 **Load balancer configuration:**
 
 ```nginx
 # Nginx -- sticky via $cookie_darshan_node or IP hash fallback
-upstream darshandb {
+upstream darshjdb {
     ip_hash;
     server node1:7700;
     server node2:7700;
@@ -227,7 +227,7 @@ server {
     server_name api.example.com;
 
     location /ws {
-        proxy_pass http://darshandb;
+        proxy_pass http://darshjdb;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection $connection_upgrade;
@@ -243,7 +243,7 @@ server {
     }
 
     location /api {
-        proxy_pass http://darshandb;
+        proxy_pass http://darshjdb;
         # REST is stateless -- round-robin is fine
     }
 }
@@ -268,10 +268,10 @@ NATS is chosen over Redis pub/sub for three reasons:
 **Subject hierarchy:**
 
 ```
-darshan.{tenant}.mutations        -- mutation events (entity, attribute, value, tx_id)
-darshan.{tenant}.invalidations    -- query hash invalidation signals
-darshan.{tenant}.presence.{room}  -- presence heartbeats
-darshan.internal.node.{id}.drain  -- node drain / shutdown coordination
+ddb.{tenant}.mutations        -- mutation events (entity, attribute, value, tx_id)
+ddb.{tenant}.invalidations    -- query hash invalidation signals
+ddb.{tenant}.presence.{room}  -- presence heartbeats
+ddb.internal.node.{id}.drain  -- node drain / shutdown coordination
 ```
 
 **Integration pattern:**
@@ -283,7 +283,7 @@ async fn on_mutation_committed(mutation: &Mutation, nats: &async_nats::Client) {
     let affected = subscription_registry.match_mutation(mutation);
 
     // 2. Publish invalidation to NATS so other nodes re-evaluate
-    let subject = format!("darshan.{}.invalidations", mutation.tenant);
+    let subject = format!("ddb.{}.invalidations", mutation.tenant);
     let payload = InvalidationEvent {
         query_hashes: affected,
         tx_id: mutation.tx_id,
@@ -294,7 +294,7 @@ async fn on_mutation_committed(mutation: &Mutation, nats: &async_nats::Client) {
 
 // On each node: background subscriber
 async fn invalidation_listener(nats: &async_nats::Client) {
-    let mut sub = nats.subscribe("darshan.*.invalidations").await?;
+    let mut sub = nats.subscribe("ddb.*.invalidations").await?;
     while let Some(msg) = sub.next().await {
         let event: InvalidationEvent = serde_json::from_slice(&msg.payload)?;
         if event.source_node == NODE_ID {
@@ -340,7 +340,7 @@ graph LR
 **Cache key design:**
 
 ```
-darshan:cache:{tenant}:{query_hash}:{permission_hash}:{tx_id}
+ddb:cache:{tenant}:{query_hash}:{permission_hash}:{tx_id}
 ```
 
 - `query_hash` -- deterministic hash of the DarshanQL AST (normalized, parameter-independent).
@@ -358,7 +358,7 @@ darshan:cache:{tenant}:{query_hash}:{permission_hash}:{tx_id}
 
 ### 2.5 Connection Migration on Node Failure (T2+)
 
-When a DarshanDB node crashes or is drained for maintenance, its connected clients must reconnect. The goal is to make this seamless: the client reconnects to any available node and resumes its subscription state without re-fetching full datasets.
+When a DarshJDB node crashes or is drained for maintenance, its connected clients must reconnect. The goal is to make this seamless: the client reconnects to any available node and resumes its subscription state without re-fetching full datasets.
 
 **Protocol:**
 
@@ -400,7 +400,7 @@ sequenceDiagram
 
 ### 3.1 Read Replicas for Query Distribution
 
-DarshanDB's workload is heavily read-biased. Reactive queries continuously evaluate against Postgres. Mutations are comparatively rare (typical ratio: 20:1 reads-to-writes for most applications).
+DarshJDB's workload is heavily read-biased. Reactive queries continuously evaluate against Postgres. Mutations are comparatively rare (typical ratio: 20:1 reads-to-writes for most applications).
 
 **Read routing strategy:**
 
@@ -443,7 +443,7 @@ impl QueryEngine {
 
 ### 3.2 Connection Pooling (PgBouncer / Supavisor)
 
-DarshanDB currently creates a `sqlx::PgPool` with `max_connections = 20`. This works at T0 but becomes a bottleneck at T1+ when multiple nodes compete for a limited number of Postgres connections (default `max_connections = 100`).
+DarshJDB currently creates a `sqlx::PgPool` with `max_connections = 20`. This works at T0 but becomes a bottleneck at T1+ when multiple nodes compete for a limited number of Postgres connections (default `max_connections = 100`).
 
 **Recommendation: PgBouncer in transaction mode (T1-T2), Supavisor for T3.**
 
@@ -461,8 +461,8 @@ DarshanDB currently creates a `sqlx::PgPool` with `max_connections = 20`. This w
 
 ```ini
 [databases]
-darshandb_primary = host=pg-primary port=5432 dbname=darshandb
-darshandb_replica = host=pg-replica-1 port=5432 dbname=darshandb
+darshjdb_primary = host=pg-primary port=5432 dbname=darshjdb
+darshjdb_replica = host=pg-replica-1 port=5432 dbname=darshjdb
 
 [pgbouncer]
 listen_addr = 0.0.0.0
@@ -478,18 +478,18 @@ server_lifetime = 3600
 log_connections = 0
 log_disconnections = 0
 
-# Critical for DarshanDB: disable prepared statement caching
-# at PgBouncer level (DarshanDB handles this internally)
+# Critical for DarshJDB: disable prepared statement caching
+# at PgBouncer level (DarshJDB handles this internally)
 max_prepared_statements = 0
 ```
 
-**Why transaction mode:** DarshanDB does not use session-level features (advisory locks, SET variables, LISTEN/NOTIFY through the pooler). All queries are self-contained transactions. Transaction mode allows maximum connection multiplexing.
+**Why transaction mode:** DarshJDB does not use session-level features (advisory locks, SET variables, LISTEN/NOTIFY through the pooler). All queries are self-contained transactions. Transaction mode allows maximum connection multiplexing.
 
-**Supavisor (T3):** Supavisor is an Elixir-based pooler that supports tenant-aware routing, built-in metrics, and native multi-tenant connection management. At T3, where DarshanDB serves thousands of tenants, Supavisor's per-tenant pool isolation prevents noisy-neighbor effects.
+**Supavisor (T3):** Supavisor is an Elixir-based pooler that supports tenant-aware routing, built-in metrics, and native multi-tenant connection management. At T3, where DarshJDB serves thousands of tenants, Supavisor's per-tenant pool isolation prevents noisy-neighbor effects.
 
 ### 3.3 Partitioning Strategy for Triple Store
 
-DarshanDB's triple store uses an EAV (Entity-Attribute-Value) model stored in PostgreSQL. The core table schema is approximately:
+DarshJDB's triple store uses an EAV (Entity-Attribute-Value) model stored in PostgreSQL. The core table schema is approximately:
 
 ```sql
 CREATE TABLE triples (
@@ -569,7 +569,7 @@ CREATE INDEX idx_vector ON triples_tenant_xxx USING ivfflat ((value->'embedding'
 
 ### 3.4 Archival and Cold Storage for Time-Travel Data
 
-Time-travel queries are a core DarshanDB feature, but historical triple versions accumulate rapidly. A tiered storage strategy keeps current-state queries fast while preserving full history.
+Time-travel queries are a core DarshJDB feature, but historical triple versions accumulate rapidly. A tiered storage strategy keeps current-state queries fast while preserving full history.
 
 **Storage tiers:**
 
@@ -609,7 +609,7 @@ ALTER TABLE triples_tenant_abc123_tx_0_1m SET TABLESPACE warm_storage;
 COPY (
     SELECT * FROM triples_tenant_abc123_tx_0_1m
     WHERE expired_at < now() - interval '90 days'
-) TO PROGRAM 's3-upload --bucket darshan-archive --key tenant/abc123/tx_0_1m.parquet'
+) TO PROGRAM 's3-upload --bucket ddb-archive --key tenant/abc123/tx_0_1m.parquet'
 WITH (FORMAT parquet);
 ```
 
@@ -656,13 +656,13 @@ SELECT cron.schedule('pgss-reset', '0 5 * * 1',
 
 ### 4.1 OpenTelemetry Integration
 
-DarshanDB adopts the OpenTelemetry (OTel) standard for all three pillars: traces, metrics, and logs. The Rust ecosystem provides first-class support via `tracing` + `opentelemetry-rust`.
+DarshJDB adopts the OpenTelemetry (OTel) standard for all three pillars: traces, metrics, and logs. The Rust ecosystem provides first-class support via `tracing` + `opentelemetry-rust`.
 
 **Instrumentation layers:**
 
 ```mermaid
 graph TB
-    subgraph App["DarshanDB Binary"]
+    subgraph App["DarshJDB Binary"]
         WS["WebSocket Handler\nspan: ws.connection"]
         QE["Query Engine\nspan: query.evaluate"]
         ME["Mutation Engine\nspan: mutation.commit"]
@@ -734,7 +734,7 @@ fn init_telemetry() -> Result<()> {
     let telemetry = tracing_opentelemetry::layer().with_tracer(tracer);
     let fmt = tracing_subscriber::fmt::layer().json();
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| "info,darshandb=debug".into());
+        .unwrap_or_else(|_| "info,darshjdb=debug".into());
 
     tracing_subscriber::registry()
         .with(filter)
@@ -801,7 +801,7 @@ All metrics use the `darshan_` prefix and are exposed via OTel (scraped by Prome
 ```yaml
 # prometheus-rules.yml
 groups:
-  - name: darshandb.critical
+  - name: darshjdb.critical
     interval: 15s
     rules:
       # High error rate on mutations
@@ -864,12 +864,12 @@ groups:
 
       # Node down (no heartbeat)
       - alert: DarshanNodeDown
-        expr: up{job="darshandb"} == 0
+        expr: up{job="darshjdb"} == 0
         for: 30s
         labels:
           severity: critical
         annotations:
-          summary: "DarshanDB node {{ $labels.instance }} is unreachable"
+          summary: "DarshJDB node {{ $labels.instance }} is unreachable"
 
       # NATS subscription backlog
       - alert: DarshanNATSBacklog
@@ -895,7 +895,7 @@ groups:
 
 Three dashboards are provided as JSON models (stored in `deploy/grafana/`):
 
-**Dashboard 1: DarshanDB Overview**
+**Dashboard 1: DarshJDB Overview**
 - Row 1: Active connections (gauge), connection rate (graph), connections by tenant (table)
 - Row 2: Query latency heatmap (P50/P95/P99), mutation throughput (graph)
 - Row 3: Cache hit ratio (gauge), sync diffs/sec (graph), presence rooms (stat)
@@ -987,7 +987,7 @@ PITR allows restoring the database to any moment in time, down to the transactio
 # /etc/pgbackrest/pgbackrest.conf
 [global]
 repo1-type=s3
-repo1-s3-bucket=darshan-backups
+repo1-s3-bucket=ddb-backups
 repo1-s3-region=us-east-1
 repo1-path=/pgbackrest
 repo1-retention-full=4
@@ -997,7 +997,7 @@ repo1-cipher-pass=<KMS-managed>
 compress-type=zst
 compress-level=6
 
-[darshandb]
+[darshjdb]
 pg1-path=/var/lib/postgresql/16/main
 
 # Schedule (via pg_cron or system cron):
@@ -1009,12 +1009,12 @@ pg1-path=/var/lib/postgresql/16/main
 **Recovery procedure:**
 
 ```bash
-# 1. Stop DarshanDB server
-systemctl stop darshandb
+# 1. Stop DarshJDB server
+systemctl stop darshjdb
 
 # 2. Restore to specific point in time
 pgbackrest restore \
-    --stanza=darshandb \
+    --stanza=darshjdb \
     --type=time \
     --target="2026-04-05 14:30:00+00" \
     --target-action=promote
@@ -1025,13 +1025,13 @@ systemctl start postgresql
 # 4. Verify data integrity
 psql -c "SELECT count(*) FROM triples WHERE expired_at IS NULL;"
 
-# 5. Restart DarshanDB
-systemctl start darshandb
+# 5. Restart DarshJDB
+systemctl start darshjdb
 ```
 
 ### 5.4 Cross-Region Failover
 
-At T3, DarshanDB operates across multiple regions. The failover process must be automated and well-tested.
+At T3, DarshJDB operates across multiple regions. The failover process must be automated and well-tested.
 
 **Architecture using Patroni:**
 
@@ -1039,12 +1039,12 @@ At T3, DarshanDB operates across multiple regions. The failover process must be 
 graph TB
     subgraph US["US-East (Primary Region)"]
         P_US[("Patroni Primary")]
-        DDB_US["DarshanDB Nodes"]
+        DDB_US["DarshJDB Nodes"]
     end
 
     subgraph EU["EU-West (DR Region)"]
         P_EU[("Patroni Standby Leader")]
-        DDB_EU["DarshanDB Nodes\n(read-only until failover)"]
+        DDB_EU["DarshJDB Nodes\n(read-only until failover)"]
     end
 
     subgraph Consensus["Consensus"]
@@ -1067,9 +1067,9 @@ graph TB
 1. Patroni detects primary failure (health check timeout: 10s, failover delay: 30s).
 2. etcd consensus: standby leader in EU-West is promoted.
 3. EU-West Patroni promotes its PostgreSQL to read-write.
-4. DNS update: `pg-primary.darshan.internal` points to EU-West (TTL: 30s).
-5. DarshanDB nodes in EU-West switch from read-only to full operation.
-6. DarshanDB nodes in US-East detect primary change, reconnect to new primary.
+4. DNS update: `pg-primary.ddb.internal` points to EU-West (TTL: 30s).
+5. DarshJDB nodes in EU-West switch from read-only to full operation.
+6. DarshJDB nodes in US-East detect primary change, reconnect to new primary.
 7. NATS supercluster reroutes mutation subjects to EU-West nodes.
 
 **Testing cadence:**
@@ -1079,7 +1079,7 @@ graph TB
 
 ### 5.5 Automated Backup Verification
 
-Backups are worthless if they cannot be restored. DarshanDB mandates automated verification.
+Backups are worthless if they cannot be restored. DarshJDB mandates automated verification.
 
 **Verification pipeline (runs after every full backup):**
 
@@ -1116,7 +1116,7 @@ graph LR
 
 ### 6.1 Query Plan Caching
 
-DarshanDB's query engine translates DarshanQL to SQL. The generated SQL for a given query AST + permission context is deterministic. Caching the query plan eliminates repeated planning overhead.
+DarshJDB's query engine translates DarshanQL to SQL. The generated SQL for a given query AST + permission context is deterministic. Caching the query plan eliminates repeated planning overhead.
 
 **Three-level plan cache:**
 
@@ -1151,11 +1151,11 @@ let pool = PgPoolOptions::new()
 | Development | 5 | 1 | Minimal resource usage |
 | T0 (small prod) | 20 | 5 | Matches PG default `max_connections=100` |
 | T1 (behind PgBouncer) | 50 | 10 | PgBouncer multiplexes to fewer PG connections |
-| T2+ | 100 | 25 | PgBouncer handles multiplexing; DarshanDB pool is for local concurrency |
+| T2+ | 100 | 25 | PgBouncer handles multiplexing; DarshJDB pool is for local concurrency |
 
 ### 6.3 Prepared Statement Caching
 
-When using PgBouncer in transaction mode, traditional prepared statements break because they are session-scoped. DarshanDB solves this with protocol-level statement caching.
+When using PgBouncer in transaction mode, traditional prepared statements break because they are session-scoped. DarshJDB solves this with protocol-level statement caching.
 
 **Strategy:**
 
@@ -1177,9 +1177,9 @@ sqlx::query_as::<_, TripleRow>(
 
 ### 6.4 Zero-Copy Serialization Paths
 
-DarshanDB uses MsgPack as its wire protocol. The current path involves:
+DarshJDB uses MsgPack as its wire protocol. The current path involves:
 1. Postgres returns rows as `PgRow` (owned memory).
-2. DarshanDB maps rows to Rust structs (owned `String`, `Vec<u8>`).
+2. DarshJDB maps rows to Rust structs (owned `String`, `Vec<u8>`).
 3. Structs are serialized to MsgPack bytes (another allocation).
 4. MsgPack bytes are written to the WebSocket frame (final copy).
 
@@ -1216,7 +1216,7 @@ async fn stream_query_result(
 
 ### 6.5 io_uring for File Storage
 
-DarshanDB's storage engine handles file uploads (S3-compatible local filesystem). The current implementation uses `tokio::fs` (which uses a thread pool for blocking I/O on Linux). `io_uring` eliminates the thread pool overhead entirely.
+DarshJDB's storage engine handles file uploads (S3-compatible local filesystem). The current implementation uses `tokio::fs` (which uses a thread pool for blocking I/O on Linux). `io_uring` eliminates the thread pool overhead entirely.
 
 **Implementation using `tokio-uring` or `monoio`:**
 
@@ -1262,7 +1262,7 @@ mod storage_uring {
 
 ### 7.1 Design Principles
 
-The DarshanDB benchmark suite (`darshan-bench`) is a standalone Rust binary that measures the five core dimensions of the system. All benchmarks are reproducible, parameterized, and emit results in both human-readable and machine-parseable (JSON) formats.
+The DarshJDB benchmark suite (`ddb-bench`) is a standalone Rust binary that measures the five core dimensions of the system. All benchmarks are reproducible, parameterized, and emit results in both human-readable and machine-parseable (JSON) formats.
 
 **Dimensions:**
 
@@ -1278,7 +1278,7 @@ The DarshanDB benchmark suite (`darshan-bench`) is a standalone Rust binary that
 
 ```mermaid
 graph TB
-    subgraph BenchRunner["darshan-bench"]
+    subgraph BenchRunner["ddb-bench"]
         Config["Config\nYAML parameterized"]
         ConnBench["Connection\nBenchmark"]
         QueryBench["Query\nBenchmark"]
@@ -1289,7 +1289,7 @@ graph TB
     end
 
     subgraph SUT["System Under Test"]
-        DDB["DarshanDB\n(configurable nodes)"]
+        DDB["DarshJDB\n(configurable nodes)"]
         PG[("PostgreSQL")]
     end
 
@@ -1429,13 +1429,13 @@ measurements:
 
 ```bash
 # Run full suite
-darshan-bench --config bench/full-suite.yaml --output results/
+ddb-bench --config bench/full-suite.yaml --output results/
 
 # Run specific benchmark
-darshan-bench --config bench/query.yaml --dataset-size 100K --connections 50
+ddb-bench --config bench/query.yaml --dataset-size 100K --connections 50
 
 # Compare two runs
-darshan-bench compare results/v0.1.0/ results/v0.2.0/ --format markdown
+ddb-bench compare results/v0.1.0/ results/v0.2.0/ --format markdown
 ```
 
 **Output format (JSON + Markdown):**
@@ -1459,7 +1459,7 @@ darshan-bench compare results/v0.1.0/ results/v0.2.0/ --format markdown
     "memory_gb": 32,
     "os": "Linux 6.8",
     "pg_version": "16.2",
-    "darshandb_version": "0.1.0"
+    "darshjdb_version": "0.1.0"
   }
 }
 ```
@@ -1484,14 +1484,14 @@ Use this checklist when graduating between tiers.
 
 ### T0 to T1
 
-- [ ] Deploy second DarshanDB node behind load balancer
+- [ ] Deploy second DarshJDB node behind load balancer
 - [ ] Configure sticky sessions for WebSocket
 - [ ] Deploy NATS server, integrate cross-node subscription broadcast
 - [ ] Configure PostgreSQL streaming replication (1 replica)
 - [ ] Enable WAL archiving to S3
 - [ ] Set up daily backup with pgBackRest
-- [ ] Deploy Prometheus + Grafana with DarshanDB dashboards
-- [ ] Run `darshan-bench` connection and sync benchmarks to validate
+- [ ] Deploy Prometheus + Grafana with DarshJDB dashboards
+- [ ] Run `ddb-bench` connection and sync benchmarks to validate
 - [ ] Document runbook for manual failover
 
 ### T1 to T2
@@ -1526,20 +1526,20 @@ All scaling-related configuration is controlled via environment variables, follo
 
 | Variable | Default | Tier | Description |
 |----------|---------|------|-------------|
-| `DARSHAN_PORT` | 7700 | T0+ | Server listen port |
-| `DARSHAN_MAX_CONNECTIONS` | 20 | T0+ | sqlx pool max connections |
-| `DARSHAN_MIN_CONNECTIONS` | 1 | T1+ | sqlx pool min connections |
-| `DARSHAN_READ_REPLICA_URL` | (none) | T1+ | PostgreSQL read replica connection string |
-| `DARSHAN_NATS_URL` | (none) | T1+ | NATS server URL (`nats://host:4222`) |
-| `DARSHAN_REDIS_URL` | (none) | T2+ | Redis URL for L2 cache |
-| `DARSHAN_CACHE_L1_MAX_MB` | 50 | T2+ | In-process cache size limit |
-| `DARSHAN_CACHE_TTL_SECS` | 60 | T2+ | Cache entry TTL |
-| `DARSHAN_OTEL_ENDPOINT` | (none) | T1+ | OpenTelemetry OTLP endpoint |
-| `DARSHAN_OTEL_SERVICE_NAME` | darshandb | T1+ | OTel service name |
-| `DARSHAN_NODE_ID` | (auto) | T1+ | Unique node identifier for cluster |
-| `DARSHAN_DRAIN_TIMEOUT_SECS` | 30 | T1+ | Graceful drain timeout |
-| `DARSHAN_URING_ENABLED` | false | T2+ | Enable io_uring for storage (Linux only) |
+| `DDB_PORT` | 7700 | T0+ | Server listen port |
+| `DDB_MAX_CONNECTIONS` | 20 | T0+ | sqlx pool max connections |
+| `DDB_MIN_CONNECTIONS` | 1 | T1+ | sqlx pool min connections |
+| `DDB_READ_REPLICA_URL` | (none) | T1+ | PostgreSQL read replica connection string |
+| `DDB_NATS_URL` | (none) | T1+ | NATS server URL (`nats://host:4222`) |
+| `DDB_REDIS_URL` | (none) | T2+ | Redis URL for L2 cache |
+| `DDB_CACHE_L1_MAX_MB` | 50 | T2+ | In-process cache size limit |
+| `DDB_CACHE_TTL_SECS` | 60 | T2+ | Cache entry TTL |
+| `DDB_OTEL_ENDPOINT` | (none) | T1+ | OpenTelemetry OTLP endpoint |
+| `DDB_OTEL_SERVICE_NAME` | darshjdb | T1+ | OTel service name |
+| `DDB_NODE_ID` | (auto) | T1+ | Unique node identifier for cluster |
+| `DDB_DRAIN_TIMEOUT_SECS` | 30 | T1+ | Graceful drain timeout |
+| `DDB_URING_ENABLED` | false | T2+ | Enable io_uring for storage (Linux only) |
 
 ---
 
-*This document is a living engineering plan. It will be updated as DarshanDB evolves through each scale tier. All recommendations are based on production experience with PostgreSQL, Rust async runtimes, and distributed systems at scale.*
+*This document is a living engineering plan. It will be updated as DarshJDB evolves through each scale tier. All recommendations are based on production experience with PostgreSQL, Rust async runtimes, and distributed systems at scale.*

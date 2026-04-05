@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to DarshanDB will be documented in this file.
+All notable changes to DarshJDB will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
@@ -20,12 +20,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **File Storage**: S3-compatible with signed URLs, image transforms, resumable uploads
 - **Presence System**: Rooms, peer state, typing indicators, cursor tracking
 - **Admin Dashboard**: Data explorer, schema visualizer, function logs, user management
-- **React SDK**: `@darshan/react` with hooks, Suspense, useSyncExternalStore
-- **Next.js SDK**: `@darshan/nextjs` with Server Components, Server Actions, App Router
-- **Angular SDK**: `@darshan/angular` with Signals (17+), RxJS, route guards, SSR
+- **React SDK**: `@darshjdb/react` with hooks, Suspense, useSyncExternalStore
+- **Next.js SDK**: `@darshjdb/nextjs` with Server Components, Server Actions, App Router
+- **Angular SDK**: `@darshjdb/angular` with Signals (17+), RxJS, route guards, SSR
 - **PHP SDK**: `darshan/darshan-php` with Laravel ServiceProvider
-- **Python SDK**: `darshandb` with FastAPI and Django integration
-- **CLI**: `darshan dev`, `darshan deploy`, `darshan push`, `darshan pull`, `darshan seed`
+- **Python SDK**: `darshjdb` with FastAPI and Django integration
+- **CLI**: `ddb dev`, `ddb deploy`, `ddb push`, `ddb pull`, `ddb seed`
 - **Docker**: Single-command self-hosted setup with docker-compose
 - **Kubernetes**: Helm chart for production deployment
 - **REST API**: Full CRUD + query + auth + storage over HTTP with OpenAPI spec

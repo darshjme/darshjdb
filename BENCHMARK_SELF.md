@@ -1,4 +1,4 @@
-# DarshanDB Self-Audit: README Claims vs. Actual Code
+# DarshJDB Self-Audit: README Claims vs. Actual Code
 
 **Audit Date:** 2026-04-05
 **Auditor:** Automated PhD-level verification against source code
@@ -98,7 +98,7 @@ The README significantly undersells the project. At least 16 substantial feature
 | **"pgvector" mentioned in architecture** | No `pgvector` crate dependency in Cargo.toml. The query AST has `SemanticQuery` and `HybridQuery` structs, but actual pgvector SQL generation is unverified without the dependency. | Medium - AST exists but execution unproven |
 | **Badge says "Tests: 731"** | Actual passing count is 809+. Understated, not overstated. | Low - conservative claim |
 | **"JWT RS256" in auth flow diagram** | Session module uses RS256, confirmed. But the "15min expiry" and "7 day refresh" are configurable, not hardcoded. | Negligible |
-| **"No shortcuts, no bypasses" in request lifecycle** | Dev mode (`DARSHAN_DEV=1`) and admin token bypass exist in the code. Standard for development, but the claim is absolutist. | Low |
+| **"No shortcuts, no bypasses" in request lifecycle** | Dev mode (`DDB_DEV=1`) and admin token bypass exist in the code. Standard for development, but the claim is absolutist. | Low |
 
 ---
 
@@ -142,7 +142,7 @@ The README significantly undersells the project. At least 16 substantial feature
 | WebSocket message types (server to client) | 14 |
 | TypeScript SDK exports (client-core) | ~15 classes/functions |
 | React hooks | 5 (useQuery, useMutation, useAuth, usePresence, useStorage) |
-| Python SDK public classes | ~5 (DarshanDB, AuthClient, QueryBuilder, etc.) |
+| Python SDK public classes | ~5 (DarshJDB, AuthClient, QueryBuilder, etc.) |
 | PHP SDK public classes | ~6 (Client, AuthClient, QueryBuilder, StorageClient, etc.) |
 
 ---

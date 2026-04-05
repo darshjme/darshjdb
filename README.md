@@ -1,15 +1,15 @@
 <div align="center">
 
-<img src=".github/assets/hero.svg" alt="DarshanDB" width="100%" />
+<img src=".github/assets/hero.svg" alt="DarshJDB" width="100%" />
 
 <br/>
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-F59E0B.svg?style=for-the-badge)](LICENSE)
 [![Built with Rust](https://img.shields.io/badge/Built_with-Rust-B7410E.svg?style=for-the-badge&logo=rust&logoColor=white)](https://www.rust-lang.org)
 [![PostgreSQL 16+](https://img.shields.io/badge/PostgreSQL-16+-336791.svg?style=for-the-badge&logo=postgresql&logoColor=white)](https://www.postgresql.org)
-[![Status: Alpha](https://img.shields.io/badge/Status-Alpha-orange.svg?style=for-the-badge)](https://github.com/darshjme/darshandb)
-[![CI](https://img.shields.io/github/actions/workflow/status/darshjme/darshandb/ci.yml?style=for-the-badge&label=CI)](https://github.com/darshjme/darshandb/actions)
-[![Tests: 731](https://img.shields.io/badge/Tests-731_passing-86efac.svg?style=for-the-badge)](https://github.com/darshjme/darshandb)
+[![Status: Alpha](https://img.shields.io/badge/Status-Alpha-orange.svg?style=for-the-badge)](https://github.com/darshjme/darshjdb)
+[![CI](https://img.shields.io/github/actions/workflow/status/darshjme/darshjdb/ci.yml?style=for-the-badge&label=CI)](https://github.com/darshjme/darshjdb/actions)
+[![Tests: 731](https://img.shields.io/badge/Tests-731_passing-86efac.svg?style=for-the-badge)](https://github.com/darshjme/darshjdb)
 
 <br/>
 
@@ -40,7 +40,7 @@ Three weeks of plumbing before writing one line of business logic. Postgres setu
 
 Firebase gives you NoSQL spaghetti. Supabase bolts real-time onto REST. InstantDB is cloud-only. Convex is a black box. None of them let you run a single binary on a $5 VPS in Mumbai and own your data completely.
 
-So I built what I wanted. I called it DarshanDB.
+So I built what I wanted. I called it DarshJDB.
 
 *"Darshan"* means to see, to perceive the complete picture. The database sees every change, every query, every permission boundary. It sees what each user is allowed to see. And it shows them exactly that — in real-time, the moment anything changes.
 
@@ -50,7 +50,7 @@ graph LR
         N["Navsari\n<i>where it started</i>"] --> L["London\n<i>systems thinking</i>"]
         L --> D["Dubai\n<i>production systems</i>"]
         D --> A["Ahmedabad\n<i>four companies</i>"]
-        A --> DB["DarshanDB\n<i>building the tool\nI always needed</i>"]
+        A --> DB["DarshJDB\n<i>building the tool\nI always needed</i>"]
     end
 
     style N fill:#cc9933,color:#000
@@ -87,7 +87,7 @@ flowchart TD
 
 ---
 
-## What DarshanDB Is
+## What DarshJDB Is
 
 A single Rust binary that gives you a complete backend. Authentication. Permissions. Real-time subscriptions. Query engine. Admin dashboard. Connect from React, Angular, Next.js, PHP, Python, or cURL.
 
@@ -166,7 +166,7 @@ graph TB
         Curl["cURL / HTTP"]
     end
 
-    subgraph Server["DarshanDB — Single Rust Binary"]
+    subgraph Server["DarshJDB — Single Rust Binary"]
         API["HTTP + WebSocket\n<i>Axum + Tokio</i>"]
         AUTH["Auth Engine\n<i>Argon2id + JWT RS256</i>"]
         PERM["Permission Engine\n<i>Row-Level Security</i>"]
@@ -226,7 +226,7 @@ sequenceDiagram
 
 ## The Data Model
 
-Traditional databases force you to define tables before writing data. DarshanDB inverts this.
+Traditional databases force you to define tables before writing data. DarshJDB inverts this.
 
 ```mermaid
 graph LR
@@ -237,7 +237,7 @@ graph LR
         T1 --> T2 --> T3
     end
 
-    subgraph Triple["DarshanDB Triple Store"]
+    subgraph Triple["DarshJDB Triple Store"]
         D1["1. Write data\n<i>POST /api/data/users\n  {'name':'Alice'}</i>"]
         D2["2. Schema inferred\n<i>from existing triples\n  automatic</i>"]
         D3["3. Lock it down\n<i>strict mode\n  when ready for prod</i>"]
@@ -250,7 +250,7 @@ graph LR
 
 ### How triples work
 
-Every piece of data in DarshanDB is a triple: `(entity_id, attribute, value)`.
+Every piece of data in DarshJDB is a triple: `(entity_id, attribute, value)`.
 
 ```
 (e_01, "name",  "Alice")
@@ -284,7 +284,7 @@ graph LR
 ```mermaid
 sequenceDiagram
     participant C as Client SDK
-    participant S as DarshanDB Server
+    participant S as DarshJDB Server
     participant P as PostgreSQL
 
     Note over C,P: Signup
@@ -347,7 +347,7 @@ graph TB
 sequenceDiagram
     participant C1 as Client A
     participant C2 as Client B
-    participant S as DarshanDB
+    participant S as DarshJDB
     participant P as PostgreSQL
 
     C1->>S: WebSocket: subscribe("todos", {filter: "owner=me"})
@@ -368,8 +368,8 @@ sequenceDiagram
 
 ```bash
 # Clone
-git clone https://github.com/darshjme/darshandb.git
-cd darshandb
+git clone https://github.com/darshjme/darshjdb.git
+cd darshjdb
 
 # Start Postgres
 docker compose up postgres -d
@@ -378,8 +378,8 @@ docker compose up postgres -d
 ./scripts/setup-db.sh --seed
 
 # Start the server
-DATABASE_URL=postgres://darshan:darshan@localhost:5432/darshandb \
-  cargo run --bin darshandb-server
+DATABASE_URL=postgres://darshan:darshan@localhost:5432/darshjdb \
+  cargo run --bin ddb-server
 
 # Health check
 curl http://localhost:7700/health
@@ -419,10 +419,10 @@ cd sdks/php && composer test
 ## Project Structure
 
 ```
-darshandb/
+darshjdb/
 ├── packages/
 │   ├── server/           # Rust: HTTP server, auth, permissions, query engine, triple store
-│   ├── cli/              # Rust: darshan dev / deploy / push / pull
+│   ├── cli/              # Rust: ddb dev / deploy / push / pull
 │   ├── client-core/      # TypeScript: framework-agnostic SDK core
 │   ├── react/            # React hooks (useQuery, useMutation, useAuth)
 │   ├── angular/          # Angular signals + RxJS observables
@@ -459,19 +459,19 @@ darshandb/
 
 ```mermaid
 graph TB
-    subgraph core["@darshandb/client-core"]
+    subgraph core["@darshjdb/client-core"]
         CC["HTTP Client\nWebSocket Client\nAuth State\nQuery Builder"]
     end
 
     subgraph frameworks["Framework SDKs"]
-        R["@darshandb/react\n<i>useQuery, useMutation\nuseAuth, usePresence</i>"]
-        A["@darshandb/angular\n<i>DarshanService\nsignals + RxJS</i>"]
-        N["@darshandb/nextjs\n<i>Server Components\nApp + Pages Router</i>"]
+        R["@darshjdb/react\n<i>useQuery, useMutation\nuseAuth, usePresence</i>"]
+        A["@darshjdb/angular\n<i>DarshanService\nsignals + RxJS</i>"]
+        N["@darshjdb/nextjs\n<i>Server Components\nApp + Pages Router</i>"]
     end
 
     subgraph native["Native SDKs"]
-        PH["darshandb-php\n<i>Composer + Laravel</i>"]
-        PY["darshandb-python\n<i>pip + FastAPI/Django</i>"]
+        PH["darshjdb-php\n<i>Composer + Laravel</i>"]
+        PY["darshjdb-python\n<i>pip + FastAPI/Django</i>"]
     end
 
     core --> R

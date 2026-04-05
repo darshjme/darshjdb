@@ -488,9 +488,9 @@ export function Settings() {
             <h3 className="text-sm font-semibold text-zinc-100 mb-2">Recent Backups</h3>
             <div className="space-y-2">
               {[
-                { name: "backup-20240401-full.darshan", size: "45.2 MB", date: "Apr 1, 2024 03:00 AM", type: "Automatic" },
-                { name: "backup-20240315-manual.darshan", size: "44.8 MB", date: "Mar 15, 2024 02:30 PM", type: "Manual" },
-                { name: "backup-20240301-full.darshan", size: "42.1 MB", date: "Mar 1, 2024 03:00 AM", type: "Automatic" },
+                { name: "backup-20240401-full.ddb", size: "45.2 MB", date: "Apr 1, 2024 03:00 AM", type: "Automatic" },
+                { name: "backup-20240315-manual.ddb", size: "44.8 MB", date: "Mar 15, 2024 02:30 PM", type: "Manual" },
+                { name: "backup-20240301-full.ddb", size: "42.1 MB", date: "Mar 1, 2024 03:00 AM", type: "Automatic" },
               ].map((backup) => (
                 <div
                   key={backup.name}
@@ -589,7 +589,7 @@ export function Settings() {
                 lastDelivery: Date.now() - 300_000,
               },
               {
-                url: "https://api.example.com/webhooks/darshan",
+                url: "https://api.example.com/webhooks/ddb",
                 events: ["user:created", "user:deleted"],
                 status: "active",
                 lastDelivery: Date.now() - 3600_000,

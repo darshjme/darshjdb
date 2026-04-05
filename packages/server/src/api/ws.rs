@@ -57,7 +57,7 @@ use crate::sync::presence::PresenceManager;
 use crate::sync::pubsub::PubSubEngine;
 use crate::sync::registry::SubscriptionRegistry;
 use crate::sync::session::{SessionId, SessionManager, SubId};
-use crate::triple_store::PgTripleStore;
+use crate::triple_store::{PgTripleStore, TripleInput};
 
 /// Auth timeout: clients must send an auth message within this window.
 const AUTH_TIMEOUT: Duration = Duration::from_secs(5);
@@ -135,6 +135,7 @@ enum ClientMessage {
         id: String,
     },
     /// Batch: execute multiple operations in a single WebSocket frame.
+    #[allow(dead_code)]
     Batch {
         #[serde(default)]
         id: String,
@@ -504,11 +505,11 @@ async fn handle_message(
         }
 
         ClientMessage::PubSub { id, channel } => {
-            handle_pub_sub(id, channel, socket, &state, session_id, codec).await;
+            handle_pub_sub(id, channel, socket, state, session_id, codec).await;
         }
 
         ClientMessage::PubUnsub { id } => {
-            handle_pub_unsub(id, socket, &state, session_id, codec).await;
+            handle_pub_unsub(id, socket, state, session_id, codec).await;
         }
 
         ClientMessage::Ping => {
@@ -656,26 +657,137 @@ async fn handle_unsubscribe(
     debug!(session_id = %session_id, sub_id = %sub_id, "subscription removed");
 }
 
-/// Handle a mutation request.
+/// Handle a mutation request via the triple store transaction engine.
 async fn handle_mutation(
     req_id: String,
     ops: Value,
     socket: &mut WebSocket,
-    _state: &WsState,
+    state: &WsState,
     session_id: SessionId,
     codec: Codec,
 ) {
-    // In a full implementation, this executes the mutation through the
-    // triple store's transaction engine with permission checks.
-    // The resulting ChangeEvent is broadcast to trigger subscription updates.
-    debug!(
-        session_id = %session_id,
-        ops = %ops,
-        "mutation requested (pending query engine integration)"
-    );
+    let ops_array = match ops.as_array() {
+        Some(a) if !a.is_empty() => a.clone(),
+        _ => {
+            let _ = send_message(socket, &ServerMessage::MutErr {
+                id: req_id, error: "ops must be a non-empty array".into(),
+            }, codec).await;
+            return;
+        }
+    };
 
-    // Acknowledge with tx_id 0 until wired to the storage engine.
-    let _ = send_message(socket, &ServerMessage::MutOk { id: req_id, tx: 0 }, codec).await;
+    let mut db_tx = match state.triple_store.begin_tx().await {
+        Ok(t) => t,
+        Err(e) => {
+            let _ = send_message(socket, &ServerMessage::MutErr {
+                id: req_id, error: format!("begin tx: {e}"),
+            }, codec).await;
+            return;
+        }
+    };
+    let tx_id = match PgTripleStore::next_tx_id_in_tx(&mut db_tx).await {
+        Ok(i) => i,
+        Err(e) => {
+            let _ = send_message(socket, &ServerMessage::MutErr {
+                id: req_id, error: format!("alloc tx_id: {e}"),
+            }, codec).await;
+            return;
+        }
+    };
+
+    let mut all_triples: Vec<TripleInput> = Vec::new();
+    let mut entity_ids: Vec<String> = Vec::new();
+    let mut entity_types: Vec<String> = Vec::new();
+
+    for op_val in &ops_array {
+        let op_str = op_val.get("op").and_then(|v| v.as_str()).unwrap_or("");
+        let entity = op_val.get("entity").and_then(|v| v.as_str()).unwrap_or("");
+        let id_str = op_val.get("id").and_then(|v| v.as_str());
+        let data = op_val.get("data");
+        if entity.is_empty() {
+            let _ = send_message(socket, &ServerMessage::MutErr {
+                id: req_id, error: "each op requires 'entity'".into(),
+            }, codec).await;
+            return;
+        }
+        if !entity_types.contains(&entity.to_string()) { entity_types.push(entity.to_string()); }
+
+        match op_str {
+            "insert" => {
+                let eid = id_str.and_then(|s| uuid::Uuid::parse_str(s).ok()).unwrap_or_else(uuid::Uuid::new_v4);
+                entity_ids.push(eid.to_string());
+                all_triples.push(TripleInput { entity_id: eid, attribute: ":db/type".into(), value: Value::String(entity.into()), value_type: 0, ttl_seconds: None });
+                if let Some(obj) = data.and_then(|d| d.as_object()) {
+                    for (k, v) in obj {
+                        all_triples.push(TripleInput { entity_id: eid, attribute: format!("{entity}/{k}"), value: v.clone(), value_type: ws_vtype(v), ttl_seconds: None });
+                    }
+                }
+            }
+            "update" => {
+                let eid = match id_str.and_then(|s| uuid::Uuid::parse_str(s).ok()) {
+                    Some(i) => i,
+                    None => { let _ = send_message(socket, &ServerMessage::MutErr { id: req_id, error: "update requires 'id'".into() }, codec).await; return; }
+                };
+                entity_ids.push(eid.to_string());
+                if let Some(obj) = data.and_then(|d| d.as_object()) {
+                    for (k, _) in obj {
+                        if let Err(e) = PgTripleStore::retract_in_tx(&mut db_tx, eid, &format!("{entity}/{k}")).await {
+                            let _ = send_message(socket, &ServerMessage::MutErr { id: req_id, error: format!("retract: {e}") }, codec).await; return;
+                        }
+                    }
+                    for (k, v) in obj {
+                        all_triples.push(TripleInput { entity_id: eid, attribute: format!("{entity}/{k}"), value: v.clone(), value_type: ws_vtype(v), ttl_seconds: None });
+                    }
+                }
+            }
+            "delete" => {
+                let eid = match id_str.and_then(|s| uuid::Uuid::parse_str(s).ok()) {
+                    Some(i) => i,
+                    None => { let _ = send_message(socket, &ServerMessage::MutErr { id: req_id, error: "delete requires 'id'".into() }, codec).await; return; }
+                };
+                entity_ids.push(eid.to_string());
+                let existing = match PgTripleStore::get_entity_in_tx(&mut db_tx, eid).await {
+                    Ok(t) => t,
+                    Err(e) => { let _ = send_message(socket, &ServerMessage::MutErr { id: req_id, error: format!("fetch: {e}") }, codec).await; return; }
+                };
+                for t in &existing {
+                    if let Err(e) = PgTripleStore::retract_in_tx(&mut db_tx, eid, &t.attribute).await {
+                        let _ = send_message(socket, &ServerMessage::MutErr { id: req_id, error: format!("retract: {e}") }, codec).await; return;
+                    }
+                }
+            }
+            _ => {
+                let _ = send_message(socket, &ServerMessage::MutErr { id: req_id, error: format!("unknown op '{op_str}'") }, codec).await; return;
+            }
+        }
+    }
+
+    if !all_triples.is_empty() {
+        if let Err(e) = PgTripleStore::set_triples_in_tx(&mut db_tx, &all_triples, tx_id).await {
+            let _ = send_message(socket, &ServerMessage::MutErr { id: req_id, error: format!("write: {e}") }, codec).await; return;
+        }
+    }
+    if let Err(e) = db_tx.commit().await {
+        let _ = send_message(socket, &ServerMessage::MutErr { id: req_id, error: format!("commit: {e}") }, codec).await; return;
+    }
+
+    let attrs: Vec<String> = all_triples.iter().map(|t| t.attribute.clone()).collect();
+    let _ = state.change_tx.send(ChangeEvent { tx_id, entity_ids: entity_ids.clone(), attributes: attrs, entity_type: entity_types.into_iter().next(), actor_id: None });
+    debug!(session_id = %session_id, tx_id = tx_id, "ws mutation committed");
+    let _ = send_message(socket, &ServerMessage::MutOk { id: req_id, tx: tx_id }, codec).await;
+}
+
+/// Infer triple value_type from JSON (WebSocket context).
+fn ws_vtype(v: &Value) -> i16 {
+    match v {
+        Value::String(s) if s.len() == 36 && uuid::Uuid::parse_str(s).is_ok() => 5,
+        Value::String(_) => 0,
+        Value::Number(n) if n.is_f64() && !n.is_i64() && !n.is_u64() => 2,
+        Value::Number(_) => 1,
+        Value::Bool(_) => 3,
+        Value::Object(_) | Value::Array(_) => 6,
+        Value::Null => 0,
+    }
 }
 
 /// Handle a presence join request.
@@ -785,10 +897,11 @@ async fn handle_change_event(
         // Check if this change could affect this subscription by matching entity type.
         // A simple heuristic: if the query's "type" field matches the event's entity_type.
         let query_type = query_ast.get("type").and_then(|v| v.as_str()).unwrap_or("");
-        if let Some(ref event_type) = event.entity_type {
-            if !query_type.is_empty() && query_type != event_type {
-                continue;
-            }
+        if let Some(ref event_type) = event.entity_type
+            && !query_type.is_empty()
+            && query_type != event_type
+        {
+            continue;
         }
 
         // Re-execute the query.

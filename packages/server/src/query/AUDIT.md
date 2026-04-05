@@ -170,6 +170,6 @@ params.push(serde_json::Value::String(format!("%{escaped}%")));
 ## Verification
 
 ```
-cargo check --package darshandb-server --lib   # PASS
-cargo test --package darshandb-server --lib query   # 66 passed, 0 failed
+cargo check --package ddb-server --lib   # PASS
+cargo test --package ddb-server --lib query   # 66 passed, 0 failed
 ```

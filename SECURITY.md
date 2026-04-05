@@ -14,8 +14,8 @@ We release patches for security vulnerabilities in the latest minor version. Old
 
 Instead, report vulnerabilities privately using one of these methods:
 
-1. **GitHub Security Advisories** (preferred): [Report a vulnerability](https://github.com/darshjme/darshandb/security/advisories/new)
-2. **Email**: security@darshandb.dev
+1. **GitHub Security Advisories** (preferred): [Report a vulnerability](https://github.com/darshjme/darshjdb/security/advisories/new)
+2. **Email**: security@db.darshj.me
 
 ### What to Include
 
@@ -44,7 +44,7 @@ Instead, report vulnerabilities privately using one of these methods:
 
 ## Security Architecture
 
-DarshanDB implements 11 layers of defense-in-depth security. See [docs/security.md](docs/security.md) for the full architecture.
+DarshJDB implements 11 layers of defense-in-depth security. See [docs/security.md](docs/security.md) for the full architecture.
 
 Key highlights:
 
@@ -66,8 +66,8 @@ Key highlights:
 
 The following are in scope for security reports:
 
-- DarshanDB server (`packages/server/`)
-- DarshanDB CLI (`packages/cli/`)
+- DarshJDB server (`packages/server/`)
+- DarshJDB CLI (`packages/cli/`)
 - Client SDKs (`packages/client-core/`, `packages/react/`, `packages/nextjs/`, `packages/angular/`)
 - Admin dashboard (`packages/admin/`)
 - PHP SDK (`sdks/php/`)
@@ -78,14 +78,14 @@ The following are out of scope:
 
 - Example applications (`examples/`)
 - Documentation website
-- Third-party integrations not maintained by the DarshanDB team
+- Third-party integrations not maintained by the DarshJDB team
 
 ## Production Deployment Security Checklist
 
-Before deploying DarshanDB to production, verify:
+Before deploying DarshJDB to production, verify:
 
-- [ ] `DARSHAN_JWT_SECRET` is set to a cryptographically random value (minimum 32 characters, **not** `change-me-in-production`)
-- [ ] `POSTGRES_PASSWORD` is set to a strong unique password (not the default `darshan`)
+- [ ] `DDB_JWT_SECRET` is set to a cryptographically random value (minimum 32 characters, **not** `change-me-in-production`)
+- [ ] `POSTGRES_PASSWORD` is set to a strong unique password (not the default `ddb`)
 - [ ] Postgres port (`5432`) is **not** exposed to the host network (internal Docker network only)
 - [ ] CORS allowed origins are configured for your frontend domains
 - [ ] TLS termination is enabled (via reverse proxy or load balancer)

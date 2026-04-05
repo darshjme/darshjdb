@@ -384,12 +384,12 @@ pub fn plan_query(ast: &QueryAST) -> Result<QueryPlan> {
         let mut first = true;
 
         // Vector distance sort (most similar first).
-        if let Some(ref sem) = ast.semantic {
-            if let Some(ref vec) = sem.vector {
-                let vec_literal = format_vector_literal(vec);
-                sql.push_str(&format!("t_emb.embedding <=> '{vec_literal}'::vector ASC"));
-                first = false;
-            }
+        if let Some(ref sem) = ast.semantic
+            && let Some(ref vec) = sem.vector
+        {
+            let vec_literal = format_vector_literal(vec);
+            sql.push_str(&format!("t_emb.embedding <=> '{vec_literal}'::vector ASC"));
+            first = false;
         }
 
         for (i, oc) in ast.order.iter().enumerate() {
@@ -638,13 +638,12 @@ pub async fn execute_query(pool: &PgPool, plan: &QueryPlan) -> Result<Vec<QueryR
             if let Some(ref_value) = attributes.get(&np.via_attribute)
                 && let Some(ref_str) = ref_value.as_str()
                 && let Ok(ref_uuid) = ref_str.parse::<uuid::Uuid>()
+                && let Some(nested_entity) = nested_maps[np_idx].get(&ref_uuid)
             {
-                if let Some(nested_entity) = nested_maps[np_idx].get(&ref_uuid) {
-                    nested.insert(
-                        np.via_attribute.clone(),
-                        serde_json::Value::Object(nested_entity.clone()),
-                    );
-                }
+                nested.insert(
+                    np.via_attribute.clone(),
+                    serde_json::Value::Object(nested_entity.clone()),
+                );
             }
         }
 
@@ -667,6 +666,7 @@ pub async fn execute_query(pool: &PgPool, plan: &QueryPlan) -> Result<Vec<QueryR
 ///
 /// Returns one `HashMap<Uuid, Map>` per nested plan, in the same order as
 /// `nested_plans`, where each map entry is `referenced_uuid -> attributes`.
+#[allow(clippy::type_complexity)]
 fn batch_resolve_nested<'a>(
     pool: &'a PgPool,
     parent_entities: &'a std::collections::HashMap<
@@ -743,15 +743,11 @@ fn batch_resolve_nested<'a>(
                         if let Some(ref_value) = attrs.get(&sub_np.via_attribute)
                             && let Some(ref_str) = ref_value.as_str()
                             && let Ok(ref_uuid) = ref_str.parse::<uuid::Uuid>()
+                            && let Some(sub_entity) = sub_maps[sub_idx].get(&ref_uuid)
                         {
-                            if let Some(sub_entity) = sub_maps[sub_idx].get(&ref_uuid) {
-                                // Store under a _nested key to avoid attribute collision.
-                                let nested_key = format!("_nested:{}", sub_np.via_attribute);
-                                attrs.insert(
-                                    nested_key,
-                                    serde_json::Value::Object(sub_entity.clone()),
-                                );
-                            }
+                            // Store under a _nested key to avoid attribute collision.
+                            let nested_key = format!("_nested:{}", sub_np.via_attribute);
+                            attrs.insert(nested_key, serde_json::Value::Object(sub_entity.clone()));
                         }
                         let _ = eid; // suppress unused warning in the non-sub_nested path
                     }

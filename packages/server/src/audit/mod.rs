@@ -113,7 +113,7 @@ pub fn merkle_root(triples: &[Triple]) -> [u8; 64] {
     // Build the tree bottom-up.
     while hashes.len() > 1 {
         // If odd number of leaves, duplicate the last (Bitcoin convention).
-        if hashes.len() % 2 != 0 {
+        if !hashes.len().is_multiple_of(2) {
             let last = *hashes.last().unwrap();
             hashes.push(last);
         }
@@ -156,7 +156,7 @@ pub fn merkle_root_from_inputs(inputs: &[TripleInput], tx_id: i64) -> [u8; 64] {
     let mut hashes: Vec<[u8; 64]> = inputs.iter().map(|t| hash_triple_input(t, tx_id)).collect();
 
     while hashes.len() > 1 {
-        if hashes.len() % 2 != 0 {
+        if !hashes.len().is_multiple_of(2) {
             let last = *hashes.last().unwrap();
             hashes.push(last);
         }
@@ -214,7 +214,7 @@ pub fn generate_proof(target: &Triple, all_triples: &[Triple]) -> Option<MerkleP
 
     // Walk up the tree, collecting sibling hashes.
     while hashes.len() > 1 {
-        if hashes.len() % 2 != 0 {
+        if !hashes.len().is_multiple_of(2) {
             let last = *hashes.last().unwrap();
             hashes.push(last);
         }
@@ -554,6 +554,7 @@ pub struct EntityMerkleProof {
 }
 
 /// Internal row type for reading from tx_merkle_roots.
+#[allow(dead_code)]
 #[derive(Debug, Clone, sqlx::FromRow)]
 struct StoredMerkleRoot {
     tx_id: i64,
@@ -625,7 +626,7 @@ mod tests {
     fn test_merkle_root_single() {
         let id = Uuid::new_v4();
         let t = make_triple(id, "user/name", json!("Alice"), 1);
-        let root = merkle_root(&[t.clone()]);
+        let root = merkle_root(std::slice::from_ref(&t));
         assert_eq!(root, hash_triple(&t));
     }
 

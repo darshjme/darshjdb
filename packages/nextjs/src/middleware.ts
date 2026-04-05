@@ -197,7 +197,7 @@ export function darshanMiddleware(config: DarshanMiddlewareConfig) {
 
     // Inject session token into request headers so Server Components
     // and API routes can access it without re-reading the cookie.
-    response.headers.set('x-darshan-session', sessionToken);
+    response.headers.set('x-ddb-session', sessionToken);
 
     // Allow custom post-authentication logic
     if (onAuthenticated) {
