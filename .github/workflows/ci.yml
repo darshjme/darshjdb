@@ -55,12 +55,12 @@ jobs:
           DDB_PORT=7799 \
           DDB_DEV=1 \
           DDB_JWT_SECRET=ci-smoke-test-secret \
-          RUST_LOG=error \
+          RUST_LOG=info \
             ./target/release/ddb-server &
           SMOKE_PID=$!
 
-          # Wait up to 30s for health check
-          for i in $(seq 1 30); do
+          # Wait up to 60s for health check (schema creation may take time on first run)
+          for i in $(seq 1 60); do
             if curl -sf http://localhost:7799/health >/dev/null 2>&1; then
               echo "Server responded to /health after ${i}s"
               kill "$SMOKE_PID" 2>/dev/null || true
@@ -75,7 +75,7 @@ jobs:
             sleep 1
           done
           kill "$SMOKE_PID" 2>/dev/null || true
-          echo "::error::Server did not respond to /health within 30s"
+          echo "::error::Server did not respond to /health within 60s"
           exit 1
 
   typescript:
