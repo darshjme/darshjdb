@@ -12,7 +12,9 @@
 
 pub mod api;
 pub mod auth;
+pub mod cache;
 pub mod connectors;
+pub mod embeddings;
 pub mod error;
 pub mod functions;
 pub mod query;

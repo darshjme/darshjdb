@@ -18,6 +18,7 @@
 use std::collections::HashMap;
 use std::convert::Infallible;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use axum::Router;
@@ -45,12 +46,14 @@ use crate::auth::{
     OAuthUserInfo, Operation, PasswordProvider, PermissionEngine, RateLimiter, SessionManager,
     build_default_engine, evaluate_rule_public, get_rule_with_fallback,
 };
+use crate::cache::{self, QueryCache};
 use crate::functions::registry::FunctionRegistry;
 use crate::functions::runtime::FunctionRuntime;
 use crate::query::{self, QueryResultRow};
 use crate::rules::RuleEngine;
 use crate::storage::{LocalFsBackend, StorageEngine, StorageError};
 use crate::sync::broadcaster::ChangeEvent;
+use crate::sync::pubsub::{PubSubEngine, PubSubEvent};
 use crate::triple_store::{PgTripleStore, TripleInput, TripleStore};
 
 // ---------------------------------------------------------------------------
@@ -98,6 +101,12 @@ pub struct AppState {
     pub oauth_state_secret: Arc<Vec<u8>>,
     /// Forward-chaining rule engine for automatic triple inference.
     pub rule_engine: Option<Arc<RuleEngine>>,
+    /// In-memory hot cache for query results (sub-millisecond reads).
+    pub query_cache: Arc<QueryCache>,
+    /// Pub/sub engine for keyspace notification subscriptions.
+    pub pubsub: Arc<PubSubEngine>,
+    /// Latency histogram for connection pool stats exposed via /health.
+    pub pool_stats: Arc<super::pool_stats::PoolStats>,
 }
 
 /// Load OAuth2 provider configurations from environment variables.
@@ -193,6 +202,7 @@ impl AppState {
             .map(|v| v == "1" || v == "true")
             .unwrap_or(false);
         let (sse_tx, _) = broadcast::channel(1024);
+        let (pubsub, _) = PubSubEngine::new(4096);
         Self {
             pool,
             triple_store,
@@ -210,6 +220,9 @@ impl AppState {
             oauth_providers: Arc::new(load_oauth_providers_from_env()),
             oauth_state_secret: Arc::new(load_oauth_state_secret()),
             rule_engine: None,
+            query_cache: Arc::new(QueryCache::from_env()),
+            pubsub,
+            pool_stats: Arc::new(super::pool_stats::PoolStats::new()),
         }
     }
 
@@ -230,6 +243,12 @@ impl AppState {
         self
     }
 
+    /// Set a shared pub/sub engine on this state (for sharing with WsState).
+    pub fn with_pubsub(mut self, pubsub: Arc<PubSubEngine>) -> Self {
+        self.pubsub = pubsub;
+        self
+    }
+
     /// Create application state with default (test-only) configuration.
     /// Panics if called outside tests — production code must use `with_pool`.
     #[cfg(test)]
@@ -238,6 +257,7 @@ impl AppState {
         // This preserves backward compatibility with existing unit tests.
         let (sse_tx, _) = broadcast::channel(1024);
         let (change_tx, _) = broadcast::channel(1024);
+        let (pubsub, _) = PubSubEngine::new(64);
         let pool = PgPool::connect_lazy("postgres://localhost/darshandb_test").expect("test pool");
         let triple_store = Arc::new(PgTripleStore::new_lazy(pool.clone()));
         let key_manager = crate::auth::KeyManager::generate();
@@ -267,6 +287,9 @@ impl AppState {
             oauth_providers: Arc::new(HashMap::new()),
             oauth_state_secret: Arc::new(b"test-oauth-state-secret-key-32b!".to_vec()),
             rule_engine: None,
+            query_cache: Arc::new(QueryCache::new(100, Duration::from_secs(60), true)),
+            pubsub,
+            pool_stats: Arc::new(super::pool_stats::PoolStats::new()),
         }
     }
 }
@@ -344,6 +367,10 @@ fn negotiate_response_status(
     }
 }
 
+/// Public wrapper for content-negotiated response (used by batch module).
+pub fn negotiate_response_pub(headers: &HeaderMap, value: &impl Serialize) -> Response {
+    negotiate_response(headers, value)
+}
 // ---------------------------------------------------------------------------
 // Rate-limit middleware
 // ---------------------------------------------------------------------------
@@ -473,11 +500,21 @@ pub fn build_router(state: AppState) -> Router {
         .route("/storage/{*path}", get(storage_get).delete(storage_delete))
         // -- SSE -----------------------------------------------------------
         .route("/subscribe", get(subscribe))
+        // -- Pub/Sub -------------------------------------------------------
+        .route("/events", get(events_sse))
+        .route("/events/publish", post(events_publish))
         // -- Admin ---------------------------------------------------------
         .route("/admin/schema", get(admin_schema))
         .route("/admin/functions", get(admin_functions))
         .route("/admin/sessions", get(admin_sessions))
         .route("/admin/bulk-load", post(admin_bulk_load))
+        .route("/admin/cache", get(admin_cache))
+        // -- Embeddings / Semantic Search (TODO: wire handlers) ------------
+        // .route("/embeddings", post(embeddings_store))
+        // .route("/embeddings/{entity_id}", get(embeddings_get))
+        // .route("/search/semantic", post(search_semantic))
+        // -- Batch / Pipeline ---------------------------------------------
+        .route("/batch", post(super::batch::batch_handler))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             require_auth_middleware,
@@ -680,24 +717,28 @@ async fn auth_signup(
             attribute: ":db/type".into(),
             value: Value::String("user".into()),
             value_type: 0,
+            ttl_seconds: None,
         },
         TripleInput {
             entity_id: user_id,
             attribute: "user/email".into(),
             value: Value::String(email.clone()),
             value_type: 0,
+            ttl_seconds: None,
         },
         TripleInput {
             entity_id: user_id,
             attribute: "user/name".into(),
             value: Value::String(body.name.unwrap_or_default()),
             value_type: 0,
+            ttl_seconds: None,
         },
         TripleInput {
             entity_id: user_id,
             attribute: "user/created_at".into(),
             value: Value::String(chrono::Utc::now().to_rfc3339()),
             value_type: 0,
+            ttl_seconds: None,
         },
     ];
     let _ = state.triple_store.set_triples(&user_triples).await;
@@ -1249,15 +1290,40 @@ async fn query(
     )?;
 
     // Inject permission WHERE clauses into the query AST.
-    if let Some(where_sql) = perm_result.build_where_clause(auth_ctx.user_id) {
+    let permission_where = perm_result.build_where_clause(auth_ctx.user_id);
+    if let Some(ref where_sql) = permission_where {
         // Convert the permission WHERE clause into a query WhereClause.
         // The permission engine produces raw SQL fragments; we inject them
         // as a special "raw" where clause that the planner will append.
         ast.where_clauses.push(query::WhereClause {
             attribute: "__permission_filter".to_string(),
             op: query::WhereOp::Eq,
-            value: serde_json::Value::String(where_sql),
+            value: serde_json::Value::String(where_sql.clone()),
         });
+    }
+
+    // Build a cache key that includes the full query + permission context
+    // so different users never see each other's cached results.
+    let cache_key_input = serde_json::json!({
+        "q": body.query,
+        "uid": auth_ctx.user_id,
+        "perm": permission_where,
+    });
+    let query_hash = cache::hash_query(&cache_key_input);
+    let entity_type = ast.entity_type.clone();
+
+    // Check the hot cache first — sub-millisecond on hit.
+    if let Some(cached_response) = state.query_cache.get(query_hash) {
+        let response = serde_json::json!({
+            "data": cached_response,
+            "meta": {
+                "count": cached_response.as_array().map(|a| a.len()).unwrap_or(0),
+                "duration_ms": start.elapsed().as_secs_f64() * 1000.0,
+                "filtered": !perm_result.where_clauses.is_empty(),
+                "cached": true
+            }
+        });
+        return Ok(negotiate_response(&headers, &response));
     }
 
     // Plan the query.
@@ -1270,12 +1336,23 @@ async fn query(
         .map_err(|e| ApiError::internal(format!("Query execution failed: {e}")))?;
 
     let count = results.len();
+
+    // Record query latency for pool stats histogram.
+    state.pool_stats.record(start.elapsed());
+
+    // Cache the result set for future reads.
+    let results_value = serde_json::to_value(&results).unwrap_or_default();
+    state
+        .query_cache
+        .set(query_hash, results_value, 0, entity_type);
+
     let response = serde_json::json!({
         "data": results,
         "meta": {
             "count": count,
             "duration_ms": start.elapsed().as_secs_f64() * 1000.0,
-            "filtered": !perm_result.where_clauses.is_empty()
+            "filtered": !perm_result.where_clauses.is_empty(),
+            "cached": false
         }
     });
 
@@ -1313,6 +1390,7 @@ async fn mutate(
     axum::Json(body): axum::Json<MutateRequest>,
 ) -> Result<Response, ApiError> {
     let _token = extract_bearer_token(&headers)?;
+    let mutate_start = Instant::now();
 
     if body.mutations.is_empty() {
         return Err(ApiError::bad_request("At least one mutation is required"));
@@ -1366,6 +1444,7 @@ async fn mutate(
                     attribute: ":db/type".to_string(),
                     value: Value::String(m.entity.clone()),
                     value_type: 0,
+                    ttl_seconds: None,
                 });
 
                 if let Some(data) = &m.data
@@ -1378,6 +1457,7 @@ async fn mutate(
                             attribute: format!("{}/{}", m.entity, key),
                             value: value.clone(),
                             value_type,
+                            ttl_seconds: None,
                         });
                     }
                 }
@@ -1404,6 +1484,7 @@ async fn mutate(
                             attribute: format!("{}/{}", m.entity, key),
                             value: value.clone(),
                             value_type,
+                            ttl_seconds: None,
                         });
                     }
                 }
@@ -1453,6 +1534,9 @@ async fn mutate(
         .await
         .map_err(|e| ApiError::internal(format!("Transaction commit failed: {e}")))?;
 
+    // Record mutation latency for pool stats histogram.
+    state.pool_stats.record(mutate_start.elapsed());
+
     // Collect attributes touched (for change notification), including implied.
     let mut touched_attributes: Vec<String> = all_triples
         .iter()
@@ -1466,6 +1550,11 @@ async fn mutate(
     let mut entity_types: Vec<String> = body.mutations.iter().map(|m| m.entity.clone()).collect();
     entity_types.sort();
     entity_types.dedup();
+
+    // Invalidate hot cache for all affected entity types.
+    for et in &entity_types {
+        state.query_cache.invalidate_by_entity_type(et);
+    }
 
     // Emit change event for reactive subscriptions.
     if tx_id > 0 {
@@ -1568,20 +1657,29 @@ async fn data_create(
     let id = Uuid::new_v4();
     let obj = body.as_object().unwrap();
 
+    // Extract optional TTL from the request body ($ttl key).
+    let ttl_seconds: Option<i64> = obj.get("$ttl").and_then(|v| v.as_i64());
+
     // Build triples: one for :db/type, one per data field.
     let mut triples = vec![TripleInput {
         entity_id: id,
         attribute: ":db/type".to_string(),
         value: Value::String(entity.clone()),
         value_type: 0, // String
+        ttl_seconds,
     }];
     for (key, value) in obj {
+        // Skip $-prefixed meta-keys (e.g. $ttl) — not stored as data attributes.
+        if key.starts_with('$') {
+            continue;
+        }
         let value_type = infer_value_type(value);
         triples.push(TripleInput {
             entity_id: id,
             attribute: format!("{entity}/{key}"),
             value: value.clone(),
             value_type,
+            ttl_seconds,
         });
     }
 
@@ -1606,6 +1704,9 @@ async fn data_create(
         }
     }
 
+    // Invalidate hot cache for the affected entity type.
+    state.query_cache.invalidate_by_entity_type(&entity);
+
     // Emit change event for reactive subscriptions.
     let attributes: Vec<String> = triples.iter().map(|t| t.attribute.clone()).collect();
     let _ = state.change_tx.send(ChangeEvent {
@@ -1616,12 +1717,20 @@ async fn data_create(
         actor_id: None,
     });
 
-    let response = serde_json::json!({
+    // Include TTL info in the creation response when set.
+    let mut response = serde_json::json!({
         "id": id,
         "entity": entity,
         "tx_id": tx_id,
         "data": body
     });
+    if let Some(ttl) = ttl_seconds {
+        let exp = chrono::Utc::now() + chrono::Duration::seconds(ttl);
+        if let Some(obj) = response.as_object_mut() {
+            obj.insert("_ttl".into(), serde_json::json!(ttl));
+            obj.insert("_expires_at".into(), serde_json::json!(exp.to_rfc3339()));
+        }
+    }
 
     Ok(negotiate_response_status(
         &headers,
@@ -1712,11 +1821,19 @@ async fn data_get(
         attrs.retain(|k, _| allowed.contains(k.as_str()) || k.starts_with(":db/"));
     }
 
-    let response = serde_json::json!({
+    // Include TTL virtual fields if the entity has an expiry set.
+    let mut response = serde_json::json!({
         "id": id,
         "entity": entity,
         "data": attrs
     });
+    if let Some(exp) = triples.iter().filter_map(|t| t.expires_at).min() {
+        let remaining = (exp - chrono::Utc::now()).num_seconds().max(0);
+        if let Some(obj) = response.as_object_mut() {
+            obj.insert("_ttl".into(), serde_json::json!(remaining));
+            obj.insert("_expires_at".into(), serde_json::json!(exp.to_rfc3339()));
+        }
+    }
 
     Ok(negotiate_response(&headers, &response))
 }
@@ -1769,16 +1886,26 @@ async fn data_patch(
     }
 
     let obj = body.as_object().unwrap();
+
+    // Extract optional TTL from the request body ($ttl key).
+    // $ttl: positive => set/extend TTL, -1 => remove TTL (persist forever).
+    let ttl_override: Option<i64> = obj.get("$ttl").and_then(|v| v.as_i64());
+
     let mut triples = Vec::new();
 
     // Build triple inputs for the new values.
     for (key, value) in obj {
+        // Skip $-prefixed meta-keys (e.g. $ttl).
+        if key.starts_with('$') {
+            continue;
+        }
         let value_type = infer_value_type(value);
         triples.push(TripleInput {
             entity_id: id,
             attribute: format!("{entity}/{key}"),
             value: value.clone(),
             value_type,
+            ttl_seconds: None,
         });
     }
 
@@ -1822,6 +1949,18 @@ async fn data_patch(
         .await
         .map_err(|e| ApiError::internal(format!("Transaction commit failed: {e}")))?;
 
+    // Apply TTL override if $ttl was specified in the PATCH body.
+    if let Some(ttl) = ttl_override {
+        state
+            .triple_store
+            .set_entity_ttl(id, ttl)
+            .await
+            .map_err(|e| ApiError::internal(format!("Failed to set TTL: {e}")))?;
+    }
+
+    // Invalidate hot cache for the affected entity type.
+    state.query_cache.invalidate_by_entity_type(&entity);
+
     // Emit change event for reactive subscriptions.
     if tx_id > 0 {
         let attributes: Vec<String> = triples.iter().map(|t| t.attribute.clone()).collect();
@@ -1834,12 +1973,27 @@ async fn data_patch(
         });
     }
 
-    let response = serde_json::json!({
+    // Include TTL info in the response when set.
+    let ttl_info = if let Some(exp) = state.triple_store.get_entity_ttl(id).await.unwrap_or(None) {
+        let remaining = (exp - chrono::Utc::now()).num_seconds().max(0);
+        serde_json::json!({ "_ttl": remaining, "_expires_at": exp.to_rfc3339() })
+    } else {
+        serde_json::json!({})
+    };
+
+    let mut response = serde_json::json!({
         "id": id,
         "entity": entity,
         "tx_id": tx_id,
         "data": body
     });
+    if let Some(obj) = response.as_object_mut() {
+        if let Some(ttl_obj) = ttl_info.as_object() {
+            for (k, v) in ttl_obj {
+                obj.insert(k.clone(), v.clone());
+            }
+        }
+    }
 
     Ok(negotiate_response(&headers, &response))
 }
@@ -1916,6 +2070,9 @@ async fn data_delete(
         .commit()
         .await
         .map_err(|e| ApiError::internal(format!("Transaction commit failed: {e}")))?;
+
+    // Invalidate hot cache for the affected entity type.
+    state.query_cache.invalidate_by_entity_type(&entity);
 
     // Emit change event for reactive subscriptions.
     let _ = state.change_tx.send(ChangeEvent {
@@ -2256,6 +2413,112 @@ async fn subscribe(
 }
 
 // ===========================================================================
+// Pub/Sub SSE + Publish handlers
+// ===========================================================================
+
+/// Query parameters for the pub/sub SSE endpoint.
+#[derive(Deserialize)]
+struct EventsParams {
+    /// Channel pattern to subscribe to (e.g., `entity:users:*`).
+    channel: String,
+}
+
+/// `GET /api/events?channel=entity:users:*` -- Server-Sent Events for pub/sub.
+///
+/// Subscribes to the pub/sub engine's broadcast channel and filters events
+/// matching the requested channel pattern. Sends matching events as SSE
+/// data frames with a heartbeat comment every 15 seconds.
+async fn events_sse(
+    State(state): State<AppState>,
+    Query(params): Query<EventsParams>,
+    headers: HeaderMap,
+) -> Result<Sse<impl tokio_stream::Stream<Item = Result<Event, Infallible>>>, ApiError> {
+    let _token = extract_bearer_token(&headers)?;
+
+    if params.channel.is_empty() {
+        return Err(ApiError::bad_request(
+            "Query parameter 'channel' is required",
+        ));
+    }
+
+    let pattern = crate::sync::pubsub::ChannelPattern::parse(&params.channel);
+    let rx = state.pubsub.subscribe_events();
+
+    let stream = BroadcastStream::new(rx).filter_map(move |msg| match msg {
+        Ok(event) => {
+            if pattern.matches(&event.channel) {
+                let data = serde_json::to_string(&event).unwrap_or_default();
+                Some(Ok(Event::default()
+                    .event("pub-event")
+                    .data(data)
+                    .id(event.tx_id.to_string())))
+            } else {
+                None
+            }
+        }
+        Err(_) => None,
+    });
+
+    Ok(Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15))))
+}
+
+/// Request body for the publish endpoint.
+#[derive(Deserialize)]
+struct PublishRequest {
+    /// Channel to publish to (e.g., `custom:notifications`).
+    channel: String,
+    /// Event name (e.g., `new-message`).
+    event: String,
+    /// Optional payload data.
+    #[serde(default)]
+    payload: Option<Value>,
+}
+
+/// `POST /api/events/publish` -- Publish a custom event to a channel.
+///
+/// Allows clients to publish arbitrary events for webhooks, notifications,
+/// or inter-service communication. The event is broadcast to all matching
+/// pub/sub subscribers (WebSocket and SSE).
+async fn events_publish(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: String,
+) -> Result<Response, ApiError> {
+    let _token = extract_bearer_token(&headers)?;
+
+    let req: PublishRequest = serde_json::from_str(&body)
+        .map_err(|e| ApiError::bad_request(format!("invalid request body: {e}")))?;
+
+    if req.channel.is_empty() {
+        return Err(ApiError::bad_request("'channel' is required"));
+    }
+    if req.event.is_empty() {
+        return Err(ApiError::bad_request("'event' is required"));
+    }
+
+    let pub_event = PubSubEvent {
+        channel: req.channel.clone(),
+        event: req.event.clone(),
+        entity_type: None,
+        entity_id: None,
+        changed: vec![],
+        tx_id: 0,
+        payload: req.payload,
+    };
+
+    let receivers = state.pubsub.publish(pub_event);
+
+    let response = serde_json::json!({
+        "ok": true,
+        "channel": req.channel,
+        "event": req.event,
+        "receivers": receivers,
+    });
+
+    Ok(negotiate_response(&headers, &response))
+}
+
+// ===========================================================================
 // Admin handlers
 // ===========================================================================
 
@@ -2339,6 +2602,26 @@ struct BulkLoadEntity {
     data: HashMap<String, Value>,
 }
 
+/// `GET /api/admin/cache` — Return hot-cache statistics.
+///
+/// Reports current size, hit/miss rates, eviction and invalidation
+/// counts. Useful for monitoring cache effectiveness and tuning
+/// `DARSHAN_CACHE_SIZE` / `DARSHAN_CACHE_TTL`.
+async fn admin_cache(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    let _token = extract_bearer_token(&headers)?;
+    require_admin_role(&headers)?;
+
+    let stats = state.query_cache.stats();
+    let response = serde_json::json!({
+        "cache": stats,
+    });
+
+    Ok(negotiate_response(&headers, &response))
+}
+
 /// `POST /api/admin/bulk-load` — High-throughput data import.
 ///
 /// Converts a JSON array of entities into triples and writes them using
@@ -2371,6 +2654,7 @@ async fn admin_bulk_load(
             attribute: ":db/type".to_string(),
             value: Value::String(entity.entity_type.clone()),
             value_type: 0, // String
+            ttl_seconds: None,
         });
 
         // Add a triple for each data field.
@@ -2381,6 +2665,7 @@ async fn admin_bulk_load(
                 attribute: format!("{}/{}", entity.entity_type, key),
                 value: value.clone(),
                 value_type,
+                ttl_seconds: None,
             });
         }
     }
@@ -2593,7 +2878,227 @@ fn validate_entity_name(name: &str) -> Result<(), ApiError> {
     Ok(())
 }
 
-/// Find or create a user from OAuth2 user info for the OAuth callback flow.
+// ===========================================================================
+// Embeddings / Semantic Search handlers
+// ===========================================================================
+
+/// Request body for `POST /api/embeddings`.
+#[derive(Deserialize)]
+struct EmbeddingStoreRequest {
+    entity_id: Uuid,
+    attribute: String,
+    embedding: Vec<f32>,
+    #[serde(default = "default_embedding_model")]
+    model: String,
+}
+
+fn default_embedding_model() -> String {
+    "text-embedding-ada-002".to_string()
+}
+
+/// `POST /api/embeddings` — Store an embedding vector for an entity+attribute pair.
+async fn embeddings_store(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    axum::Json(body): axum::Json<EmbeddingStoreRequest>,
+) -> Result<Response, ApiError> {
+    if body.embedding.is_empty() {
+        return Err(ApiError::bad_request("embedding vector must not be empty"));
+    }
+    if body.attribute.is_empty() {
+        return Err(ApiError::bad_request("attribute must not be empty"));
+    }
+
+    // Format the vector as a pgvector literal: [0.1,0.2,0.3]
+    let vec_literal = format_pgvector_literal(&body.embedding);
+
+    let result = sqlx::query_scalar::<_, i64>(
+        "INSERT INTO embeddings (entity_id, attribute, embedding, model) \
+         VALUES ($1, $2, $3::vector, $4) \
+         RETURNING id",
+    )
+    .bind(body.entity_id)
+    .bind(&body.attribute)
+    .bind(&vec_literal)
+    .bind(&body.model)
+    .fetch_one(&state.pool)
+    .await
+    .map_err(|e| ApiError::internal(format!("Failed to store embedding: {e}")))?;
+
+    let response = serde_json::json!({
+        "id": result,
+        "entity_id": body.entity_id,
+        "attribute": body.attribute,
+        "model": body.model,
+        "dimensions": body.embedding.len(),
+    });
+    Ok(negotiate_response_status(
+        &headers,
+        StatusCode::CREATED,
+        &response,
+    ))
+}
+
+/// `GET /api/embeddings/:entity_id` — Get all embeddings for an entity.
+async fn embeddings_get(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(entity_id): Path<Uuid>,
+) -> Result<Response, ApiError> {
+    let rows = sqlx::query_as::<_, (i64, String, String, chrono::DateTime<chrono::Utc>)>(
+        "SELECT id, attribute, model, created_at \
+         FROM embeddings \
+         WHERE entity_id = $1 \
+         ORDER BY created_at DESC",
+    )
+    .bind(entity_id)
+    .fetch_all(&state.pool)
+    .await
+    .map_err(|e| ApiError::internal(format!("Failed to fetch embeddings: {e}")))?;
+
+    let embeddings: Vec<serde_json::Value> = rows
+        .into_iter()
+        .map(|(id, attribute, model, created_at)| {
+            serde_json::json!({
+                "id": id,
+                "entity_id": entity_id,
+                "attribute": attribute,
+                "model": model,
+                "created_at": created_at.to_rfc3339(),
+            })
+        })
+        .collect();
+
+    let response = serde_json::json!({
+        "data": embeddings,
+        "meta": { "count": embeddings.len() }
+    });
+    Ok(negotiate_response(&headers, &response))
+}
+
+/// Request body for `POST /api/search/semantic`.
+#[derive(Deserialize)]
+struct SemanticSearchRequest {
+    /// The entity type to search within (e.g. "Article").
+    entity_type: String,
+    /// Pre-computed embedding vector.
+    vector: Vec<f32>,
+    /// Maximum number of results.
+    #[serde(default = "default_search_limit")]
+    limit: u32,
+    /// Optional attribute filter — only search embeddings for this attribute.
+    #[serde(default)]
+    attribute: Option<String>,
+}
+
+fn default_search_limit() -> u32 {
+    10
+}
+
+/// `POST /api/search/semantic` — Search by vector similarity, return matched
+/// entities with their cosine distance scores.
+async fn search_semantic(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    axum::Json(body): axum::Json<SemanticSearchRequest>,
+) -> Result<Response, ApiError> {
+    if body.vector.is_empty() {
+        return Err(ApiError::bad_request("vector must not be empty"));
+    }
+    if body.entity_type.is_empty() {
+        return Err(ApiError::bad_request("entity_type must not be empty"));
+    }
+
+    let vec_literal = format_pgvector_literal(&body.vector);
+
+    // Build the query dynamically to support optional attribute filter.
+    let (sql, has_attr_param) = if body.attribute.is_some() {
+        (
+            format!(
+                "SELECT e.entity_id, e.attribute, \
+                        (e.embedding <=> '{vec}'::vector) AS distance \
+                 FROM embeddings e \
+                 INNER JOIN triples t_type ON t_type.entity_id = e.entity_id \
+                   AND t_type.attribute = ':db/type' \
+                   AND t_type.value = $1::jsonb \
+                   AND NOT t_type.retracted \
+                 WHERE e.attribute = $2 \
+                 ORDER BY e.embedding <=> '{vec}'::vector \
+                 LIMIT $3",
+                vec = vec_literal,
+            ),
+            true,
+        )
+    } else {
+        (
+            format!(
+                "SELECT e.entity_id, e.attribute, \
+                        (e.embedding <=> '{vec}'::vector) AS distance \
+                 FROM embeddings e \
+                 INNER JOIN triples t_type ON t_type.entity_id = e.entity_id \
+                   AND t_type.attribute = ':db/type' \
+                   AND t_type.value = $1::jsonb \
+                   AND NOT t_type.retracted \
+                 ORDER BY e.embedding <=> '{vec}'::vector \
+                 LIMIT $2",
+                vec = vec_literal,
+            ),
+            false,
+        )
+    };
+
+    let rows: Vec<(Uuid, String, f64)> = if has_attr_param {
+        sqlx::query_as::<_, (Uuid, String, f64)>(&sql)
+            .bind(serde_json::Value::String(body.entity_type.clone()))
+            .bind(body.attribute.as_deref().unwrap_or(""))
+            .bind(body.limit as i32)
+            .fetch_all(&state.pool)
+            .await
+    } else {
+        sqlx::query_as::<_, (Uuid, String, f64)>(&sql)
+            .bind(serde_json::Value::String(body.entity_type.clone()))
+            .bind(body.limit as i32)
+            .fetch_all(&state.pool)
+            .await
+    }
+    .map_err(|e| ApiError::internal(format!("Semantic search failed: {e}")))?;
+
+    let results: Vec<serde_json::Value> = rows
+        .into_iter()
+        .map(|(entity_id, attribute, distance)| {
+            serde_json::json!({
+                "entity_id": entity_id,
+                "attribute": attribute,
+                "distance": distance,
+                "similarity": 1.0 - distance,
+            })
+        })
+        .collect();
+
+    let response = serde_json::json!({
+        "data": results,
+        "meta": {
+            "count": results.len(),
+            "entity_type": body.entity_type,
+        }
+    });
+    Ok(negotiate_response(&headers, &response))
+}
+
+/// Format a slice of f32 values as a pgvector literal string: `[0.1,0.2,0.3]`.
+fn format_pgvector_literal(vec: &[f32]) -> String {
+    let mut s = String::with_capacity(vec.len() * 8 + 2);
+    s.push('[');
+    for (i, v) in vec.iter().enumerate() {
+        if i > 0 {
+            s.push(',');
+        }
+        s.push_str(&v.to_string());
+    }
+    s.push(']');
+    s
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2915,6 +3420,8 @@ mod tests {
             "/storage/upload",
             "/storage/{path}",
             "/subscribe",
+            "/events",
+            "/events/publish",
             "/admin/schema",
             "/admin/functions",
             "/admin/sessions",

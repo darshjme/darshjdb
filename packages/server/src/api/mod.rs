@@ -31,11 +31,14 @@
 //! Every response includes `X-RateLimit-Limit`, `X-RateLimit-Remaining`,
 //! and `X-RateLimit-Reset` headers.
 
+pub mod batch;
 pub mod error;
 pub mod openapi;
+pub mod pool_stats;
 pub mod rest;
 pub mod ws;
 
 pub use error::ApiError;
+pub use pool_stats::PoolStats;
 pub use rest::build_router;
 pub use ws::{WsState, ws_routes};

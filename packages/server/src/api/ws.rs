@@ -14,6 +14,8 @@
 //! { "type": "pres-join",  "room": "<room_id>", "state": { ... } }
 //! { "type": "pres-state", "room": "<room_id>", "state": { ... } }
 //! { "type": "pres-leave", "room": "<room_id>" }
+//! { "type": "pub-sub",    "id": "<sub_id>", "channel": "entity:users:*" }
+//! { "type": "pub-unsub",  "id": "<sub_id>" }
 //! { "type": "ping" }
 //! ```
 //!
@@ -30,6 +32,9 @@
 //! { "type": "mut-err",    "id": "<req_id>", "error": "<reason>" }
 //! { "type": "pres-snap",  "room": "<room_id>", "members": [ ... ] }
 //! { "type": "pres-diff",  "room": "<room_id>", "joined": [...], "left": [...], "updated": [...] }
+//! { "type": "pub-sub-ok", "id": "<sub_id>", "channel": "entity:users:*" }
+//! { "type": "pub-unsub-ok", "id": "<sub_id>" }
+//! { "type": "pub-event",  "id": "<sub_id>", "event": "updated", "entity_type": "users", "entity_id": "<uuid>", "changed": [...], "tx_id": N }
 //! { "type": "pong" }
 //! { "type": "error",      "error": "<reason>" }
 //! ```
@@ -49,6 +54,7 @@ use tracing::{debug, info};
 use crate::query;
 use crate::sync::broadcaster::{ChangeEvent, OutboundDiff};
 use crate::sync::presence::PresenceManager;
+use crate::sync::pubsub::PubSubEngine;
 use crate::sync::registry::SubscriptionRegistry;
 use crate::sync::session::{SessionId, SessionManager, SubId};
 use crate::triple_store::PgTripleStore;
@@ -86,6 +92,8 @@ pub struct WsState {
     pub triple_store: Arc<PgTripleStore>,
     /// Broadcast sender for change events (subscribe to receive mutations).
     pub change_tx: tokio::sync::broadcast::Sender<ChangeEvent>,
+    /// Pub/sub engine for keyspace notification subscriptions.
+    pub pubsub: Arc<PubSubEngine>,
 }
 
 /// Inbound client message (deserialized from JSON or MessagePack).
@@ -118,6 +126,19 @@ enum ClientMessage {
     },
     PresLeave {
         room: String,
+    },
+    PubSub {
+        id: String,
+        channel: String,
+    },
+    PubUnsub {
+        id: String,
+    },
+    /// Batch: execute multiple operations in a single WebSocket frame.
+    Batch {
+        #[serde(default)]
+        id: String,
+        ops: Vec<Value>,
     },
     Ping,
 }
@@ -172,6 +193,32 @@ enum ServerMessage {
         left: Vec<String>,
         #[serde(skip_serializing_if = "Vec::is_empty")]
         updated: Vec<Value>,
+    },
+    PubSubOk {
+        id: String,
+        channel: String,
+    },
+    PubUnsubOk {
+        id: String,
+    },
+    PubEvent {
+        id: String,
+        event: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        entity_type: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        entity_id: Option<String>,
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        changed: Vec<String>,
+        tx_id: i64,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        payload: Option<Value>,
+    },
+    /// Batch result: contains results for all operations in a batch frame.
+    BatchResult {
+        id: String,
+        results: Vec<Value>,
+        duration_ms: f64,
     },
     Pong,
     Error {
@@ -263,6 +310,12 @@ async fn handle_connection(
             change = change_rx.recv() => {
                 match change {
                     Ok(event) => {
+                        // Process pub/sub subscriptions for this change event.
+                        if handle_pubsub_change(&event, &mut socket, &state, session_id, codec).await {
+                            debug!(session_id = %session_id, "send failed during pub/sub event, closing");
+                            break;
+                        }
+                        // Process query subscriptions (existing behavior).
                         if handle_change_event(&event, &mut socket, &state, session_id, codec).await {
                             debug!(session_id = %session_id, "send failed during change event, closing");
                             break;
@@ -450,8 +503,20 @@ async fn handle_message(
             handle_presence_leave(room, state, session_id);
         }
 
+        ClientMessage::PubSub { id, channel } => {
+            handle_pub_sub(id, channel, socket, &state, session_id, codec).await;
+        }
+
+        ClientMessage::PubUnsub { id } => {
+            handle_pub_unsub(id, socket, &state, session_id, codec).await;
+        }
+
         ClientMessage::Ping => {
             let _ = send_message(socket, &ServerMessage::Pong, codec).await;
+        }
+
+        ClientMessage::Batch { id, ops } => {
+            handle_ws_batch(id, ops, socket, state, session_id, codec).await;
         }
     }
 }
@@ -772,13 +837,23 @@ async fn handle_change_event(
 
 /// Clean up all resources for a disconnected session.
 fn cleanup(session_id: SessionId, state: &WsState) {
-    // Unregister all subscriptions.
+    // Unregister all query subscriptions.
     let removed_hashes = state.registry.unregister_session(&session_id);
     debug!(
         session_id = %session_id,
         removed_queries = removed_hashes.len(),
         "cleaned up subscriptions"
     );
+
+    // Unregister all pub/sub subscriptions.
+    let removed_pubsub = state.pubsub.unsubscribe_all(&session_id.to_string());
+    if removed_pubsub > 0 {
+        debug!(
+            session_id = %session_id,
+            removed_pubsub = removed_pubsub,
+            "cleaned up pub/sub subscriptions"
+        );
+    }
 
     // Leave all presence rooms.
     if let Some(user_id) = get_user_id(state, session_id) {
@@ -787,6 +862,122 @@ fn cleanup(session_id: SessionId, state: &WsState) {
 
     // Remove session.
     state.sessions.remove_session(&session_id);
+}
+
+/// Handle a pub/sub subscribe request.
+async fn handle_pub_sub(
+    id: String,
+    channel: String,
+    socket: &mut WebSocket,
+    state: &WsState,
+    session_id: SessionId,
+    codec: Codec,
+) {
+    if channel.is_empty() {
+        let _ = send_message(
+            socket,
+            &ServerMessage::Error {
+                error: "channel pattern is required".into(),
+            },
+            codec,
+        )
+        .await;
+        return;
+    }
+
+    let subscriber = session_id.to_string();
+    let pattern = state.pubsub.subscribe(&subscriber, &id, &channel);
+
+    let _ = send_message(
+        socket,
+        &ServerMessage::PubSubOk {
+            id: id.clone(),
+            channel: pattern.raw,
+        },
+        codec,
+    )
+    .await;
+
+    debug!(
+        session_id = %session_id,
+        sub_id = %id,
+        channel = %channel,
+        "pub/sub subscription registered"
+    );
+}
+
+/// Handle a pub/sub unsubscribe request.
+async fn handle_pub_unsub(
+    id: String,
+    socket: &mut WebSocket,
+    state: &WsState,
+    session_id: SessionId,
+    codec: Codec,
+) {
+    let subscriber = session_id.to_string();
+    let removed = state.pubsub.unsubscribe(&subscriber, &id);
+
+    if !removed {
+        let _ = send_message(
+            socket,
+            &ServerMessage::Error {
+                error: format!("pub/sub subscription '{id}' not found"),
+            },
+            codec,
+        )
+        .await;
+        return;
+    }
+
+    let _ = send_message(socket, &ServerMessage::PubUnsubOk { id: id.clone() }, codec).await;
+
+    debug!(
+        session_id = %session_id,
+        sub_id = %id,
+        "pub/sub subscription removed"
+    );
+}
+
+/// Process a change event through the pub/sub engine and send matching events
+/// to this WebSocket client.
+///
+/// Returns `true` if a send failed and the connection should be closed.
+async fn handle_pubsub_change(
+    event: &ChangeEvent,
+    socket: &mut WebSocket,
+    state: &WsState,
+    session_id: SessionId,
+    codec: Codec,
+) -> bool {
+    let subscriber = session_id.to_string();
+    let matches = state.pubsub.process_change_event(event);
+
+    for (sub, sub_id, pub_event) in matches {
+        if sub != subscriber {
+            continue;
+        }
+
+        if send_message(
+            socket,
+            &ServerMessage::PubEvent {
+                id: sub_id,
+                event: pub_event.event,
+                entity_type: pub_event.entity_type,
+                entity_id: pub_event.entity_id,
+                changed: pub_event.changed,
+                tx_id: pub_event.tx_id,
+                payload: pub_event.payload,
+            },
+            codec,
+        )
+        .await
+        .is_err()
+        {
+            return true;
+        }
+    }
+
+    false
 }
 
 /// Send a server message over the WebSocket using the detected codec.

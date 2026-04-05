@@ -242,47 +242,7 @@ impl RuleEngine {
 
     /// Check whether a triple matches a rule's pattern.
     fn matches_pattern(&self, pattern: &TriplePattern, triple: &TripleInput) -> bool {
-        match pattern {
-            TriplePattern::Attribute(attr) => triple.attribute == *attr,
-            TriplePattern::EntityType(prefix) => {
-                triple.attribute.starts_with(&format!("{}/", prefix))
-            }
-            TriplePattern::AttributeValue {
-                attribute,
-                condition,
-                value,
-            } => {
-                if triple.attribute != *attribute {
-                    return false;
-                }
-                match condition {
-                    WhereOp::Eq => triple.value == *value,
-                    WhereOp::Neq => triple.value != *value,
-                    WhereOp::Gt => {
-                        json_compare(&triple.value, value) == Some(std::cmp::Ordering::Greater)
-                    }
-                    WhereOp::Gte => {
-                        matches!(
-                            json_compare(&triple.value, value),
-                            Some(std::cmp::Ordering::Greater | std::cmp::Ordering::Equal)
-                        )
-                    }
-                    WhereOp::Lt => {
-                        json_compare(&triple.value, value) == Some(std::cmp::Ordering::Less)
-                    }
-                    WhereOp::Lte => {
-                        matches!(
-                            json_compare(&triple.value, value),
-                            Some(std::cmp::Ordering::Less | std::cmp::Ordering::Equal)
-                        )
-                    }
-                    WhereOp::Like | WhereOp::Contains => {
-                        // Like/Contains not meaningful for single-value match; treat as no-match.
-                        false
-                    }
-                }
-            }
-        }
+        pattern_matches(pattern, triple)
     }
 
     /// Execute a rule action and produce implied triples.
@@ -305,6 +265,7 @@ impl RuleEngine {
                         attribute: target.clone(),
                         value: v,
                         value_type: ValueType::String as i16,
+                        ttl_seconds: None,
                     }]),
                     None => Ok(Vec::new()),
                 }
@@ -348,6 +309,7 @@ impl RuleEngine {
                         attribute: target.clone(),
                         value: v,
                         value_type: ValueType::String as i16,
+                        ttl_seconds: None,
                     }]),
                     None => Ok(Vec::new()),
                 }
@@ -408,6 +370,7 @@ impl RuleEngine {
                 attribute: target_attribute.to_string(),
                 value: trigger.value.clone(),
                 value_type: trigger.value_type,
+                ttl_seconds: None,
             })
             .collect())
     }
@@ -430,6 +393,7 @@ impl RuleEngine {
                 attribute: target_attribute.to_string(),
                 value: trigger.value.clone(),
                 value_type: trigger.value_type,
+                ttl_seconds: None,
             })
             .collect())
     }
@@ -459,6 +423,7 @@ impl RuleEngine {
                 attribute: target_attribute.to_string(),
                 value: serde_json::Value::Number(serde_json::Number::from(current + delta)),
                 value_type: ValueType::Integer as i16,
+                ttl_seconds: None,
             });
         }
 
@@ -491,6 +456,7 @@ impl RuleEngine {
                 attribute: target_attribute.to_string(),
                 value: serde_json::Value::Number(serde_json::Number::from(current + delta)),
                 value_type: ValueType::Integer as i16,
+                ttl_seconds: None,
             });
         }
 
@@ -498,7 +464,53 @@ impl RuleEngine {
     }
 }
 
-// ── Helper functions ───────────────────────────────────────────────
+// ── Pattern matching (standalone for testability) ──────────────────
+
+/// Check whether a triple matches a pattern.
+///
+/// Extracted as a free function so it can be tested without constructing
+/// a full [`RuleEngine`] (which requires a Tokio runtime for the PgPool).
+fn pattern_matches(pattern: &TriplePattern, triple: &TripleInput) -> bool {
+    match pattern {
+        TriplePattern::Attribute(attr) => triple.attribute == *attr,
+        TriplePattern::EntityType(prefix) => triple.attribute.starts_with(&format!("{}/", prefix)),
+        TriplePattern::AttributeValue {
+            attribute,
+            condition,
+            value,
+        } => {
+            if triple.attribute != *attribute {
+                return false;
+            }
+            match condition {
+                WhereOp::Eq => triple.value == *value,
+                WhereOp::Neq => triple.value != *value,
+                WhereOp::Gt => {
+                    json_compare(&triple.value, value) == Some(std::cmp::Ordering::Greater)
+                }
+                WhereOp::Gte => {
+                    matches!(
+                        json_compare(&triple.value, value),
+                        Some(std::cmp::Ordering::Greater | std::cmp::Ordering::Equal)
+                    )
+                }
+                WhereOp::Lt => json_compare(&triple.value, value) == Some(std::cmp::Ordering::Less),
+                WhereOp::Lte => {
+                    matches!(
+                        json_compare(&triple.value, value),
+                        Some(std::cmp::Ordering::Less | std::cmp::Ordering::Equal)
+                    )
+                }
+                WhereOp::Like | WhereOp::Contains => {
+                    // Like/Contains not meaningful for single-value match; treat as no-match.
+                    false
+                }
+            }
+        }
+    }
+}
+
+// ─��� Helper functions ───────────────────────────────────────────────
 
 /// Compute a derived value from an entity's triples.
 fn compute_from_triples(
@@ -596,13 +608,6 @@ mod tests {
 
     // ── Pattern matching ───────────────────────────────────────────
 
-    fn make_engine() -> RuleEngine {
-        // Engine with no rules for testing pattern matching directly.
-        let pool = sqlx::PgPool::connect_lazy("postgres://localhost/test").expect("test pool");
-        let store = Arc::new(PgTripleStore::new_lazy(pool));
-        RuleEngine::new(Vec::new(), store)
-    }
-
     fn make_triple_input(
         entity_id: Uuid,
         attribute: &str,
@@ -613,87 +618,80 @@ mod tests {
             attribute: attribute.to_string(),
             value,
             value_type: ValueType::String as i16,
+            ttl_seconds: None,
         }
     }
 
     #[test]
     fn pattern_attribute_matches() {
-        let engine = make_engine();
         let pattern = TriplePattern::Attribute("users/firstName".to_string());
         let triple = make_triple_input(Uuid::new_v4(), "users/firstName", json!("Alice"));
-        assert!(engine.matches_pattern(&pattern, &triple));
+        assert!(pattern_matches(&pattern, &triple));
     }
 
     #[test]
     fn pattern_attribute_no_match() {
-        let engine = make_engine();
         let pattern = TriplePattern::Attribute("users/firstName".to_string());
         let triple = make_triple_input(Uuid::new_v4(), "users/lastName", json!("Smith"));
-        assert!(!engine.matches_pattern(&pattern, &triple));
+        assert!(!pattern_matches(&pattern, &triple));
     }
 
     #[test]
     fn pattern_entity_type_matches() {
-        let engine = make_engine();
         let pattern = TriplePattern::EntityType("users".to_string());
         let triple = make_triple_input(Uuid::new_v4(), "users/email", json!("a@b.com"));
-        assert!(engine.matches_pattern(&pattern, &triple));
+        assert!(pattern_matches(&pattern, &triple));
     }
 
     #[test]
     fn pattern_entity_type_no_match() {
-        let engine = make_engine();
         let pattern = TriplePattern::EntityType("posts".to_string());
         let triple = make_triple_input(Uuid::new_v4(), "users/email", json!("a@b.com"));
-        assert!(!engine.matches_pattern(&pattern, &triple));
+        assert!(!pattern_matches(&pattern, &triple));
     }
 
     #[test]
     fn pattern_attribute_value_eq_matches() {
-        let engine = make_engine();
         let pattern = TriplePattern::AttributeValue {
             attribute: "users/role".to_string(),
             condition: WhereOp::Eq,
             value: json!("admin"),
         };
         let triple = make_triple_input(Uuid::new_v4(), "users/role", json!("admin"));
-        assert!(engine.matches_pattern(&pattern, &triple));
+        assert!(pattern_matches(&pattern, &triple));
     }
 
     #[test]
     fn pattern_attribute_value_eq_no_match() {
-        let engine = make_engine();
         let pattern = TriplePattern::AttributeValue {
             attribute: "users/role".to_string(),
             condition: WhereOp::Eq,
             value: json!("admin"),
         };
         let triple = make_triple_input(Uuid::new_v4(), "users/role", json!("user"));
-        assert!(!engine.matches_pattern(&pattern, &triple));
+        assert!(!pattern_matches(&pattern, &triple));
     }
 
     #[test]
     fn pattern_attribute_value_gt_matches() {
-        let engine = make_engine();
         let pattern = TriplePattern::AttributeValue {
             attribute: "users/age".to_string(),
             condition: WhereOp::Gt,
             value: json!(18),
         };
         let triple = make_triple_input(Uuid::new_v4(), "users/age", json!(25));
-        assert!(engine.matches_pattern(&pattern, &triple));
+        assert!(pattern_matches(&pattern, &triple));
     }
 
     #[test]
     fn pattern_attribute_value_gt_no_match() {
-        let engine = make_engine();
         let pattern = TriplePattern::AttributeValue {
             attribute: "users/age".to_string(),
             condition: WhereOp::Gt,
             value: json!(18),
         };
         let triple = make_triple_input(Uuid::new_v4(), "users/age", json!(15));
-        assert!(!engine.matches_pattern(&pattern, &triple));
+        assert!(!pattern_matches(&pattern, &triple));
     }
 
     // ── Computation helpers ────────────────────────────────────────
@@ -708,6 +706,7 @@ mod tests {
             tx_id: 1,
             created_at: chrono::Utc::now(),
             retracted: false,
+            expires_at: None,
         }
     }
 
@@ -865,6 +864,13 @@ mod tests {
     }
 
     // ── Engine evaluate (empty rules) ──────────────────────────────
+
+    /// Build an engine with no rules for testing. Requires a Tokio runtime.
+    fn make_engine() -> RuleEngine {
+        let pool = sqlx::PgPool::connect_lazy("postgres://localhost/test").expect("test pool");
+        let store = Arc::new(PgTripleStore::new_lazy(pool));
+        RuleEngine::new(Vec::new(), store)
+    }
 
     #[tokio::test]
     async fn evaluate_empty_rules_returns_empty() {

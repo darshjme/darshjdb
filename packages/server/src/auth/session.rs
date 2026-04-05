@@ -28,6 +28,12 @@ use uuid::Uuid;
 
 use super::{AuthContext, AuthError};
 
+/// Quantum readiness: when NIST PQC standards are final, add CRYSTALS-Dilithium
+/// as an alternative signing algorithm. The KeyManager already supports algorithm
+/// selection -- adding a new variant is a config change, not a rewrite.
+/// See docs/strategy/QUANTUM_STRATEGY.md for the migration plan.
+pub const QUANTUM_READY_NOTE: &str = "PQC migration path documented";
+
 // ---------------------------------------------------------------------------
 // JWT claims
 // ---------------------------------------------------------------------------
