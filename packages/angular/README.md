@@ -1,11 +1,11 @@
-# @darshan/angular
+# @darshjdb/angular
 
-Angular SDK for DarshanDB -- Signals, Observables, SSR, and standalone component support.
+Angular SDK for DarshJDB -- Signals, Observables, SSR, and standalone component support.
 
 ## Install
 
 ```bash
-npm install @darshan/angular
+npm install @darshjdb/angular
 ```
 
 Requires Angular 16+ as a peer dependency. Angular 17+ recommended for Signals support.
@@ -14,7 +14,7 @@ Requires Angular 16+ as a peer dependency. Angular 17+ recommended for Signals s
 
 ```typescript
 // app.config.ts (standalone)
-import { provideDarshan } from '@darshan/angular';
+import { provideDarshan } from '@darshjdb/angular';
 
 export const appConfig = {
   providers: [
@@ -27,7 +27,7 @@ Or with NgModule:
 
 ```typescript
 // app.module.ts
-import { DarshanModule } from '@darshan/angular';
+import { DarshanModule } from '@darshjdb/angular';
 
 @NgModule({
   imports: [
@@ -43,7 +43,7 @@ export class AppModule {}
 
 ```typescript
 import { Component } from '@angular/core';
-import { injectQuery } from '@darshan/angular';
+import { injectQuery } from '@darshjdb/angular';
 
 @Component({
   selector: 'app-todos',
@@ -70,7 +70,7 @@ export class TodosComponent {
 
 ```typescript
 import { Component, inject } from '@angular/core';
-import { DarshanAuthService } from '@darshan/angular';
+import { DarshJDBAuthService } from '@darshjdb/angular';
 
 @Component({
   template: `
@@ -83,7 +83,7 @@ import { DarshanAuthService } from '@darshan/angular';
   `
 })
 export class AuthComponent {
-  auth = inject(DarshanAuthService);
+  auth = inject(DarshJDBAuthService);
 }
 ```
 
@@ -91,7 +91,7 @@ export class AuthComponent {
 
 ```typescript
 import { Component, inject } from '@angular/core';
-import { DarshanService } from '@darshan/angular';
+import { DarshanService } from '@darshjdb/angular';
 
 @Component({
   template: `
@@ -118,7 +118,7 @@ For traditional Angular patterns or Angular 16:
 
 ```typescript
 import { Component, inject } from '@angular/core';
-import { DarshanService } from '@darshan/angular';
+import { DarshanService } from '@darshjdb/angular';
 import { AsyncPipe } from '@angular/common';
 
 @Component({
@@ -142,7 +142,7 @@ Protect routes with the built-in auth guard:
 
 ```typescript
 // app.routes.ts
-import { darshanAuthGuard } from '@darshan/angular';
+import { darshanAuthGuard } from '@darshjdb/angular';
 
 export const routes = [
   { path: 'dashboard', component: DashboardComponent, canActivate: [darshanAuthGuard] },
@@ -155,7 +155,7 @@ export const routes = [
 
 ```typescript
 import { Component, inject } from '@angular/core';
-import { injectPresence } from '@darshan/angular';
+import { injectPresence } from '@darshjdb/angular';
 
 @Component({
   template: `
@@ -181,7 +181,7 @@ Works with Angular Universal out of the box. Queries executed during SSR are ser
 
 ```typescript
 // server.ts
-import { provideDarshanServer } from '@darshan/angular/server';
+import { provideDarshanServer } from '@darshjdb/angular/server';
 
 const serverConfig = {
   providers: [

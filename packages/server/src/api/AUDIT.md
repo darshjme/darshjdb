@@ -1,4 +1,4 @@
-# DarshanDB REST API Audit
+# DarshJDB REST API Audit
 
 **Date:** 2026-04-05
 **Scope:** `packages/server/src/api/` -- mod.rs, rest.rs, error.rs, openapi.rs, ws.rs
@@ -78,7 +78,7 @@ The content negotiation `wants_msgpack` function checks if the Accept header *co
 
 ## Test Coverage Added
 
-**40 tests total**, all passing (`cargo test --package darshandb-server --lib -- api::`)
+**40 tests total**, all passing (`cargo test --package ddb-server --lib -- api::`)
 
 ### error.rs (12 tests)
 | Test | What it verifies |

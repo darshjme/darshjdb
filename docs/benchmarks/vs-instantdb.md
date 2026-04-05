@@ -1,6 +1,6 @@
-# DarshanDB vs InstantDB: A Technical Comparison
+# DarshJDB vs InstantDB: A Technical Comparison
 
-Both DarshanDB and InstantDB store application data in a **triple store** (Entity-Attribute-Value model) on top of PostgreSQL. Both offer declarative relational queries from the client, real-time subscriptions, and optimistic mutations. DarshanQL is directly inspired by InstantDB's InstaQL.
+Both DarshJDB and InstantDB store application data in a **triple store** (Entity-Attribute-Value model) on top of PostgreSQL. Both offer declarative relational queries from the client, real-time subscriptions, and optimistic mutations. DarshanQL is directly inspired by InstantDB's InstaQL.
 
 This document is an honest, detailed comparison written from the perspective of someone who has read both codebases. Where InstantDB is better, we say so.
 
@@ -33,9 +33,9 @@ const graph = i.graph(
 );
 ```
 
-### DarshanDB
+### DarshJDB
 
-DarshanDB uses a single `triples` table with typed value columns:
+DarshJDB uses a single `triples` table with typed value columns:
 
 ```sql
 CREATE TABLE triples (
@@ -59,7 +59,7 @@ CREATE TABLE triples (
 
 Key differences:
 
-| Aspect | InstantDB | DarshanDB |
+| Aspect | InstantDB | DarshJDB |
 |--------|-----------|-----------|
 | Attribute storage | Integer IDs via `attrs` table | Raw text strings |
 | Value storage | Single JSONB `value` column | Typed columns (`value_bool`, `value_int`, etc.) |
@@ -68,7 +68,7 @@ Key differences:
 | TTL support | No | Yes (`expires_at` column) |
 | Entity typing | Via attribute metadata in `attrs` | Via `:db/type` attribute triple |
 
-**Assessment:** InstantDB's integer-ID attribute normalization saves storage on wide datasets and makes attribute renames free. DarshanDB's typed value columns avoid JSONB comparison overhead for numeric filters (comparing `value_int >= 3` is faster than `value::jsonb >= '3'::jsonb`). Both are valid engineering tradeoffs. InstantDB's design is more faithful to Datomic's information model; DarshanDB's is more PostgreSQL-native.
+**Assessment:** InstantDB's integer-ID attribute normalization saves storage on wide datasets and makes attribute renames free. DarshJDB's typed value columns avoid JSONB comparison overhead for numeric filters (comparing `value_int >= 3` is faster than `value::jsonb >= '3'::jsonb`). Both are valid engineering tradeoffs. InstantDB's design is more faithful to Datomic's information model; DarshJDB's is more PostgreSQL-native.
 
 ---
 
@@ -84,7 +84,7 @@ Both query languages use nested JSON objects where keys are entity types and val
 // InstaQL (InstantDB)
 db.useQuery({ todos: {} })
 
-// DarshanQL (DarshanDB)
+// DarshanQL (DarshJDB)
 db.useQuery({ todos: {} })
 ```
 
@@ -147,7 +147,7 @@ InstaQL groups all query modifiers under `$`. DarshanQL uses top-level `$order`,
 | Multi-entity queries | Yes | Yes |
 | Query complexity limits | Not documented | Configurable depth, result, and op limits |
 
-**Assessment:** DarshanQL is a superset of InstaQL. The core relational query syntax is nearly identical (intentionally so), but DarshanDB adds full-text search, vector search, hybrid search, aggregations, and groupBy that InstantDB does not have. InstantDB's query language is cleaner in its minimalism -- everything under one `$` key is arguably more elegant. DarshanDB trades that elegance for more query power.
+**Assessment:** DarshanQL is a superset of InstaQL. The core relational query syntax is nearly identical (intentionally so), but DarshJDB adds full-text search, vector search, hybrid search, aggregations, and groupBy that InstantDB does not have. InstantDB's query language is cleaner in its minimalism -- everything under one `$` key is arguably more elegant. DarshJDB trades that elegance for more query power.
 
 ---
 
@@ -159,7 +159,7 @@ InstaQL groups all query modifiers under `$`. DarshanQL uses top-level `$order`,
 // InstantDB
 db.transact(tx.todos[id()].update({ title: "Buy milk", done: false }))
 
-// DarshanDB
+// DarshJDB
 db.transact(db.tx.todos[db.id()].set({ title: "Buy milk", done: false }))
 ```
 
@@ -167,7 +167,7 @@ db.transact(db.tx.todos[db.id()].set({ title: "Buy milk", done: false }))
 // InstantDB
 db.transact(tx.todos[id].merge({ done: true }))
 
-// DarshanDB
+// DarshJDB
 db.transact(db.tx.todos[id].merge({ done: true }))
 ```
 
@@ -175,7 +175,7 @@ db.transact(db.tx.todos[id].merge({ done: true }))
 // InstantDB
 db.transact(tx.todos[id].delete())
 
-// DarshanDB
+// DarshJDB
 db.transact(db.tx.todos[id].delete())
 ```
 
@@ -183,13 +183,13 @@ db.transact(db.tx.todos[id].delete())
 // InstantDB
 db.transact(tx.users[userId].link({ todos: todoId }))
 
-// DarshanDB
+// DarshJDB
 db.transact(db.tx.users[userId].link({ todos: todoId }))
 ```
 
 The mutation APIs are nearly identical. Both support batch transactions (array of operations executed atomically) and optimistic updates with server reconciliation.
 
-**Assessment:** Parity. DarshanDB's mutation API is a direct port of InstantDB's, with the same semantics.
+**Assessment:** Parity. DarshJDB's mutation API is a direct port of InstantDB's, with the same semantics.
 
 ---
 
@@ -205,9 +205,9 @@ Key characteristics:
 - Client re-derives query results from its local triple set
 - This enables offline query evaluation without server round-trips
 
-### DarshanDB
+### DarshJDB
 
-DarshanDB uses a **server-side dependency tracker** with delta diff compression:
+DarshJDB uses a **server-side dependency tracker** with delta diff compression:
 
 1. When a query is registered, the `DependencyTracker` records which `(attribute, value_constraint)` pairs the query depends on.
 2. When triples change, `get_affected_queries()` returns the set of query IDs whose results may have changed.
@@ -222,7 +222,7 @@ Key characteristics:
 
 ### Comparison
 
-| Aspect | InstantDB | DarshanDB |
+| Aspect | InstantDB | DarshJDB |
 |--------|-----------|-----------|
 | Where queries re-evaluate | Client (Datalog) | Server (SQL) |
 | What gets pushed | Raw triple novelty | Computed delta diffs |
@@ -230,9 +230,9 @@ Key characteristics:
 | Server load per mutation | Lower (just broadcast triples) | Higher (re-execute affected queries) |
 | Offline query capability | Full (local Datalog can answer new queries) | Partial (cache has results, not a queryable database) |
 | Permission enforcement | Mixed (server filters what triples to send) | Pure server-side (results always filtered before sending) |
-| Bandwidth efficiency | Depends on query selectivity | High (98% reduction vs polling per DarshanDB docs) |
+| Bandwidth efficiency | Depends on query selectivity | High (98% reduction vs polling per DarshJDB docs) |
 
-**Assessment:** InstantDB's approach is architecturally more elegant and enables richer offline capabilities. DarshanDB's approach is simpler to implement correctly (especially around permissions -- the server always sees the full picture) and produces smaller payloads for complex queries. For most applications, the difference is invisible to end users.
+**Assessment:** InstantDB's approach is architecturally more elegant and enables richer offline capabilities. DarshJDB's approach is simpler to implement correctly (especially around permissions -- the server always sees the full picture) and produces smaller payloads for complex queries. For most applications, the difference is invisible to end users.
 
 ---
 
@@ -247,7 +247,7 @@ This is the clearest differentiator.
 - Data lives on InstantDB's cloud. You depend on their uptime, pricing, and data residency.
 - There is an open-source client SDK, but the server is proprietary.
 
-### DarshanDB
+### DarshJDB
 
 - **Self-hosted by design.** Single binary + PostgreSQL. That's it.
 - Docker Compose for one-command deployment.
@@ -256,7 +256,7 @@ This is the clearest differentiator.
 - Can run air-gapped. No phone-home. No license server.
 - Monitoring via Prometheus `/metrics` endpoint + Grafana dashboards.
 
-**Assessment:** If you need to own your data, run in a regulated environment, operate in a specific geographic region, or simply refuse to depend on a startup's cloud for your production database, DarshanDB is the only option. This is not a minor difference -- it is the fundamental reason DarshanDB exists.
+**Assessment:** If you need to own your data, run in a regulated environment, operate in a specific geographic region, or simply refuse to depend on a startup's cloud for your production database, DarshJDB is the only option. This is not a minor difference -- it is the fundamental reason DarshJDB exists.
 
 ---
 
@@ -271,7 +271,7 @@ This is the clearest differentiator.
 - No MFA
 - No session management UI
 
-### DarshanDB
+### DarshJDB
 
 - Email/password (Argon2id hashing, breach-password rejection)
 - Magic links
@@ -283,7 +283,7 @@ This is the clearest differentiator.
 - Custom JWT claims
 - Framework integrations (Next.js middleware, Angular service)
 
-**Assessment:** DarshanDB's auth is significantly more complete. InstantDB's is intentionally minimal -- they expect you to use it alongside external auth providers. DarshanDB ships a production-grade auth system because self-hosted users cannot rely on a separate auth SaaS being available.
+**Assessment:** DarshJDB's auth is significantly more complete. InstantDB's is intentionally minimal -- they expect you to use it alongside external auth providers. DarshJDB ships a production-grade auth system because self-hosted users cannot rely on a separate auth SaaS being available.
 
 ---
 
@@ -306,7 +306,7 @@ InstantDB uses a CEL-like permissions language defined in the dashboard or in co
 - `bind` for reusable permission variables
 - Evaluated server-side before sending triples to clients
 
-### DarshanDB
+### DarshJDB
 
 ```typescript
 export default {
@@ -336,7 +336,7 @@ export default {
 - Permission test helpers
 - Debug logging
 
-**Assessment:** DarshanDB's permission system is more powerful -- field-level permissions and filter-object injection are features InstantDB lacks. InstantDB's expression-based approach is more constrained but arguably safer (no arbitrary code execution in the permission layer). Both work well for typical use cases. DarshanDB's advantage grows with complex multi-tenant scenarios.
+**Assessment:** DarshJDB's permission system is more powerful -- field-level permissions and filter-object injection are features InstantDB lacks. InstantDB's expression-based approach is more constrained but arguably safer (no arbitrary code execution in the permission layer). Both work well for typical use cases. DarshJDB's advantage grows with complex multi-tenant scenarios.
 
 ---
 
@@ -348,11 +348,11 @@ Let's be honest about where InstantDB wins.
 
 InstantDB's `i.graph()` schema definition produces fully typed query results. When you write `db.useQuery({ todos: {} })`, TypeScript knows the shape of every todo. This is best-in-class developer experience, comparable to Prisma's type generation.
 
-DarshanDB does not have schema-driven type inference at the query level. You get `data.todos` as a generic type unless you manually annotate.
+DarshJDB does not have schema-driven type inference at the query level. You get `data.todos` as a generic type unless you manually annotate.
 
 ### Client-Side Datalog Engine
 
-InstantDB's client holds a full triple database locally and can evaluate queries offline without server round-trips. This is architecturally superior for offline-first applications. DarshanDB's client cache stores query results, not a queryable database.
+InstantDB's client holds a full triple database locally and can evaluate queries offline without server round-trips. This is architecturally superior for offline-first applications. DarshJDB's client cache stores query results, not a queryable database.
 
 ### Developer Experience Polish
 
@@ -362,57 +362,57 @@ InstantDB has had more engineering time devoted to DX polish:
 - Comprehensive React hooks with TypeScript generics
 - Error messages tuned for common mistakes
 
-DarshanDB has an admin dashboard and CLI, but the overall DX is less polished.
+DarshJDB has an admin dashboard and CLI, but the overall DX is less polished.
 
 ### YC Backing and Community
 
-InstantDB is YC-backed with full-time engineers, a growing community, and the resources of a funded startup. DarshanDB is a solo open-source project. This matters for long-term maintenance, ecosystem growth, and third-party integrations.
+InstantDB is YC-backed with full-time engineers, a growing community, and the resources of a funded startup. DarshJDB is a solo open-source project. This matters for long-term maintenance, ecosystem growth, and third-party integrations.
 
 ### Battle-Testing
 
-InstantDB is running production workloads for paying customers. DarshanDB is new. There is no substitute for production traffic when it comes to finding edge cases in a database.
+InstantDB is running production workloads for paying customers. DarshJDB is new. There is no substitute for production traffic when it comes to finding edge cases in a database.
 
 ---
 
-## 9. What DarshanDB Does Better
+## 9. What DarshJDB Does Better
 
 ### Self-Hosting
 
-The obvious one. If your data cannot leave your infrastructure, InstantDB is not an option. DarshanDB is a single binary.
+The obvious one. If your data cannot leave your infrastructure, InstantDB is not an option. DarshJDB is a single binary.
 
 ### Vector Search
 
-DarshanDB has native `$semantic` and `$hybrid` search built into the query language, backed by pgvector. This enables AI/ML features (semantic search, RAG, embeddings) at the database level. InstantDB has no vector search capability.
+DarshJDB has native `$semantic` and `$hybrid` search built into the query language, backed by pgvector. This enables AI/ML features (semantic search, RAG, embeddings) at the database level. InstantDB has no vector search capability.
 
 ### Full-Text Search
 
-DarshanDB exposes PostgreSQL's tsvector full-text search via `$search` in DarshanQL. InstantDB does not have full-text search.
+DarshJDB exposes PostgreSQL's tsvector full-text search via `$search` in DarshanQL. InstantDB does not have full-text search.
 
 ### Aggregations
 
-DarshanDB supports `$aggregate` with `count`, `sum`, `avg`, `min`, `max`, and `$groupBy` directly in queries. InstantDB requires you to fetch all data and aggregate client-side.
+DarshJDB supports `$aggregate` with `count`, `sum`, `avg`, `min`, `max`, and `$groupBy` directly in queries. InstantDB requires you to fetch all data and aggregate client-side.
 
 ### Server Functions
 
-DarshanDB runs TypeScript functions in sandboxed V8 isolates (Deno Core) on the server: queries, mutations, actions, scheduled (cron), and internal functions. Each isolate has CPU time limits (30s), memory limits (128MB), network allowlists, and SSRF protection.
+DarshJDB runs TypeScript functions in sandboxed V8 isolates (Deno Core) on the server: queries, mutations, actions, scheduled (cron), and internal functions. Each isolate has CPU time limits (30s), memory limits (128MB), network allowlists, and SSRF protection.
 
 InstantDB does not have server-side functions. Business logic runs either on the client or in your own separate backend.
 
 ### Forward-Chaining Rules
 
-DarshanDB includes a rule engine inspired by GraphDB's TRREE: when triples are inserted, rules can fire to produce derived triples in the same transaction. This enables computed attributes, value propagation, and counter updates without application code. InstantDB has no equivalent.
+DarshJDB includes a rule engine inspired by GraphDB's TRREE: when triples are inserted, rules can fire to produce derived triples in the same transaction. This enables computed attributes, value propagation, and counter updates without application code. InstantDB has no equivalent.
 
 ### Multi-Language SDKs
 
-DarshanDB ships Python and PHP SDKs alongside JavaScript/TypeScript. InstantDB is JavaScript/TypeScript only.
+DarshJDB ships Python and PHP SDKs alongside JavaScript/TypeScript. InstantDB is JavaScript/TypeScript only.
 
 ### Presence System
 
-DarshanDB has a built-in real-time presence system (rooms, peers, cursor tracking, typing indicators). InstantDB has presence via their `room` primitive, so this is roughly at parity -- though DarshanDB's is built into the core server rather than being a separate service.
+DarshJDB has a built-in real-time presence system (rooms, peers, cursor tracking, typing indicators). InstantDB has presence via their `room` primitive, so this is roughly at parity -- though DarshJDB's is built into the core server rather than being a separate service.
 
 ### Wire Protocol
 
-DarshanDB uses MsgPack over WebSocket by default (28% smaller than JSON), with HTTP/2 + MsgPack for SSR and REST + JSON as a fallback. InstantDB uses JSON over WebSocket.
+DarshJDB uses MsgPack over WebSocket by default (28% smaller than JSON), with HTTP/2 + MsgPack for SSR and REST + JSON as a fallback. InstantDB uses JSON over WebSocket.
 
 ### Authentication Depth
 
@@ -432,22 +432,22 @@ Yes and no.
 - The primary differentiator is deployment model: cloud vs self-hosted
 
 **No, because:**
-- DarshanDB has features InstantDB does not: vector search, full-text search, aggregations, server functions, forward-chaining rules, MFA, multi-language SDKs
-- DarshanDB lacks features InstantDB has: TypeScript type inference, client-side Datalog, production battle-testing, funded team
+- DarshJDB has features InstantDB does not: vector search, full-text search, aggregations, server functions, forward-chaining rules, MFA, multi-language SDKs
+- DarshJDB lacks features InstantDB has: TypeScript type inference, client-side Datalog, production battle-testing, funded team
 - The real-time architectures are fundamentally different (server-side re-evaluation vs client-side Datalog)
-- "Self-hosted X" implies X-but-you-run-it-yourself. DarshanDB is not a drop-in replacement for InstantDB. You cannot take an InstantDB app and point it at DarshanDB without code changes.
+- "Self-hosted X" implies X-but-you-run-it-yourself. DarshJDB is not a drop-in replacement for InstantDB. You cannot take an InstantDB app and point it at DarshJDB without code changes.
 
 **A more precise positioning:**
 
-> DarshanDB is a self-hosted reactive database that shares InstantDB's core insight -- EAV triple stores are the right foundation for real-time client-centric applications -- but extends it with vector search, server functions, and the ability to run on your own infrastructure.
+> DarshJDB is a self-hosted reactive database that shares InstantDB's core insight -- EAV triple stores are the right foundation for real-time client-centric applications -- but extends it with vector search, server functions, and the ability to run on your own infrastructure.
 
-The "self-hosted InstantDB" shorthand is useful for initial understanding. It tells people the right mental model. But DarshanDB should grow beyond that comparison. The vector search, rule engine, and server functions are capabilities that make DarshanDB a different product, not just a self-hosted clone.
+The "self-hosted InstantDB" shorthand is useful for initial understanding. It tells people the right mental model. But DarshJDB should grow beyond that comparison. The vector search, rule engine, and server functions are capabilities that make DarshJDB a different product, not just a self-hosted clone.
 
 ---
 
 ## Summary Table
 
-| Dimension | InstantDB | DarshanDB |
+| Dimension | InstantDB | DarshJDB |
 |-----------|-----------|-----------|
 | Data model | EAV triple store (Postgres) | EAV triple store (Postgres) |
 | Query language | InstaQL | DarshanQL (inspired by InstaQL) |
@@ -472,4 +472,4 @@ The "self-hosted InstantDB" shorthand is useful for initial understanding. It te
 
 ---
 
-*This comparison was written by examining DarshanDB's source code (`query/mod.rs`, `triple_store/mod.rs`, `sync/mod.rs`, `rules/mod.rs`) and InstantDB's public documentation and open-source client. Last updated: April 2026.*
+*This comparison was written by examining DarshJDB's source code (`query/mod.rs`, `triple_store/mod.rs`, `sync/mod.rs`, `rules/mod.rs`) and InstantDB's public documentation and open-source client. Last updated: April 2026.*

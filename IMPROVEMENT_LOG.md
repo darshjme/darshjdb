@@ -1,4 +1,4 @@
-# DarshanDB Workspace Audit -- Improvement Log
+# DarshJDB Workspace Audit -- Improvement Log
 
 **Date:** 2026-04-05
 **Rust toolchain:** Edition 2024, stable
@@ -51,7 +51,7 @@ The `rate_limit_headers_injected` test attempted to construct an `axum::middlewa
 
 **File:** `packages/server/src/main.rs`
 
-`use darshandb_server::sync::broadcaster::Broadcaster` was imported but never used.
+`use ddb_server::sync::broadcaster::Broadcaster` was imported but never used.
 
 **Fix:** Removed the import.
 

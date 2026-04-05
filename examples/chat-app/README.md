@@ -1,6 +1,6 @@
-# DarshanDB Chat App
+# DarshJDB Chat App
 
-A real-time chat application built with React and DarshanDB. Demonstrates live queries, mutations, presence tracking, and authentication -- all the building blocks for collaborative apps.
+A real-time chat application built with React and DarshJDB. Demonstrates live queries, mutations, presence tracking, and authentication -- all the building blocks for collaborative apps.
 
 ## What it demonstrates
 
@@ -13,7 +13,7 @@ A real-time chat application built with React and DarshanDB. Demonstrates live q
 ## Prerequisites
 
 - Node.js 18+
-- A running DarshanDB server (default: `http://localhost:7700`)
+- A running DarshJDB server (default: `http://localhost:7700`)
 
 ## Setup
 

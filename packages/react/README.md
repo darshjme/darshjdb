@@ -1,11 +1,11 @@
-# @darshan/react
+# @darshjdb/react
 
-React bindings for DarshanDB -- hooks, provider, and real-time primitives.
+React bindings for DarshJDB -- hooks, provider, and real-time primitives.
 
 ## Install
 
 ```bash
-npm install @darshan/react
+npm install @darshjdb/react
 ```
 
 Requires React 18 or later as a peer dependency.
@@ -13,9 +13,9 @@ Requires React 18 or later as a peer dependency.
 ## Quick Start
 
 ```tsx
-import { DarshanProvider, DarshanDB } from '@darshan/react';
+import { DarshanProvider, DarshJDB } from '@darshjdb/react';
 
-const db = DarshanDB.init({ appId: 'my-app' });
+const db = DarshJDB.init({ appId: 'my-app' });
 
 function App() {
   return (
@@ -74,7 +74,7 @@ function AuthButton() {
 ### usePresence -- Real-time presence
 
 ```tsx
-import { usePresence } from '@darshan/react';
+import { usePresence } from '@darshjdb/react';
 
 function CollaborativeEditor() {
   const { peers, myPresence, updatePresence } = usePresence('doc-123', {

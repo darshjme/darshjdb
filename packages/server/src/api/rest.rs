@@ -41,9 +41,9 @@ use super::error::{ApiError, ErrorCode};
 use super::openapi;
 use crate::auth::middleware::RateLimitKey;
 use crate::auth::{
-    AuthContext, AuthOutcome, GenericOAuth2Provider, OAuth2Provider, OAuthProviderKind,
-    OAuthUserInfo, Operation, PasswordProvider, PermissionEngine, RateLimiter, SessionManager,
-    build_default_engine, evaluate_rule_public, get_rule_with_fallback,
+    AuthContext, AuthOutcome, GenericOAuth2Provider, MagicLinkProvider, OAuth2Provider,
+    OAuthProviderKind, OAuthUserInfo, Operation, PasswordProvider, PermissionEngine, RateLimiter,
+    SessionManager, build_default_engine, evaluate_rule_public, get_rule_with_fallback,
 };
 use crate::cache::{self, QueryCache};
 use crate::functions::registry::FunctionRegistry;
@@ -607,6 +607,16 @@ pub async fn ensure_auth_schema(pool: &PgPool) -> std::result::Result<(), sqlx::
         CREATE INDEX IF NOT EXISTS idx_oauth_provider_user
             ON oauth_identities (provider, provider_user_id);
         CREATE INDEX IF NOT EXISTS idx_oauth_user_id ON oauth_identities (user_id);
+        CREATE TABLE IF NOT EXISTS magic_links (
+            id              BIGSERIAL PRIMARY KEY,
+            token_hash      TEXT NOT NULL UNIQUE,
+            user_id         UUID NOT NULL REFERENCES users(id),
+            expires_at      TIMESTAMPTZ NOT NULL,
+            consumed        BOOLEAN NOT NULL DEFAULT false,
+            created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+        );
+        CREATE INDEX IF NOT EXISTS idx_magic_links_hash
+            ON magic_links (token_hash) WHERE NOT consumed;
         "#,
     )
     .execute(pool)
@@ -877,15 +887,44 @@ struct MagicLinkRequest {
 }
 
 async fn auth_magic_link(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     axum::Json(body): axum::Json<MagicLinkRequest>,
 ) -> Result<Response, ApiError> {
-    if body.email.is_empty() || !body.email.contains('@') {
+    let email = body.email.trim().to_lowercase();
+    if email.is_empty() || !email.contains('@') {
         return Err(ApiError::bad_request("Invalid email address"));
     }
 
+    // Look up the user. If not found, still return 200 to prevent enumeration.
+    let user_row: Option<(Uuid,)> =
+        sqlx::query_as("SELECT id FROM users WHERE email = $1 AND deleted_at IS NULL")
+            .bind(&email)
+            .fetch_optional(&state.pool)
+            .await
+            .map_err(|e| ApiError::internal(format!("Database error: {e}")))?;
+
+    if let Some((user_id,)) = user_row {
+        let magic_link = MagicLinkProvider::generate(&state.pool, user_id)
+            .await
+            .map_err(|e| ApiError::internal(format!("Failed to generate magic link: {e}")))?;
+
+        tracing::debug!(user_id = %user_id, expires_at = %magic_link.expires_at, "magic link generated");
+
+        // In dev mode, include the token in the response for testing.
+        if state.dev_mode {
+            return Ok((
+                StatusCode::OK,
+                axum::Json(serde_json::json!({
+                    "message": "If an account exists, a magic link has been sent.",
+                    "_dev_token": magic_link.token,
+                    "_dev_expires_at": magic_link.expires_at.to_rfc3339(),
+                })),
+            )
+                .into_response());
+        }
+    }
+
     // Always return 200 to prevent email enumeration.
-    // TODO: wire to MagicLinkProvider.
     Ok((
         StatusCode::OK,
         axum::Json(serde_json::json!({
@@ -905,7 +944,7 @@ struct VerifyRequest {
 }
 
 async fn auth_verify(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     headers: HeaderMap,
     axum::Json(body): axum::Json<VerifyRequest>,
 ) -> Result<Response, ApiError> {
@@ -913,14 +952,53 @@ async fn auth_verify(
         return Err(ApiError::bad_request("Token is required"));
     }
 
-    // TODO: wire to token verification + optional MFA check.
-    let response = serde_json::json!({
-        "access_token": format!("ddb_at_{}", Uuid::new_v4()),
-        "refresh_token": format!("ddb_rt_{}", Uuid::new_v4()),
-        "expires_in": 3600
-    });
+    // Verify the magic-link token against the database.
+    let outcome = MagicLinkProvider::verify(&state.pool, &body.token)
+        .await
+        .map_err(|e| ApiError::internal(format!("Token verification failed: {e}")))?;
 
-    Ok(negotiate_response(&headers, &response))
+    match outcome {
+        AuthOutcome::Success { user_id, roles } => {
+            let ip = headers
+                .get("x-forwarded-for")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("unknown");
+            let ua = headers
+                .get("user-agent")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("unknown");
+            let dfp = headers
+                .get("x-device-fingerprint")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("");
+
+            let token_pair = state
+                .session_manager
+                .create_session(user_id, roles, ip, ua, dfp)
+                .await
+                .map_err(|e| ApiError::internal(format!("Session creation failed: {e}")))?;
+
+            let response = serde_json::json!({
+                "user_id": user_id,
+                "access_token": token_pair.access_token,
+                "refresh_token": token_pair.refresh_token,
+                "expires_in": token_pair.expires_in,
+                "token_type": token_pair.token_type,
+            });
+            Ok(negotiate_response(&headers, &response))
+        }
+        AuthOutcome::MfaRequired { user_id, mfa_token } => {
+            let response = serde_json::json!({
+                "mfa_required": true,
+                "user_id": user_id,
+                "mfa_token": mfa_token,
+            });
+            Ok(negotiate_response(&headers, &response))
+        }
+        AuthOutcome::Failed { reason } => Err(ApiError::unauthenticated(format!(
+            "Verification failed: {reason}"
+        ))),
+    }
 }
 
 /// `POST /api/auth/oauth/:provider` — Generate an OAuth2 authorize URL with PKCE + HMAC state,
@@ -1297,7 +1375,7 @@ async fn query(
     headers: HeaderMap,
     axum::Json(body): axum::Json<QueryRequest>,
 ) -> Result<Response, ApiError> {
-    let auth_ctx = extract_auth_context(&headers)?;
+    let auth_ctx = extract_auth_context(&headers, &state)?;
 
     let start = Instant::now();
 
@@ -1543,13 +1621,13 @@ async fn mutate(
     // Evaluate forward-chaining rules: implied triples are written in the
     // same transaction so the entire mutation + inferences is atomic.
     let mut implied_triples: Vec<TripleInput> = Vec::new();
-    if !all_triples.is_empty() {
-        if let Some(ref rule_engine) = state.rule_engine {
-            implied_triples = rule_engine
-                .evaluate_and_write_in_tx(&mut db_tx, &all_triples, tx_id)
-                .await
-                .map_err(|e| ApiError::internal(format!("Rule engine error: {e}")))?;
-        }
+    if !all_triples.is_empty()
+        && let Some(ref rule_engine) = state.rule_engine
+    {
+        implied_triples = rule_engine
+            .evaluate_and_write_in_tx(&mut db_tx, &all_triples, tx_id)
+            .await
+            .map_err(|e| ApiError::internal(format!("Rule engine error: {e}")))?;
     }
 
     // Commit the entire batch atomically.
@@ -1619,7 +1697,7 @@ async fn data_list(
     Query(params): Query<DataListParams>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
-    let auth_ctx = extract_auth_context(&headers)?;
+    let auth_ctx = extract_auth_context(&headers, &state)?;
     let limit = params.limit.unwrap_or(50).min(1000);
 
     validate_entity_name(&entity)?;
@@ -1667,7 +1745,7 @@ async fn data_create(
     headers: HeaderMap,
     axum::Json(body): axum::Json<Value>,
 ) -> Result<Response, ApiError> {
-    let auth_ctx = extract_auth_context(&headers)?;
+    let auth_ctx = extract_auth_context(&headers, &state)?;
 
     validate_entity_name(&entity)?;
 
@@ -1769,7 +1847,7 @@ async fn data_get(
     Path((entity, id)): Path<(String, Uuid)>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
-    let auth_ctx = extract_auth_context(&headers)?;
+    let auth_ctx = extract_auth_context(&headers, &state)?;
 
     validate_entity_name(&entity)?;
 
@@ -1817,12 +1895,12 @@ async fn data_get(
             owner_id
         };
 
-        if let Some(owner) = entity_owner {
-            if owner != auth_ctx.user_id {
-                return Err(ApiError::permission_denied(format!(
-                    "Access denied: you do not own this {entity}"
-                )));
-            }
+        if let Some(owner) = entity_owner
+            && owner != auth_ctx.user_id
+        {
+            return Err(ApiError::permission_denied(format!(
+                "Access denied: you do not own this {entity}"
+            )));
         }
         // If no owner_id attribute exists, the WHERE clause will be
         // enforced at query time for list operations. For single-entity
@@ -1869,7 +1947,7 @@ async fn data_patch(
     headers: HeaderMap,
     axum::Json(body): axum::Json<Value>,
 ) -> Result<Response, ApiError> {
-    let auth_ctx = extract_auth_context(&headers)?;
+    let auth_ctx = extract_auth_context(&headers, &state)?;
 
     validate_entity_name(&entity)?;
 
@@ -1896,12 +1974,12 @@ async fn data_patch(
             owner_id
         };
 
-        if let Some(owner) = entity_owner {
-            if owner != auth_ctx.user_id {
-                return Err(ApiError::permission_denied(format!(
-                    "Access denied: you do not own this {entity}"
-                )));
-            }
+        if let Some(owner) = entity_owner
+            && owner != auth_ctx.user_id
+        {
+            return Err(ApiError::permission_denied(format!(
+                "Access denied: you do not own this {entity}"
+            )));
         }
     }
 
@@ -2011,11 +2089,11 @@ async fn data_patch(
         "tx_id": tx_id,
         "data": body
     });
-    if let Some(obj) = response.as_object_mut() {
-        if let Some(ttl_obj) = ttl_info.as_object() {
-            for (k, v) in ttl_obj {
-                obj.insert(k.clone(), v.clone());
-            }
+    if let Some(obj) = response.as_object_mut()
+        && let Some(ttl_obj) = ttl_info.as_object()
+    {
+        for (k, v) in ttl_obj {
+            obj.insert(k.clone(), v.clone());
         }
     }
 
@@ -2028,7 +2106,7 @@ async fn data_delete(
     Path((entity, id)): Path<(String, Uuid)>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
-    let auth_ctx = extract_auth_context(&headers)?;
+    let auth_ctx = extract_auth_context(&headers, &state)?;
 
     validate_entity_name(&entity)?;
 
@@ -2062,12 +2140,12 @@ async fn data_delete(
             owner_id
         };
 
-        if let Some(owner) = entity_owner {
-            if owner != auth_ctx.user_id {
-                return Err(ApiError::permission_denied(format!(
-                    "Access denied: you do not own this {entity}"
-                )));
-            }
+        if let Some(owner) = entity_owner
+            && owner != auth_ctx.user_id
+        {
+            return Err(ApiError::permission_denied(format!(
+                "Access denied: you do not own this {entity}"
+            )));
         }
     }
 
@@ -2567,32 +2645,84 @@ async fn admin_schema(
 
 /// `GET /api/admin/functions` — List registered server-side functions.
 async fn admin_functions(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
     let _token = extract_bearer_token(&headers)?;
     require_admin_role(&headers)?;
 
-    // TODO: wire to FunctionRegistry.
+    let functions = match state.function_registry.as_ref() {
+        Some(registry) => {
+            let defs = registry.list().await;
+            defs.into_iter()
+                .map(|f| {
+                    serde_json::json!({
+                        "name": f.name,
+                        "export_name": f.export_name,
+                        "file_path": f.file_path.display().to_string(),
+                        "kind": format!("{:?}", f.kind),
+                        "description": f.description,
+                        "args_schema": f.args_schema.as_ref().map(|s| serde_json::to_value(s).unwrap_or_default()),
+                    })
+                })
+                .collect::<Vec<_>>()
+        }
+        None => Vec::new(),
+    };
+
     let response = serde_json::json!({
-        "functions": []
+        "functions": functions,
+        "count": functions.len(),
     });
 
     Ok(negotiate_response(&headers, &response))
 }
 
-/// `GET /api/admin/sessions` — List active sync sessions.
+/// `GET /api/admin/sessions` — List active sessions across all users.
+#[allow(clippy::type_complexity)]
 async fn admin_sessions(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
     let _token = extract_bearer_token(&headers)?;
     require_admin_role(&headers)?;
 
-    // TODO: wire to sync::SessionManager.
+    let rows: Vec<(
+        uuid::Uuid,
+        uuid::Uuid,
+        String,
+        String,
+        String,
+        chrono::DateTime<chrono::Utc>,
+        bool,
+    )> = sqlx::query_as(
+        "SELECT session_id, user_id, device_fingerprint, ip, user_agent, created_at, revoked \
+         FROM sessions WHERE revoked = false AND refresh_expires_at > NOW() \
+         ORDER BY created_at DESC LIMIT 500",
+    )
+    .fetch_all(&state.pool)
+    .await
+    .map_err(|e| ApiError::internal(format!("Failed to query sessions: {e}")))?;
+
+    let sessions: Vec<serde_json::Value> = rows
+        .into_iter()
+        .map(|(sid, uid, dfp, ip, ua, created, revoked)| {
+            serde_json::json!({
+                "session_id": sid,
+                "user_id": uid,
+                "device_fingerprint": dfp,
+                "ip": ip,
+                "user_agent": ua,
+                "created_at": created.to_rfc3339(),
+                "revoked": revoked,
+            })
+        })
+        .collect();
+
+    let count = sessions.len();
     let response = serde_json::json!({
-        "sessions": [],
-        "count": 0
+        "sessions": sessions,
+        "count": count,
     });
 
     Ok(negotiate_response(&headers, &response))
@@ -2726,11 +2856,12 @@ async fn docs(State(_state): State<AppState>) -> impl IntoResponse {
     Html(openapi::docs_html("/api/openapi.json"))
 }
 
-/// Find or create a user from OAuth identity info.
-///
-/// Looks up `oauth_identities` by (provider, provider_user_id). If not found,
-/// checks for an existing user with the same email for account linking.
-/// If neither exists, creates a new user with a placeholder password hash.
+// Find or create a user from OAuth identity info.
+//
+// Looks up `oauth_identities` by (provider, provider_user_id). If not found,
+// checks for an existing user with the same email for account linking.
+// If neither exists, creates a new user with a placeholder password hash.
+
 // ===========================================================================
 // Helpers
 // ===========================================================================
@@ -2770,45 +2901,38 @@ fn require_admin_role(headers: &HeaderMap) -> Result<(), ApiError> {
     Ok(())
 }
 
-/// Extract an [`AuthContext`] from the request headers.
-///
-/// In production this decodes and validates the JWT. Currently it builds
-/// a context from the token's embedded claims or falls back to a
-/// default authenticated user context for development.
-fn extract_auth_context(headers: &HeaderMap) -> Result<AuthContext, ApiError> {
+/// Extract an [`AuthContext`] by validating the JWT via the [`SessionManager`].
+fn extract_auth_context(headers: &HeaderMap, state: &AppState) -> Result<AuthContext, ApiError> {
     let token = extract_bearer_token(headers)?;
+    let ip = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok()).unwrap_or("unknown");
+    let ua = headers.get(http::header::USER_AGENT).and_then(|v| v.to_str().ok()).unwrap_or("unknown");
+    let dfp = headers.get("x-device-fingerprint").and_then(|v| v.to_str().ok()).unwrap_or("");
+    state.session_manager.validate_token(&token, ip, ua, dfp)
+        .map_err(|e| ApiError::unauthenticated(format!("Invalid token: {e}")))
+}
 
-    // In dev mode or when JWT decoding is not yet wired, we parse a
-    // minimal context from the token format: `ddb_at_<uuid>`.
-    // Production will replace this with full JWT validation via SessionManager.
-    let user_id = token
-        .strip_prefix("ddb_at_")
-        .and_then(|id| Uuid::parse_str(id).ok())
-        .unwrap_or_else(Uuid::new_v4);
-
-    // Check for role hints in X-DarshanDB-Roles header (dev/test only).
-    // Production uses JWT claims exclusively.
-    let roles: Vec<String> = headers
-        .get("X-DarshanDB-Roles")
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.split(',').map(|r| r.trim().to_string()).collect())
-        .unwrap_or_else(|| vec!["user".to_string()]);
-
+/// Decode JWT claims from the Bearer token without full signature verification.
+fn decode_jwt_claims(headers: &HeaderMap) -> Result<AuthContext, ApiError> {
+    let token = extract_bearer_token(headers)?;
+    let parts: Vec<&str> = token.split('.').collect();
+    if parts.len() != 3 { return Err(ApiError::unauthenticated("Malformed JWT")); }
+    let payload_bytes = data_encoding::BASE64URL_NOPAD.decode(parts[1].as_bytes())
+        .map_err(|_| ApiError::unauthenticated("Invalid JWT encoding"))?;
+    #[derive(Deserialize)]
+    struct Claims { sub: String, sid: String, #[serde(default)] roles: Vec<String> }
+    let claims: Claims = serde_json::from_slice(&payload_bytes)
+        .map_err(|_| ApiError::unauthenticated("Invalid JWT claims"))?;
+    let user_id = Uuid::parse_str(&claims.sub)
+        .map_err(|_| ApiError::unauthenticated("Invalid user_id in JWT"))?;
+    let session_id = Uuid::parse_str(&claims.sid)
+        .map_err(|_| ApiError::unauthenticated("Invalid session_id in JWT"))?;
     Ok(AuthContext {
         user_id,
-        session_id: Uuid::new_v4(),
-        roles,
-        ip: headers
-            .get("X-Forwarded-For")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("unknown")
-            .to_string(),
-        user_agent: headers
-            .get(http::header::USER_AGENT)
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("unknown")
-            .to_string(),
-        device_fingerprint: "http-request".to_string(),
+        session_id,
+        roles: claims.roles,
+        ip: headers.get("x-forwarded-for").and_then(|v| v.to_str().ok()).unwrap_or("unknown").to_string(),
+        user_agent: headers.get(http::header::USER_AGENT).and_then(|v| v.to_str().ok()).unwrap_or("unknown").to_string(),
+        device_fingerprint: headers.get("x-device-fingerprint").and_then(|v| v.to_str().ok()).unwrap_or("").to_string(),
     })
 }
 
@@ -2907,6 +3031,7 @@ fn validate_entity_name(name: &str) -> Result<(), ApiError> {
 // ===========================================================================
 
 /// Request body for `POST /api/embeddings`.
+#[allow(dead_code)]
 #[derive(Deserialize)]
 struct EmbeddingStoreRequest {
     entity_id: Uuid,
@@ -2916,10 +3041,12 @@ struct EmbeddingStoreRequest {
     model: String,
 }
 
+#[allow(dead_code)]
 fn default_embedding_model() -> String {
     "text-embedding-ada-002".to_string()
 }
 
+#[allow(dead_code)]
 /// `POST /api/embeddings` — Store an embedding vector for an entity+attribute pair.
 async fn embeddings_store(
     State(state): State<AppState>,
@@ -2963,6 +3090,7 @@ async fn embeddings_store(
     ))
 }
 
+#[allow(dead_code)]
 /// `GET /api/embeddings/:entity_id` — Get all embeddings for an entity.
 async fn embeddings_get(
     State(state): State<AppState>,
@@ -3001,6 +3129,7 @@ async fn embeddings_get(
 }
 
 /// Request body for `POST /api/search/semantic`.
+#[allow(dead_code)]
 #[derive(Deserialize)]
 struct SemanticSearchRequest {
     /// The entity type to search within (e.g. "Article").
@@ -3015,10 +3144,12 @@ struct SemanticSearchRequest {
     attribute: Option<String>,
 }
 
+#[allow(dead_code)]
 fn default_search_limit() -> u32 {
     10
 }
 
+#[allow(dead_code)]
 /// `POST /api/search/semantic` — Search by vector similarity, return matched
 /// entities with their cosine distance scores.
 async fn search_semantic(
@@ -3109,6 +3240,7 @@ async fn search_semantic(
     Ok(negotiate_response(&headers, &response))
 }
 
+#[allow(dead_code)]
 /// Format a slice of f32 values as a pgvector literal string: `[0.1,0.2,0.3]`.
 fn format_pgvector_literal(vec: &[f32]) -> String {
     let mut s = String::with_capacity(vec.len() * 8 + 2);

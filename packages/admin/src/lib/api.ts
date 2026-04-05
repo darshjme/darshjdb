@@ -22,7 +22,7 @@ const API_URL = import.meta.env.VITE_DARSHAN_URL || "http://localhost:7700";
  * non-empty token, so a dev placeholder is fine.
  */
 const AUTH_TOKEN =
-  import.meta.env.VITE_DARSHAN_TOKEN || "darshan-admin-dev-token";
+  import.meta.env.VITE_DDB_TOKEN || "ddb-admin-dev-token";
 
 // ---------------------------------------------------------------------------
 // Internals

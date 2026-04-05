@@ -63,7 +63,7 @@ impl WebhookConnector {
         std::env::var("DARSHAN_WEBHOOK_URL")
             .ok()
             .filter(|u| !u.is_empty())
-            .map(|url| Self::new(url))
+            .map(Self::new)
     }
 
     /// POST `body` to the webhook URL with retries.

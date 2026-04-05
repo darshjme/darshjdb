@@ -1,4 +1,4 @@
-# DarshanDB — Code Reference
+# DarshJDB — Code Reference
 
 > Last updated: 2026-04-05
 > Status: Alpha — end-to-end data path working, not production-ready
@@ -23,7 +23,7 @@ What does NOT work yet:
 - Server functions (registry exists, no V8/Deno runtime — subprocess placeholder)
 - Admin dashboard (renders mock data, not connected to live API)
 - File storage (S3 backend code exists, no upload endpoint wired)
-- CLI `darshan dev` (compiles, does not auto-start Postgres)
+- CLI `ddb dev` (compiles, does not auto-start Postgres)
 
 ## Project Stats
 
@@ -115,7 +115,7 @@ src/
 
 ```
 src/
-├── client.ts            # DarshanDB class — connection state machine, reconnect
+├── client.ts            # DarshJDB class — connection state machine, reconnect
 ├── query.ts             # QueryBuilder with deduplication
 ├── transaction.ts       # Proxy-based tx.entity[id].set/merge/delete
 ├── sync.ts              # IndexedDB cache, optimistic updates, offline queue
@@ -142,7 +142,7 @@ src/
 
 ```
 src/
-├── darshan.module.ts    # NgModule with forRoot()
+├── ddb.module.ts    # NgModule with forRoot()
 ├── providers.ts         # provideDarshan() for standalone
 ├── query.signal.ts      # Signal-based queries (Angular 17+)
 ├── query.observable.ts  # Observable queries (RxJS)
@@ -193,8 +193,8 @@ src/
 ### Python SDK (sdks/python/)
 
 ```
-src/darshandb/
-├── client.py            # DarshanDB class — query, transact, fn
+src/darshjdb/
+├── client.py            # DarshJDB class — query, transact, fn
 ├── auth.py              # AuthClient — sign_up/in/out, OAuth
 ├── storage.py           # StorageClient — upload, get_url, delete
 ├── admin.py             # DarshanAdmin — impersonation, SSE subscribe
@@ -247,7 +247,7 @@ Written in `docs/strategy/`:
 - **WEB3_STRATEGY.md** — SIWE wallet auth, token-gated permissions, IPFS/Arweave, chain indexing
 - **ENTERPRISE_STRATEGY.md** — Self-hosted + SaaS dual model, multi-tenancy, SOC2/HIPAA, pricing
 - **SCALABILITY_STRATEGY.md** — 4 scale tiers (500→1M+), NATS, Redis cache, Patroni DR
-- **DX_STRATEGY.md** — 24 DX improvements, error codes, darshan doctor, CLI enhancements
+- **DX_STRATEGY.md** — 24 DX improvements, error codes, ddb doctor, CLI enhancements
 
 ## How to Run
 
@@ -259,7 +259,7 @@ docker compose up postgres -d
 ./scripts/setup-db.sh --seed
 
 # Start server
-DATABASE_URL=postgres://darshan:darshan@localhost:5432/darshandb cargo run --bin darshandb-server
+DATABASE_URL=postgres://darshan:darshan@localhost:5432/darshjdb cargo run --bin ddb-server
 
 # Test it
 curl http://localhost:7700/health
@@ -273,7 +273,7 @@ curl -X POST http://localhost:7700/api/data/users \
 
 ## Repo
 
-- GitHub: https://github.com/darshjme/darshandb (public)
+- GitHub: https://github.com/darshjme/darshjdb (public)
 - License: MIT
 - Built by: Darsh Joshi (born Navsari, Gujarat — now Ahmedabad)
 - CEO at GraymatterOnline LLP, CTO at KnowAI

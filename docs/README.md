@@ -1,12 +1,12 @@
-# DarshanDB Documentation
+# DarshJDB Documentation
 
-Complete reference for building applications with DarshanDB -- the self-hosted backend-as-a-service compiled into a single Rust binary.
+Complete reference for building applications with DarshJDB -- the self-hosted backend-as-a-service compiled into a single Rust binary.
 
 ---
 
 ## Quick Start
 
-> **New to DarshanDB?** Start here: **[Getting Started](getting-started.md)** -- install and connect your first app in under 5 minutes.
+> **New to DarshJDB?** Start here: **[Getting Started](getting-started.md)** -- install and connect your first app in under 5 minutes.
 
 ---
 
@@ -16,7 +16,7 @@ Complete reference for building applications with DarshanDB -- the self-hosted b
 
 | Guide | Description | Time |
 |-------|-------------|------|
-| [Getting Started](getting-started.md) | Install DarshanDB, start the dev server, connect from React/Next.js/Python/PHP | 5 min |
+| [Getting Started](getting-started.md) | Install DarshJDB, start the dev server, connect from React/Next.js/Python/PHP | 5 min |
 | [Architecture](architecture.md) | Deep dive into internals -- triple store, query pipeline, sync engine, with diagrams | 15 min |
 | [Self-Hosting](self-hosting.md) | Deploy with Docker, bare metal, or Kubernetes with monitoring and backups | 10 min |
 
@@ -56,31 +56,31 @@ Complete reference for building applications with DarshanDB -- the self-hosted b
 
 ## Packages
 
-DarshanDB is a monorepo. Each package has its own README with install instructions and usage examples.
+DarshJDB is a monorepo. Each package has its own README with install instructions and usage examples.
 
 | Package | Path | npm / crate | Description |
 |---------|------|-------------|-------------|
-| Server | [`packages/server`](../packages/server/) | `darshandb-server` (crate) | Rust server -- triple store, query engine, sync, auth, functions, storage |
-| CLI | [`packages/cli`](../packages/cli/) | `darshan` (binary) | CLI -- `darshan dev`, deploy, migrations, backups |
-| Client Core | [`packages/client-core`](../packages/client-core/) | `@darshan/client` | Framework-agnostic TypeScript SDK -- queries, mutations, sync, offline |
-| React | [`packages/react`](../packages/react/) | `@darshan/react` | React hooks, `DarshanProvider`, Suspense support |
-| Angular | [`packages/angular`](../packages/angular/) | `@darshan/angular` | Angular signals (17+), RxJS observables, route guards, SSR |
-| Next.js | [`packages/nextjs`](../packages/nextjs/) | `@darshan/nextjs` | Server Components, App Router, Server Actions, middleware |
-| Admin | [`packages/admin`](../packages/admin/) | `@darshan/admin` | Admin dashboard -- React + Vite + Tailwind |
+| Server | [`packages/server`](../packages/server/) | `ddb-server` (crate) | Rust server -- triple store, query engine, sync, auth, functions, storage |
+| CLI | [`packages/cli`](../packages/cli/) | `ddb` (binary) | CLI -- `ddb dev`, deploy, migrations, backups |
+| Client Core | [`packages/client-core`](../packages/client-core/) | `@darshjdb/client` | Framework-agnostic TypeScript SDK -- queries, mutations, sync, offline |
+| React | [`packages/react`](../packages/react/) | `@darshjdb/react` | React hooks, `DarshanProvider`, Suspense support |
+| Angular | [`packages/angular`](../packages/angular/) | `@darshjdb/angular` | Angular signals (17+), RxJS observables, route guards, SSR |
+| Next.js | [`packages/nextjs`](../packages/nextjs/) | `@darshjdb/nextjs` | Server Components, App Router, Server Actions, middleware |
+| Admin | [`packages/admin`](../packages/admin/) | `@darshjdb/admin` | Admin dashboard -- React + Vite + Tailwind |
 
 ## External SDKs
 
 | SDK | Install | Description |
 |-----|---------|-------------|
 | PHP | `composer require darshan/darshan-php` | Laravel ServiceProvider, Eloquent-style query builder |
-| Python | `pip install darshandb` | Async client, FastAPI and Django integration |
+| Python | `pip install darshjdb` | Async client, FastAPI and Django integration |
 
 ---
 
 ## Additional Resources
 
 - [Main README](../README.md) -- Architecture diagrams, feature overview, and quickstart
-- [Contributing Guide](../CONTRIBUTING.md) -- How to contribute to DarshanDB
+- [Contributing Guide](../CONTRIBUTING.md) -- How to contribute to DarshJDB
 - [Changelog](../CHANGELOG.md) -- Version history and release notes
 - [Security Audit](SECURITY_AUDIT.md) -- Detailed security assessment
 - [License](../LICENSE) -- MIT License

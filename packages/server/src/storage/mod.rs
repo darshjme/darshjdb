@@ -635,6 +635,7 @@ impl S3Backend {
         );
 
         let mut s3_config_builder = aws_sdk_s3::config::Builder::new()
+            .behavior_version_latest()
             .region(aws_types::region::Region::new(region))
             .credentials_provider(creds)
             .endpoint_url(&endpoint)
@@ -1612,7 +1613,7 @@ mod tests {
         let backend = LocalFsBackend::new(&dir).expect("create backend");
 
         let mut meta = HashMap::new();
-        meta.insert("author".into(), "darshan".into());
+        meta.insert("author".into(), "ddb".into());
         meta.insert("version".into(), "1".into());
 
         backend
@@ -1623,7 +1624,7 @@ mod tests {
         let (_, obj_meta) = backend.get_object("meta-test.bin").await.expect("get");
         assert_eq!(
             obj_meta.metadata.get("author").map(|s| s.as_str()),
-            Some("darshan")
+            Some("ddb")
         );
         assert_eq!(
             obj_meta.metadata.get("version").map(|s| s.as_str()),

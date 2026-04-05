@@ -2,9 +2,9 @@
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: {{ include "darshandb.fullname" . }}
+  name: {{ include "darshjdb.fullname" . }}
   labels:
-    {{- include "darshandb.labels" . | nindent 4 }}
+    {{- include "darshjdb.labels" . | nindent 4 }}
   {{- with .Values.ingress.annotations }}
   annotations:
     {{- toYaml . | nindent 4 }}
@@ -33,7 +33,7 @@ spec:
             pathType: {{ .pathType }}
             backend:
               service:
-                name: {{ include "darshandb.fullname" $ }}
+                name: {{ include "darshjdb.fullname" $ }}
                 port:
                   number: {{ $.Values.service.port }}
           {{- end }}

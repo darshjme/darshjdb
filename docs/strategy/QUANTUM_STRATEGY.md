@@ -1,4 +1,4 @@
-# DarshanDB Quantum Resistance Strategy
+# DarshJDB Quantum Resistance Strategy
 
 > Based on: "Quantum Blockchain: Trends, Technologies, and Future Directions"
 > (IET Quantum Communication, 2024, DOI: 10.1049/qtc2.12119)
@@ -7,7 +7,7 @@
 
 ## 1. Current Cryptographic Inventory
 
-Every cryptographic primitive in DarshanDB, assessed against known quantum attacks.
+Every cryptographic primitive in DarshJDB, assessed against known quantum attacks.
 
 | Component | Algorithm | Location | Quantum Status | Attack Vector |
 |-----------|-----------|----------|---------------|---------------|
@@ -152,7 +152,7 @@ Signature: DILITHIUM3(header.payload, dilithium_private_key)
 
 ### Design
 
-Every write transaction in DarshanDB produces a Merkle root hash anchoring the transaction's changes.
+Every write transaction in DarshJDB produces a Merkle root hash anchoring the transaction's changes.
 
 ```
 Transaction: INSERT user { name: "Alice", email: "alice@example.com" }
@@ -189,7 +189,7 @@ Anchor record:
   tx_hash: (if blockchain anchored)
 ```
 
-This provides tamper-evidence even if DarshanDB's database is compromised.
+This provides tamper-evidence even if DarshJDB's database is compromised.
 
 ### Implementation Location
 
@@ -241,7 +241,7 @@ Entry N:
   [x] Add quantum readiness annotations to codebase
   [ ] Upgrade hex_sha256 -> hex_sha512 for internal hashes
   [ ] Upgrade HMAC-SHA256 -> HMAC-SHA512 for OAuth state and signed URLs
-  [ ] Add algorithm configuration field to DarshanDB config
+  [ ] Add algorithm configuration field to DarshJDB config
   [ ] Implement SHA-512 Merkle tree for transaction integrity
   [ ] Implement hash-chained audit log (SHA-512, no PQ signatures yet)
 
@@ -268,19 +268,19 @@ Entry N:
 | Trigger | Action |
 |---------|--------|
 | NIST finalizes FIPS 204 (ML-DSA/Dilithium) | Begin Phase 2 implementation |
-| Rust `pqcrypto` crates reach 1.0 with audits | Integrate into DarshanDB |
+| Rust `pqcrypto` crates reach 1.0 with audits | Integrate into DarshJDB |
 | NSA/NIST issues "harvest now, decrypt later" advisory | Accelerate Phase 2 |
 | Quantum computer breaks RSA-2048 in practice | Emergency Phase 3 |
 | RSA-2048 estimated < 10 years secure | Planned Phase 3 migration |
 
 ### Risk: "Harvest Now, Decrypt Later"
 
-The paper (Section 2.3) highlights that adversaries may record encrypted traffic today to decrypt it when quantum computers mature. For DarshanDB:
+The paper (Section 2.3) highlights that adversaries may record encrypted traffic today to decrypt it when quantum computers mature. For DarshJDB:
 
 - **JWTs are short-lived (15 min):** Low harvest risk -- tokens are worthless after expiry
 - **Refresh tokens are opaque random bytes:** No structure to exploit post-quantum
 - **Passwords use Argon2id:** Memory-hard hashing is quantum-safe
-- **Stored data uses Postgres encryption:** Migration to PQC TLS is a Postgres/infrastructure concern, not DarshanDB application layer
+- **Stored data uses Postgres encryption:** Migration to PQC TLS is a Postgres/infrastructure concern, not DarshJDB application layer
 
 **Primary risk vector:** Long-lived API keys or service tokens (if added in future). These MUST use PQC from inception.
 
@@ -312,8 +312,8 @@ Files that will require changes during PQC migration:
 | `packages/server/src/triple_store/merkle.rs` | 1 | New module: Merkle tree with SHA-512 |
 | `packages/server/src/auth/audit.rs` | 1, 2 | Hash-chained audit log, PQ signatures |
 | `Cargo.toml` | 2 | Add `pqcrypto-dilithium` dependency |
-| `darshandb.toml` | 1, 2 | Algorithm configuration fields |
+| `darshjdb.toml` | 1, 2 | Algorithm configuration fields |
 
 ---
 
-*This strategy ensures DarshanDB is quantum-ready without premature dependency on immature PQC libraries. The existing KeyManager architecture already supports algorithm selection -- the migration path is incremental, not a rewrite.*
+*This strategy ensures DarshJDB is quantum-ready without premature dependency on immature PQC libraries. The existing KeyManager architecture already supports algorithm selection -- the migration path is incremental, not a rewrite.*

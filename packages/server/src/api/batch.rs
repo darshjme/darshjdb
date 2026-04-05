@@ -130,10 +130,9 @@ pub async fn batch_handler(
         if let BatchOp::Mutate {
             body: mutate_body, ..
         } = op
+            && let Some(mutations) = mutate_body.get("mutations").and_then(|m| m.as_array())
         {
-            if let Some(mutations) = mutate_body.get("mutations").and_then(|m| m.as_array()) {
-                total_mutations += mutations.len();
-            }
+            total_mutations += mutations.len();
         }
     }
     if total_mutations > MAX_BATCH_MUTATIONS {
@@ -176,7 +175,7 @@ pub async fn batch_handler(
                 id,
                 body: mutate_body,
             } => {
-                let r = execute_batch_mutate(
+                execute_batch_mutate(
                     id,
                     mutate_body,
                     &state,
@@ -185,8 +184,7 @@ pub async fn batch_handler(
                     &mut all_entity_ids,
                     &mut all_entity_types,
                 )
-                .await;
-                r
+                .await
             }
             BatchOp::Fn { id, name, args } => {
                 execute_batch_fn(id, name, args, &state, token.as_deref()).await
@@ -221,17 +219,17 @@ pub async fn batch_handler(
             }
 
             // Emit change events for reactive subscriptions.
-            if let Some(tid) = tx_id {
-                if tid > 0 {
-                    all_entity_ids.dedup();
-                    let _ = state.change_tx.send(crate::sync::broadcaster::ChangeEvent {
-                        tx_id: tid,
-                        entity_ids: all_entity_ids.iter().map(|id| id.to_string()).collect(),
-                        attributes: Vec::new(),
-                        entity_type: all_entity_types.into_iter().next(),
-                        actor_id: None,
-                    });
-                }
+            if let Some(tid) = tx_id
+                && tid > 0
+            {
+                all_entity_ids.dedup();
+                let _ = state.change_tx.send(crate::sync::broadcaster::ChangeEvent {
+                    tx_id: tid,
+                    entity_ids: all_entity_ids.iter().map(|id| id.to_string()).collect(),
+                    attributes: Vec::new(),
+                    entity_type: all_entity_types.into_iter().next(),
+                    actor_id: None,
+                });
             }
         }
     }
@@ -520,32 +518,30 @@ async fn execute_batch_mutate(
     }
 
     // Write all triples inside the shared transaction.
-    if !triples.is_empty() {
-        if let Err(e) = PgTripleStore::set_triples_in_tx(db_tx, &triples, tx_id).await {
-            return BatchOpResult {
-                id: id.to_string(),
-                status: 500,
-                data: None,
-                error: Some(format!("Failed to write triples: {e}")),
-            };
-        }
+    if !triples.is_empty()
+        && let Err(e) = PgTripleStore::set_triples_in_tx(db_tx, &triples, tx_id).await
+    {
+        return BatchOpResult {
+            id: id.to_string(),
+            status: 500,
+            data: None,
+            error: Some(format!("Failed to write triples: {e}")),
+        };
     }
 
     // Run forward-chaining rules inside the same transaction.
-    if !triples.is_empty() {
-        if let Some(ref rule_engine) = state.rule_engine {
-            if let Err(e) = rule_engine
-                .evaluate_and_write_in_tx(db_tx, &triples, tx_id)
-                .await
-            {
-                return BatchOpResult {
-                    id: id.to_string(),
-                    status: 500,
-                    data: None,
-                    error: Some(format!("Rule engine error: {e}")),
-                };
-            }
-        }
+    if !triples.is_empty()
+        && let Some(ref rule_engine) = state.rule_engine
+        && let Err(e) = rule_engine
+            .evaluate_and_write_in_tx(db_tx, &triples, tx_id)
+            .await
+    {
+        return BatchOpResult {
+            id: id.to_string(),
+            status: 500,
+            data: None,
+            error: Some(format!("Rule engine error: {e}")),
+        };
     }
 
     all_entity_ids.extend_from_slice(&entity_ids);
@@ -747,10 +743,9 @@ pub async fn parallel_batch_handler(
         if let BatchOp::Mutate {
             body: mutate_body, ..
         } = op
+            && let Some(mutations) = mutate_body.get("mutations").and_then(|m| m.as_array())
         {
-            if let Some(mutations) = mutate_body.get("mutations").and_then(|m| m.as_array()) {
-                total_mutations += mutations.len();
-            }
+            total_mutations += mutations.len();
         }
     }
     if total_mutations > MAX_BATCH_MUTATIONS {
@@ -1021,7 +1016,7 @@ mod tests {
 
     #[test]
     fn infer_value_type_float() {
-        assert_eq!(infer_value_type(&serde_json::json!(3.14_f64)), 2);
+        assert_eq!(infer_value_type(&serde_json::json!(2.78_f64)), 2);
     }
 
     #[test]

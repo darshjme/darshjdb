@@ -1,11 +1,11 @@
-# @darshan/client
+# @darshjdb/client
 
-Framework-agnostic TypeScript client SDK for DarshanDB. This is the core library that all framework-specific SDKs (`@darshan/react`, `@darshan/nextjs`, `@darshan/angular`) build on top of.
+Framework-agnostic TypeScript client SDK for DarshJDB. This is the core library that all framework-specific SDKs (`@darshjdb/react`, `@darshjdb/nextjs`, `@darshjdb/angular`) build on top of.
 
 ## Install
 
 ```bash
-npm install @darshan/client
+npm install @darshjdb/client
 ```
 
 Use this package directly if you are building for a framework without a dedicated SDK, or if you need a plain TypeScript/JavaScript client.
@@ -13,9 +13,9 @@ Use this package directly if you are building for a framework without a dedicate
 ## Usage
 
 ```typescript
-import { DarshanDB } from '@darshan/client';
+import { DarshJDB } from '@darshjdb/client';
 
-const db = DarshanDB.init({
+const db = DarshJDB.init({
   appId: 'my-app',
   serverUrl: 'http://localhost:7700', // optional, defaults to localhost
 });

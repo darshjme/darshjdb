@@ -1,10 +1,10 @@
 # Performance
 
-DarshanDB is built for speed at every layer.
+DarshJDB is built for speed at every layer.
 
-## Why DarshanDB Is Faster Than REST
+## Why DarshJDB Is Faster Than REST
 
-| What REST Does | What DarshanDB Does | Improvement |
+| What REST Does | What DarshJDB Does | Improvement |
 |---------------|---------------------|-------------|
 | New TCP+TLS per request | Single persistent connection | **15x lower latency** |
 | JSON text encoding | MsgPack binary encoding | **28% smaller payloads** |
@@ -16,7 +16,7 @@ DarshanDB is built for speed at every layer.
 
 A typical app making 20 requests/second with 10 active subscriptions:
 
-| Metric | REST | DarshanDB | Factor |
+| Metric | REST | DarshJDB | Factor |
 |--------|------|-----------|--------|
 | Latency | ~248ms | ~1.2ms | **206x** |
 | Bandwidth overhead | ~4,800 B/s | ~180 B/s | **26x** |
@@ -27,22 +27,22 @@ A typical app making 20 requests/second with 10 active subscriptions:
 
 ```bash
 # Default: 10 connections
-DARSHAN_PG_POOL_SIZE=20
+DDB_PG_POOL_SIZE=20
 
 # For high-concurrency servers
-DARSHAN_PG_POOL_SIZE=50
+DDB_PG_POOL_SIZE=50
 
 # Rule of thumb: 2x CPU cores for write-heavy, 4x CPU cores for read-heavy
 ```
 
 #### When to Use PgBouncer
 
-If you run multiple DarshanDB instances (e.g., 3 replicas in Kubernetes), each with a pool size of 20, that is 60 connections to PostgreSQL. PostgreSQL has a default `max_connections` of 100. Use PgBouncer to multiplex connections:
+If you run multiple DarshJDB instances (e.g., 3 replicas in Kubernetes), each with a pool size of 20, that is 60 connections to PostgreSQL. PostgreSQL has a default `max_connections` of 100. Use PgBouncer to multiplex connections:
 
 ```bash
 # PgBouncer config
 [databases]
-darshandb = host=postgres port=5432 dbname=darshandb
+darshjdb = host=postgres port=5432 dbname=darshjdb
 
 [pgbouncer]
 pool_mode = transaction
@@ -54,42 +54,42 @@ default_pool_size = 20
 
 ```bash
 # Max depth of nested queries (default: 12)
-DARSHAN_MAX_QUERY_DEPTH=8
+DDB_MAX_QUERY_DEPTH=8
 
 # Max entities per query result (default: 10000)
-DARSHAN_MAX_QUERY_RESULTS=5000
+DDB_MAX_QUERY_RESULTS=5000
 ```
 
 ### Rate Limits
 
 ```bash
 # Authenticated requests per minute (default: 100)
-DARSHAN_RATE_LIMIT_AUTH=200
+DDB_RATE_LIMIT_AUTH=200
 
 # Anonymous requests per minute (default: 20)
-DARSHAN_RATE_LIMIT_ANON=10
+DDB_RATE_LIMIT_ANON=10
 ```
 
 ### WebSocket Tuning
 
 ```bash
 # Max concurrent connections per server (default: 10000)
-DARSHAN_MAX_CONNECTIONS=50000
+DDB_MAX_CONNECTIONS=50000
 
 # Send buffer size per client before backpressure (default: 1MB)
-DARSHAN_WS_BUFFER_SIZE=2097152
+DDB_WS_BUFFER_SIZE=2097152
 ```
 
 ### Caching
 
-DarshanDB caches query results in an LRU cache. Cached entries are invalidated automatically when underlying data changes.
+DarshJDB caches query results in an LRU cache. Cached entries are invalidated automatically when underlying data changes.
 
 ```bash
 # Query cache size (default: 1000 entries)
-DARSHAN_QUERY_CACHE_SIZE=5000
+DDB_QUERY_CACHE_SIZE=5000
 
 # Disable cache (useful for debugging)
-DARSHAN_QUERY_CACHE_ENABLED=false
+DDB_QUERY_CACHE_ENABLED=false
 ```
 
 ## Capacity Planning
@@ -121,7 +121,7 @@ DARSHAN_QUERY_CACHE_ENABLED=false
 | Mutation (batch, 100 ops) | ~20-50 ms |
 | Subscription re-evaluation | ~0.5-2 ms |
 
-**Rule of thumb:** 1 CPU core supports ~1,000 queries/second for simple queries. For complex workloads, benchmark with `darshan bench`.
+**Rule of thumb:** 1 CPU core supports ~1,000 queries/second for simple queries. For complex workloads, benchmark with `ddb bench`.
 
 ### Disk (PostgreSQL)
 
@@ -145,7 +145,7 @@ DARSHAN_QUERY_CACHE_ENABLED=false
 Run the built-in benchmark suite to measure your deployment's performance:
 
 ```bash
-darshan bench --connections 100 --duration 30s --queries-per-sec 1000
+ddb bench --connections 100 --duration 30s --queries-per-sec 1000
 ```
 
 This reports:
@@ -157,7 +157,7 @@ This reports:
 ### Example Output
 
 ```
-DarshanDB Benchmark Results
+DarshJDB Benchmark Results
 ===========================
 Connections: 100 concurrent
 Duration: 30 seconds
@@ -185,7 +185,7 @@ Memory:
 
 ## PostgreSQL Tuning
 
-For high-performance DarshanDB deployments, tune these PostgreSQL settings:
+For high-performance DarshJDB deployments, tune these PostgreSQL settings:
 
 ```ini
 # postgresql.conf
@@ -211,17 +211,17 @@ effective_io_concurrency = 200   # For SSD storage
 
 ## Production Tuning Checklist
 
-- [ ] Set `DARSHAN_PG_POOL_SIZE` appropriate for your hardware (2x CPU cores is a starting point)
+- [ ] Set `DDB_PG_POOL_SIZE` appropriate for your hardware (2x CPU cores is a starting point)
 - [ ] Enable PgBouncer for multi-instance deployments
-- [ ] Set `DARSHAN_MAX_QUERY_DEPTH` to the minimum your app requires
-- [ ] Configure rate limits (`DARSHAN_RATE_LIMIT_AUTH`, `DARSHAN_RATE_LIMIT_ANON`)
+- [ ] Set `DDB_MAX_QUERY_DEPTH` to the minimum your app requires
+- [ ] Configure rate limits (`DDB_RATE_LIMIT_AUTH`, `DDB_RATE_LIMIT_ANON`)
 - [ ] Monitor `/metrics` endpoint with Prometheus + Grafana
 - [ ] Set up database backups (see [Self-Hosting](self-hosting.md))
 - [ ] Enable `RUST_LOG=warn` in production (avoid `info` or `debug`)
 - [ ] Tune PostgreSQL `shared_buffers` and `work_mem` for your hardware
-- [ ] Set `DARSHAN_QUERY_CACHE_SIZE` based on your query diversity
-- [ ] Configure `DARSHAN_MAX_CONNECTIONS` based on expected concurrent users
-- [ ] Run `darshan bench` against your production hardware to establish baselines
+- [ ] Set `DDB_QUERY_CACHE_SIZE` based on your query diversity
+- [ ] Configure `DDB_MAX_CONNECTIONS` based on expected concurrent users
+- [ ] Run `ddb bench` against your production hardware to establish baselines
 - [ ] Set up alerting for P99 latency, connection pool exhaustion, and high error rates
 
 ---

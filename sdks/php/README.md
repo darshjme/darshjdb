@@ -1,6 +1,6 @@
-# DarshanDB PHP SDK
+# DarshJDB PHP SDK
 
-Official PHP SDK for [DarshanDB](https://github.com/darshandb/darshandb) with first-class Laravel support.
+Official PHP SDK for [DarshJDB](https://github.com/darshjdb/darshjdb) with first-class Laravel support.
 
 ## Requirements
 
@@ -77,7 +77,7 @@ $db->storage()->delete('/avatars/photo.jpg');
 Laravel auto-discovers the service provider. Publish the config file:
 
 ```bash
-php artisan vendor:publish --tag=darshan-config
+php artisan vendor:publish --tag=ddb-config
 ```
 
 Add to your `.env`:
@@ -125,13 +125,13 @@ use Darshan\Client;
 
 class UserService
 {
-    public function __construct(private Client $darshan)
+    public function __construct(private Client $ddb)
     {
     }
 
     public function getActiveUsers(): array
     {
-        $result = $this->darshan->data('users')
+        $result = $this->ddb->data('users')
             ->where('active', '=', true)
             ->orderBy('lastSeen', 'desc')
             ->get();
@@ -148,7 +148,7 @@ use Darshan\Client;
 
 class DarshanAuthMiddleware
 {
-    public function __construct(private Client $darshan)
+    public function __construct(private Client $ddb)
     {
     }
 
@@ -156,7 +156,7 @@ class DarshanAuthMiddleware
     {
         $token = $request->bearerToken();
         if ($token) {
-            $this->darshan->auth()->setToken($token);
+            $this->ddb->auth()->setToken($token);
         }
 
         return $next($request);
@@ -184,7 +184,7 @@ try {
 
 | Option      | Type   | Default | Description                      |
 | ----------- | ------ | ------- | -------------------------------- |
-| `serverUrl` | string | --      | DarshanDB server URL (required)  |
+| `serverUrl` | string | --      | DarshJDB server URL (required)  |
 | `apiKey`    | string | --      | Application API key (required)   |
 | `timeout`   | int    | 30      | HTTP timeout in seconds          |
 

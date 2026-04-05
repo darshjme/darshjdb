@@ -229,7 +229,7 @@ Follow references to load related entities in a single query:
 // Filter nested relations
 { users: { todos: { $where: { done: false }, $limit: 5 } } }
 
-// Deep nesting (up to DARSHAN_MAX_QUERY_DEPTH levels)
+// Deep nesting (up to DDB_MAX_QUERY_DEPTH levels)
 {
   organizations: {
     teams: {
@@ -414,13 +414,13 @@ const { data } = db.useQuery({
 
 ## Query Complexity Limits
 
-To prevent expensive queries from degrading performance, DarshanDB enforces limits:
+To prevent expensive queries from degrading performance, DarshJDB enforces limits:
 
 | Limit | Default | Config Variable |
 |-------|---------|-----------------|
-| Max query depth | 12 | `DARSHAN_MAX_QUERY_DEPTH` |
-| Max results per query | 10,000 | `DARSHAN_MAX_QUERY_RESULTS` |
-| Max entities per transaction | 1,000 | `DARSHAN_MAX_TX_OPS` |
+| Max query depth | 12 | `DDB_MAX_QUERY_DEPTH` |
+| Max results per query | 10,000 | `DDB_MAX_QUERY_RESULTS` |
+| Max entities per transaction | 1,000 | `DDB_MAX_TX_OPS` |
 
 Queries that exceed these limits receive a `400 Bad Request` response with an explanation of which limit was exceeded.
 

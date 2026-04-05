@@ -1,4 +1,4 @@
-# DarshanDB vs PocketBase
+# DarshJDB vs PocketBase
 
 A technical comparison of two single-binary, self-hosted Backend-as-a-Service platforms.
 
@@ -8,7 +8,7 @@ Both projects share a core thesis: developers should be able to run one binary o
 
 ## At a Glance
 
-| Dimension | PocketBase | DarshanDB |
+| Dimension | PocketBase | DarshJDB |
 |-----------|-----------|-----------|
 | **Language** | Go | Rust |
 | **Storage engine** | SQLite (embedded) | PostgreSQL 16+ (external) |
@@ -38,15 +38,15 @@ This is genuinely elegant. The operational burden is near-zero. Backups are `cp 
 
 The Go runtime provides garbage collection, goroutine concurrency, and fast compilation. PocketBase can be extended as a Go framework --- import it as a library and add custom routes, middleware, and hooks in Go.
 
-### DarshanDB: Rust + PostgreSQL
+### DarshJDB: Rust + PostgreSQL
 
-DarshanDB compiles to a single Rust binary but requires a running PostgreSQL instance. This is a fundamental tradeoff: you gain Postgres's full feature set (MVCC, concurrent writers, extensions, replication) at the cost of operational complexity.
+DarshJDB compiles to a single Rust binary but requires a running PostgreSQL instance. This is a fundamental tradeoff: you gain Postgres's full feature set (MVCC, concurrent writers, extensions, replication) at the cost of operational complexity.
 
 The Rust binary runs on Axum + Tokio for async I/O. Memory safety is enforced at compile time without a garbage collector, which means no GC pauses under load. The type system catches entire classes of bugs before the binary exists.
 
-The Postgres dependency means DarshanDB will never match PocketBase's "copy one file and run" experience. But it also means DarshanDB inherits decades of PostgreSQL investment: pg_dump, logical replication, pgvector, PostGIS, pg_cron, and the entire Postgres extension ecosystem.
+The Postgres dependency means DarshJDB will never match PocketBase's "copy one file and run" experience. But it also means DarshJDB inherits decades of PostgreSQL investment: pg_dump, logical replication, pgvector, PostGIS, pg_cron, and the entire Postgres extension ecosystem.
 
-**Honest assessment:** PocketBase wins on operational simplicity. DarshanDB wins on raw capability of the underlying storage engine. For a solo developer deploying to a $5 VPS, the difference matters. For a team with a managed Postgres instance (Neon, Supabase Postgres, RDS), the Postgres dependency is a non-issue.
+**Honest assessment:** PocketBase wins on operational simplicity. DarshJDB wins on raw capability of the underlying storage engine. For a solo developer deploying to a $5 VPS, the difference matters. For a team with a managed Postgres instance (Neon, Supabase Postgres, RDS), the Postgres dependency is a non-issue.
 
 ---
 
@@ -58,9 +58,9 @@ PocketBase uses a traditional relational model. You define collections (tables) 
 
 This is familiar to any developer who has used SQL. The mental model is rows and columns. Queries filter on columns. Relations are foreign keys. The schema is explicit and enforced.
 
-### DarshanDB: Triple Store (EAV)
+### DarshJDB: Triple Store (EAV)
 
-Every piece of data in DarshanDB is a triple: `(entity_id, attribute, value)`. An "entity" is a collection of triples sharing the same ID. A "collection" is triples grouped by entity type.
+Every piece of data in DarshJDB is a triple: `(entity_id, attribute, value)`. An "entity" is a collection of triples sharing the same ID. A "collection" is triples grouped by entity type.
 
 ```
 (e_01, "name",  "Alice")
@@ -80,11 +80,11 @@ This is fundamentally a knowledge graph stored in Postgres. The triples table ha
 
 **What it costs you:**
 
-- **Query performance on wide entities.** Reconstructing an entity with 20 attributes requires joining 20+ rows from the triples table, compared to a single row scan in a relational model. DarshanDB uses query plan caching and Postgres indexes to mitigate this, but the fundamental overhead exists.
-- **Unfamiliar mental model.** Most developers think in rows and columns. The EAV model requires adjustment. DarshanDB's REST API abstracts this (you POST JSON objects, not raw triples), but the underlying model surfaces in query behavior and debugging.
+- **Query performance on wide entities.** Reconstructing an entity with 20 attributes requires joining 20+ rows from the triples table, compared to a single row scan in a relational model. DarshJDB uses query plan caching and Postgres indexes to mitigate this, but the fundamental overhead exists.
+- **Unfamiliar mental model.** Most developers think in rows and columns. The EAV model requires adjustment. DarshJDB's REST API abstracts this (you POST JSON objects, not raw triples), but the underlying model surfaces in query behavior and debugging.
 - **Storage overhead.** Each attribute-value pair is a row with metadata (entity_id, attribute name, value_type, tx_id, timestamps). A 20-field entity produces 20 rows instead of one. Postgres handles this fine at moderate scale, but it is more storage than a normalized relational model.
 
-**Honest assessment:** PocketBase's relational model is simpler, more familiar, and more storage-efficient for conventional CRUD. DarshanDB's triple store is more powerful for graph-shaped data, temporal queries, schema evolution, and automated inference --- but most applications do not need these capabilities. The triple store is a bet on a more expressive data model at the cost of simplicity.
+**Honest assessment:** PocketBase's relational model is simpler, more familiar, and more storage-efficient for conventional CRUD. DarshJDB's triple store is more powerful for graph-shaped data, temporal queries, schema evolution, and automated inference --- but most applications do not need these capabilities. The triple store is a bet on a more expressive data model at the cost of simplicity.
 
 ---
 
@@ -100,15 +100,15 @@ Horizontal scaling is not possible with SQLite. You cannot run two PocketBase in
 
 Backups and replication are file-level. Litestream can stream WAL changes to S3 for near-real-time backups, but this is append-only disaster recovery, not read replicas.
 
-### DarshanDB: PostgreSQL Concurrency
+### DarshJDB: PostgreSQL Concurrency
 
 PostgreSQL uses MVCC (Multi-Version Concurrency Control) with row-level locking. Multiple writers can operate concurrently on different rows without blocking each other. This is a fundamentally different concurrency model.
 
-DarshanDB also implements Solana-inspired parallel query execution: non-conflicting batch operations are grouped into waves that execute concurrently via `tokio::join_all`, while conflicting operations (same entity type, at least one write) are serialized.
+DarshJDB also implements Solana-inspired parallel query execution: non-conflicting batch operations are grouped into waves that execute concurrently via `tokio::join_all`, while conflicting operations (same entity type, at least one write) are serialized.
 
 Postgres provides native horizontal read scaling via streaming replication. Write scaling requires more sophisticated approaches (Citus, partitioning), but the read-replica pattern covers most growth scenarios.
 
-**Honest assessment:** For a solo developer's side project, SQLite's single-writer model is not a limitation --- and the operational simplicity is a genuine advantage. For an application that needs concurrent writes from multiple users modifying different data simultaneously, Postgres is architecturally superior. DarshanDB's scalability ceiling is much higher, but reaching that ceiling requires operational maturity that the target user may not have.
+**Honest assessment:** For a solo developer's side project, SQLite's single-writer model is not a limitation --- and the operational simplicity is a genuine advantage. For an application that needs concurrent writes from multiple users modifying different data simultaneously, Postgres is architecturally superior. DarshJDB's scalability ceiling is much higher, but reaching that ceiling requires operational maturity that the target user may not have.
 
 ---
 
@@ -120,9 +120,9 @@ PocketBase uses SSE (Server-Sent Events) for real-time subscriptions. Clients su
 
 SSE is HTTP-based, works through most proxies and firewalls without configuration, and is simpler than WebSockets. The tradeoff is that SSE is one-directional (server to client only) and sends full record payloads on each change.
 
-### DarshanDB: WebSocket Subscriptions with Diff Push
+### DarshJDB: WebSocket Subscriptions with Diff Push
 
-DarshanDB uses WebSocket connections for real-time sync. The architecture is more involved:
+DarshJDB uses WebSocket connections for real-time sync. The architecture is more involved:
 
 1. Clients subscribe to queries (not just collections).
 2. When a mutation occurs, the `Broadcaster` identifies affected subscriptions via the `SubscriptionRegistry`.
@@ -133,10 +133,10 @@ DarshanDB uses WebSocket connections for real-time sync. The architecture is mor
 This means:
 
 - **Bandwidth efficiency.** Diffs are smaller than full payloads, which matters on mobile or metered connections.
-- **Permission-aware push.** Two users subscribed to the same query can receive different results because their permission rules differ. PocketBase also filters by collection rules, but DarshanDB's per-query subscription with RLS injection is more granular.
-- **Presence system.** DarshanDB has a built-in presence engine (who's online, cursor positions, typing indicators) with auto-expiry and rate limiting (20 updates/sec per room). PocketBase does not have presence.
+- **Permission-aware push.** Two users subscribed to the same query can receive different results because their permission rules differ. PocketBase also filters by collection rules, but DarshJDB's per-query subscription with RLS injection is more granular.
+- **Presence system.** DarshJDB has a built-in presence engine (who's online, cursor positions, typing indicators) with auto-expiry and rate limiting (20 updates/sec per room). PocketBase does not have presence.
 
-**Honest assessment:** PocketBase's SSE approach is simpler, requires no special proxy configuration, and is adequate for most use cases ("record changed, here's the new version"). DarshanDB's diff-based WebSocket system is more sophisticated and more bandwidth-efficient, but adds implementation complexity and requires WebSocket-compatible infrastructure. The presence system is a genuine differentiator for collaborative applications.
+**Honest assessment:** PocketBase's SSE approach is simpler, requires no special proxy configuration, and is adequate for most use cases ("record changed, here's the new version"). DarshJDB's diff-based WebSocket system is more sophisticated and more bandwidth-efficient, but adds implementation complexity and requires WebSocket-compatible infrastructure. The presence system is a genuine differentiator for collaborative applications.
 
 ---
 
@@ -152,7 +152,7 @@ This means:
 
 The breadth of OAuth2 providers is impressive. The auth rules use a filter expression language evaluated at the collection level.
 
-### DarshanDB
+### DarshJDB
 
 - Email/password (Argon2id: 64MB memory, 3 iterations, 4 parallelism --- OWASP recommended)
 - Magic link authentication (32-byte tokens, hashed storage, 15-minute expiry, one-time use)
@@ -163,9 +163,9 @@ The breadth of OAuth2 providers is impressive. The auth rules use a filter expre
 - Rate limiting per-IP and per-user (token bucket)
 - Row-level permission engine (rules stored as data, not config)
 
-DarshanDB has fewer OAuth2 providers but deeper security features: MFA, device fingerprinting, refresh token rotation, and HMAC-signed OAuth state parameters. The permission engine stores rules as triples in the database, which means permissions are data --- queryable, versionable, and auditable.
+DarshJDB has fewer OAuth2 providers but deeper security features: MFA, device fingerprinting, refresh token rotation, and HMAC-signed OAuth state parameters. The permission engine stores rules as triples in the database, which means permissions are data --- queryable, versionable, and auditable.
 
-**Honest assessment:** PocketBase has broader OAuth2 coverage. DarshanDB has deeper security primitives. For most indie projects, PocketBase's auth is more than sufficient. For applications where MFA, device binding, or auditable permission rules matter (enterprise, fintech, healthcare), DarshanDB's auth stack is more appropriate.
+**Honest assessment:** PocketBase has broader OAuth2 coverage. DarshJDB has deeper security primitives. For most indie projects, PocketBase's auth is more than sufficient. For applications where MFA, device binding, or auditable permission rules matter (enterprise, fintech, healthcare), DarshJDB's auth stack is more appropriate.
 
 ---
 
@@ -187,7 +187,7 @@ The admin UI is polished and functional. You can manage data, view logs, configu
 
 PocketBase can also be used as a Go framework: import it, add custom routes, and build your extended binary. This is a powerful pattern for developers who need custom server logic.
 
-### DarshanDB
+### DarshJDB
 
 The current experience requires more setup:
 
@@ -199,7 +199,7 @@ The current experience requires more setup:
 
 This is not bad, but it is more steps than PocketBase. The Postgres dependency is the primary friction point.
 
-Where DarshanDB's DX diverges is in SDK breadth. Five SDKs ship out of the box:
+Where DarshJDB's DX diverges is in SDK breadth. Five SDKs ship out of the box:
 
 - **TypeScript core** + framework-specific packages for React (hooks), Angular (signals + RxJS), and Next.js (App Router + Pages Router + Server Components)
 - **Python** with FastAPI and Django integration
@@ -209,7 +209,7 @@ Each SDK uses framework-native patterns. React gets `useQuery` and `useMutation`
 
 DarshanQL is a purpose-built query language with semantic search (`$semantic`), hybrid search (tsvector + pgvector via RRF), nested entity resolution, and full-text search. This is more expressive than PocketBase's filter syntax but has a learning curve.
 
-**Honest assessment:** PocketBase has a better out-of-box experience for the first 10 minutes. DarshanDB has a more complete SDK story for production applications, especially polyglot teams using Python or PHP backends alongside JS frontends. The gap in initial setup friction is real and should not be minimized.
+**Honest assessment:** PocketBase has a better out-of-box experience for the first 10 minutes. DarshJDB has a more complete SDK story for production applications, especially polyglot teams using Python or PHP backends alongside JS frontends. The gap in initial setup friction is real and should not be minimized.
 
 ---
 
@@ -219,9 +219,9 @@ This is not a close comparison.
 
 PocketBase was released in 2022 and has accumulated 43,000+ GitHub stars, an active Discord, extensive community tutorials, third-party SDKs (Dart, Swift, Kotlin, C#, Python), and production deployments. It has gone through 20+ releases with breaking changes handled via documented migration paths. The bus factor is low (primarily one developer, Gani Georgiev), but the codebase is clean and well-understood.
 
-DarshanDB is a new project in alpha. It has 731 tests, comprehensive documentation, and multi-language SDK coverage, but no community yet. No production deployments. No third-party ecosystem.
+DarshJDB is a new project in alpha. It has 731 tests, comprehensive documentation, and multi-language SDK coverage, but no community yet. No production deployments. No third-party ecosystem.
 
-**Honest assessment:** If community support and ecosystem maturity are deciding factors, PocketBase wins by a large margin. DarshanDB must earn its community through technical merit and reliability over time.
+**Honest assessment:** If community support and ecosystem maturity are deciding factors, PocketBase wins by a large margin. DarshJDB must earn its community through technical merit and reliability over time.
 
 ---
 
@@ -253,15 +253,15 @@ PocketBase does fewer things and does them well. It does not try to be a knowled
 
 ---
 
-## 9. What DarshanDB Does Better
+## 9. What DarshJDB Does Better
 
 ### PostgreSQL as a foundation
 
-Everything Postgres gives you, DarshanDB inherits: MVCC concurrency, streaming replication, pgvector for embeddings, PostGIS for geospatial, full-text search with tsvector, JSONB operators, window functions, CTEs, and 30 years of performance optimization. SQLite is excellent, but Postgres operates at a different scale.
+Everything Postgres gives you, DarshJDB inherits: MVCC concurrency, streaming replication, pgvector for embeddings, PostGIS for geospatial, full-text search with tsvector, JSONB operators, window functions, CTEs, and 30 years of performance optimization. SQLite is excellent, but Postgres operates at a different scale.
 
 ### Vector search and auto-embeddings
 
-DarshanDB integrates pgvector for semantic search with an auto-embedding pipeline. Configure an OpenAI or Ollama endpoint, specify which attributes to embed, and vector embeddings are generated automatically when text triples are written. Queries support `$semantic` (vector similarity), `$search` (full-text), and `$hybrid` (RRF fusion of both).
+DarshJDB integrates pgvector for semantic search with an auto-embedding pipeline. Configure an OpenAI or Ollama endpoint, specify which attributes to embed, and vector embeddings are generated automatically when text triples are written. Queries support `$semantic` (vector similarity), `$search` (full-text), and `$hybrid` (RRF fusion of both).
 
 PocketBase has no vector search capability.
 
@@ -276,7 +276,7 @@ The EAV model with transaction IDs enables:
 
 ### Forward-chaining rule engine
 
-Inspired by GraphDB's TRREE engine, DarshanDB's rule system fires when matching triples are inserted and produces inferred triples in the same transaction. Supported actions: computed attributes (concat, copy, literal), value propagation across references, and counter updates on related entities. Rules chain up to a configurable depth (default 3).
+Inspired by GraphDB's TRREE engine, DarshJDB's rule system fires when matching triples are inserted and produces inferred triples in the same transaction. Supported actions: computed attributes (concat, copy, literal), value propagation across references, and counter updates on related entities. Rules chain up to a configurable depth (default 3).
 
 This enables patterns like "when a user is added to a team, automatically update the team's member_count" or "when an order's status changes to shipped, propagate the tracking number to the customer entity" --- without application code.
 
@@ -314,7 +314,7 @@ MFA with TOTP and recovery codes, device fingerprint binding, HMAC-signed OAuth 
 - **Go developers** who want an extensible backend framework.
 - **Projects where the data model is conventional CRUD** (users, posts, comments, orders).
 
-### DarshanDB is for:
+### DarshJDB is for:
 
 - **Developers building on graph-shaped or highly relational data** where the triple store model is a natural fit (knowledge management, CRM, ERP, social graphs, content management with complex taxonomies).
 - **Applications that need vector/semantic search** integrated with their transactional data (AI-powered search, recommendation engines, RAG pipelines).
@@ -332,23 +332,23 @@ Use this decision tree:
 
 ```
 Do you need vector search or semantic/hybrid queries?
-  YES --> DarshanDB
+  YES --> DarshJDB
   NO  -->
 
 Is your data naturally graph-shaped (entities referencing entities, traversal queries)?
-  YES --> DarshanDB
+  YES --> DarshJDB
   NO  -->
 
 Do you need concurrent writes from many users modifying different data?
-  YES --> DarshanDB (Postgres MVCC) 
+  YES --> DarshJDB (Postgres MVCC) 
   NO  -->
 
 Do you need Python or PHP SDKs as first-class citizens?
-  YES --> DarshanDB
+  YES --> DarshJDB
   NO  -->
 
 Do you need temporal queries or an append-only audit trail?
-  YES --> DarshanDB
+  YES --> DarshJDB
   NO  -->
 
 Do you need to be running in production this week with community support?
@@ -360,7 +360,7 @@ Is zero-dependency deployment (no Docker, no Postgres) critical?
   NO  -->
 
 Are you comfortable with alpha software and willing to contribute?
-  YES --> DarshanDB
+  YES --> DarshJDB
   NO  --> PocketBase
 ```
 
@@ -370,10 +370,10 @@ Are you comfortable with alpha software and willing to contribute?
 
 PocketBase is a mature, polished, community-proven BaaS that solves the "I need a backend for my app" problem with minimal friction. It has earned its 43K stars through genuine developer experience quality.
 
-DarshanDB is an alpha-stage project that makes a different architectural bet: PostgreSQL instead of SQLite, triple store instead of relational tables, diff-based WebSockets instead of SSE, forward-chaining rules instead of application-level hooks. These choices trade simplicity for power in specific dimensions.
+DarshJDB is an alpha-stage project that makes a different architectural bet: PostgreSQL instead of SQLite, triple store instead of relational tables, diff-based WebSockets instead of SSE, forward-chaining rules instead of application-level hooks. These choices trade simplicity for power in specific dimensions.
 
 If PocketBase fits your use case, it is the safer choice today. It is more stable, better documented by the community, and battle-tested in production.
 
-If your application needs what DarshanDB offers --- vector search, graph data, temporal queries, multi-language SDKs, Postgres-grade concurrency, inference rules --- then DarshanDB addresses a gap that PocketBase does not fill. But you are adopting alpha software, and that comes with the risks that word implies.
+If your application needs what DarshJDB offers --- vector search, graph data, temporal queries, multi-language SDKs, Postgres-grade concurrency, inference rules --- then DarshJDB addresses a gap that PocketBase does not fill. But you are adopting alpha software, and that comes with the risks that word implies.
 
 The goal is not to replace PocketBase. The goal is to serve the developers who have outgrown SQLite's concurrency model, who need more than relational tables, or who are building AI-native applications where vector search is not optional. Different tools for different problems.

@@ -1035,27 +1035,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "darshan-cli"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "chrono",
- "clap",
- "colored",
- "dialoguer",
- "dirs",
- "indicatif",
- "reqwest",
- "serde",
- "serde_json",
- "tokio",
- "toml",
- "tracing",
- "tracing-subscriber",
- "uuid",
-]
-
-[[package]]
 name = "darshandb-server"
 version = "0.1.0"
 dependencies = [
@@ -1120,6 +1099,27 @@ name = "data-encoding"
 version = "2.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d7a1e2f27636f116493b8b860f5546edb47c8d8f8ea73e1d2a20be88e28d1fea"
+
+[[package]]
+name = "ddb-cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "clap",
+ "colored",
+ "dialoguer",
+ "dirs",
+ "indicatif",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "toml",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
 
 [[package]]
 name = "der"

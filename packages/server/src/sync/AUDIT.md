@@ -136,8 +136,8 @@ The overall architecture is sound:
 ## Verification
 
 ```
-cargo check --lib -p darshandb-server  # PASS (0 errors in sync/)
-cargo test --lib -p darshandb-server sync::  # 65 passed, 0 failed
+cargo check --lib -p ddb-server  # PASS (0 errors in sync/)
+cargo test --lib -p ddb-server sync::  # 65 passed, 0 failed
 ```
 
 Pre-existing errors in `auth/session.rs` (missing `aud` field) and `functions/runtime.rs` (moved value borrow) are unrelated to the sync module.

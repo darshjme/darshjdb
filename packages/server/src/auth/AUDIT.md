@@ -1,4 +1,4 @@
-# DarshanDB Auth Security Audit
+# DarshJDB Auth Security Audit
 
 **Date:** 2026-04-05
 **Auditor:** PhD Security Engineer (automated)
@@ -9,7 +9,7 @@
 
 ## Executive Summary
 
-The DarshanDB auth subsystem is well-architected with strong fundamentals: Argon2id password hashing with OWASP parameters, RS256 JWTs with key rotation, HMAC-signed OAuth state, PKCE enforcement, and hashed refresh/magic-link token storage. The issues found are subtle but exploitable in adversarial conditions.
+The DarshJDB auth subsystem is well-architected with strong fundamentals: Argon2id password hashing with OWASP parameters, RS256 JWTs with key rotation, HMAC-signed OAuth state, PKCE enforcement, and hashed refresh/magic-link token storage. The issues found are subtle but exploitable in adversarial conditions.
 
 ---
 
@@ -35,9 +35,9 @@ The DarshanDB auth subsystem is well-architected with strong fundamentals: Argon
 **Category:** JWT vulnerability
 **Severity:** High
 
-**Before:** JWT validation checked `iss` (issuer) and `exp` (expiry) but not `aud` (audience). In multi-service architectures, a token issued by DarshanDB could be replayed against other services sharing the same signing key, or vice versa.
+**Before:** JWT validation checked `iss` (issuer) and `exp` (expiry) but not `aud` (audience). In multi-service architectures, a token issued by DarshJDB could be replayed against other services sharing the same signing key, or vice versa.
 
-**Fix:** Added `aud: Option<String>` field to `AccessClaims`. Token creation now includes `aud: Some("darshandb")`. Validation now calls `validation.set_audience(&["darshandb"])`. The `aud` field uses `#[serde(default)]` for backward compatibility with tokens issued before this change.
+**Fix:** Added `aud: Option<String>` field to `AccessClaims`. Token creation now includes `aud: Some("darshjdb")`. Validation now calls `validation.set_audience(&["darshjdb"])`. The `aud` field uses `#[serde(default)]` for backward compatibility with tokens issued before this change.
 
 **Impact:** Prevents cross-service token confusion attacks.
 

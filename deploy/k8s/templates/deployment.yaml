@@ -1,25 +1,25 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ include "darshandb.fullname" . }}
+  name: {{ include "darshjdb.fullname" . }}
   labels:
-    {{- include "darshandb.labels" . | nindent 4 }}
+    {{- include "darshjdb.labels" . | nindent 4 }}
 spec:
   {{- if not .Values.autoscaling.enabled }}
   replicas: {{ .Values.replicaCount }}
   {{- end }}
   selector:
     matchLabels:
-      {{- include "darshandb.selectorLabels" . | nindent 6 }}
+      {{- include "darshjdb.selectorLabels" . | nindent 6 }}
   template:
     metadata:
       annotations:
         checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
         checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
       labels:
-        {{- include "darshandb.selectorLabels" . | nindent 8 }}
+        {{- include "darshjdb.selectorLabels" . | nindent 8 }}
     spec:
-      serviceAccountName: {{ include "darshandb.fullname" . }}
+      serviceAccountName: {{ include "darshjdb.fullname" . }}
       securityContext:
         runAsNonRoot: true
         runAsUser: 65534
@@ -43,14 +43,14 @@ spec:
               protocol: TCP
           envFrom:
             - configMapRef:
-                name: {{ include "darshandb.fullname" . }}-config
+                name: {{ include "darshjdb.fullname" . }}-config
             - secretRef:
-                name: {{ include "darshandb.fullname" . }}-secret
+                name: {{ include "darshjdb.fullname" . }}-secret
           env:
             - name: DATABASE_URL
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "darshandb.fullname" . }}-secret
+                  name: {{ include "darshjdb.fullname" . }}-secret
                   key: database-url
           startupProbe:
             httpGet:

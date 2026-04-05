@@ -1,6 +1,6 @@
-# Self-Hosting DarshanDB
+# Self-Hosting DarshJDB
 
-DarshanDB runs anywhere you can run a single binary and connect to PostgreSQL.
+DarshJDB runs anywhere you can run a single binary and connect to PostgreSQL.
 
 ## Deployment Topology
 
@@ -15,9 +15,9 @@ graph TB
     end
 
     subgraph App["Application Tier"]
-        D1[DarshanDB Instance 1]
-        D2[DarshanDB Instance 2]
-        D3[DarshanDB Instance N]
+        D1[DarshJDB Instance 1]
+        D2[DarshJDB Instance 2]
+        D3[DarshJDB Instance N]
     end
 
     subgraph Data["Data Tier"]
@@ -56,25 +56,25 @@ graph TB
 ## Docker (Recommended)
 
 ```bash
-curl -fsSL https://darshandb.dev/docker -o docker-compose.yml
+curl -fsSL https://db.darshj.me/docker -o docker-compose.yml
 docker compose up -d
 ```
 
-The default `docker-compose.yml` includes DarshanDB and PostgreSQL 16 with pgvector.
+The default `docker-compose.yml` includes DarshJDB and PostgreSQL 16 with pgvector.
 
 ### Environment Variables
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `DATABASE_URL` | -- | PostgreSQL connection string |
-| `DARSHAN_PORT` | `7700` | Server listen port |
-| `DARSHAN_ADMIN_DIR` | `/usr/share/darshan/admin` | Admin dashboard static files |
-| `DARSHAN_JWT_SECRET` | auto-generated | JWT signing key (RS256) |
-| `DARSHAN_STORAGE_BACKEND` | `local` | `local`, `s3`, `r2`, `minio` |
-| `DARSHAN_S3_BUCKET` | -- | S3 bucket name |
-| `DARSHAN_S3_REGION` | -- | S3 region |
-| `DARSHAN_CORS_ORIGINS` | `*` (dev) / none (prod) | Allowed CORS origins |
-| `DARSHAN_ENCRYPTION_KEY` | -- | AES-256-GCM key for at-rest encryption |
+| `DDB_PORT` | `7700` | Server listen port |
+| `DDB_ADMIN_DIR` | `/usr/share/darshan/admin` | Admin dashboard static files |
+| `DDB_JWT_SECRET` | auto-generated | JWT signing key (RS256) |
+| `DDB_STORAGE_BACKEND` | `local` | `local`, `s3`, `r2`, `minio` |
+| `DDB_S3_BUCKET` | -- | S3 bucket name |
+| `DDB_S3_REGION` | -- | S3 region |
+| `DDB_CORS_ORIGINS` | `*` (dev) / none (prod) | Allowed CORS origins |
+| `DDB_ENCRYPTION_KEY` | -- | AES-256-GCM key for at-rest encryption |
 | `RUST_LOG` | `info` | Log level: `trace`, `debug`, `info`, `warn`, `error` |
 
 ## Bare Metal
@@ -88,31 +88,31 @@ The default `docker-compose.yml` includes DarshanDB and PostgreSQL 16 with pgvec
 ### Install
 
 ```bash
-curl -fsSL https://darshandb.dev/install | sh
+curl -fsSL https://db.darshj.me/install | sh
 ```
 
 ### Configure
 
 ```bash
-export DATABASE_URL="postgres://user:pass@localhost:5432/darshandb"
-darshan start --prod
+export DATABASE_URL="postgres://user:pass@localhost:5432/darshjdb"
+ddb start --prod
 ```
 
 ### systemd Service
 
 ```ini
-# /etc/systemd/system/darshandb.service
+# /etc/systemd/system/darshjdb.service
 [Unit]
-Description=DarshanDB Server
+Description=DarshJDB Server
 After=postgresql.service
 
 [Service]
 Type=simple
-User=darshandb
-Environment=DATABASE_URL=postgres://user:pass@localhost:5432/darshandb
-Environment=DARSHAN_PORT=7700
+User=darshjdb
+Environment=DATABASE_URL=postgres://user:pass@localhost:5432/darshjdb
+Environment=DDB_PORT=7700
 Environment=RUST_LOG=warn
-ExecStart=/usr/local/bin/darshan start --prod
+ExecStart=/usr/local/bin/ddb start --prod
 Restart=always
 RestartSec=5
 
@@ -121,15 +121,15 @@ WantedBy=multi-user.target
 ```
 
 ```bash
-sudo systemctl enable darshandb
-sudo systemctl start darshandb
+sudo systemctl enable darshjdb
+sudo systemctl start darshjdb
 ```
 
 ## Kubernetes
 
 ```bash
-helm repo add darshan https://charts.darshandb.dev
-helm install darshan darshan/darshandb \
+helm repo add darshjdb https://charts.db.darshj.me
+helm install darshan darshan/darshjdb \
   --set postgres.enabled=true \
   --set postgres.storageClass=ssd \
   --set replicas=3 \
@@ -142,7 +142,7 @@ helm install darshan darshan/darshandb \
 ```yaml
 replicas: 3
 image:
-  repository: ghcr.io/darshjme/darshandb
+  repository: ghcr.io/darshjme/darshjdb
   tag: latest
 
 postgres:
@@ -165,7 +165,7 @@ resources:
 
 env:
   RUST_LOG: warn
-  DARSHAN_PG_POOL_SIZE: "20"
+  DDB_PG_POOL_SIZE: "20"
 ```
 
 ## Reverse Proxy Configuration
@@ -173,7 +173,7 @@ env:
 ### nginx
 
 ```nginx
-upstream darshandb {
+upstream darshjdb {
     server 127.0.0.1:7700;
     keepalive 64;
 }
@@ -187,7 +187,7 @@ server {
 
     # WebSocket support
     location / {
-        proxy_pass http://darshandb;
+        proxy_pass http://darshjdb;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection "upgrade";
@@ -217,34 +217,34 @@ Caddy handles TLS, WebSocket upgrades, and HTTP/2 automatically.
 
 ```bash
 # Compressed SQL dump
-darshan backup --output /backups/darshan-$(date +%Y%m%d).sql.gz
+ddb backup --output /backups/ddb-$(date +%Y%m%d).sql.gz
 
 # Restore from backup
-darshan restore --input /backups/darshan-20260405.sql.gz
+ddb restore --input /backups/ddb-20260405.sql.gz
 
 # Verify backup integrity
-darshan backup verify --input /backups/darshan-20260405.sql.gz
+ddb backup verify --input /backups/ddb-20260405.sql.gz
 ```
 
 ### Automated Backup with Cron
 
 ```bash
-# /etc/cron.d/darshandb-backup
+# /etc/cron.d/darshjdb-backup
 # Daily backup at 2 AM, keep 30 days
-0 2 * * * darshandb /usr/local/bin/darshan backup \
-  --output /backups/darshan-$(date +\%Y\%m\%d).sql.gz && \
-  find /backups -name "darshan-*.sql.gz" -mtime +30 -delete
+0 2 * * * darshjdb /usr/local/bin/ddb backup \
+  --output /backups/ddb-$(date +\%Y\%m\%d).sql.gz && \
+  find /backups -name "ddb-*.sql.gz" -mtime +30 -delete
 ```
 
 ### S3 Backup
 
 ```bash
 # Backup directly to S3
-darshan backup --output s3://my-backups/darshan-$(date +%Y%m%d).sql.gz \
+ddb backup --output s3://my-backups/ddb-$(date +%Y%m%d).sql.gz \
   --s3-region us-east-1
 
 # Restore from S3
-darshan restore --input s3://my-backups/darshan-20260405.sql.gz \
+ddb restore --input s3://my-backups/ddb-20260405.sql.gz \
   --s3-region us-east-1
 ```
 
@@ -264,7 +264,7 @@ This allows restoring to any point in time, not just the last backup.
 
 ### Prometheus Metrics
 
-DarshanDB exposes Prometheus metrics at `/metrics`:
+DarshJDB exposes Prometheus metrics at `/metrics`:
 
 ```bash
 curl http://localhost:7700/metrics
@@ -274,15 +274,15 @@ Key metrics:
 
 | Metric | Type | Description |
 |--------|------|-------------|
-| `darshandb_queries_total` | Counter | Total queries processed |
-| `darshandb_mutations_total` | Counter | Total mutations processed |
-| `darshandb_query_duration_seconds` | Histogram | Query latency distribution |
-| `darshandb_mutation_duration_seconds` | Histogram | Mutation latency distribution |
-| `darshandb_websocket_connections` | Gauge | Active WebSocket connections |
-| `darshandb_subscriptions_active` | Gauge | Active live query subscriptions |
-| `darshandb_pg_pool_connections` | Gauge | PostgreSQL connection pool usage |
-| `darshandb_storage_bytes_total` | Counter | Total bytes stored |
-| `darshandb_auth_failures_total` | Counter | Failed authentication attempts |
+| `darshjdb_queries_total` | Counter | Total queries processed |
+| `darshjdb_mutations_total` | Counter | Total mutations processed |
+| `darshjdb_query_duration_seconds` | Histogram | Query latency distribution |
+| `darshjdb_mutation_duration_seconds` | Histogram | Mutation latency distribution |
+| `darshjdb_websocket_connections` | Gauge | Active WebSocket connections |
+| `darshjdb_subscriptions_active` | Gauge | Active live query subscriptions |
+| `darshjdb_pg_pool_connections` | Gauge | PostgreSQL connection pool usage |
+| `darshjdb_storage_bytes_total` | Counter | Total bytes stored |
+| `darshjdb_auth_failures_total` | Counter | Failed authentication attempts |
 
 ### Grafana Dashboard
 
@@ -290,8 +290,8 @@ Import the included Grafana dashboard from `deploy/grafana-dashboard.json`:
 
 ```bash
 # Or download from the release
-curl -fsSL https://darshandb.dev/grafana-dashboard.json \
-  -o /var/lib/grafana/dashboards/darshandb.json
+curl -fsSL https://db.darshj.me/grafana-dashboard.json \
+  -o /var/lib/grafana/dashboards/darshjdb.json
 ```
 
 ### Health Check
@@ -313,18 +313,18 @@ healthcheck:
 ```yaml
 # prometheus-rules.yml
 groups:
-  - name: darshandb
+  - name: darshjdb
     rules:
       - alert: HighQueryLatency
-        expr: histogram_quantile(0.99, darshandb_query_duration_seconds) > 1
+        expr: histogram_quantile(0.99, darshjdb_query_duration_seconds) > 1
         for: 5m
         labels:
           severity: warning
         annotations:
-          summary: "DarshanDB P99 query latency above 1s"
+          summary: "DarshJDB P99 query latency above 1s"
 
       - alert: HighAuthFailures
-        expr: rate(darshandb_auth_failures_total[5m]) > 10
+        expr: rate(darshjdb_auth_failures_total[5m]) > 10
         for: 2m
         labels:
           severity: critical
@@ -332,7 +332,7 @@ groups:
           summary: "High rate of authentication failures (possible brute force)"
 
       - alert: ConnectionPoolExhausted
-        expr: darshandb_pg_pool_connections / darshandb_pg_pool_max > 0.9
+        expr: darshjdb_pg_pool_connections / darshjdb_pg_pool_max > 0.9
         for: 5m
         labels:
           severity: warning
@@ -342,7 +342,7 @@ groups:
 
 ## Upgrading
 
-See the [Migration Guide](migration.md) for instructions on upgrading between DarshanDB versions, managing database migrations, and handling breaking changes.
+See the [Migration Guide](migration.md) for instructions on upgrading between DarshJDB versions, managing database migrations, and handling breaking changes.
 
 ---
 

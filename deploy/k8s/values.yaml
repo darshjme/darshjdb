@@ -1,7 +1,7 @@
 replicaCount: 1
 
 image:
-  repository: ghcr.io/darshjme/darshandb
+  repository: ghcr.io/darshjme/darshjdb
   pullPolicy: IfNotPresent
   tag: "latest"
 
@@ -17,7 +17,7 @@ ingress:
   className: "nginx"
   annotations: {}
   hosts:
-    - host: darshandb.local
+    - host: darshjdb.local
       paths:
         - path: /
           pathType: Prefix
@@ -44,7 +44,7 @@ postgresql:
     username: darshan
     # Override in production: --set postgresql.auth.password=<secure-value>
     password: darshan
-    database: darshandb
+    database: darshjdb
   primary:
     persistence:
       size: 10Gi

@@ -1,19 +1,19 @@
-# Contributing to DarshanDB
+# Contributing to DarshJDB
 
-We welcome contributions from everyone. Whether you're fixing a typo, reporting a bug, or building a new SDK — you're making DarshanDB better for every developer who uses it.
+We welcome contributions from everyone. Whether you're fixing a typo, reporting a bug, or building a new SDK — you're making DarshJDB better for every developer who uses it.
 
 ## Getting Started
 
 ```bash
-git clone https://github.com/darshjme/darshandb.git
-cd darshandb
+git clone https://github.com/darshjme/darshjdb.git
+cd darshjdb
 
 # Start the dev server (requires Docker for Postgres)
-darshan dev
+ddb dev
 
 # Or manually:
 docker compose up postgres -d
-cargo run --bin darshan-server
+cargo run --bin ddb-server
 ```
 
 ## Project Structure
@@ -21,7 +21,7 @@ cargo run --bin darshan-server
 | Directory | Language | What it does |
 |-----------|----------|-------------|
 | `packages/server/` | Rust | Core server: triple store, query engine, sync, auth, functions |
-| `packages/cli/` | Rust | CLI tool: `darshan dev`, `darshan deploy`, etc. |
+| `packages/cli/` | Rust | CLI tool: `ddb dev`, `ddb deploy`, etc. |
 | `packages/client-core/` | TypeScript | Framework-agnostic client SDK |
 | `packages/react/` | TypeScript | React hooks SDK |
 | `packages/angular/` | TypeScript | Angular signals/RxJS SDK |

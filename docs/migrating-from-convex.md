@@ -1,10 +1,10 @@
-# Migrating from Convex to DarshanDB
+# Migrating from Convex to DarshJDB
 
-This guide walks you through migrating an existing Convex application to DarshanDB, covering data model mapping, code translation, and the automated migration tooling.
+This guide walks you through migrating an existing Convex application to DarshJDB, covering data model mapping, code translation, and the automated migration tooling.
 
 ## Why Migrate?
 
-DarshanDB gives you the same real-time, reactive developer experience as Convex with:
+DarshJDB gives you the same real-time, reactive developer experience as Convex with:
 
 - **Self-hosted** -- run on your own infrastructure with no vendor lock-in
 - **Open source** -- inspect, modify, and contribute to the database engine
@@ -13,11 +13,11 @@ DarshanDB gives you the same real-time, reactive developer experience as Convex 
 
 ## Data Model Mapping
 
-### Convex Documents to DarshanDB Entities
+### Convex Documents to DarshJDB Entities
 
-Convex stores data as documents in tables. DarshanDB stores data as entities with typed fields in collections. The mapping is straightforward:
+Convex stores data as documents in tables. DarshJDB stores data as entities with typed fields in collections. The mapping is straightforward:
 
-| Convex Concept     | DarshanDB Equivalent         |
+| Convex Concept     | DarshJDB Equivalent         |
 |--------------------|------------------------------|
 | Table              | Collection (entity type)     |
 | Document           | Entity                       |
@@ -55,11 +55,11 @@ export default defineSchema({
 });
 ```
 
-**DarshanDB:**
+**DarshJDB:**
 
 ```typescript
 // darshan/schema.ts
-import { defineSchema, defineTable, v } from "@darshan/server";
+import { defineSchema, defineTable, v } from "@darshjdb/server";
 
 export default defineSchema({
   todos: defineTable({
@@ -75,7 +75,7 @@ export default defineSchema({
 });
 ```
 
-The schemas are nearly identical. The main difference is the import path and that `v.id()` in DarshanDB does not take a table name argument.
+The schemas are nearly identical. The main difference is the import path and that `v.id()` in DarshJDB does not take a table name argument.
 
 ## Code Comparisons
 
@@ -93,10 +93,10 @@ function TodoList() {
 }
 ```
 
-**DarshanDB:**
+**DarshJDB:**
 
 ```typescript
-import { useQuery } from "@darshan/react";
+import { useQuery } from "@darshjdb/react";
 
 function TodoList() {
   const { data } = useQuery("todos", {
@@ -129,10 +129,10 @@ function AddTodo() {
 }
 ```
 
-**DarshanDB:**
+**DarshJDB:**
 
 ```typescript
-import { useMutation } from "@darshan/react";
+import { useMutation } from "@darshjdb/react";
 
 function AddTodo() {
   const createTodo = useMutation("todos");
@@ -170,12 +170,12 @@ export const create = mutation({
 });
 ```
 
-**DarshanDB:**
+**DarshJDB:**
 
 ```typescript
 // darshan/functions/todos.ts
-import { query, mutation } from "@darshan/server";
-import { v } from "@darshan/server";
+import { query, mutation } from "@darshjdb/server";
+import { v } from "@darshjdb/server";
 
 export const list = query({
   args: { userId: v.id() },
@@ -201,10 +201,10 @@ export const create = mutation({
 If you want to minimize code changes during migration, use the Convex compatibility wrapper:
 
 ```typescript
-import { DarshanDB } from "@darshan/client";
-import { ConvexCompat } from "@darshan/client/convex-compat";
+import { DarshJDB } from "@darshjdb/client";
+import { ConvexCompat } from "@darshjdb/client/convex-compat";
 
-const db = new DarshanDB({
+const db = new DarshJDB({
   serverUrl: "http://localhost:7700",
   appId: "my-app",
 });
@@ -236,7 +236,7 @@ npx convex export --path ./convex-export
 
 This produces a directory with one JSON file per table.
 
-### 2. Start a DarshanDB Instance
+### 2. Start a DarshJDB Instance
 
 ```bash
 # Docker (quickest)
@@ -246,7 +246,7 @@ docker compose up -d
 cargo run --release
 ```
 
-DarshanDB runs on `http://localhost:7700` by default.
+DarshJDB runs on `http://localhost:7700` by default.
 
 ### 3. Run the Migration Script
 
@@ -259,8 +259,8 @@ npx tsx scripts/migrate-from-convex.ts \
 
 The script:
 1. Reads each JSON file from the export directory
-2. Converts each document to a DarshanDB entity (preserving `_id` values)
-3. Writes to DarshanDB in batches of 100 via `POST /api/mutate`
+2. Converts each document to a DarshJDB entity (preserving `_id` values)
+3. Writes to DarshJDB in batches of 100 via `POST /api/mutate`
 4. Reports progress per table
 
 **Dry run first** to verify the mapping:
@@ -278,7 +278,7 @@ Copy your Convex schema and adjust imports:
 ```diff
 - import { defineSchema, defineTable } from "convex/server";
 - import { v } from "convex/values";
-+ import { defineSchema, defineTable, v } from "@darshan/server";
++ import { defineSchema, defineTable, v } from "@darshjdb/server";
 
   export default defineSchema({
     todos: defineTable({
@@ -292,10 +292,10 @@ Copy your Convex schema and adjust imports:
 
 ### 5. Update Client Code
 
-Install the DarshanDB SDKs:
+Install the DarshJDB SDKs:
 
 ```bash
-npm install @darshan/client @darshan/react
+npm install @darshjdb/client @darshjdb/react
 npm uninstall convex
 ```
 
@@ -304,7 +304,7 @@ Replace imports and update queries:
 ```diff
 - import { ConvexProvider, useQuery, useMutation } from "convex/react";
 - import { api } from "../convex/_generated/api";
-+ import { DarshanProvider, useQuery, useMutation } from "@darshan/react";
++ import { DarshanProvider, useQuery, useMutation } from "@darshjdb/react";
 ```
 
 ### 6. Update Server Functions
@@ -313,17 +313,17 @@ Move your Convex functions from `convex/` to `darshan/functions/` and update the
 
 ```diff
 - import { query, mutation } from "./_generated/server";
-+ import { query, mutation } from "@darshan/server";
++ import { query, mutation } from "@darshjdb/server";
 ```
 
 ### 7. Verify the Migration
 
-Use the DarshanDB export script to verify data integrity:
+Use the DarshJDB export script to verify data integrity:
 
 ```bash
-npx tsx scripts/export-darshandb.ts \
+npx tsx scripts/export-darshjdb.ts \
   --url    http://localhost:7700    \
-  --output ./darshan-verify         \
+  --output ./ddb-verify         \
   --tables todos,users
 ```
 
@@ -345,23 +345,23 @@ Update your app's provider:
 
 ### 1. Document IDs
 
-Convex uses opaque `Id<"tableName">` types. DarshanDB uses UUID v7 strings. The migration script preserves your original Convex `_id` values, so foreign key references remain valid.
+Convex uses opaque `Id<"tableName">` types. DarshJDB uses UUID v7 strings. The migration script preserves your original Convex `_id` values, so foreign key references remain valid.
 
 ### 2. System Fields
 
-Convex's `_creationTime` is mapped to `:db/createdAt`. If your code reads `doc._creationTime`, update it to read the standard DarshanDB timestamp field.
+Convex's `_creationTime` is mapped to `:db/createdAt`. If your code reads `doc._creationTime`, update it to read the standard DarshJDB timestamp field.
 
 ### 3. Validators
 
-Convex's `v.id("tableName")` becomes `v.id()` in DarshanDB. Table-scoped ID validation is handled by the schema layer automatically.
+Convex's `v.id("tableName")` becomes `v.id()` in DarshJDB. Table-scoped ID validation is handled by the schema layer automatically.
 
 ### 4. File Storage
 
-Convex's built-in file storage maps to DarshanDB's Storage module. Upload URLs and patterns are similar but not identical. See the [Storage docs](storage.md) for the DarshanDB API.
+Convex's built-in file storage maps to DarshJDB's Storage module. Upload URLs and patterns are similar but not identical. See the [Storage docs](storage.md) for the DarshJDB API.
 
 ### 5. Scheduled Functions
 
-Convex's `ctx.scheduler` maps to DarshanDB's cron/scheduled function support. See the [Server Functions docs](server-functions.md) for configuration.
+Convex's `ctx.scheduler` maps to DarshJDB's cron/scheduled function support. See the [Server Functions docs](server-functions.md) for configuration.
 
 ---
 

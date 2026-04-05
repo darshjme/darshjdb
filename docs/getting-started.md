@@ -1,4 +1,4 @@
-# Getting Started with DarshanDB
+# Getting Started with DarshJDB
 
 Get a complete backend running in under five minutes.
 
@@ -12,7 +12,7 @@ Get a complete backend running in under five minutes.
 
 ```bash
 # macOS / Linux
-curl -fsSL https://darshandb.dev/install | sh
+curl -fsSL https://db.darshj.me/install | sh
 
 # Or with Docker (includes PostgreSQL 16 + pgvector)
 docker compose up -d
@@ -21,20 +21,20 @@ docker compose up -d
 Verify the installation:
 
 ```bash
-darshan --version
-# darshandb 0.1.0
+ddb --version
+# darshjdb 0.1.0
 ```
 
 ## Start the Dev Server
 
 ```bash
-darshan dev
+ddb dev
 ```
 
 This will:
 1. Start a PostgreSQL instance (via Docker if needed)
 2. Create the database and apply the initial schema
-3. Start the DarshanDB server on `http://localhost:7700`
+3. Start the DarshJDB server on `http://localhost:7700`
 4. Open the admin dashboard at `http://localhost:7700/admin`
 5. Watch `darshan/functions/` for changes and hot-reload server functions
 
@@ -43,13 +43,13 @@ This will:
 ### React
 
 ```bash
-npm install @darshan/react
+npm install @darshjdb/react
 ```
 
 ```tsx
-import { DarshanProvider, DarshanDB } from '@darshan/react';
+import { DarshanProvider, DarshJDB } from '@darshjdb/react';
 
-const db = DarshanDB.init({ appId: 'my-app' });
+const db = DarshJDB.init({ appId: 'my-app' });
 
 function App() {
   return (
@@ -83,14 +83,14 @@ function TodoApp() {
 ### Next.js (App Router)
 
 ```bash
-npm install @darshan/nextjs
+npm install @darshjdb/nextjs
 ```
 
 ```tsx
 // app/providers.tsx ("use client")
-import { DarshanProvider, DarshanDB } from '@darshan/nextjs';
+import { DarshanProvider, DarshJDB } from '@darshjdb/nextjs';
 
-const db = DarshanDB.init({ appId: 'my-app' });
+const db = DarshJDB.init({ appId: 'my-app' });
 
 export function Providers({ children }: { children: React.ReactNode }) {
   return <DarshanProvider db={db}>{children}</DarshanProvider>;
@@ -99,7 +99,7 @@ export function Providers({ children }: { children: React.ReactNode }) {
 
 ```tsx
 // app/page.tsx (Server Component)
-import { queryServer } from '@darshan/nextjs/server';
+import { queryServer } from '@darshjdb/nextjs/server';
 
 export default async function Page() {
   const data = await queryServer({ todos: { $order: { createdAt: 'desc' } } });
@@ -109,7 +109,7 @@ export default async function Page() {
 
 ```tsx
 // app/api/todos/route.ts (Server Action)
-import { createServerAction } from '@darshan/nextjs/api';
+import { createServerAction } from '@darshjdb/nextjs/api';
 
 export const POST = createServerAction(async (ctx, body) => {
   return ctx.db.transact(
@@ -122,9 +122,9 @@ export const POST = createServerAction(async (ctx, body) => {
 
 ```tsx
 // pages/_app.tsx
-import { DarshanProvider, DarshanDB } from '@darshan/nextjs/pages';
+import { DarshanProvider, DarshJDB } from '@darshjdb/nextjs/pages';
 
-const db = DarshanDB.init({ appId: 'my-app' });
+const db = DarshJDB.init({ appId: 'my-app' });
 
 export default function App({ Component, pageProps }) {
   return (
@@ -138,12 +138,12 @@ export default function App({ Component, pageProps }) {
 ### Angular
 
 ```bash
-npm install @darshan/angular
+npm install @darshjdb/angular
 ```
 
 ```typescript
 // app.config.ts
-import { provideDarshan } from '@darshan/angular';
+import { provideDarshan } from '@darshjdb/angular';
 
 export const appConfig = {
   providers: [
@@ -155,7 +155,7 @@ export const appConfig = {
 ```typescript
 // todo-list.component.ts
 import { Component, inject } from '@angular/core';
-import { DarshanService, injectQuery } from '@darshan/angular';
+import { DarshanService, injectQuery } from '@darshjdb/angular';
 
 @Component({
   selector: 'app-todo-list',
@@ -179,9 +179,9 @@ export class TodoListComponent {
 ### Vanilla JavaScript (CDN)
 
 ```html
-<script src="https://cdn.darshandb.dev/client.min.js"></script>
+<script src="https://cdn.db.darshj.me/client.min.js"></script>
 <script>
-  const db = DarshanDB.init({ appId: 'my-app' });
+  const db = DarshJDB.init({ appId: 'my-app' });
 
   db.query({ todos: { $where: { done: false } } }).then(data => {
     data.todos.forEach(todo => {
@@ -198,7 +198,7 @@ composer require darshan/darshan-php
 ```
 
 ```php
-use DarshanDB\Client;
+use DarshJDB\Client;
 
 $db = new Client([
     'serverUrl' => 'http://localhost:7700',
@@ -220,16 +220,16 @@ $db->transact([
 #### Laravel Integration
 
 ```php
-// config/darshan.php (published by the ServiceProvider)
+// config/ddb.php (published by the ServiceProvider)
 return [
-    'server_url' => env('DARSHAN_URL', 'http://localhost:7700'),
-    'api_key' => env('DARSHAN_API_KEY'),
+    'server_url' => env('DDB_URL', 'http://localhost:7700'),
+    'api_key' => env('DDB_API_KEY'),
 ];
 ```
 
 ```php
 // Usage via facade
-use DarshanDB\Facades\Darshan;
+use DarshJDB\Facades\Darshan;
 
 $todos = Darshan::query(['todos' => ['$where' => ['done' => false]]]);
 ```
@@ -237,13 +237,13 @@ $todos = Darshan::query(['todos' => ['$where' => ['done' => false]]]);
 ### Python
 
 ```bash
-pip install darshandb
+pip install darshjdb
 ```
 
 ```python
-from darshandb import DarshanDB
+from darshjdb import DarshJDB
 
-db = DarshanDB("http://localhost:7700", api_key="your-key")
+db = DarshJDB("http://localhost:7700", api_key="your-key")
 
 # Query
 todos = db.query({"todos": {"$where": {"done": False}}})
@@ -258,12 +258,12 @@ db.transact([
 
 ```python
 from fastapi import FastAPI, Depends
-from darshandb.fastapi import get_db, DarshanDB
+from darshjdb.fastapi import get_db, DarshJDB
 
 app = FastAPI()
 
 @app.get("/todos")
-async def list_todos(db: DarshanDB = Depends(get_db)):
+async def list_todos(db: DarshJDB = Depends(get_db)):
     return await db.query({"todos": {"$where": {"done": False}}})
 ```
 
@@ -285,7 +285,7 @@ curl -X POST http://localhost:7700/api/data/todos \
 
 ## Project Structure
 
-After running `darshan dev`, your project looks like this:
+After running `ddb dev`, your project looks like this:
 
 ```
 my-app/
@@ -305,7 +305,7 @@ my-app/
 - [Server Functions](server-functions.md) -- Write backend logic that runs on the server
 - [Authentication](authentication.md) -- Set up email/password, OAuth, and MFA
 - [Permissions](permissions.md) -- Control who can read and write data
-- [Architecture](architecture.md) -- Understand how DarshanDB works under the hood
+- [Architecture](architecture.md) -- Understand how DarshJDB works under the hood
 - [Presence](presence.md) -- Add real-time cursors and typing indicators
 - [Storage](storage.md) -- Upload and serve files
 - [Self-Hosting Guide](self-hosting.md) -- Deploy to your own infrastructure
@@ -313,7 +313,7 @@ my-app/
 
 ## Troubleshooting
 
-### `darshan dev` fails to start
+### `ddb dev` fails to start
 
 **Port already in use:**
 
@@ -321,7 +321,7 @@ my-app/
 # Check what's using port 7700
 lsof -i :7700
 # Kill the process or use a different port
-darshan dev --port 7701
+ddb dev --port 7701
 ```
 
 **PostgreSQL connection failed:**
@@ -331,24 +331,24 @@ darshan dev --port 7701
 docker ps | grep postgres
 
 # If using an external Postgres, verify the connection string
-darshan dev --database-url "postgres://user:pass@localhost:5432/darshandb"
+ddb dev --database-url "postgres://user:pass@localhost:5432/darshjdb"
 ```
 
 **Permission denied on install script:**
 
 ```bash
 # Run with explicit permissions
-curl -fsSL https://darshandb.dev/install | sudo sh
+curl -fsSL https://db.darshj.me/install | sudo sh
 ```
 
 ### Client SDK won't connect
 
 **CORS errors in browser:**
 
-DarshanDB has CORS disabled by default in production. In development (`darshan dev`), it allows `localhost` origins. For production, configure allowed origins:
+DarshJDB has CORS disabled by default in production. In development (`ddb dev`), it allows `localhost` origins. For production, configure allowed origins:
 
 ```bash
-DARSHAN_CORS_ORIGINS=https://myapp.com,https://admin.myapp.com
+DDB_CORS_ORIGINS=https://myapp.com,https://admin.myapp.com
 ```
 
 **WebSocket connection drops:**
@@ -368,14 +368,14 @@ location / {
 
 ### SDK type errors after server update
 
-After updating the DarshanDB server, make sure your client SDKs are on a compatible version:
+After updating the DarshJDB server, make sure your client SDKs are on a compatible version:
 
 ```bash
 # Check server version
 curl http://localhost:7700/api/admin/health
 
 # Update all SDKs
-npm update @darshan/react @darshan/nextjs @darshan/client
+npm update @darshjdb/react @darshjdb/nextjs @darshjdb/client
 ```
 
 See the full [Troubleshooting Guide](troubleshooting.md) for more solutions.

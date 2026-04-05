@@ -1,4 +1,4 @@
-# DarshanDB Performance Analysis
+# DarshJDB Performance Analysis
 
 Theoretical performance characteristics derived from source code analysis. No benchmark numbers are fabricated. All claims reference specific code paths.
 
@@ -400,7 +400,7 @@ Theoretical overhead vs. a traditional table-based BaaS (e.g., Supabase/PostgRES
 
 ### 10.1 Simple Read (fetch one entity by ID)
 
-| Aspect | Traditional | DarshanDB | Overhead factor |
+| Aspect | Traditional | DarshJDB | Overhead factor |
 |---|---|---|---|
 | SQL queries | 1 (`SELECT * FROM users WHERE id = $1`) | 1 (`SELECT ... FROM triples WHERE entity_id = $1 AND NOT retracted`) | ~1x queries |
 | Rows returned | 1 row | N rows (one per attribute) | Nx row volume |
@@ -411,7 +411,7 @@ Theoretical overhead vs. a traditional table-based BaaS (e.g., Supabase/PostgRES
 
 ### 10.2 Filtered Query (e.g., users WHERE email = X AND age > 25)
 
-| Aspect | Traditional | DarshanDB |
+| Aspect | Traditional | DarshJDB |
 |---|---|---|
 | JOINs | 0 (single table scan with WHERE) | 2 (one per filter attribute) + 1 (type filter) = 3 self-JOINs |
 | Index usage | Composite index on (email, age) | Separate index lookups per JOIN arm |
@@ -421,7 +421,7 @@ Theoretical overhead vs. a traditional table-based BaaS (e.g., Supabase/PostgRES
 
 ### 10.3 Mutation (create one entity with 10 attributes)
 
-| Aspect | Traditional | DarshanDB |
+| Aspect | Traditional | DarshJDB |
 |---|---|---|
 | SQL statements | 1 INSERT | 1 tx_id allocation + 10 INSERTs + 1 COMMIT + 1 re-read + 1 Merkle store = 14 |
 | Round-trips | 1 | 15 (using `set_triples` path) |
@@ -432,7 +432,7 @@ Theoretical overhead vs. a traditional table-based BaaS (e.g., Supabase/PostgRES
 
 ### 10.4 Cache Hit
 
-| Aspect | Traditional | DarshanDB |
+| Aspect | Traditional | DarshJDB |
 |---|---|---|
 | Path | N/A (typically no app-level cache) | DashMap lookup + Value clone |
 | Postgres involved | Yes (always) | No |
@@ -441,7 +441,7 @@ Theoretical overhead vs. a traditional table-based BaaS (e.g., Supabase/PostgRES
 
 ### 10.5 WebSocket Real-Time
 
-Comparable to other implementations (Supabase Realtime, Convex). The broadcast channel + subscription registry pattern is standard. DarshanDB's query-hash-based deduplication is an advantage for fan-out efficiency.
+Comparable to other implementations (Supabase Realtime, Convex). The broadcast channel + subscription registry pattern is standard. DarshJDB's query-hash-based deduplication is an advantage for fan-out efficiency.
 
 ---
 

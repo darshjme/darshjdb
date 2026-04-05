@@ -89,12 +89,12 @@ export const mockEntityTypes: EntityType[] = [
 ];
 
 export const mockRecords: EntityRecord[] = [
-  { _id: "jd72k3m4n5", _creationTime: 1711234567890, email: "alex@darshan.dev", name: "Alex Rivera", role: "admin", avatarUrl: null },
-  { _id: "kf83l4n5o6", _creationTime: 1711334567890, email: "sam@darshan.dev", name: "Sam Chen", role: "developer", avatarUrl: null },
+  { _id: "jd72k3m4n5", _creationTime: 1711234567890, email: "alex@db.darshj.me", name: "Alex Rivera", role: "admin", avatarUrl: null },
+  { _id: "kf83l4n5o6", _creationTime: 1711334567890, email: "sam@db.darshj.me", name: "Sam Chen", role: "developer", avatarUrl: null },
   { _id: "lg94m5o6p7", _creationTime: 1711434567890, email: "jordan@example.com", name: "Jordan Lee", role: "viewer", avatarUrl: null },
   { _id: "mh05n6p7q8", _creationTime: 1711534567890, email: "taylor@example.com", name: "Taylor Kim", role: "developer", avatarUrl: null },
   { _id: "ni16o7q8r9", _creationTime: 1711634567890, email: "morgan@example.com", name: "Morgan Patel", role: "viewer", avatarUrl: null },
-  { _id: "oj27p8r9s0", _creationTime: 1711734567890, email: "casey@darshan.dev", name: "Casey Wu", role: "admin", avatarUrl: null },
+  { _id: "oj27p8r9s0", _creationTime: 1711734567890, email: "casey@db.darshj.me", name: "Casey Wu", role: "admin", avatarUrl: null },
   { _id: "pk38q9s0t1", _creationTime: 1711834567890, email: "riley@example.com", name: "Riley Brooks", role: "viewer", avatarUrl: null },
   { _id: "ql49r0t1u2", _creationTime: 1711934567890, email: "avery@example.com", name: "Avery Singh", role: "developer", avatarUrl: null },
 ];
@@ -125,7 +125,7 @@ export const mockExecutions: FunctionExecution[] = Array.from({ length: 20 }, (_
 
 export const mockUsers: User[] = [
   {
-    id: "usr_001", email: "alex@darshan.dev", name: "Alex Rivera", role: "admin",
+    id: "usr_001", email: "alex@db.darshj.me", name: "Alex Rivera", role: "admin",
     createdAt: 1711234567890, lastLogin: Date.now() - 3600_000,
     sessions: [
       { id: "sess_1", device: "Chrome / macOS", ip: "192.168.1.100", lastActive: Date.now() - 300_000, current: true },
@@ -133,7 +133,7 @@ export const mockUsers: User[] = [
     ],
   },
   {
-    id: "usr_002", email: "sam@darshan.dev", name: "Sam Chen", role: "developer",
+    id: "usr_002", email: "sam@db.darshj.me", name: "Sam Chen", role: "developer",
     createdAt: 1711334567890, lastLogin: Date.now() - 7200_000,
     sessions: [
       { id: "sess_3", device: "Firefox / Linux", ip: "172.16.0.50", lastActive: Date.now() - 1800_000, current: true },
@@ -198,12 +198,12 @@ export const mockLogs: LogEntry[] = Array.from({ length: 50 }, (_, i) => {
 
 export const mockEnvVars: EnvVariable[] = [
   { key: "DARSHAN_DEPLOY_KEY", value: "dk_prod_a1b2c3d4e5f6", isSecret: true, updatedAt: Date.now() - 604800_000 },
-  { key: "DARSHAN_URL", value: "https://api.darshan.dev", isSecret: false, updatedAt: Date.now() - 2592000_000 },
+  { key: "DDB_URL", value: "https://api.db.darshj.me", isSecret: false, updatedAt: Date.now() - 2592000_000 },
   { key: "SMTP_HOST", value: "smtp.resend.com", isSecret: false, updatedAt: Date.now() - 1296000_000 },
   { key: "SMTP_API_KEY", value: "re_abc123def456", isSecret: true, updatedAt: Date.now() - 1296000_000 },
   { key: "WEBHOOK_SECRET", value: "whsec_xyz789", isSecret: true, updatedAt: Date.now() - 864000_000 },
-  { key: "STORAGE_BUCKET", value: "darshan-prod-files", isSecret: false, updatedAt: Date.now() - 2592000_000 },
-  { key: "CDN_URL", value: "https://cdn.darshan.dev", isSecret: false, updatedAt: Date.now() - 2592000_000 },
+  { key: "STORAGE_BUCKET", value: "ddb-prod-files", isSecret: false, updatedAt: Date.now() - 2592000_000 },
+  { key: "CDN_URL", value: "https://cdn.db.darshj.me", isSecret: false, updatedAt: Date.now() - 2592000_000 },
 ];
 
 export const mockExecutionHistory = Array.from({ length: 24 }, (_, i) => ({

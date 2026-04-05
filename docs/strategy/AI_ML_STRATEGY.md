@@ -1,4 +1,4 @@
-# DarshanDB AI/ML Strategy: Making a Self-Hosted BaaS AI-Native
+# DarshJDB AI/ML Strategy: Making a Self-Hosted BaaS AI-Native
 
 > **Author:** Darsh Joshi  
 > **Date:** 2026-04-05  
@@ -9,9 +9,9 @@
 
 ## Executive Summary
 
-DarshanDB already has pgvector and a `$semantic` operator in its query language. This document lays out the plan to evolve that into a complete AI-native backend -- one where embeddings are generated automatically on insert, server functions have first-class AI primitives, queries understand natural language, mutations are guarded by ML-powered middleware, and the entire system speaks MCP so any AI agent can use it as a tool.
+DarshJDB already has pgvector and a `$semantic` operator in its query language. This document lays out the plan to evolve that into a complete AI-native backend -- one where embeddings are generated automatically on insert, server functions have first-class AI primitives, queries understand natural language, mutations are guarded by ML-powered middleware, and the entire system speaks MCP so any AI agent can use it as a tool.
 
-The thesis is simple: every BaaS will need AI capabilities within 18 months. Firebase added Vertex AI extensions as an afterthought. Supabase bolted on pgvector but left orchestration to the user. DarshanDB can make AI a first-class citizen from the data layer up -- not an extension, not a plugin, but part of the core.
+The thesis is simple: every BaaS will need AI capabilities within 18 months. Firebase added Vertex AI extensions as an afterthought. Supabase bolted on pgvector but left orchestration to the user. DarshJDB can make AI a first-class citizen from the data layer up -- not an extension, not a plugin, but part of the core.
 
 ---
 
@@ -32,17 +32,17 @@ The thesis is simple: every BaaS will need AI capabilities within 18 months. Fir
 
 ### Current State
 
-DarshanDB already ships with pgvector and exposes a `$semantic` query operator. What's missing is the pipeline around it: automatic embedding generation, chunking, hybrid search, and multi-model support.
+DarshJDB already ships with pgvector and exposes a `$semantic` query operator. What's missing is the pipeline around it: automatic embedding generation, chunking, hybrid search, and multi-model support.
 
 ### 1.1 Embedding Generation Pipeline
 
-Every document stored in DarshanDB should be embeddable without the developer writing any pipeline code. The system auto-embeds on insert and re-embeds on update.
+Every document stored in DarshJDB should be embeddable without the developer writing any pipeline code. The system auto-embeds on insert and re-embeds on update.
 
 #### Schema Declaration
 
 ```typescript
-// darshan.schema.ts
-import { defineSchema, s } from '@darshan/server';
+// ddb.schema.ts
+import { defineSchema, s } from '@darshjdb/server';
 
 export default defineSchema({
   articles: {
@@ -296,7 +296,7 @@ LIMIT 10;
 ### 1.3 Multi-Model Support
 
 ```toml
-# darshan.config.toml
+# ddb.config.toml
 
 [ai]
 default_embedding_model = "openai/text-embedding-3-small"
@@ -421,13 +421,13 @@ impl EmbeddingProvider for OnnxEmbeddingProvider {
 
 ## 2. AI Server Functions
 
-Server functions are DarshanDB's answer to Convex functions -- sandboxed TypeScript/JavaScript executed in V8 isolates on the server. The AI extension gives every function access to embedding, completion, classification, and summarization primitives through the `ctx.ai` namespace.
+Server functions are DarshJDB's answer to Convex functions -- sandboxed TypeScript/JavaScript executed in V8 isolates on the server. The AI extension gives every function access to embedding, completion, classification, and summarization primitives through the `ctx.ai` namespace.
 
 ### 2.1 API Surface
 
 ```typescript
 // darshan/functions/ai-helpers.ts
-import { action } from '@darshan/server';
+import { action } from '@darshjdb/server';
 
 // ctx.ai.embed -- Generate embeddings
 export const getRelatedArticles = action(async (ctx, { articleId }) => {
@@ -525,7 +525,7 @@ export const summarizeThread = action(async (ctx, { threadId }) => {
 
 ```typescript
 // darshan/functions/rag.ts
-import { action } from '@darshan/server';
+import { action } from '@darshjdb/server';
 
 export const askDocs = action(async (ctx, { question }) => {
   // One-liner RAG: search, retrieve context, generate answer
@@ -560,10 +560,10 @@ export const askDocs = action(async (ctx, { question }) => {
 // 2. "openai/gpt-4o"            -> OpenAIProvider with model gpt-4o
 // 3. "ollama/llama3"            -> OllamaProvider at configured base_url
 // 4. "local/classifier"         -> ONNX runtime with local model
-// 5. "default"                  -> project-level default from darshan.config.toml
+// 5. "default"                  -> project-level default from ddb.config.toml
 
 // Fallback chains:
-// darshan.config.toml
+// ddb.config.toml
 // [ai.fallback]
 // chain = ["anthropic/claude-sonnet-4-20250514", "openai/gpt-4o-mini", "ollama/llama3"]
 // on_error = "next"       # try next provider on failure
@@ -641,7 +641,7 @@ pub fn ai_ops() -> Vec<deno_core::OpDecl> {
 ### 2.5 Cost and Rate Limiting
 
 ```toml
-# darshan.config.toml
+# ddb.config.toml
 
 [ai.limits]
 # Per-function invocation limits
@@ -668,11 +668,11 @@ completion_cache = false
 
 ### 3.1 Natural Language to DarshanQL Translation
 
-Allow developers to expose a natural-language query interface to their end users. DarshanDB translates NL to DarshanQL using the project's schema as context.
+Allow developers to expose a natural-language query interface to their end users. DarshJDB translates NL to DarshanQL using the project's schema as context.
 
 ```typescript
 // darshan/functions/natural-query.ts
-import { action } from '@darshan/server';
+import { action } from '@darshjdb/server';
 
 export const naturalQuery = action(async (ctx, { question }) => {
   // ctx.ai.toQuery() knows the project schema, permissions, and indexes
@@ -711,7 +711,7 @@ const { data, dql, explanation } = db.useNaturalQuery(
 
 ### 3.2 Auto-Indexing Recommendations
 
-DarshanDB's query engine already sees every query. The AI layer analyzes patterns and recommends indexes.
+DarshJDB's query engine already sees every query. The AI layer analyzes patterns and recommends indexes.
 
 ```rust
 // packages/server/src/ai/auto_index.rs
@@ -787,7 +787,7 @@ impl QueryAnalyzer {
 #### Dashboard Integration
 
 ```
-darshan index:suggest
+ddb index:suggest
 
   Recommended Indexes (based on 48h query analysis):
   
@@ -846,7 +846,7 @@ Middleware functions that run automatically on mutations, applying ML-powered va
 
 ```typescript
 // darshan/middleware/moderation.ts
-import { middleware } from '@darshan/server';
+import { middleware } from '@darshjdb/server';
 
 export const contentModeration = middleware({
   // Run on every insert/update to these tables
@@ -889,7 +889,7 @@ export const contentModeration = middleware({
 
 ```typescript
 // darshan/middleware/pii.ts
-import { middleware } from '@darshan/server';
+import { middleware } from '@darshjdb/server';
 
 export const piiProtection = middleware({
   tables: ['*'],   // all tables
@@ -939,7 +939,7 @@ export const piiProtection = middleware({
 #### Schema-Level PII Configuration
 
 ```typescript
-// darshan.schema.ts
+// ddb.schema.ts
 export default defineSchema({
   support_tickets: {
     subject: s.string(),
@@ -958,7 +958,7 @@ export default defineSchema({
 
 ```typescript
 // darshan/middleware/anomaly.ts
-import { middleware } from '@darshan/server';
+import { middleware } from '@darshjdb/server';
 
 export const anomalyDetection = middleware({
   tables: ['transactions', 'orders'],
@@ -1017,7 +1017,7 @@ export const anomalyDetection = middleware({
 
 ### 5.1 MCP (Model Context Protocol) Server
 
-DarshanDB ships with a built-in MCP server, making it directly usable as a tool by Claude, GPT, and any MCP-compatible agent.
+DarshJDB ships with a built-in MCP server, making it directly usable as a tool by Claude, GPT, and any MCP-compatible agent.
 
 ```rust
 // packages/server/src/mcp/server.rs
@@ -1028,7 +1028,7 @@ pub fn register_mcp_tools(server: &mut McpServer, db: &DarshanCore) {
     // Tool: Query data
     server.add_tool(Tool {
         name: "darshan_query",
-        description: "Query data from DarshanDB using DarshanQL",
+        description: "Query data from DarshJDB using DarshanQL",
         input_schema: json!({
             "type": "object",
             "properties": {
@@ -1053,7 +1053,7 @@ pub fn register_mcp_tools(server: &mut McpServer, db: &DarshanCore) {
     // Tool: Mutate data
     server.add_tool(Tool {
         name: "darshan_transact",
-        description: "Insert, update, or delete data in DarshanDB",
+        description: "Insert, update, or delete data in DarshJDB",
         input_schema: json!({
             "type": "object",
             "properties": {
@@ -1119,9 +1119,9 @@ pub fn register_mcp_tools(server: &mut McpServer, db: &DarshanCore) {
     
     // Resource: Schema introspection
     server.add_resource(Resource {
-        uri: "darshan://schema",
+        uri: "ddb://schema",
         name: "Database Schema",
-        description: "Current DarshanDB schema with all tables, fields, types, and relationships",
+        description: "Current DarshJDB schema with all tables, fields, types, and relationships",
         mime_type: "application/json",
         handler: Arc::new(move || {
             Ok(db.schema().to_json())
@@ -1130,7 +1130,7 @@ pub fn register_mcp_tools(server: &mut McpServer, db: &DarshanCore) {
     
     // Resource: Table data preview
     server.add_resource_template(ResourceTemplate {
-        uri_template: "darshan://tables/{table}/preview",
+        uri_template: "ddb://tables/{table}/preview",
         name: "Table Preview",
         description: "Preview first 20 rows of a table",
         handler: Arc::new(move |table| {
@@ -1144,7 +1144,7 @@ pub fn register_mcp_tools(server: &mut McpServer, db: &DarshanCore) {
 #### MCP Configuration
 
 ```toml
-# darshan.config.toml
+# ddb.config.toml
 
 [mcp]
 enabled = true
@@ -1162,11 +1162,11 @@ rate_limit = { rpm: 60, rpd: 10000 }
 ```json
 {
   "mcpServers": {
-    "darshandb": {
-      "command": "darshan",
+    "darshjdb": {
+      "command": "ddb",
       "args": ["mcp", "--project", "/path/to/my-app"],
       "env": {
-        "DARSHAN_API_KEY": "dsk_..."
+        "DDB_API_KEY": "dsk_..."
       }
     }
   }
@@ -1175,7 +1175,7 @@ rate_limit = { rpm: 60, rpd: 10000 }
 
 ### 5.2 Tool-Use Ready REST Endpoints
 
-For agents that don't support MCP, DarshanDB exposes the same capabilities through a tool-friendly REST API with OpenAPI 3.1 spec.
+For agents that don't support MCP, DarshJDB exposes the same capabilities through a tool-friendly REST API with OpenAPI 3.1 spec.
 
 ```
 POST /api/v1/query          -- Execute DarshanQL query
@@ -1194,7 +1194,7 @@ GET  /api/v1/openapi.json    -- Full OpenAPI spec (agents can self-discover)
 // Agents can GET /api/v1/openapi.json to understand the full API surface
 
 pub fn generate_openapi(schema: &Schema, functions: &[Function]) -> OpenApiSpec {
-    let mut spec = OpenApiSpec::new("DarshanDB API", env!("CARGO_PKG_VERSION"));
+    let mut spec = OpenApiSpec::new("DarshJDB API", env!("CARGO_PKG_VERSION"));
     
     // Add schema-derived CRUD endpoints
     for table in schema.tables() {
@@ -1225,7 +1225,7 @@ pub fn generate_openapi(schema: &Schema, functions: &[Function]) -> OpenApiSpec 
 
 ```typescript
 // darshan/functions/agent-session.ts
-import { action } from '@darshan/server';
+import { action } from '@darshjdb/server';
 
 export const agentChat = action(async (ctx, { sessionId, message }) => {
   // Get or create session
@@ -1278,7 +1278,7 @@ export const agentChat = action(async (ctx, { sessionId, message }) => {
 use axum::response::sse::{Event, Sse};
 use futures::stream::Stream;
 
-/// SSE endpoint for streaming LLM responses through DarshanDB
+/// SSE endpoint for streaming LLM responses through DarshJDB
 pub async fn stream_completion(
     State(state): State<AppState>,
     Json(request): Json<StreamRequest>,
@@ -1301,7 +1301,7 @@ pub async fn stream_completion(
 #### Client-Side Streaming
 
 ```typescript
-// @darshan/react
+// @darshjdb/react
 function AiChat() {
   const [response, setResponse] = useState('');
   
@@ -1323,7 +1323,7 @@ function AiChat() {
 
 ### Phase 1: v0.2 -- "Vector Foundation" (8 weeks)
 
-The goal: make DarshanDB the easiest self-hosted backend for building RAG applications.
+The goal: make DarshJDB the easiest self-hosted backend for building RAG applications.
 
 | Week | Deliverable | Details |
 |------|-------------|---------|
@@ -1345,11 +1345,11 @@ async-openai = "0.25"          # OpenAI API client
 # reqwest already in workspace for Anthropic/Cohere/Ollama HTTP calls
 ```
 
-**Exit criteria:** A developer can define `$embeddings` on a table, insert documents, and run hybrid search queries with zero custom code. Claude can use DarshanDB as an MCP tool.
+**Exit criteria:** A developer can define `$embeddings` on a table, insert documents, and run hybrid search queries with zero custom code. Claude can use DarshJDB as an MCP tool.
 
 ### Phase 2: v0.3 -- "Intelligence Layer" (8 weeks)
 
-The goal: make DarshanDB smart about data flowing through it.
+The goal: make DarshJDB smart about data flowing through it.
 
 | Week | Deliverable | Details |
 |------|-------------|---------|
@@ -1359,13 +1359,13 @@ The goal: make DarshanDB smart about data flowing through it.
 | 4-5 | PII detection and redaction | Regex + ML hybrid detector, encrypt/redact/block actions |
 | 5-6 | `ctx.ai.rag()` primitive | One-liner RAG pipeline in server functions |
 | 6-7 | NL-to-DarshanQL | Schema-aware query translation, `useNaturalQuery` hook |
-| 7-8 | Auto-indexing recommendations | Query pattern analyzer, `darshan index:suggest` CLI |
+| 7-8 | Auto-indexing recommendations | Query pattern analyzer, `ddb index:suggest` CLI |
 
 **Exit criteria:** Content moderation works out of the box on any text field. Developers can build a chatbot over their data with a single `ctx.ai.rag()` call. PII is auto-detected.
 
 ### Phase 3: v1.0 -- "Agent Platform" (10 weeks)
 
-The goal: make DarshanDB the backend of choice for AI agent applications.
+The goal: make DarshJDB the backend of choice for AI agent applications.
 
 | Week | Deliverable | Details |
 |------|-------------|---------|
@@ -1379,7 +1379,7 @@ The goal: make DarshanDB the backend of choice for AI agent applications.
 | 8-9 | Dashboard AI features | Embedding visualization, moderation queue, anomaly dashboard |
 | 9-10 | Performance, security audit, docs | Benchmarks, penetration testing on AI endpoints, full docs |
 
-**Exit criteria:** An agent framework (LangChain, CrewAI, Claude) can connect to DarshanDB via MCP, query data, mutate records, search semantically, and maintain multi-turn sessions -- all with proper auth and rate limiting. A developer can run the entire AI stack locally with zero API keys using ONNX models.
+**Exit criteria:** An agent framework (LangChain, CrewAI, Claude) can connect to DarshJDB via MCP, query data, mutate records, search semantically, and maintain multi-turn sessions -- all with proper auth and rate limiting. A developer can run the entire AI stack locally with zero API keys using ONNX models.
 
 ---
 
@@ -1397,7 +1397,7 @@ The goal: make DarshanDB the backend of choice for AI agent applications.
 
 **Decision:** Use pgvector inside the existing PostgreSQL instance rather than adding a separate vector database (Qdrant, Pinecone, Weaviate).
 
-**Rationale:** DarshanDB's core promise is "one binary." Adding a separate vector database breaks that. pgvector handles millions of vectors with HNSW indexes and sub-10ms search. For the 99% use case (< 10M vectors per table), pgvector is sufficient. For the 1% who need billion-scale, they're not running on a $5 VPS anyway.
+**Rationale:** DarshJDB's core promise is "one binary." Adding a separate vector database breaks that. pgvector handles millions of vectors with HNSW indexes and sub-10ms search. For the 99% use case (< 10M vectors per table), pgvector is sufficient. For the 1% who need billion-scale, they're not running on a $5 VPS anyway.
 
 **Escape hatch:** The provider abstraction allows adding Qdrant/Pinecone as a vector storage backend in the future without changing the query API.
 
@@ -1415,9 +1415,9 @@ The goal: make DarshanDB the backend of choice for AI agent applications.
 
 ### AD-5: MCP as Primary Agent Interface
 
-**Decision:** MCP (Model Context Protocol) is the primary way agents interact with DarshanDB, with REST as a fallback.
+**Decision:** MCP (Model Context Protocol) is the primary way agents interact with DarshJDB, with REST as a fallback.
 
-**Rationale:** MCP is becoming the standard for tool-use in AI agents (supported by Claude, adopted by OpenAI, integrated into VS Code, JetBrains, and others). By shipping an MCP server inside the DarshanDB binary, every DarshanDB instance becomes immediately usable by any MCP-compatible agent without additional setup.
+**Rationale:** MCP is becoming the standard for tool-use in AI agents (supported by Claude, adopted by OpenAI, integrated into VS Code, JetBrains, and others). By shipping an MCP server inside the DarshJDB binary, every DarshJDB instance becomes immediately usable by any MCP-compatible agent without additional setup.
 
 ---
 

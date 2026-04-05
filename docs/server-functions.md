@@ -37,7 +37,7 @@ Queries can only read data. They are cacheable and can be used as reactive subsc
 
 ```typescript
 // darshan/functions/getTodos.ts
-import { query, v } from '@darshan/server';
+import { query, v } from '@darshjdb/server';
 
 export const getTodos = query({
   args: { listId: v.id(), status: v.optional(v.string()) },
@@ -54,7 +54,7 @@ export const getTodos = query({
 Mutations execute within a database transaction. If any step fails, the entire mutation rolls back.
 
 ```typescript
-import { mutation, v } from '@darshan/server';
+import { mutation, v } from '@darshjdb/server';
 
 export const createTodo = mutation({
   args: {
@@ -82,7 +82,7 @@ export const createTodo = mutation({
 Actions can perform external HTTP requests, send emails, call webhooks, and other side effects that mutations cannot.
 
 ```typescript
-import { action, v } from '@darshan/server';
+import { action, v } from '@darshjdb/server';
 
 export const sendWelcomeEmail = action({
   args: { userId: v.id() },
@@ -107,7 +107,7 @@ export const sendWelcomeEmail = action({
 Scheduled functions run on a cron schedule. They have the same capabilities as mutations.
 
 ```typescript
-import { scheduled } from '@darshan/server';
+import { scheduled } from '@darshjdb/server';
 
 export const dailyCleanup = scheduled({
   cron: '0 3 * * *', // 3 AM daily
@@ -135,7 +135,7 @@ export const dailyCleanup = scheduled({
 Internal functions cannot be called from clients. They are only callable from other server functions.
 
 ```typescript
-import { internal } from '@darshan/server';
+import { internal } from '@darshjdb/server';
 
 export const computeAnalytics = internal({
   handler: async (ctx) => {
@@ -153,7 +153,7 @@ export const computeAnalytics = internal({
 });
 
 // Calling from another function:
-import { mutation } from '@darshan/server';
+import { mutation } from '@darshjdb/server';
 
 export const completeOrder = mutation({
   args: { orderId: v.id() },
@@ -203,7 +203,7 @@ const { data, isLoading } = db.useFn('getTodos', { listId: 'list-1', status: 'ac
 const result = await db.fn('createTodo', { title: 'Buy milk', listId: 'list-1' });
 
 // Angular
-const todos = this.darshan.fn('getTodos', { listId: 'list-1' });
+const todos = this.ddb.fn('getTodos', { listId: 'list-1' });
 
 // PHP
 $result = $db->fn('createTodo', ['title' => 'Buy milk', 'listId' => 'list-1']);
@@ -223,7 +223,7 @@ curl -X POST http://localhost:7700/api/fn/createTodo \
 ### Throwing Structured Errors
 
 ```typescript
-import { mutation, v, DarshanError } from '@darshan/server';
+import { mutation, v, DarshanError } from '@darshjdb/server';
 
 export const claimTodo = mutation({
   args: { todoId: v.id() },
@@ -286,7 +286,7 @@ try {
 ### Authentication Guard
 
 ```typescript
-import { mutation, v, DarshanError } from '@darshan/server';
+import { mutation, v, DarshanError } from '@darshjdb/server';
 
 function requireAuth(ctx: any) {
   if (!ctx.auth) {
@@ -315,7 +315,7 @@ export const deleteUser = mutation({
 ### Rate Limiting within Functions
 
 ```typescript
-import { action, v, DarshanError } from '@darshan/server';
+import { action, v, DarshanError } from '@darshjdb/server';
 
 export const sendVerificationEmail = action({
   args: { email: v.string().email() },
@@ -349,7 +349,7 @@ export const sendVerificationEmail = action({
 ### Composing Functions
 
 ```typescript
-import { mutation, v } from '@darshan/server';
+import { mutation, v } from '@darshjdb/server';
 
 // Helper: validate and normalize input
 function normalizeTitle(title: string): string {
@@ -426,21 +426,21 @@ export default {
 
 | Resource | Default | Configurable |
 |----------|---------|-------------|
-| CPU time | 30 seconds | `DARSHAN_FN_CPU_LIMIT` (per function) |
-| Memory | 128 MB | `DARSHAN_FN_MEMORY_LIMIT` (per function) |
-| Network | Allowlist only | `DARSHAN_FN_NETWORK_ALLOWLIST` (global config) |
-| Payload size | 1 MB | `DARSHAN_FN_MAX_PAYLOAD` |
+| CPU time | 30 seconds | `DDB_FN_CPU_LIMIT` (per function) |
+| Memory | 128 MB | `DDB_FN_MEMORY_LIMIT` (per function) |
+| Network | Allowlist only | `DDB_FN_NETWORK_ALLOWLIST` (global config) |
+| Payload size | 1 MB | `DDB_FN_MAX_PAYLOAD` |
 
 When a function exceeds its CPU or memory limit, it is terminated immediately and a `RESOURCE_EXCEEDED` error is returned to the client.
 
 ## Hot Reload
 
-In development mode (`darshan dev`), server functions are reloaded automatically when you save a file. No restart needed.
+In development mode (`ddb dev`), server functions are reloaded automatically when you save a file. No restart needed.
 
 In production, deploy updated functions with:
 
 ```bash
-darshan deploy --functions
+ddb deploy --functions
 ```
 
 ---

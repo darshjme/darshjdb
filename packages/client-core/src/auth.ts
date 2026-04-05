@@ -229,7 +229,7 @@ export class AuthClient {
 
       const popup = window.open(
         authUrl,
-        'darshan-oauth',
+        'ddb-oauth',
         `width=${width},height=${height},left=${left},top=${top},popup=yes`,
       );
 
@@ -251,7 +251,7 @@ export class AuthClient {
           error?: string;
         };
 
-        if (data.type !== 'darshan-oauth-callback') return;
+        if (data.type !== 'ddb-oauth-callback') return;
 
         window.removeEventListener('message', handleMessage);
         popup.close();

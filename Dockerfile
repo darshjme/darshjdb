@@ -59,7 +59,7 @@ COPY --from=builder /build/target/release/darshan /usr/local/bin/darshan
 COPY --from=frontend /build/packages/admin/dist /usr/share/darshan/admin
 
 # Ensure binaries are not writable by runtime user
-RUN chmod 555 /usr/local/bin/darshandb-server /usr/local/bin/darshan && \
+RUN chmod 555 /usr/local/bin/darshandb-server /usr/local/bin/ddb && \
     chown -R darshan:darshan /app
 
 USER darshan

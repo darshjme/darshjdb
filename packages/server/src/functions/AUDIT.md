@@ -84,7 +84,7 @@ The `Object` schema validates declared fields but ignores extra keys in the inpu
 
 ### C. `register_job` uses `block_in_place` (scheduler.rs)
 
-`tokio::task::block_in_place` panics on a single-threaded runtime. Since DarshanDB uses `tokio::main` with the multi-threaded runtime, this works in practice. However, it would break unit tests using `#[tokio::test]` with `flavor = "current_thread"`.
+`tokio::task::block_in_place` panics on a single-threaded runtime. Since DarshJDB uses `tokio::main` with the multi-threaded runtime, this works in practice. However, it would break unit tests using `#[tokio::test]` with `flavor = "current_thread"`.
 
 **Recommendation:** Convert `register_job` to `async fn` in a future refactor.
 

@@ -1,4 +1,4 @@
-# DarshanDB Verification Report
+# DarshJDB Verification Report
 
 **Date:** 2026-04-05
 **Auditor:** Automated deep-read verification
@@ -12,8 +12,8 @@
 
 | Suite | Passed | Failed | Ignored | Status |
 |-------|--------|--------|---------|--------|
-| `darshandb_server` (lib) | 446 | 0 | 0 | PASS |
-| `darshandb_server` (bin) | 0 | 0 | 0 | PASS (no binary tests) |
+| `ddb_server` (lib) | 446 | 0 | 0 | PASS |
+| `ddb_server` (bin) | 0 | 0 | 0 | PASS (no binary tests) |
 | Doc-tests | 2 | 0 | 2 | PASS |
 | **Total** | **448** | **0** | **2** | **PASS** |
 
@@ -26,10 +26,10 @@ The clippy failures are minor style issues (nested `if let + if` blocks in rest.
 
 | Package | Files | Passed | Skipped | Status |
 |---------|-------|--------|---------|--------|
-| `@darshan/tests` (integration) | 2 | 61 | 15 | PASS |
-| `@darshan/react` | 1 | 31 | 0 | PASS |
-| `@darshan/angular` | 0 | -- | -- | No tests |
-| `@darshan/nextjs` | 0 | -- | -- | No tests |
+| `@darshjdb/tests` (integration) | 2 | 61 | 15 | PASS |
+| `@darshjdb/react` | 1 | 31 | 0 | PASS |
+| `@darshjdb/angular` | 0 | -- | -- | No tests |
+| `@darshjdb/nextjs` | 0 | -- | -- | No tests |
 | **Total** | **3** | **92** | **15** | **PASS** |
 
 ### Python SDK (pytest)
@@ -272,7 +272,7 @@ The clippy failures are minor style issues (nested `if let + if` blocks in rest.
 
 ## Summary
 
-DarshanDB has a **solid, working core**. The triple store, query engine, password auth, JWT sessions, permission engine, WebSocket sync, and presence system are all genuinely implemented with real database operations. The 681 passing tests validate real behavior, not just type signatures.
+DarshJDB has a **solid, working core**. The triple store, query engine, password auth, JWT sessions, permission engine, WebSocket sync, and presence system are all genuinely implemented with real database operations. The 681 passing tests validate real behavior, not just type signatures.
 
 The main gap is that several substantial modules (storage engine, function runtime, scheduler) exist as well-written implementations but are **not yet wired** to the REST API handlers. This is a classic "last mile" problem -- the hardest engineering is done, the plumbing just needs connecting.
 

@@ -1,6 +1,6 @@
-# DarshanDB + Next.js App Router
+# DarshJDB + Next.js App Router
 
-A minimal Next.js 14 application demonstrating DarshanDB with the App Router. Server Components fetch initial data for fast page loads and SEO, while Client Components subscribe to real-time updates.
+A minimal Next.js 14 application demonstrating DarshJDB with the App Router. Server Components fetch initial data for fast page loads and SEO, while Client Components subscribe to real-time updates.
 
 ## What it demonstrates
 
@@ -13,7 +13,7 @@ A minimal Next.js 14 application demonstrating DarshanDB with the App Router. Se
 ## Prerequisites
 
 - Node.js 18+
-- A running DarshanDB server (default: `http://localhost:7700`)
+- A running DarshJDB server (default: `http://localhost:7700`)
 
 ## Setup
 
@@ -24,7 +24,7 @@ npm install
 # Configure environment
 cd examples/nextjs-app
 cp .env.local.example .env.local
-# Edit .env.local with your DarshanDB URL and admin token
+# Edit .env.local with your DarshJDB URL and admin token
 
 # Start the dev server
 npm run dev
@@ -54,7 +54,7 @@ nextjs-app/
 
 ```tsx
 // app/page.tsx (runs on the server)
-import { queryServer } from "@darshan/nextjs/server";
+import { queryServer } from "@darshjdb/nextjs/server";
 
 const posts = await queryServer({
   collection: "posts",
@@ -67,7 +67,7 @@ const posts = await queryServer({
 
 ```tsx
 // app/components/post-list.tsx ("use client")
-import { useQuery, useMutation } from "@darshan/react";
+import { useQuery, useMutation } from "@darshjdb/react";
 
 const { data } = useQuery({
   collection: "posts",
@@ -80,7 +80,7 @@ const { data } = useQuery({
 
 ```tsx
 // app/actions/posts.ts ("use server")
-import { mutateServer } from "@darshan/nextjs/server";
+import { mutateServer } from "@darshjdb/nextjs/server";
 import { revalidateTag } from "next/cache";
 
 export async function createPost(title: string, body: string) {
@@ -95,6 +95,6 @@ export async function createPost(title: string, body: string) {
 
 | Variable | Where | Description |
 |----------|-------|-------------|
-| `DARSHAN_URL` | Server only | DarshanDB server URL |
-| `DARSHAN_ADMIN_TOKEN` | Server only | Admin auth token (keep secret) |
-| `NEXT_PUBLIC_DARSHAN_URL` | Client + Server | Public URL for browser WebSocket |
+| `DDB_URL` | Server only | DarshJDB server URL |
+| `DDB_ADMIN_TOKEN` | Server only | Admin auth token (keep secret) |
+| `NEXT_PUBLIC_DDB_URL` | Client + Server | Public URL for browser WebSocket |

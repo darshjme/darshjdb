@@ -1,6 +1,6 @@
 # Architecture
 
-A deep dive into how DarshanDB works -- from a client query to a real-time push.
+A deep dive into how DarshJDB works -- from a client query to a real-time push.
 
 ## System Overview
 
@@ -41,11 +41,11 @@ graph TB
 
 ## The Triple Store
 
-DarshanDB stores all application data in a **triple store** -- an Entity-Attribute-Value (EAV) model implemented on top of PostgreSQL.
+DarshJDB stores all application data in a **triple store** -- an Entity-Attribute-Value (EAV) model implemented on top of PostgreSQL.
 
 ### Why EAV?
 
-Traditional relational databases require you to define schemas before writing data. DarshanDB flips this: you write data first, and schema emerges from usage. This means:
+Traditional relational databases require you to define schemas before writing data. DarshJDB flips this: you write data first, and schema emerges from usage. This means:
 
 - No migrations during development
 - Entities can have any attributes without ALTER TABLE
@@ -175,7 +175,7 @@ WHERE entity_id IN (SELECT entity_id FROM matched_entities)
 
 ## Sync Engine
 
-The sync engine is what makes DarshanDB reactive. Every query is not just executed once -- it becomes a **live subscription**.
+The sync engine is what makes DarshJDB reactive. Every query is not just executed once -- it becomes a **live subscription**.
 
 ```mermaid
 sequenceDiagram
@@ -235,12 +235,12 @@ On a typical app, this reduces bandwidth by 98% compared to polling.
 flowchart LR
     subgraph Client["Client (Browser/Mobile)"]
         App[Application Code]
-        SDK[DarshanDB SDK]
+        SDK[DarshJDB SDK]
         IDB[(IndexedDB)]
         OQ[Operation Queue]
     end
 
-    subgraph Server["DarshanDB Server"]
+    subgraph Server["DarshJDB Server"]
         WS[WebSocket Endpoint]
         ME[Mutation Engine]
     end
@@ -269,7 +269,7 @@ flowchart LR
 ```mermaid
 sequenceDiagram
     participant C as Client
-    participant S as DarshanDB Server
+    participant S as DarshJDB Server
     participant PG as PostgreSQL
 
     C->>S: POST /api/auth/signin { email, password }
@@ -396,7 +396,7 @@ flowchart TD
 
 ## Wire Protocol
 
-DarshanDB supports three transport mechanisms, negotiated at connection time:
+DarshJDB supports three transport mechanisms, negotiated at connection time:
 
 | Protocol | Format | Use Case |
 |----------|--------|----------|

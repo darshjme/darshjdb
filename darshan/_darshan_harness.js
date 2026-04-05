@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// DarshanDB function execution harness.
+// DarshJDB function execution harness.
 //
 // Usage: node _darshan_harness.js <function-file> <export-name>
 //

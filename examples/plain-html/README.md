@@ -1,17 +1,17 @@
-# DarshanDB Plain HTML Example
+# DarshJDB Plain HTML Example
 
-A zero-dependency todo app using DarshanDB's REST API with vanilla JavaScript. No build tools, no frameworks -- just a single HTML file.
+A zero-dependency todo app using DarshJDB's REST API with vanilla JavaScript. No build tools, no frameworks -- just a single HTML file.
 
 ## What it demonstrates
 
 - **Authentication** (sign up + sign in) via REST
-- **CRUD operations** using `fetch()` against the DarshanDB API
+- **CRUD operations** using `fetch()` against the DarshJDB API
 - **Polling for updates** (2-second interval)
-- How DarshanDB works without any SDK -- pure HTTP
+- How DarshJDB works without any SDK -- pure HTTP
 
 ## Prerequisites
 
-- A running DarshanDB server (default: `http://localhost:7700`)
+- A running DarshJDB server (default: `http://localhost:7700`)
 - Any modern web browser
 
 ## Setup
@@ -32,7 +32,7 @@ open examples/plain-html/index.html
 
 ## How it works
 
-The app authenticates with a demo account on load, then uses the DarshanDB REST API directly:
+The app authenticates with a demo account on load, then uses the DarshJDB REST API directly:
 
 | Operation | Method | Endpoint |
 |-----------|--------|----------|

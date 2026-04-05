@@ -1,6 +1,6 @@
 # Real-Time Presence
 
-DarshanDB includes a built-in presence system for tracking online users, cursors, typing indicators, and arbitrary ephemeral state. Presence data is not persisted to the database -- it lives in memory on the server and is broadcast to connected clients in real time.
+DarshJDB includes a built-in presence system for tracking online users, cursors, typing indicators, and arbitrary ephemeral state. Presence data is not persisted to the database -- it lives in memory on the server and is broadcast to connected clients in real time.
 
 ## Concepts
 
@@ -34,7 +34,7 @@ Presence is automatically cleaned up when a client disconnects.
 ### React
 
 ```tsx
-import { usePresence } from '@darshan/react';
+import { usePresence } from '@darshjdb/react';
 
 function CollaborativeEditor() {
   const { peers, myPresence, updatePresence } = usePresence('document-123', {
@@ -168,14 +168,14 @@ curl http://localhost:7700/api/presence/document-123 \
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `DARSHAN_PRESENCE_MAX_ROOMS` | `10000` | Maximum concurrent rooms |
-| `DARSHAN_PRESENCE_MAX_PEERS_PER_ROOM` | `500` | Maximum peers per room |
-| `DARSHAN_PRESENCE_HEARTBEAT_INTERVAL` | `30000` | Heartbeat interval in ms |
-| `DARSHAN_PRESENCE_TIMEOUT` | `60000` | Peer eviction timeout in ms |
+| `DDB_PRESENCE_MAX_ROOMS` | `10000` | Maximum concurrent rooms |
+| `DDB_PRESENCE_MAX_PEERS_PER_ROOM` | `500` | Maximum peers per room |
+| `DDB_PRESENCE_HEARTBEAT_INTERVAL` | `30000` | Heartbeat interval in ms |
+| `DDB_PRESENCE_TIMEOUT` | `60000` | Peer eviction timeout in ms |
 
 ## Permissions
 
-Presence rooms respect the same authentication model as the rest of DarshanDB. Only authenticated users can join rooms by default. You can configure room-level access in your permissions file:
+Presence rooms respect the same authentication model as the rest of DarshJDB. Only authenticated users can join rooms by default. You can configure room-level access in your permissions file:
 
 ```typescript
 // darshan/permissions.ts

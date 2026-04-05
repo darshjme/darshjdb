@@ -1,4 +1,4 @@
-# DarshanDB Security Audit Report
+# DarshJDB Security Audit Report
 
 **Date:** 2026-04-05
 **Auditor:** Systems Security Engineer
@@ -8,7 +8,7 @@
 
 ## Executive Summary
 
-DarshanDB demonstrates strong security fundamentals: the Dockerfile runs as a non-root user, password hashing uses Argon2id with OWASP-recommended parameters, JWT tokens use RS256 with key rotation, refresh tokens implement rotation with device fingerprint binding, the storage layer has path traversal protection, rate limiting is implemented, and OAuth state parameters are HMAC-signed with PKCE enforced.
+DarshJDB demonstrates strong security fundamentals: the Dockerfile runs as a non-root user, password hashing uses Argon2id with OWASP-recommended parameters, JWT tokens use RS256 with key rotation, refresh tokens implement rotation with device fingerprint binding, the storage layer has path traversal protection, rate limiting is implemented, and OAuth state parameters are HMAC-signed with PKCE enforced.
 
 However, there are several findings that must be addressed before production deployment, ranging from hardcoded default credentials in infrastructure files to missing CORS configuration.
 
@@ -19,18 +19,18 @@ However, there are several findings that must be addressed before production dep
 ### CRITICAL: Default JWT Secret in docker-compose.yml and K8s values
 
 **Files:**
-- `docker-compose.yml:10` -- `DARSHAN_JWT_SECRET: ${DARSHAN_JWT_SECRET:-change-me-in-production}`
+- `docker-compose.yml:10` -- `DDB_JWT_SECRET: ${DDB_JWT_SECRET:-change-me-in-production}`
 - `deploy/k8s/values.yaml:55` -- `jwtSecret: change-me-in-production`
 
 **Risk:** If operators deploy without setting the environment variable, the JWT signing secret is a publicly known string. Any attacker can forge valid JWTs and impersonate any user including admins.
 
-**Recommendation:** Remove the default fallback entirely. The server should refuse to start if `DARSHAN_JWT_SECRET` is not set or is set to the placeholder value. Add a startup check in `packages/server/src/main.rs`:
+**Recommendation:** Remove the default fallback entirely. The server should refuse to start if `DDB_JWT_SECRET` is not set or is set to the placeholder value. Add a startup check in `packages/server/src/main.rs`:
 
 ```rust
-let jwt_secret = std::env::var("DARSHAN_JWT_SECRET")
-    .expect("DARSHAN_JWT_SECRET must be set");
+let jwt_secret = std::env::var("DDB_JWT_SECRET")
+    .expect("DDB_JWT_SECRET must be set");
 if jwt_secret == "change-me-in-production" || jwt_secret.len() < 32 {
-    panic!("DARSHAN_JWT_SECRET is insecure -- set a strong random value");
+    panic!("DDB_JWT_SECRET is insecure -- set a strong random value");
 }
 ```
 
@@ -64,10 +64,10 @@ if jwt_secret == "change-me-in-production" || jwt_secret.len() < 32 {
 
 **File:** `packages/cli/src/main.rs:298-300`
 ```rust
-.env("DATABASE_URL", "postgres://postgres:darshan@localhost:5432/darshandb")
+.env("DATABASE_URL", "postgres://postgres:darshan@localhost:5432/darshjdb")
 ```
 
-**Risk:** Dev-only, local-only. Acceptable but worth noting the password is `darshan`.
+**Risk:** Dev-only, local-only. Acceptable but worth noting the password is `ddb`.
 
 ---
 
@@ -91,10 +91,10 @@ The function runtime (`packages/server/src/functions/runtime.rs`) also uses `Com
 Deno is invoked with `--allow-net`, `--allow-read`, `--allow-env`. This grants user functions:
 - Full network access (could exfiltrate data)
 - Full filesystem read access (could read server config, secrets)
-- Full environment variable access (could read `DATABASE_URL`, `DARSHAN_JWT_SECRET`)
+- Full environment variable access (could read `DATABASE_URL`, `DDB_JWT_SECRET`)
 
 **Recommendation:**
-- `--allow-env`: Restrict to specific variables: `--allow-env=NODE_ENV,DARSHAN_PORT`
+- `--allow-env`: Restrict to specific variables: `--allow-env=NODE_ENV,DDB_PORT`
 - `--allow-read`: Restrict to the functions directory: `--allow-read=./darshan/functions`
 - `--allow-net`: Consider restricting to specific domains or blocking metadata endpoints (169.254.169.254)
 - Add `--no-prompt` to prevent interactive permission requests
@@ -107,7 +107,7 @@ Deno is invoked with `--allow-net`, `--allow-read`, `--allow-env`. This grants u
 
 **File:** `Dockerfile:41-51`
 
-The runtime stage creates a dedicated `darshan` user and group, sets `USER darshan`, and the workdir is owned by this user. This is correct.
+The runtime stage creates a dedicated `ddb` user and group, sets `USER ddb`, and the workdir is owned by this user. This is correct.
 
 ### GOOD: Multi-Stage Build
 
@@ -123,11 +123,11 @@ Line 59-60: Proper health check with reasonable intervals.
 
 ### MINOR: No Read-Only Filesystem Directive
 
-**Recommendation:** Add `--read-only` to Docker run configurations or document that `/app` should be mounted read-only where possible. The `DARSHAN_ADMIN_DIR` points to `/usr/share/darshan/admin` which is static content.
+**Recommendation:** Add `--read-only` to Docker run configurations or document that `/app` should be mounted read-only where possible. The `DDB_ADMIN_DIR` points to `/usr/share/darshan/admin` which is static content.
 
 ### MINOR: No COPY --chown
 
-Line 45-47: Files are copied as root then `chown -R` is run. Using `COPY --chown=darshan:darshan` is slightly more efficient and avoids the extra layer.
+Line 45-47: Files are copied as root then `chown -R` is run. Using `COPY --chown=ddb:ddb` is slightly more efficient and avoids the extra layer.
 
 ---
 
@@ -201,13 +201,13 @@ Glob scan confirms zero `.env` files are present in the working tree.
 
 The `.gitignore` does not block:
 - `.env.production` or `.env.staging` (only `.env.*.local` is blocked)
-- `darshan.toml` files that may contain `[server].token`
+- `ddb.toml` files that may contain `[server].token`
 
 **Recommendation:** Add:
 ```
 .env.*
 !.env.example
-darshan.toml
+ddb.toml
 ```
 
 ---

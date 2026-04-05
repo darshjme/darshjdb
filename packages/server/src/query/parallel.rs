@@ -341,7 +341,7 @@ pub struct ScheduleStats {
 
 pub fn compute_stats(waves: &[Wave], total_ops: usize) -> ScheduleStats {
     let wave_sizes: Vec<usize> = waves.iter().map(|w| w.op_indices.len()).collect();
-    let parallel_ops = wave_sizes.iter().filter(|&&s| s > 1).map(|&s| s).sum();
+    let parallel_ops = wave_sizes.iter().filter(|&&s| s > 1).copied().sum();
 
     ScheduleStats {
         total_ops,
@@ -527,7 +527,7 @@ mod tests {
 
     #[test]
     fn schedule_all_reads_single_wave() {
-        let ops = vec![
+        let ops = [
             make_query_op("q1", json!({"type": "User"})),
             make_query_op("q2", json!({"type": "Post"})),
             make_query_op("q3", json!({"type": "User"})),
@@ -546,7 +546,7 @@ mod tests {
 
     #[test]
     fn schedule_read_write_different_entities_single_wave() {
-        let ops = vec![
+        let ops = [
             make_query_op("q1", json!({"type": "User"})),
             make_mutate_op("m1", "Post"),
         ];
@@ -564,7 +564,7 @@ mod tests {
 
     #[test]
     fn schedule_read_write_same_entity_two_waves() {
-        let ops = vec![
+        let ops = [
             make_query_op("q1", json!({"type": "User"})),
             make_mutate_op("m1", "User"),
         ];
@@ -589,7 +589,7 @@ mod tests {
         // q3: read Comment  (idx=3)
         // m2: write Post    (idx=4)
         // q4: read User     (idx=5)
-        let ops = vec![
+        let ops = [
             make_query_op("q1", json!({"type": "User"})),
             make_query_op("q2", json!({"type": "Post"})),
             make_mutate_op("m1", "User"),
@@ -622,7 +622,7 @@ mod tests {
 
     #[test]
     fn schedule_function_ops() {
-        let ops = vec![
+        let ops = [
             make_fn_op("f1", "compute_stats"),
             make_fn_op("f2", "send_email"),
             make_fn_op("f3", "compute_stats"),
@@ -649,7 +649,7 @@ mod tests {
 
     #[test]
     fn schedule_single_op() {
-        let ops = vec![make_query_op("q1", json!({"type": "User"}))];
+        let ops = [make_query_op("q1", json!({"type": "User"}))];
         let profiles: Vec<_> = ops
             .iter()
             .enumerate()

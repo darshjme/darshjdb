@@ -38,6 +38,7 @@ struct CacheEntry {
     /// Number of cache hits on this entry.
     hit_count: u64,
     /// Transaction ID when this entry was cached (stale-detection).
+    #[allow(dead_code)]
     tx_id: i64,
     /// Entity type this query targets (for selective invalidation).
     entity_type: String,

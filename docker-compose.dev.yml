@@ -2,13 +2,13 @@
 # Usage: docker compose -f docker-compose.yml -f docker-compose.dev.yml up
 
 services:
-  darshandb:
+  darshjdb:
     build:
       context: .
       target: builder
     environment:
       RUST_LOG: debug
-      DARSHAN_WATCH: "true"
+      DDB_WATCH: "true"
     volumes:
       - ./packages/server/src:/build/packages/server/src:ro
       - ./packages/cli/src:/build/packages/cli/src:ro
@@ -20,7 +20,7 @@ services:
   pgadmin:
     image: dpage/pgadmin4:8
     environment:
-      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL:-admin@darshan.dev}
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL:-admin@db.darshj.me}
       PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD:-admin}
       PGADMIN_CONFIG_SERVER_MODE: "False"
     ports:
@@ -29,7 +29,7 @@ services:
       - postgres
     restart: unless-stopped
     networks:
-      - darshandb
+      - darshjdb
 
   prometheus:
     image: prom/prometheus:v2.53.0
@@ -40,7 +40,7 @@ services:
       - "9090:9090"
     restart: unless-stopped
     networks:
-      - darshandb
+      - darshjdb
 
   grafana:
     image: grafana/grafana:11.1.0
@@ -56,7 +56,7 @@ services:
       - prometheus
     restart: unless-stopped
     networks:
-      - darshandb
+      - darshjdb
 
 volumes:
   prometheus_data:

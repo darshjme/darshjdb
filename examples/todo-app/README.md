@@ -1,18 +1,18 @@
-# DarshanDB Todo App
+# DarshJDB Todo App
 
-A minimal React + TypeScript todo app powered by DarshanDB real-time queries and mutations.
+A minimal React + TypeScript todo app powered by DarshJDB real-time queries and mutations.
 
 ## What it demonstrates
 
 - **Live queries** that update automatically when data changes
 - **Mutations** for creating, toggling, and deleting records
 - **DarshanProvider** setup with client initialization
-- Optimistic UI updates via the `@darshan/react` SDK
+- Optimistic UI updates via the `@darshjdb/react` SDK
 
 ## Prerequisites
 
 - Node.js 18+
-- A running DarshanDB server (default: `http://localhost:7700`)
+- A running DarshJDB server (default: `http://localhost:7700`)
 
 ## Setup
 
@@ -36,7 +36,7 @@ todo-app/
   tsconfig.json       TypeScript config
   vite.config.ts      Vite dev server config
   src/
-    main.tsx          App bootstrap and DarshanDB client init
+    main.tsx          App bootstrap and DarshJDB client init
     App.tsx           Todo list UI with live query and mutations
 ```
 
@@ -45,9 +45,9 @@ todo-app/
 ### Initializing the client
 
 ```tsx
-import { DarshanProvider, DarshanDB } from "@darshan/react";
+import { DarshanProvider, DarshJDB } from "@darshjdb/react";
 
-const db = DarshanDB.init({ url: "http://localhost:7700" });
+const db = DarshJDB.init({ url: "http://localhost:7700" });
 
 <DarshanProvider db={db}>
   <App />
@@ -66,5 +66,5 @@ const { data, isLoading } = useQuery({
 
 ```tsx
 const createTodo = useMutation("createTodo");
-await createTodo({ title: "Learn DarshanDB" });
+await createTodo({ title: "Learn DarshJDB" });
 ```

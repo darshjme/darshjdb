@@ -161,7 +161,7 @@ async fn test_schema_inference() {
         darshandb_server::triple_store::TripleInput {
             entity_id: e1,
             attribute: "user/email".into(),
-            value: json!("test@darshan.db"),
+            value: json!("test@darshjdb.test"),
             value_type: 0,
             ttl_seconds: None,
         },
@@ -190,11 +190,7 @@ async fn test_schema_inference() {
 
     // Schema should contain at least the entity types we wrote.
     // Schema.entity_types is HashMap<String, EntityType> — keys are type names.
-    let type_names: Vec<&str> = schema
-        .entity_types
-        .keys()
-        .map(|k| k.as_str())
-        .collect();
+    let type_names: Vec<&str> = schema.entity_types.keys().map(|k| k.as_str()).collect();
     assert!(
         type_names.contains(&"User"),
         "Schema should contain User type, got: {:?}",
@@ -449,7 +445,7 @@ async fn test_auth_signup_signin() {
         return;
     };
 
-    let test_email = format!("integ-test-{}@darshan.db", Uuid::new_v4());
+    let test_email = format!("integ-test-{}@darshjdb.test", Uuid::new_v4());
     let test_password = "SuperSecure!Pass123";
 
     // Hash the password

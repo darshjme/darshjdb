@@ -1,6 +1,6 @@
-# DarshanDB — Complete Research Sources for NotebookLM
+# DarshJDB — Complete Research Sources for NotebookLM
 
-All sources used during the design, architecture, audit, and implementation of DarshanDB. Organized by category for feeding into NotebookLM.
+All sources used during the design, architecture, audit, and implementation of DarshJDB. Organized by category for feeding into NotebookLM.
 
 ---
 
@@ -29,7 +29,7 @@ All sources used during the design, architecture, audit, and implementation of D
 
 ---
 
-## 2. BaaS Competitors (what DarshanDB replaces)
+## 2. BaaS Competitors (what DarshJDB replaces)
 
 ### Firebase
 - Real-time database: NoSQL document model, event-driven subscriptions
@@ -54,7 +54,7 @@ All sources used during the design, architecture, audit, and implementation of D
 
 ### PlanetScale
 - Serverless MySQL, schema branching, zero-downtime migrations
-- What we took: schema inference concept (DarshanDB's schema-on-read parallels auto-schema)
+- What we took: schema inference concept (DarshJDB's schema-on-read parallels auto-schema)
 
 ---
 
@@ -103,7 +103,7 @@ All sources used during the design, architecture, audit, and implementation of D
 ## 5. Security Standards & References
 
 ### OWASP
-- [OWASP API Security Top 10](https://owasp.org/API-Security/) — Every risk addressed in DarshanDB's security design
+- [OWASP API Security Top 10](https://owasp.org/API-Security/) — Every risk addressed in DarshJDB's security design
 - BOLA, broken auth, property-level auth, resource consumption, function-level auth, SSRF, misconfiguration, inventory, unsafe consumption
 
 ### Password Hashing
@@ -143,7 +143,7 @@ All sources used during the design, architecture, audit, and implementation of D
 
 ---
 
-## 7. DarshanDB Internal Documentation
+## 7. DarshJDB Internal Documentation
 
 ### Core Docs (in docs/)
 - `getting-started.md` — 5-minute quickstart, all framework examples
@@ -161,7 +161,7 @@ All sources used during the design, architecture, audit, and implementation of D
 - `migration.md` — Schema migrations, version upgrades
 - `troubleshooting.md` — Common errors and solutions
 - `admin-dashboard.md` — Admin UI guide
-- `migrating-from-convex.md` — Convex → DarshanDB migration guide
+- `migrating-from-convex.md` — Convex → DarshJDB migration guide
 
 ### Strategy Docs (in docs/strategy/)
 - `AI_ML_STRATEGY.md` — Auto-embedding, ctx.ai namespace, MCP server, RAG
@@ -223,16 +223,16 @@ All sources used during the design, architecture, audit, and implementation of D
 
 ### NIST Post-Quantum Cryptography Standards
 - [NIST PQC Standardization Project](https://csrc.nist.gov/projects/post-quantum-cryptography) — FIPS 203 (ML-KEM/Kyber), FIPS 204 (ML-DSA/Dilithium), FIPS 205 (SLH-DSA/SPHINCS+)
-- [CRYSTALS-Dilithium](https://pq-crystals.org/dilithium/) — Lattice-based digital signature scheme; selected by NIST as ML-DSA (FIPS 204); DarshanDB's primary PQC candidate for JWT signing
-- [Falcon](https://falcon-sign.info/) — NTRU lattice-based signatures; smaller signatures than Dilithium but more complex implementation; DarshanDB's backup PQC candidate
+- [CRYSTALS-Dilithium](https://pq-crystals.org/dilithium/) — Lattice-based digital signature scheme; selected by NIST as ML-DSA (FIPS 204); DarshJDB's primary PQC candidate for JWT signing
+- [Falcon](https://falcon-sign.info/) — NTRU lattice-based signatures; smaller signatures than Dilithium but more complex implementation; DarshJDB's backup PQC candidate
 - [SPHINCS+](https://sphincs.org/) — Stateless hash-based signatures; conservative fallback requiring no lattice assumptions; largest signatures but highest confidence
 
-### Quantum Attack Vectors Relevant to DarshanDB
-- **Shor's algorithm** — Breaks RSA, ECDSA, and all integer-factorization/discrete-log crypto in polynomial time; directly threatens DarshanDB's RS256 JWT signing
+### Quantum Attack Vectors Relevant to DarshJDB
+- **Shor's algorithm** — Breaks RSA, ECDSA, and all integer-factorization/discrete-log crypto in polynomial time; directly threatens DarshJDB's RS256 JWT signing
 - **Grover's algorithm** — Provides quadratic speedup for brute-force search; reduces SHA-256 from 256-bit to ~128-bit effective security; mitigated by upgrading to SHA-512
-- **"Harvest now, decrypt later"** — Adversaries record encrypted traffic today for future quantum decryption; low risk for DarshanDB due to 15-minute JWT expiry and opaque refresh tokens
+- **"Harvest now, decrypt later"** — Adversaries record encrypted traffic today for future quantum decryption; low risk for DarshJDB due to 15-minute JWT expiry and opaque refresh tokens
 
-### DarshanDB Quantum Strategy
+### DarshJDB Quantum Strategy
 - See `docs/strategy/QUANTUM_STRATEGY.md` for the complete three-phase migration plan (immediate SHA-512 hardening, hybrid Dilithium+RSA, full PQC)
 
 ---
