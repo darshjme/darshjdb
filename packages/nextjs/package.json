@@ -1,7 +1,7 @@
 {
   "name": "@darshan/nextjs",
   "version": "0.1.0",
-  "description": "Next.js SDK for DarshanDB — Server Components, App Router, Pages Router, and Middleware",
+  "description": "Next.js SDK for DarshanDB \u2014 Server Components, App Router, Pages Router, and Middleware",
   "type": "module",
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
@@ -100,7 +100,8 @@
     "react-dom": "^18.3.0",
     "tsup": "^8.3.6",
     "typescript": "^5.7.3",
-    "vitest": "^3.0.4"
+    "vitest": "^3.0.4",
+    "@types/node": "^22.0.0"
   },
   "sideEffects": false,
   "license": "MIT",
