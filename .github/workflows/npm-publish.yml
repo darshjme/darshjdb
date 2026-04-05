@@ -1,0 +1,73 @@
+name: Publish npm packages
+
+on:
+  release:
+    types: [created]
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: Build & Publish to npm
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Install dependencies
+        run: npm install --ignore-scripts
+
+      - name: Build client-core
+        working-directory: packages/client-core
+        run: npx tsup
+
+      - name: Build react
+        working-directory: packages/react
+        run: npx tsup
+
+      - name: Build angular
+        working-directory: packages/angular
+        run: npx tsup
+
+      - name: Build nextjs
+        working-directory: packages/nextjs
+        run: npx tsup
+
+      - name: Verify dist outputs
+        run: |
+          for pkg in client-core react angular nextjs; do
+            if [ ! -d "packages/$pkg/dist" ]; then
+              echo "ERROR: packages/$pkg/dist missing"
+              exit 1
+            fi
+            echo "OK: packages/$pkg/dist exists"
+          done
+
+      - name: Publish @darshan/client
+        working-directory: packages/client-core
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Publish @darshan/react
+        working-directory: packages/react
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Publish @darshan/angular
+        working-directory: packages/angular
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Publish @darshan/nextjs
+        working-directory: packages/nextjs
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

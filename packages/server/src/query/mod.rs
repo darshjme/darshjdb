@@ -275,7 +275,12 @@ pub struct NestedPlan {
     pub via_attribute: String,
     /// SQL to fetch the nested entity's triples.
     pub sql: String,
+    /// Sub-nested plans for multi-level resolution (e.g. todos -> owner -> org).
+    pub sub_nested: Vec<NestedPlan>,
 }
+
+/// Maximum nesting depth to prevent query explosion.
+const MAX_NESTING_DEPTH: usize = 3;
 
 /// Convert a [`QueryAST`] into an executable [`QueryPlan`].
 ///
@@ -428,24 +433,39 @@ pub fn plan_query(ast: &QueryAST) -> Result<QueryPlan> {
         }
     }
 
-    // Nested plans
-    let nested_plans: Vec<NestedPlan> = ast
-        .nested
-        .iter()
-        .map(|n| NestedPlan {
-            via_attribute: n.via_attribute.clone(),
-            sql:
-                "SELECT id, entity_id, attribute, value, value_type, tx_id, created_at, retracted \
-                 FROM triples WHERE entity_id = $1 AND NOT retracted ORDER BY attribute, tx_id DESC"
-                    .to_string(),
-        })
-        .collect();
+    // Nested plans (with recursive sub-nesting up to MAX_NESTING_DEPTH)
+    let nested_plans = build_nested_plans(&ast.nested, 1);
 
     Ok(QueryPlan {
         sql,
         params,
         nested_plans,
     })
+}
+
+/// Recursively build nested plans from the AST's nested queries,
+/// respecting [`MAX_NESTING_DEPTH`] to prevent query explosion.
+fn build_nested_plans(nested: &[NestedQuery], depth: usize) -> Vec<NestedPlan> {
+    if depth > MAX_NESTING_DEPTH {
+        return Vec::new();
+    }
+    nested
+        .iter()
+        .map(|n| {
+            let sub_nested = match &n.sub_query {
+                Some(sub) => build_nested_plans(&sub.nested, depth + 1),
+                None => Vec::new(),
+            };
+            NestedPlan {
+                via_attribute: n.via_attribute.clone(),
+                sql: "SELECT attribute, value FROM triples \
+                     WHERE entity_id = ANY($1::uuid[]) AND NOT retracted \
+                     ORDER BY entity_id, attribute, tx_id DESC"
+                    .to_string(),
+                sub_nested,
+            }
+        })
+        .collect()
 }
 
 /// Format a vector of f32 values as a pgvector literal string: `[0.1,0.2,0.3]`.
@@ -542,17 +562,7 @@ ORDER BY rm.rrf_score DESC
     ];
 
     // Nested plans reuse the standard approach.
-    let nested_plans: Vec<NestedPlan> = ast
-        .nested
-        .iter()
-        .map(|n| NestedPlan {
-            via_attribute: n.via_attribute.clone(),
-            sql:
-                "SELECT id, entity_id, attribute, value, value_type, tx_id, created_at, retracted \
-                 FROM triples WHERE entity_id = $1 AND NOT retracted ORDER BY attribute, tx_id DESC"
-                    .to_string(),
-        })
-        .collect();
+    let nested_plans = build_nested_plans(&ast.nested, 1);
 
     Ok(QueryPlan {
         sql,
@@ -613,44 +623,146 @@ pub async fn execute_query(pool: &PgPool, plan: &QueryPlan) -> Result<Vec<QueryR
             .or_insert_with(|| value.clone());
     }
 
-    // Resolve nested references.
+    // Resolve nested references using batched fetching.
+    // Instead of N queries (one per parent entity per nested plan), we collect
+    // all referenced UUIDs and fetch them in a single WHERE entity_id = ANY($1)
+    // query per nested plan. This turns N+1 into 1+P where P = number of nested
+    // plans (typically 1-3), regardless of how many parent entities exist.
+    let nested_maps = batch_resolve_nested(pool, &entities, &plan.nested_plans).await?;
+
     let mut results: Vec<QueryResultRow> = Vec::with_capacity(entities.len());
-    for (entity_id, attributes) in entities {
+    for (entity_id, attributes) in &entities {
         let mut nested = serde_json::Map::new();
 
-        for np in &plan.nested_plans {
+        for (np_idx, np) in plan.nested_plans.iter().enumerate() {
             if let Some(ref_value) = attributes.get(&np.via_attribute)
                 && let Some(ref_str) = ref_value.as_str()
                 && let Ok(ref_uuid) = ref_str.parse::<uuid::Uuid>()
             {
-                let nested_rows = sqlx::query_as::<_, (String, serde_json::Value)>(
-                    "SELECT attribute, value FROM triples \
-                     WHERE entity_id = $1 AND NOT retracted \
-                     ORDER BY attribute, tx_id DESC",
-                )
-                .bind(ref_uuid)
-                .fetch_all(pool)
-                .await?;
-
-                let mut nested_attrs = serde_json::Map::new();
-                for (attr, val) in nested_rows {
-                    nested_attrs.entry(attr).or_insert(val);
+                if let Some(nested_entity) = nested_maps[np_idx].get(&ref_uuid) {
+                    nested.insert(
+                        np.via_attribute.clone(),
+                        serde_json::Value::Object(nested_entity.clone()),
+                    );
                 }
-                nested.insert(
-                    np.via_attribute.clone(),
-                    serde_json::Value::Object(nested_attrs),
-                );
             }
         }
 
         results.push(QueryResultRow {
-            entity_id,
-            attributes,
+            entity_id: *entity_id,
+            attributes: attributes.clone(),
             nested,
         });
     }
 
     Ok(results)
+}
+
+/// Batch-fetch nested entities for all parent entities at once.
+///
+/// For each `NestedPlan`, collects all referenced UUIDs from the parent
+/// entity attributes, fetches their triples in a single
+/// `WHERE entity_id = ANY($1::uuid[])` query, groups results by entity_id,
+/// and recursively resolves sub-nested references (up to [`MAX_NESTING_DEPTH`]).
+///
+/// Returns one `HashMap<Uuid, Map>` per nested plan, in the same order as
+/// `nested_plans`, where each map entry is `referenced_uuid -> attributes`.
+fn batch_resolve_nested<'a>(
+    pool: &'a PgPool,
+    parent_entities: &'a std::collections::HashMap<
+        uuid::Uuid,
+        serde_json::Map<String, serde_json::Value>,
+    >,
+    nested_plans: &'a [NestedPlan],
+) -> std::pin::Pin<
+    Box<
+        dyn std::future::Future<
+                Output = Result<
+                    Vec<
+                        std::collections::HashMap<
+                            uuid::Uuid,
+                            serde_json::Map<String, serde_json::Value>,
+                        >,
+                    >,
+                >,
+            > + Send
+            + 'a,
+    >,
+> {
+    Box::pin(async move {
+        let mut all_nested_maps = Vec::with_capacity(nested_plans.len());
+
+        for np in nested_plans {
+            // Step 1: Collect all referenced UUIDs from parent entities for this attribute.
+            let ref_uuids: Vec<uuid::Uuid> = parent_entities
+                .values()
+                .filter_map(|attrs| {
+                    attrs
+                        .get(&np.via_attribute)
+                        .and_then(|v| v.as_str())
+                        .and_then(|s| s.parse::<uuid::Uuid>().ok())
+                })
+                .collect::<std::collections::HashSet<_>>()
+                .into_iter()
+                .collect();
+
+            if ref_uuids.is_empty() {
+                all_nested_maps.push(std::collections::HashMap::new());
+                continue;
+            }
+
+            // Step 2: Batch-fetch all referenced entities in one query.
+            let rows = sqlx::query_as::<_, (uuid::Uuid, String, serde_json::Value)>(
+                "SELECT entity_id, attribute, value FROM triples \
+             WHERE entity_id = ANY($1::uuid[]) AND NOT retracted \
+             ORDER BY entity_id, attribute, tx_id DESC",
+            )
+            .bind(&ref_uuids)
+            .fetch_all(pool)
+            .await?;
+
+            // Step 3: Group fetched triples by entity_id.
+            let mut grouped: std::collections::HashMap<
+                uuid::Uuid,
+                serde_json::Map<String, serde_json::Value>,
+            > = std::collections::HashMap::new();
+
+            for (eid, attr, val) in rows {
+                let entry = grouped.entry(eid).or_default();
+                // First attribute value wins (rows ordered by tx_id DESC).
+                entry.entry(attr).or_insert(val);
+            }
+
+            // Step 4: Recursively resolve sub-nested references if any.
+            if !np.sub_nested.is_empty() {
+                let sub_maps = batch_resolve_nested(pool, &grouped, &np.sub_nested).await?;
+
+                // Attach sub-nested results to each grouped entity.
+                for (eid, attrs) in grouped.iter_mut() {
+                    for (sub_idx, sub_np) in np.sub_nested.iter().enumerate() {
+                        if let Some(ref_value) = attrs.get(&sub_np.via_attribute)
+                            && let Some(ref_str) = ref_value.as_str()
+                            && let Ok(ref_uuid) = ref_str.parse::<uuid::Uuid>()
+                        {
+                            if let Some(sub_entity) = sub_maps[sub_idx].get(&ref_uuid) {
+                                // Store under a _nested key to avoid attribute collision.
+                                let nested_key = format!("_nested:{}", sub_np.via_attribute);
+                                attrs.insert(
+                                    nested_key,
+                                    serde_json::Value::Object(sub_entity.clone()),
+                                );
+                            }
+                        }
+                        let _ = eid; // suppress unused warning in the non-sub_nested path
+                    }
+                }
+            }
+
+            all_nested_maps.push(grouped);
+        }
+
+        Ok(all_nested_maps)
+    })
 }
 
 /// Row type returned by triple queries.
@@ -1650,5 +1762,84 @@ mod tests {
             plan_hybrid_query(&ast).is_err(),
             "should error without $hybrid clause"
         );
+    }
+
+    // ── Batch nested resolution ────────────────────────────────────
+
+    #[test]
+    fn nested_plan_sql_uses_any_batch() {
+        let ast = QueryAST {
+            nested: vec![NestedQuery {
+                via_attribute: "owner_id".into(),
+                sub_query: None,
+            }],
+            ..bare_ast("Todo")
+        };
+        let plan = plan_query(&ast).expect("should plan");
+        assert_eq!(plan.nested_plans.len(), 1);
+        assert!(
+            plan.nested_plans[0].sql.contains("ANY($1::uuid[])"),
+            "nested SQL should use batched ANY(): {}",
+            plan.nested_plans[0].sql
+        );
+    }
+
+    #[test]
+    fn nested_plan_builds_sub_nested() {
+        let ast = QueryAST {
+            nested: vec![NestedQuery {
+                via_attribute: "customer_id".into(),
+                sub_query: Some(Box::new(QueryAST {
+                    entity_type: "Customer".into(),
+                    nested: vec![NestedQuery {
+                        via_attribute: "address_id".into(),
+                        sub_query: None,
+                    }],
+                    ..bare_ast("Customer")
+                })),
+            }],
+            ..bare_ast("Order")
+        };
+        let plan = plan_query(&ast).expect("should plan");
+        assert_eq!(plan.nested_plans.len(), 1);
+        assert_eq!(plan.nested_plans[0].via_attribute, "customer_id");
+        assert_eq!(plan.nested_plans[0].sub_nested.len(), 1);
+        assert_eq!(
+            plan.nested_plans[0].sub_nested[0].via_attribute,
+            "address_id"
+        );
+    }
+
+    #[test]
+    fn nested_plan_respects_max_depth() {
+        // Build nesting 5 levels deep — only 3 should be resolved.
+        fn make_nested(depth: usize) -> Vec<NestedQuery> {
+            if depth == 0 {
+                return vec![];
+            }
+            vec![NestedQuery {
+                via_attribute: format!("ref_{depth}"),
+                sub_query: Some(Box::new(QueryAST {
+                    entity_type: format!("Level{depth}"),
+                    nested: make_nested(depth - 1),
+                    ..bare_ast(&format!("Level{depth}"))
+                })),
+            }]
+        }
+
+        let ast = QueryAST {
+            nested: make_nested(5),
+            ..bare_ast("Root")
+        };
+        let plan = plan_query(&ast).expect("should plan");
+
+        // Walk the nested plans — should stop at depth 3.
+        let mut current = &plan.nested_plans;
+        let mut depth = 0;
+        while !current.is_empty() {
+            depth += 1;
+            current = &current[0].sub_nested;
+        }
+        assert_eq!(depth, MAX_NESTING_DEPTH, "should stop at max nesting depth");
     }
 }

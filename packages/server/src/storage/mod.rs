@@ -594,19 +594,69 @@ pub struct S3Config {
 /// S3-compatible storage backend.
 ///
 /// Works with Amazon S3, Cloudflare R2, MinIO, and any S3-compatible
-/// service. Uses the `aws-sdk-s3` crate under the hood.
+/// service. Uses the `aws-sdk-s3` crate under the hood with native
+/// AWS Signature V4 authentication.
 ///
-/// Note: The actual S3 SDK calls will be wired once the `aws-sdk-s3`
-/// dependency is added. The trait interface is complete and the local
-/// filesystem backend provides a working reference implementation.
+/// # Environment Variables
+///
+/// - `DARSHAN_S3_BUCKET` — bucket name (overrides config)
+/// - `DARSHAN_S3_REGION` — AWS region (overrides config)
+/// - `DARSHAN_S3_ACCESS_KEY` — access key ID (overrides config)
+/// - `DARSHAN_S3_SECRET_KEY` — secret access key (overrides config)
+/// - `DARSHAN_S3_ENDPOINT` — custom endpoint for R2/MinIO (overrides config)
 pub struct S3Backend {
-    config: S3Config,
+    client: aws_sdk_s3::Client,
+    bucket: String,
+    prefix: Option<String>,
 }
 
 impl S3Backend {
     /// Create a new S3-compatible backend with the given configuration.
-    pub fn new(config: S3Config) -> Self {
-        Self { config }
+    ///
+    /// Environment variables take precedence over `S3Config` fields,
+    /// allowing runtime override without recompilation.
+    pub async fn new(config: S3Config) -> Self {
+        // Environment overrides for 12-factor compat.
+        let endpoint =
+            std::env::var("DARSHAN_S3_ENDPOINT").unwrap_or_else(|_| config.endpoint.clone());
+        let region = std::env::var("DARSHAN_S3_REGION").unwrap_or_else(|_| config.region.clone());
+        let access_key =
+            std::env::var("DARSHAN_S3_ACCESS_KEY").unwrap_or_else(|_| config.access_key_id.clone());
+        let secret_key = std::env::var("DARSHAN_S3_SECRET_KEY")
+            .unwrap_or_else(|_| config.secret_access_key.clone());
+        let bucket = std::env::var("DARSHAN_S3_BUCKET").unwrap_or_else(|_| config.bucket.clone());
+
+        let creds = aws_credential_types::Credentials::new(
+            &access_key,
+            &secret_key,
+            None, // session token
+            None, // expiry
+            "darshandb-s3-config",
+        );
+
+        let mut s3_config_builder = aws_sdk_s3::config::Builder::new()
+            .region(aws_types::region::Region::new(region))
+            .credentials_provider(creds)
+            .endpoint_url(&endpoint)
+            .force_path_style(config.path_style);
+
+        // Cloudflare R2 and MinIO do not support S3 checksums —
+        // disable to avoid 400 errors.
+        s3_config_builder = s3_config_builder
+            .request_checksum_calculation(
+                aws_types::sdk_config::RequestChecksumCalculation::WhenRequired,
+            )
+            .response_checksum_validation(
+                aws_types::sdk_config::ResponseChecksumValidation::WhenRequired,
+            );
+
+        let client = aws_sdk_s3::Client::from_conf(s3_config_builder.build());
+
+        Self {
+            client,
+            bucket,
+            prefix: config.prefix,
+        }
     }
 
     /// Get the effective object key (with prefix if configured).
@@ -634,10 +684,22 @@ impl S3Backend {
                 "path traversal is not allowed".into(),
             ));
         }
-        Ok(match &self.config.prefix {
+        Ok(match &self.prefix {
             Some(prefix) => format!("{prefix}/{path}"),
             None => path.to_string(),
         })
+    }
+
+    /// Map AWS SDK errors to StorageError.
+    fn map_sdk_error<E: std::fmt::Display>(err: E, path: &str) -> StorageError {
+        let msg = err.to_string();
+        if msg.contains("NoSuchKey") || msg.contains("NotFound") || msg.contains("404") {
+            StorageError::NotFound(path.to_string())
+        } else if msg.contains("AccessDenied") || msg.contains("403") {
+            StorageError::BackendUnavailable(format!("access denied: {msg}"))
+        } else {
+            StorageError::Io(msg)
+        }
     }
 }
 
@@ -645,48 +707,200 @@ impl StorageBackend for S3Backend {
     async fn put_object(
         &self,
         path: &str,
-        _data: &[u8],
-        _content_type: &str,
-        _metadata: &HashMap<String, String>,
+        data: &[u8],
+        content_type: &str,
+        metadata: &HashMap<String, String>,
     ) -> Result<String, StorageError> {
-        let _key = self.effective_key(path)?;
-        // TODO: wire to aws-sdk-s3 PutObject.
-        Err(StorageError::BackendUnavailable(
-            "S3 backend not yet wired to aws-sdk-s3".into(),
-        ))
+        let key = self.effective_key(path)?;
+
+        let body = aws_sdk_s3::primitives::ByteStream::from(data.to_vec());
+
+        let mut req = self
+            .client
+            .put_object()
+            .bucket(&self.bucket)
+            .key(&key)
+            .body(body)
+            .content_type(content_type);
+
+        // Attach user-defined metadata.
+        for (k, v) in metadata {
+            req = req.metadata(k, v);
+        }
+
+        let output = req.send().await.map_err(|e| Self::map_sdk_error(e, path))?;
+
+        // Return the ETag from S3 (strip surrounding quotes if present).
+        let etag = output.e_tag().unwrap_or("").trim_matches('"').to_string();
+
+        Ok(etag)
     }
 
     async fn get_object(&self, path: &str) -> Result<(Vec<u8>, ObjectMeta), StorageError> {
-        let _key = self.effective_key(path)?;
-        Err(StorageError::BackendUnavailable(
-            "S3 backend not yet wired to aws-sdk-s3".into(),
-        ))
+        let key = self.effective_key(path)?;
+
+        let output = self
+            .client
+            .get_object()
+            .bucket(&self.bucket)
+            .key(&key)
+            .send()
+            .await
+            .map_err(|e| Self::map_sdk_error(e, path))?;
+
+        let content_type = output
+            .content_type()
+            .unwrap_or("application/octet-stream")
+            .to_string();
+        let content_length = output.content_length().unwrap_or(0) as u64;
+        let etag = output.e_tag().unwrap_or("").trim_matches('"').to_string();
+        let last_modified: chrono::DateTime<chrono::Utc> = output
+            .last_modified()
+            .and_then(|t| {
+                let secs = t.secs();
+                chrono::DateTime::from_timestamp(secs, t.subsec_nanos())
+            })
+            .unwrap_or_else(chrono::Utc::now);
+
+        // Collect user metadata.
+        let metadata: HashMap<String, String> = output
+            .metadata()
+            .map(|m| m.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+            .unwrap_or_default();
+
+        // Read body into memory.
+        let data = output
+            .body
+            .collect()
+            .await
+            .map_err(|e| StorageError::Io(format!("failed to read S3 body: {e}")))?
+            .into_bytes()
+            .to_vec();
+
+        let obj_meta = ObjectMeta {
+            path: path.to_string(),
+            size: content_length,
+            content_type,
+            etag,
+            created_at: last_modified,
+            modified_at: last_modified,
+            metadata,
+        };
+
+        Ok((data, obj_meta))
     }
 
     async fn delete_object(&self, path: &str) -> Result<(), StorageError> {
-        let _key = self.effective_key(path)?;
-        Err(StorageError::BackendUnavailable(
-            "S3 backend not yet wired to aws-sdk-s3".into(),
-        ))
+        let key = self.effective_key(path)?;
+
+        self.client
+            .delete_object()
+            .bucket(&self.bucket)
+            .key(&key)
+            .send()
+            .await
+            .map_err(|e| Self::map_sdk_error(e, path))?;
+
+        Ok(())
     }
 
     async fn head_object(&self, path: &str) -> Result<ObjectMeta, StorageError> {
-        let _key = self.effective_key(path)?;
-        Err(StorageError::BackendUnavailable(
-            "S3 backend not yet wired to aws-sdk-s3".into(),
-        ))
+        let key = self.effective_key(path)?;
+
+        let output = self
+            .client
+            .head_object()
+            .bucket(&self.bucket)
+            .key(&key)
+            .send()
+            .await
+            .map_err(|e| Self::map_sdk_error(e, path))?;
+
+        let content_type = output
+            .content_type()
+            .unwrap_or("application/octet-stream")
+            .to_string();
+        let content_length = output.content_length().unwrap_or(0) as u64;
+        let etag = output.e_tag().unwrap_or("").trim_matches('"').to_string();
+        let last_modified: chrono::DateTime<chrono::Utc> = output
+            .last_modified()
+            .and_then(|t| {
+                let secs = t.secs();
+                chrono::DateTime::from_timestamp(secs, t.subsec_nanos())
+            })
+            .unwrap_or_else(chrono::Utc::now);
+
+        let metadata: HashMap<String, String> = output
+            .metadata()
+            .map(|m| m.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+            .unwrap_or_default();
+
+        Ok(ObjectMeta {
+            path: path.to_string(),
+            size: content_length,
+            content_type,
+            etag,
+            created_at: last_modified,
+            modified_at: last_modified,
+            metadata,
+        })
     }
 
     async fn list_objects(
         &self,
         prefix: &str,
-        _limit: usize,
-        _cursor: Option<&str>,
+        limit: usize,
+        cursor: Option<&str>,
     ) -> Result<Vec<ObjectMeta>, StorageError> {
-        let _key = self.effective_key(prefix)?;
-        Err(StorageError::BackendUnavailable(
-            "S3 backend not yet wired to aws-sdk-s3".into(),
-        ))
+        let effective_prefix = self.effective_key(prefix)?;
+
+        let mut req = self
+            .client
+            .list_objects_v2()
+            .bucket(&self.bucket)
+            .prefix(&effective_prefix)
+            .max_keys(limit as i32);
+
+        if let Some(token) = cursor {
+            req = req.continuation_token(token);
+        }
+
+        let output = req
+            .send()
+            .await
+            .map_err(|e| Self::map_sdk_error(e, prefix))?;
+
+        let mut entries = Vec::new();
+        for obj in output.contents() {
+            let obj_key: &str = obj.key().unwrap_or("");
+            // Strip the prefix back to get the user-facing path.
+            let user_path = match &self.prefix {
+                Some(pfx) => obj_key.strip_prefix(&format!("{pfx}/")).unwrap_or(obj_key),
+                None => obj_key,
+            };
+
+            let last_modified: chrono::DateTime<chrono::Utc> = obj
+                .last_modified()
+                .and_then(|t: &aws_sdk_s3::primitives::DateTime| {
+                    let secs = t.secs();
+                    chrono::DateTime::from_timestamp(secs, t.subsec_nanos())
+                })
+                .unwrap_or_else(chrono::Utc::now);
+
+            let etag = obj.e_tag().unwrap_or("").trim_matches('"').to_string();
+
+            entries.push(ObjectMeta {
+                path: user_path.to_string(),
+                size: obj.size().unwrap_or(0) as u64,
+                content_type: "application/octet-stream".to_string(),
+                etag,
+                created_at: last_modified,
+                modified_at: last_modified,
+                metadata: HashMap::new(),
+            });
+        }
+
+        Ok(entries)
     }
 }
 

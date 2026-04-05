@@ -52,3 +52,8 @@ dirs = "6"
 toml = "0.8"
 hex = "0.4"
 futures = "0.3"
+axum-server = { version = "0.7", features = ["tls-rustls"] }
+aws-sdk-s3 = "1"
+aws-config = "1"
+aws-credential-types = "1"
+aws-types = "1"

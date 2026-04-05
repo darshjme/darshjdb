@@ -56,5 +56,13 @@
     "realtime",
     "sync",
     "offline"
-  ]
+  ],
+  "author": "Darsh Joshi",
+  "homepage": "https://github.com/darshjme/darshandb/tree/main/packages/client-core#readme",
+  "bugs": {
+    "url": "https://github.com/darshjme/darshandb/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
 }

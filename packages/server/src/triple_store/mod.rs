@@ -272,7 +272,8 @@ impl PgTripleStore {
         Ok(row.0)
     }
 
-    /// Write a batch of triples within an existing transaction.
+    /// Write a batch of triples within an existing transaction using
+    /// UNNEST-based bulk insert for maximum throughput.
     ///
     /// Unlike [`TripleStore::set_triples`], this does NOT commit — the
     /// caller owns the transaction and decides when to commit/rollback.
@@ -281,28 +282,47 @@ impl PgTripleStore {
         triples: &[TripleInput],
         tx_id: i64,
     ) -> Result<()> {
+        if triples.is_empty() {
+            return Ok(());
+        }
+
         for t in triples {
             t.validate()?;
         }
+
+        let count = triples.len();
+        let mut entity_ids: Vec<Uuid> = Vec::with_capacity(count);
+        let mut attributes: Vec<String> = Vec::with_capacity(count);
+        let mut values: Vec<serde_json::Value> = Vec::with_capacity(count);
+        let mut value_types: Vec<i16> = Vec::with_capacity(count);
+        let mut expires_at_vec: Vec<Option<DateTime<Utc>>> = Vec::with_capacity(count);
+
         for t in triples {
-            let expires_at = t
+            let exp = t
                 .ttl_seconds
                 .map(|secs| Utc::now() + chrono::Duration::seconds(secs));
-            sqlx::query(
-                r#"
-                INSERT INTO triples (entity_id, attribute, value, value_type, tx_id, expires_at)
-                VALUES ($1, $2, $3, $4, $5, $6)
-                "#,
-            )
-            .bind(t.entity_id)
-            .bind(&t.attribute)
-            .bind(&t.value)
-            .bind(t.value_type)
-            .bind(tx_id)
-            .bind(expires_at)
-            .execute(&mut **tx)
-            .await?;
+            entity_ids.push(t.entity_id);
+            attributes.push(t.attribute.clone());
+            values.push(t.value.clone());
+            value_types.push(t.value_type);
+            expires_at_vec.push(exp);
         }
+
+        sqlx::query(
+            r#"
+            INSERT INTO triples (entity_id, attribute, value, value_type, tx_id, expires_at)
+            SELECT * FROM UNNEST($1::uuid[], $2::text[], $3::jsonb[], $4::smallint[], $5::bigint[], $6::timestamptz[])
+            "#,
+        )
+        .bind(&entity_ids)
+        .bind(&attributes)
+        .bind(&values)
+        .bind(&value_types)
+        .bind(&vec![tx_id; count])
+        .bind(&expires_at_vec)
+        .execute(&mut **tx)
+        .await?;
+
         Ok(())
     }
 
@@ -375,6 +395,10 @@ impl PgTripleStore {
         // Allocate a single tx_id for the entire bulk load.
         let tx_id = self.next_tx_id().await?;
 
+        // Compute the Merkle root from in-memory inputs BEFORE decomposing
+        // them into columnar arrays (which consumes the Vec).
+        let root = crate::audit::merkle_root_from_inputs(&triples, tx_id);
+
         // Decompose into columnar arrays for UNNEST.
         let mut entity_ids: Vec<Uuid> = Vec::with_capacity(count);
         let mut attributes: Vec<String> = Vec::with_capacity(count);
@@ -418,15 +442,8 @@ impl PgTripleStore {
             count as f64 // sub-millisecond => report count as rate
         };
 
-        // Record the Merkle root for the bulk-loaded transaction.
-        let written: Vec<Triple> = sqlx::query_as(
-            "SELECT id, entity_id, attribute, value, value_type, tx_id, created_at, retracted, expires_at FROM triples WHERE tx_id = $1 ORDER BY id",
-        )
-        .bind(tx_id)
-        .fetch_all(&self.pool)
-        .await?;
-
-        if let Err(e) = crate::audit::record_merkle_root(&self.pool, tx_id, &written).await {
+        // Record the pre-computed Merkle root (no Postgres re-read needed).
+        if let Err(e) = crate::audit::record_merkle_root(&self.pool, tx_id, &root, count).await {
             tracing::warn!(tx_id, error = %e, "Failed to record Merkle root for bulk load");
         }
 
@@ -486,41 +503,50 @@ impl TripleStore for PgTripleStore {
         }
 
         let tx_id = self.next_tx_id().await?;
+
+        // Compute Merkle root from in-memory inputs before the DB round-trip.
+        let root = crate::audit::merkle_root_from_inputs(triples, tx_id);
+        let count = triples.len();
+
         let mut tx = self.pool.begin().await?;
 
+        // Decompose into columnar arrays for single-query UNNEST bulk insert.
+        let mut entity_ids: Vec<Uuid> = Vec::with_capacity(count);
+        let mut attributes: Vec<String> = Vec::with_capacity(count);
+        let mut values: Vec<serde_json::Value> = Vec::with_capacity(count);
+        let mut value_types: Vec<i16> = Vec::with_capacity(count);
+        let mut expires_at_vec: Vec<Option<DateTime<Utc>>> = Vec::with_capacity(count);
+
         for t in triples {
-            let expires_at = t
+            let exp = t
                 .ttl_seconds
                 .map(|secs| Utc::now() + chrono::Duration::seconds(secs));
-            sqlx::query(
-                r#"
-                INSERT INTO triples (entity_id, attribute, value, value_type, tx_id, expires_at)
-                VALUES ($1, $2, $3, $4, $5, $6)
-                "#,
-            )
-            .bind(t.entity_id)
-            .bind(&t.attribute)
-            .bind(&t.value)
-            .bind(t.value_type)
-            .bind(tx_id)
-            .bind(expires_at)
-            .execute(&mut *tx)
-            .await?;
+            entity_ids.push(t.entity_id);
+            attributes.push(t.attribute.clone());
+            values.push(t.value.clone());
+            value_types.push(t.value_type);
+            expires_at_vec.push(exp);
         }
+
+        sqlx::query(
+            r#"
+            INSERT INTO triples (entity_id, attribute, value, value_type, tx_id, expires_at)
+            SELECT * FROM UNNEST($1::uuid[], $2::text[], $3::jsonb[], $4::smallint[], $5::bigint[], $6::timestamptz[])
+            "#,
+        )
+        .bind(&entity_ids)
+        .bind(&attributes)
+        .bind(&values)
+        .bind(&value_types)
+        .bind(&vec![tx_id; count])
+        .bind(&expires_at_vec)
+        .execute(&mut *tx)
+        .await?;
 
         tx.commit().await?;
 
-        // Record the Merkle root for this transaction (post-commit).
-        // We re-read the committed triples to compute the root over the
-        // canonical database state, ensuring hash determinism.
-        let written: Vec<Triple> = sqlx::query_as(
-            "SELECT id, entity_id, attribute, value, value_type, tx_id, created_at, retracted, expires_at FROM triples WHERE tx_id = $1 ORDER BY id",
-        )
-        .bind(tx_id)
-        .fetch_all(&self.pool)
-        .await?;
-
-        if let Err(e) = crate::audit::record_merkle_root(&self.pool, tx_id, &written).await {
+        // Record the pre-computed Merkle root (no Postgres re-read needed).
+        if let Err(e) = crate::audit::record_merkle_root(&self.pool, tx_id, &root, count).await {
             tracing::warn!(tx_id, error = %e, "Failed to record Merkle root for transaction");
         }
 
