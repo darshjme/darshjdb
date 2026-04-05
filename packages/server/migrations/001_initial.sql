@@ -98,6 +98,12 @@ CREATE INDEX IF NOT EXISTS idx_embeddings_hnsw
     ON embeddings USING hnsw (embedding vector_cosine_ops)
     WITH (m = 16, ef_construction = 64);
 
+-- TTL expiry scan index: find expired triples efficiently.
+-- Partial index ensures only rows with a set expiry are scanned.
+CREATE INDEX IF NOT EXISTS idx_triples_expiry
+    ON triples (expires_at)
+    WHERE expires_at IS NOT NULL AND NOT retracted;
+
 -- Lookup index for fetching all embeddings for a given entity.
 CREATE INDEX IF NOT EXISTS idx_embeddings_entity
     ON embeddings (entity_id, attribute);

@@ -33,6 +33,18 @@ const DEFAULT_PORT: u16 = 7700;
 /// Maximum database connections in the pool.
 const DEFAULT_MAX_CONNECTIONS: u32 = 20;
 
+/// Minimum idle connections in the pool.
+const DEFAULT_MIN_CONNECTIONS: u32 = 2;
+
+/// Timeout (seconds) to acquire a connection from the pool.
+const DEFAULT_ACQUIRE_TIMEOUT_SECS: u64 = 5;
+
+/// Idle timeout (seconds) before a connection is released.
+const DEFAULT_IDLE_TIMEOUT_SECS: u64 = 600;
+
+/// Pool utilization percentage that triggers a warning log.
+const POOL_HIGH_WATER_MARK: f64 = 0.80;
+
 /// Rate limiter cleanup interval.
 const RATE_LIMIT_CLEANUP_INTERVAL: Duration = Duration::from_secs(60);
 
@@ -62,10 +74,25 @@ async fn main() -> Result<()> {
         .and_then(|p| p.parse().ok())
         .unwrap_or(DEFAULT_PORT);
 
-    let max_connections: u32 = std::env::var("DDB_MAX_CONNECTIONS")
+    let max_connections: u32 = std::env::var("DDB_DB_MAX_CONNECTIONS")
         .ok()
         .and_then(|p| p.parse().ok())
         .unwrap_or(DEFAULT_MAX_CONNECTIONS);
+
+    let min_connections: u32 = std::env::var("DDB_DB_MIN_CONNECTIONS")
+        .ok()
+        .and_then(|p| p.parse().ok())
+        .unwrap_or(DEFAULT_MIN_CONNECTIONS);
+
+    let acquire_timeout_secs: u64 = std::env::var("DDB_DB_ACQUIRE_TIMEOUT_SECS")
+        .ok()
+        .and_then(|p| p.parse().ok())
+        .unwrap_or(DEFAULT_ACQUIRE_TIMEOUT_SECS);
+
+    let idle_timeout_secs: u64 = std::env::var("DDB_DB_IDLE_TIMEOUT_SECS")
+        .ok()
+        .and_then(|p| p.parse().ok())
+        .unwrap_or(DEFAULT_IDLE_TIMEOUT_SECS);
 
     let jwt_secret = std::env::var("DDB_JWT_SECRET").ok();
     let jwt_private_key_path = std::env::var("DDB_JWT_PRIVATE_KEY").ok();
@@ -74,13 +101,20 @@ async fn main() -> Result<()> {
     // -- Database Pool --------------------------------------------------------
     tracing::info!(database_url = %mask_url(&database_url), "connecting to database");
 
+    tracing::info!(
+        max_connections,
+        min_connections,
+        acquire_timeout_secs,
+        idle_timeout_secs,
+        "database pool configuration"
+    );
+
     let pool = PgPoolOptions::new()
         .max_connections(max_connections)
-        .min_connections(1)
-        .acquire_timeout(Duration::from_secs(5))
-        .idle_timeout(Duration::from_secs(600))
+        .min_connections(min_connections)
+        .acquire_timeout(Duration::from_secs(acquire_timeout_secs))
+        .idle_timeout(Duration::from_secs(idle_timeout_secs))
         .max_lifetime(Duration::from_secs(1800))
-        .test_before_acquire(true)
         .connect(&database_url)
         .await
         .map_err(|e| {
@@ -171,12 +205,13 @@ async fn main() -> Result<()> {
     let triple_store_arc = Arc::new(triple_store);
 
     // -- TTL Expiry Background Task -------------------------------------------
-    // Every 10 seconds, scan for expired triples and retract them.
+    // Every 30 seconds, scan for expired triples and retract them.
+    // Uses the idx_triples_expiry partial index for efficient scans.
     {
         let ttl_store = triple_store_arc.clone();
         let ttl_change_tx = change_tx.clone();
         tokio::spawn(async move {
-            let mut interval = tokio::time::interval(Duration::from_secs(10));
+            let mut interval = tokio::time::interval(Duration::from_secs(30));
             loop {
                 interval.tick().await;
                 match ttl_store.expire_triples().await {
@@ -204,7 +239,38 @@ async fn main() -> Result<()> {
                 }
             }
         });
-        tracing::info!("TTL expiry background task started (10s interval)");
+        tracing::info!("TTL expiry background task started (30s interval)");
+    }
+
+    // -- Pool Utilization Monitor ------------------------------------------------
+    {
+        let monitor_pool = pool.clone();
+        let monitor_max = max_connections;
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(10));
+            loop {
+                interval.tick().await;
+                let size = monitor_pool.size();
+                let idle = monitor_pool.num_idle() as u32;
+                let active = size.saturating_sub(idle);
+                let utilization = if monitor_max > 0 {
+                    active as f64 / monitor_max as f64
+                } else {
+                    0.0
+                };
+                if utilization > POOL_HIGH_WATER_MARK {
+                    tracing::warn!(
+                        active,
+                        idle,
+                        size,
+                        max = monitor_max,
+                        utilization_pct = format!("{:.1}", utilization * 100.0),
+                        "connection pool utilization above 80%"
+                    );
+                }
+            }
+        });
+        tracing::info!("pool utilization monitor started (10s interval, warn >80%)");
     }
 
     // Pub/sub engine for keyspace notifications (shared between WS and REST).
@@ -485,6 +551,14 @@ async fn main() -> Result<()> {
                 readiness_check(health_pool_ready.clone(), health_ws_sessions_ready.clone())
             }),
         )
+        // Database pool stats endpoint
+        .route(
+            "/health/db",
+            axum::routing::get({
+                let db_pool = pool.clone();
+                move || db_pool_health(db_pool.clone())
+            }),
+        )
         // -- Middleware stack (outermost = runs first) -------------------------
         // Structured request logging
         .layer(middleware::from_fn(request_logging_middleware))
@@ -705,6 +779,35 @@ async fn readiness_check(pool: sqlx::PgPool, ws_sessions: Arc<SyncSessionManager
             (StatusCode::SERVICE_UNAVAILABLE, axum::Json(body)).into_response()
         }
     }
+}
+
+// =============================================================================
+// Database pool health endpoint
+// =============================================================================
+
+/// `GET /health/db` - Connection pool statistics (active, idle, size, max).
+async fn db_pool_health(pool: sqlx::PgPool) -> Response {
+    let size = pool.size();
+    let idle = pool.num_idle() as u32;
+    let active = size.saturating_sub(idle);
+    let max = pool.options().get_max_connections();
+    let min = pool.options().get_min_connections();
+    let utilization = if max > 0 {
+        (active as f64 / max as f64) * 100.0
+    } else {
+        0.0
+    };
+
+    let body = serde_json::json!({
+        "active": active,
+        "idle": idle,
+        "size": size,
+        "max": max,
+        "min": min,
+        "utilization_pct": format!("{:.1}", utilization),
+    });
+
+    (StatusCode::OK, axum::Json(body)).into_response()
 }
 
 // =============================================================================
