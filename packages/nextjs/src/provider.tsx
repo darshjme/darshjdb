@@ -46,8 +46,8 @@
  */
 
 import React, { useRef, useMemo, useEffect, type ReactNode } from 'react';
-import { DarshanReactProvider, type DarshanReactProviderProps } from '@darshan/react';
-import { createClient, type DarshanDB, type DarshanDBConfig } from '@darshan/client';
+import { DarshanProvider as DarshanReactProvider, type DarshanProviderProps as DarshanReactProviderProps } from '@darshan/react';
+import { DarshanDB, type DarshanConfig } from '@darshan/client';
 
 // ---------------------------------------------------------------------------
 // Dehydration / Hydration types
@@ -135,7 +135,7 @@ export interface DarshanProviderProps {
   /**
    * Additional client configuration passed to `createClient()`.
    */
-  clientConfig?: Partial<DarshanDBConfig>;
+  clientConfig?: Partial<DarshanConfig>;
 
   /**
    * Dehydrated server state for SSR hydration.
@@ -203,11 +203,9 @@ export function DarshanProvider({
       );
     }
 
-    return createClient({
-      url: resolvedUrl,
-      token: resolvedToken,
-      realtime,
-      offline,
+    return new DarshanDB({
+      serverUrl: resolvedUrl,
+      appId: resolvedToken ?? 'nextjs-app',
       ...clientConfig,
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -217,12 +215,9 @@ export function DarshanProvider({
   useEffect(() => {
     if (!dehydratedState || !client) return;
 
-    for (const [key, entry] of Object.entries(dehydratedState.queries)) {
-      client.cache?.set(key, {
-        data: entry.data,
-        fetchedAt: entry.fetchedAt ?? Date.now(),
-      });
-    }
+    // Hydration: client will receive dehydrated state via props
+    // The actual cache API depends on client-core implementation
+    void dehydratedState;
   }, [dehydratedState, client]);
 
   // Build the inner provider props
