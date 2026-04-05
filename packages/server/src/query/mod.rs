@@ -638,8 +638,9 @@ pub async fn execute_query(pool: &PgPool, plan: &QueryPlan) -> Result<Vec<QueryR
     // plans (typically 1-3), regardless of how many parent entities exist.
     let nested_maps = batch_resolve_nested(pool, &entities, &plan.nested_plans).await?;
 
-    // Collect entity keys, apply offset and limit at the entity level.
+    // Collect entity keys in deterministic order for stable pagination.
     let mut entity_keys: Vec<uuid::Uuid> = entities.keys().copied().collect();
+    entity_keys.sort();
     if let Some(offset) = plan.offset {
         let off = offset as usize;
         if off < entity_keys.len() {
