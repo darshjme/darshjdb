@@ -531,39 +531,59 @@ async fn main() -> Result<()> {
         .map(|v| v == "1" || v == "true")
         .unwrap_or(false);
 
-    let cors = if dev_mode {
-        tracing::info!("CORS: dev mode, allowing all origins");
+    // Determine allowed origins: DDB_CORS_ORIGINS takes precedence, then
+    // dev-mode defaults to localhost, production defaults to deny-all.
+    let cors_origins = std::env::var("DDB_CORS_ORIGINS").unwrap_or_default();
+
+    let cors = if cors_origins.trim() == "*" {
+        // Explicit wildcard: allow all origins regardless of mode.
+        tracing::warn!("CORS: wildcard (*) — all origins allowed");
         CorsLayer::new()
             .allow_origin(Any)
             .allow_methods(Any)
             .allow_headers(Any)
             .expose_headers(Any)
             .max_age(Duration::from_secs(86400))
+    } else if !cors_origins.is_empty() {
+        // Explicit origin list (comma-separated).
+        let parsed: Vec<axum::http::HeaderValue> = cors_origins
+            .split(',')
+            .filter_map(|o| o.trim().parse().ok())
+            .collect();
+        tracing::info!(origins = ?parsed, "CORS: explicit origins");
+        CorsLayer::new()
+            .allow_origin(parsed)
+            .allow_methods(Any)
+            .allow_headers(Any)
+            .expose_headers(Any)
+            .max_age(Duration::from_secs(86400))
+    } else if dev_mode {
+        // Dev mode with no explicit origins: allow localhost only.
+        tracing::info!("CORS: dev mode, allowing localhost origins");
+        let localhost_origins: Vec<axum::http::HeaderValue> = vec![
+            "http://localhost:3000".parse().expect("valid origin"),
+            "http://localhost:5173".parse().expect("valid origin"),
+            "http://localhost:8080".parse().expect("valid origin"),
+            "http://127.0.0.1:3000".parse().expect("valid origin"),
+            "http://127.0.0.1:5173".parse().expect("valid origin"),
+            "http://127.0.0.1:8080".parse().expect("valid origin"),
+        ];
+        CorsLayer::new()
+            .allow_origin(localhost_origins)
+            .allow_methods(Any)
+            .allow_headers(Any)
+            .expose_headers(Any)
+            .max_age(Duration::from_secs(86400))
     } else {
-        let cors_origins = std::env::var("DDB_CORS_ORIGINS").unwrap_or_default();
-        if cors_origins.is_empty() {
-            tracing::warn!(
-                "DDB_CORS_ORIGINS not set in production mode, denying cross-origin requests"
-            );
-            // No allow_origin call = no Access-Control-Allow-Origin header = browser blocks.
-            CorsLayer::new()
-                .allow_methods(Any)
-                .allow_headers(Any)
-                .expose_headers(Any)
-                .max_age(Duration::from_secs(86400))
-        } else {
-            let parsed: Vec<axum::http::HeaderValue> = cors_origins
-                .split(',')
-                .filter_map(|o| o.trim().parse().ok())
-                .collect();
-            tracing::info!(origins = ?parsed, "CORS: production mode with explicit origins");
-            CorsLayer::new()
-                .allow_origin(parsed)
-                .allow_methods(Any)
-                .allow_headers(Any)
-                .expose_headers(Any)
-                .max_age(Duration::from_secs(86400))
-        }
+        // Production with no explicit origins: deny cross-origin.
+        tracing::warn!(
+            "DDB_CORS_ORIGINS not set in production mode, denying cross-origin requests"
+        );
+        CorsLayer::new()
+            .allow_methods(Any)
+            .allow_headers(Any)
+            .expose_headers(Any)
+            .max_age(Duration::from_secs(86400))
     };
 
     // -- Count existing triples for startup log --------------------------------
