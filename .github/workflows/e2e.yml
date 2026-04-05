@@ -1,0 +1,84 @@
+name: E2E
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "packages/server/**"
+      - "scripts/e2e-test.sh"
+      - ".github/workflows/e2e.yml"
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -Dwarnings
+  DATABASE_URL: postgres://darshan:darshan@localhost:5432/darshandb
+  DARSHAN_PORT: "7700"
+  DARSHAN_JWT_SECRET: ci-test-secret-do-not-use-in-production
+
+jobs:
+  e2e:
+    name: End-to-End Integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: darshan
+          POSTGRES_PASSWORD: darshan
+          POSTGRES_DB: darshandb
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - name: Build server
+        run: cargo build --bin darshandb-server
+
+      - name: Start server
+        run: |
+          cargo run --bin darshandb-server &
+          SERVER_PID=$!
+          echo "SERVER_PID=$SERVER_PID" >> $GITHUB_ENV
+
+          # Wait for server to be ready
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:7700/health >/dev/null 2>&1; then
+              echo "Server ready after ${i}s"
+              break
+            fi
+            if ! kill -0 $SERVER_PID 2>/dev/null; then
+              echo "Server exited unexpectedly"
+              exit 1
+            fi
+            if [ "$i" -eq 30 ]; then
+              echo "Server did not become ready in 30s"
+              exit 1
+            fi
+            sleep 1
+          done
+
+      - name: Run E2E tests
+        run: |
+          chmod +x scripts/e2e-test.sh
+          SKIP_POSTGRES=1 SKIP_BUILD=1 ./scripts/e2e-test.sh
+
+      - name: Stop server
+        if: always()
+        run: |
+          if [ -n "${SERVER_PID:-}" ]; then
+            kill "$SERVER_PID" 2>/dev/null || true
+          fi

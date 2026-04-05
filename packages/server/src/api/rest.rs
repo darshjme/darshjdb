@@ -31,6 +31,7 @@ use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sqlx::PgPool;
 use tokio::sync::broadcast;
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::BroadcastStream;
@@ -38,6 +39,8 @@ use uuid::Uuid;
 
 use super::error::{ApiError, ErrorCode};
 use super::openapi;
+use crate::query::{self, QueryResultRow};
+use crate::triple_store::{PgTripleStore, TripleInput, TripleStore};
 
 // ---------------------------------------------------------------------------
 // Application state
@@ -52,6 +55,10 @@ use super::openapi;
 /// once the backing implementations land.
 #[derive(Clone)]
 pub struct AppState {
+    /// Postgres connection pool for direct queries.
+    pub pool: PgPool,
+    /// The triple store backend.
+    pub triple_store: Arc<PgTripleStore>,
     /// Pre-computed OpenAPI 3.1 specification (JSON).
     pub openapi_spec: Arc<Value>,
     /// Broadcast channel for SSE subscription fan-out.
@@ -61,10 +68,30 @@ pub struct AppState {
 }
 
 impl AppState {
-    /// Create application state with default configuration.
-    pub fn new() -> Self {
+    /// Create application state with a live database pool and triple store.
+    pub fn with_pool(pool: PgPool, triple_store: Arc<PgTripleStore>) -> Self {
         let (sse_tx, _) = broadcast::channel(1024);
         Self {
+            pool,
+            triple_store,
+            openapi_spec: Arc::new(openapi::generate_openapi_spec()),
+            sse_tx,
+            started_at: Instant::now(),
+        }
+    }
+
+    /// Create application state with default (test-only) configuration.
+    /// Panics if called outside tests — production code must use `with_pool`.
+    #[cfg(test)]
+    pub fn new() -> Self {
+        // Tests that don't hit the database can use a dummy pool.
+        // This preserves backward compatibility with existing unit tests.
+        let (sse_tx, _) = broadcast::channel(1024);
+        let pool = PgPool::connect_lazy("postgres://localhost/darshandb_test").expect("test pool");
+        let triple_store = Arc::new(PgTripleStore::new_lazy(pool.clone()));
+        Self {
+            pool,
+            triple_store,
             openapi_spec: Arc::new(openapi::generate_openapi_spec()),
             sse_tx,
             started_at: Instant::now(),
@@ -72,6 +99,7 @@ impl AppState {
     }
 }
 
+#[cfg(test)]
 impl Default for AppState {
     fn default() -> Self {
         Self::new()
@@ -182,11 +210,12 @@ async fn rate_limit_headers(req: Request<Body>, next: Next) -> Response {
 ///
 /// Mount this under `/api` in your top-level Axum application:
 ///
-/// ```rust,no_run
+/// ```rust,ignore
 /// use darshandb_server::api::rest::{build_router, AppState};
 ///
+/// let state = AppState::with_pool(pool, triple_store);
 /// let app = axum::Router::new()
-///     .nest("/api", build_router(AppState::new()));
+///     .nest("/api", build_router(state));
 /// ```
 pub fn build_router(state: AppState) -> Router {
     Router::new()
@@ -446,30 +475,39 @@ async fn auth_me(State(_state): State<AppState>, headers: HeaderMap) -> Result<R
 /// `POST /api/query` — Execute a DarshanQL query over HTTP.
 #[derive(Deserialize)]
 struct QueryRequest {
-    query: String,
+    query: Value,
     #[serde(rename = "args")]
     #[allow(dead_code)] // used by client protocol
     _args: Option<HashMap<String, Value>>,
 }
 
 async fn query(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     headers: HeaderMap,
     axum::Json(body): axum::Json<QueryRequest>,
 ) -> Result<Response, ApiError> {
     let _token = extract_bearer_token(&headers)?;
 
-    if body.query.is_empty() {
-        return Err(ApiError::bad_request("Query string is required"));
-    }
-
     let start = Instant::now();
 
-    // TODO: wire to query engine with permission-injected context.
+    // Parse the DarshanQL JSON into an AST.
+    let ast = query::parse_darshan_ql(&body.query)
+        .map_err(|e| ApiError::bad_request(format!("Invalid query: {e}")))?;
+
+    // Plan the query.
+    let plan = query::plan_query(&ast)
+        .map_err(|e| ApiError::bad_request(format!("Query planning failed: {e}")))?;
+
+    // Execute against Postgres.
+    let results: Vec<QueryResultRow> = query::execute_query(&state.pool, &plan)
+        .await
+        .map_err(|e| ApiError::internal(format!("Query execution failed: {e}")))?;
+
+    let count = results.len();
     let response = serde_json::json!({
-        "data": [],
+        "data": results,
         "meta": {
-            "count": 0,
+            "count": count,
             "duration_ms": start.elapsed().as_secs_f64() * 1000.0
         }
     });
@@ -503,7 +541,7 @@ enum MutationOp {
 }
 
 async fn mutate(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     headers: HeaderMap,
     axum::Json(body): axum::Json<MutateRequest>,
 ) -> Result<Response, ApiError> {
@@ -535,10 +573,100 @@ async fn mutate(
         }
     }
 
-    // TODO: wire to triple store transaction engine.
+    // Convert mutations into triple operations and execute against the store.
+    let mut all_triples: Vec<TripleInput> = Vec::new();
+    let mut entity_ids: Vec<Uuid> = Vec::new();
+
+    for m in &body.mutations {
+        match m.op {
+            MutationOp::Insert => {
+                let entity_id = m.id.unwrap_or_else(Uuid::new_v4);
+                entity_ids.push(entity_id);
+
+                // Set the :db/type attribute for this entity.
+                all_triples.push(TripleInput {
+                    entity_id,
+                    attribute: ":db/type".to_string(),
+                    value: Value::String(m.entity.clone()),
+                    value_type: 0, // String
+                });
+
+                // Convert each key-value pair in data to a triple.
+                if let Some(data) = &m.data
+                    && let Some(obj) = data.as_object()
+                {
+                    for (key, value) in obj {
+                        let value_type = infer_value_type(value);
+                        all_triples.push(TripleInput {
+                            entity_id,
+                            attribute: format!("{}/{}", m.entity, key),
+                            value: value.clone(),
+                            value_type,
+                        });
+                    }
+                }
+            }
+            MutationOp::Update | MutationOp::Upsert => {
+                let entity_id = m.id.unwrap_or_else(Uuid::new_v4);
+                entity_ids.push(entity_id);
+
+                // For update/upsert, retract old values for touched attributes
+                // then insert new ones.
+                if let Some(data) = &m.data
+                    && let Some(obj) = data.as_object()
+                {
+                    for (key, _) in obj {
+                        let attr = format!("{}/{}", m.entity, key);
+                        let _ = state.triple_store.retract(entity_id, &attr).await;
+                    }
+                    for (key, value) in obj {
+                        let value_type = infer_value_type(value);
+                        all_triples.push(TripleInput {
+                            entity_id,
+                            attribute: format!("{}/{}", m.entity, key),
+                            value: value.clone(),
+                            value_type,
+                        });
+                    }
+                }
+            }
+            MutationOp::Delete => {
+                let entity_id = m.id.expect("validated above");
+                entity_ids.push(entity_id);
+
+                // Retract all triples for this entity by fetching and retracting each attribute.
+                let existing = state
+                    .triple_store
+                    .get_entity(entity_id)
+                    .await
+                    .map_err(|e| {
+                        ApiError::internal(format!("Failed to fetch entity for deletion: {e}"))
+                    })?;
+                for triple in &existing {
+                    let _ = state
+                        .triple_store
+                        .retract(entity_id, &triple.attribute)
+                        .await;
+                }
+            }
+        }
+    }
+
+    // Write all insert/update triples in one batch.
+    let tx_id = if !all_triples.is_empty() {
+        state
+            .triple_store
+            .set_triples(&all_triples)
+            .await
+            .map_err(|e| ApiError::internal(format!("Failed to write triples: {e}")))?
+    } else {
+        0
+    };
+
     let response = serde_json::json!({
-        "tx_id": 1,
-        "affected": body.mutations.len()
+        "tx_id": tx_id,
+        "affected": body.mutations.len(),
+        "entity_ids": entity_ids,
     });
 
     Ok(negotiate_response(&headers, &response))
@@ -558,21 +686,34 @@ struct DataListParams {
 
 /// `GET /api/data/:entity` — List entities of a type with pagination.
 async fn data_list(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     Path(entity): Path<String>,
     Query(params): Query<DataListParams>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
     let _token = extract_bearer_token(&headers)?;
-    let _limit = params.limit.unwrap_or(50).min(1000);
+    let limit = params.limit.unwrap_or(50).min(1000);
 
     validate_entity_name(&entity)?;
 
-    // TODO: wire to query engine with cursor pagination.
+    // Use the query engine to list entities of this type.
+    let query_json = serde_json::json!({
+        "type": entity,
+        "$limit": limit
+    });
+    let ast = query::parse_darshan_ql(&query_json)
+        .map_err(|e| ApiError::internal(format!("Failed to build list query: {e}")))?;
+    let plan = query::plan_query(&ast)
+        .map_err(|e| ApiError::internal(format!("Failed to plan list query: {e}")))?;
+    let results = query::execute_query(&state.pool, &plan)
+        .await
+        .map_err(|e| ApiError::internal(format!("Failed to execute list query: {e}")))?;
+
+    let has_more = results.len() as u32 >= limit;
     let response = serde_json::json!({
-        "data": [],
+        "data": results,
         "cursor": Value::Null,
-        "has_more": false
+        "has_more": has_more
     });
 
     Ok(negotiate_response(&headers, &response))
@@ -580,7 +721,7 @@ async fn data_list(
 
 /// `POST /api/data/:entity` — Create a new entity.
 async fn data_create(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     Path(entity): Path<String>,
     headers: HeaderMap,
     axum::Json(body): axum::Json<Value>,
@@ -594,11 +735,35 @@ async fn data_create(
     }
 
     let id = Uuid::new_v4();
+    let obj = body.as_object().unwrap();
 
-    // TODO: wire to triple store insert.
+    // Build triples: one for :db/type, one per data field.
+    let mut triples = vec![TripleInput {
+        entity_id: id,
+        attribute: ":db/type".to_string(),
+        value: Value::String(entity.clone()),
+        value_type: 0, // String
+    }];
+    for (key, value) in obj {
+        let value_type = infer_value_type(value);
+        triples.push(TripleInput {
+            entity_id: id,
+            attribute: format!("{entity}/{key}"),
+            value: value.clone(),
+            value_type,
+        });
+    }
+
+    let tx_id = state
+        .triple_store
+        .set_triples(&triples)
+        .await
+        .map_err(|e| ApiError::internal(format!("Failed to create entity: {e}")))?;
+
     let response = serde_json::json!({
         "id": id,
         "entity": entity,
+        "tx_id": tx_id,
         "data": body
     });
 
@@ -611,7 +776,7 @@ async fn data_create(
 
 /// `GET /api/data/:entity/:id` — Fetch a single entity by ID.
 async fn data_get(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     Path((entity, id)): Path<(String, Uuid)>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
@@ -619,16 +784,42 @@ async fn data_get(
 
     validate_entity_name(&entity)?;
 
-    // TODO: wire to triple store lookup.
-    // For now, return not-found to show the error format works.
-    Err(ApiError::not_found(format!(
-        "{entity} with id {id} not found"
-    )))
+    let triples = state
+        .triple_store
+        .get_entity(id)
+        .await
+        .map_err(|e| ApiError::internal(format!("Failed to fetch entity: {e}")))?;
+
+    if triples.is_empty() {
+        return Err(ApiError::not_found(format!(
+            "{entity} with id {id} not found"
+        )));
+    }
+
+    // Build attribute map from triples.
+    let mut attrs = serde_json::Map::new();
+    for t in &triples {
+        // Use the short attribute name (strip "entity/" prefix if present).
+        let key = t
+            .attribute
+            .strip_prefix(&format!("{entity}/"))
+            .unwrap_or(&t.attribute)
+            .to_string();
+        attrs.entry(key).or_insert_with(|| t.value.clone());
+    }
+
+    let response = serde_json::json!({
+        "id": id,
+        "entity": entity,
+        "data": attrs
+    });
+
+    Ok(negotiate_response(&headers, &response))
 }
 
 /// `PATCH /api/data/:entity/:id` — Partially update an entity.
 async fn data_patch(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     Path((entity, id)): Path<(String, Uuid)>,
     headers: HeaderMap,
     axum::Json(body): axum::Json<Value>,
@@ -641,10 +832,36 @@ async fn data_patch(
         return Err(ApiError::bad_request("Request body must be a JSON object"));
     }
 
-    // TODO: wire to triple store update.
+    let obj = body.as_object().unwrap();
+    let mut triples = Vec::new();
+
+    // Retract old values for each attribute being patched, then insert new.
+    for (key, value) in obj {
+        let attr = format!("{entity}/{key}");
+        let _ = state.triple_store.retract(id, &attr).await;
+        let value_type = infer_value_type(value);
+        triples.push(TripleInput {
+            entity_id: id,
+            attribute: attr,
+            value: value.clone(),
+            value_type,
+        });
+    }
+
+    let tx_id = if !triples.is_empty() {
+        state
+            .triple_store
+            .set_triples(&triples)
+            .await
+            .map_err(|e| ApiError::internal(format!("Failed to update entity: {e}")))?
+    } else {
+        0
+    };
+
     let response = serde_json::json!({
         "id": id,
         "entity": entity,
+        "tx_id": tx_id,
         "data": body
     });
 
@@ -653,7 +870,7 @@ async fn data_patch(
 
 /// `DELETE /api/data/:entity/:id` — Delete an entity.
 async fn data_delete(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     Path((entity, id)): Path<(String, Uuid)>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
@@ -661,8 +878,27 @@ async fn data_delete(
 
     validate_entity_name(&entity)?;
 
-    // TODO: wire to triple store retract.
-    let _ = id;
+    // Retract all triples for this entity.
+    let existing = state
+        .triple_store
+        .get_entity(id)
+        .await
+        .map_err(|e| ApiError::internal(format!("Failed to fetch entity for deletion: {e}")))?;
+
+    if existing.is_empty() {
+        return Err(ApiError::not_found(format!(
+            "{entity} with id {id} not found"
+        )));
+    }
+
+    for triple in &existing {
+        state
+            .triple_store
+            .retract(id, &triple.attribute)
+            .await
+            .map_err(|e| ApiError::internal(format!("Failed to retract triple: {e}")))?;
+    }
+
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
@@ -860,17 +1096,19 @@ async fn subscribe(
 
 /// `GET /api/admin/schema` — Return the current inferred schema.
 async fn admin_schema(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
     let _token = extract_bearer_token(&headers)?;
     require_admin_role(&headers)?;
 
-    // TODO: wire to Schema introspection.
-    let response = serde_json::json!({
-        "entity_types": {},
-        "as_of_tx": 0
-    });
+    let schema = state
+        .triple_store
+        .get_schema()
+        .await
+        .map_err(|e| ApiError::internal(format!("Failed to infer schema: {e}")))?;
+
+    let response = serde_json::json!(schema);
 
     Ok(negotiate_response(&headers, &response))
 }
@@ -959,6 +1197,30 @@ fn require_admin_role(headers: &HeaderMap) -> Result<(), ApiError> {
     // For now, accept any authenticated request so the route compiles.
     let _ = headers;
     Ok(())
+}
+
+/// Infer the triple store value_type discriminator from a JSON value.
+fn infer_value_type(value: &Value) -> i16 {
+    match value {
+        Value::String(s) => {
+            // Check if it looks like a UUID (reference).
+            if s.len() == 36 && Uuid::parse_str(s).is_ok() {
+                5 // Reference
+            } else {
+                0 // String
+            }
+        }
+        Value::Number(n) => {
+            if n.is_f64() && !n.is_i64() && !n.is_u64() {
+                2 // Float
+            } else {
+                1 // Integer
+            }
+        }
+        Value::Bool(_) => 3,                     // Boolean
+        Value::Object(_) | Value::Array(_) => 6, // Json
+        Value::Null => 0,                        // Default to String for null
+    }
 }
 
 /// Validate that an entity name is safe and well-formed.
@@ -1329,14 +1591,14 @@ mod tests {
     // AppState construction
     // -----------------------------------------------------------------------
 
-    #[test]
-    fn app_state_default_has_valid_spec() {
+    #[tokio::test]
+    async fn app_state_default_has_valid_spec() {
         let state = AppState::new();
         assert!(state.openapi_spec["openapi"].is_string());
     }
 
-    #[test]
-    fn app_state_default_trait() {
+    #[tokio::test]
+    async fn app_state_default_trait() {
         let state = AppState::default();
         assert!(state.openapi_spec["openapi"].is_string());
     }

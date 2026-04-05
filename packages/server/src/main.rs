@@ -147,10 +147,8 @@ async fn main() -> Result<()> {
     tracing::info!("sync engine initialized");
 
     // ── REST API State ─────────────────────────────────────────────
-    let app_state = AppState::new();
-
-    // Keep references for health-check / admin purposes.
-    let _triple_store = triple_store;
+    let triple_store_arc = Arc::new(triple_store);
+    let app_state = AppState::with_pool(pool.clone(), triple_store_arc.clone());
 
     // ── CORS Layer ─────────────────────────────────────────────────
     let cors = CorsLayer::new()
@@ -160,8 +158,16 @@ async fn main() -> Result<()> {
         .expose_headers(Any)
         .max_age(Duration::from_secs(86400));
 
+    // ── Count existing triples for startup log ──────────────────────
+    let triple_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM triples")
+        .fetch_one(&pool)
+        .await
+        .unwrap_or((0,));
+    tracing::info!(triples = triple_count.0, "triple store stats");
+
     // ── Router Assembly ────────────────────────────────────────────
     let api_router = build_router(app_state);
+    let health_pool = pool.clone();
 
     let app = axum::Router::new()
         // REST API routes under /api
@@ -169,7 +175,10 @@ async fn main() -> Result<()> {
         // WebSocket route at /ws
         .merge(ws_routes(ws_state))
         // Health check at root
-        .route("/health", axum::routing::get(health_check))
+        .route(
+            "/health",
+            axum::routing::get(move || health_check(health_pool.clone())),
+        )
         // CORS (outermost layer, runs first)
         .layer(cors);
 
@@ -198,12 +207,25 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-/// Health check endpoint. Returns 200 with server status.
-async fn health_check() -> axum::Json<serde_json::Value> {
+/// Health check endpoint. Returns 200 with server status and pool info.
+async fn health_check(pool: sqlx::PgPool) -> axum::Json<serde_json::Value> {
+    let pool_size = pool.size();
+    let idle = pool.num_idle();
+    let triple_count: i64 = sqlx::query_as::<_, (i64,)>("SELECT COUNT(*) FROM triples")
+        .fetch_one(&pool)
+        .await
+        .map(|r| r.0)
+        .unwrap_or(-1);
+
     axum::Json(serde_json::json!({
         "status": "ok",
         "service": "darshandb",
         "version": env!("CARGO_PKG_VERSION"),
+        "pool": {
+            "size": pool_size,
+            "idle": idle,
+        },
+        "triples": triple_count,
     }))
 }
 

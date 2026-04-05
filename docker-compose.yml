@@ -32,6 +32,7 @@ services:
     # override in docker-compose.dev.yml when local access is needed.
     volumes:
       - pgdata:/var/lib/postgresql/data
+      - ./packages/server/migrations/001_initial.sql:/docker-entrypoint-initdb.d/001_initial.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U darshan -d darshandb"]
       interval: 5s

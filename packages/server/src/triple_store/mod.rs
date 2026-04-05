@@ -156,6 +156,12 @@ impl PgTripleStore {
         &self.pool
     }
 
+    /// Create a store without running schema migrations.
+    /// Useful for tests or when the schema is known to exist already.
+    pub fn new_lazy(pool: PgPool) -> Self {
+        Self { pool }
+    }
+
     /// Create the `triples` table and all supporting indexes if they
     /// do not already exist. This is idempotent.
     async fn ensure_schema(&self) -> Result<()> {

@@ -126,23 +126,42 @@ darshandb/
 ## Running Locally
 
 ```bash
-# Prerequisites: Rust 1.70+, Node.js 20+, PostgreSQL 16+
+# Prerequisites: Rust 1.70+, Node.js 20+, Docker (for Postgres)
 
 # Clone
 git clone https://github.com/darshjme/darshandb.git
 cd darshandb
 
-# Run Rust tests
+# Run all unit tests (438 Rust + TypeScript + PHP + Python)
 cargo test --workspace
-
-# Run TypeScript tests
 npm install && npm test --workspaces --if-present
 
-# Start Postgres (Docker)
+# Start Postgres via Docker
 docker compose up postgres -d
 
-# Start the server (will connect to Postgres, serve REST API + WebSocket)
-cargo run --bin darshandb-server
+# Start the server
+DATABASE_URL=postgres://darshan:darshan@localhost:5432/darshandb \
+  cargo run --bin darshandb-server
+# Server listens on http://localhost:7700
+# REST API at http://localhost:7700/api
+# WebSocket at ws://localhost:7700/ws
+# OpenAPI spec at http://localhost:7700/api/openapi.json
+```
+
+### End-to-End Test
+
+The full integration test starts Postgres, builds the server, and exercises every REST endpoint:
+
+```bash
+./scripts/e2e-test.sh
+```
+
+This tests auth signup, entity CRUD, the mutation API, DarshanQL queries, error handling, and OpenAPI spec generation. Use `SKIP_POSTGRES=1` if Postgres is already running, or `SKIP_BUILD=1` to skip the cargo build step.
+
+For a guided walkthrough of the API with commentary (good for understanding the data model):
+
+```bash
+./examples/curl-scripts/e2e-demo.sh
 ```
 
 ## Roadmap
