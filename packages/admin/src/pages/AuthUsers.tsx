@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect, useCallback } from "react";
 import {
   Search,
   Shield,
@@ -10,9 +10,14 @@ import {
   Clock,
   MapPin,
   X,
+  Loader2,
+  AlertCircle,
+  UserPlus,
+  RefreshCw,
 } from "lucide-react";
 import { Badge } from "../components/Badge";
 import { mockUsers } from "../lib/mock-data";
+import { fetchEntities, fetchSchema, createUser, ApiError } from "../lib/api";
 import { cn, formatRelativeTime, formatTimestamp } from "../lib/utils";
 import type { User } from "../types";
 
@@ -22,12 +27,119 @@ const roleBadge: Record<User["role"], { variant: "amber" | "emerald" | "sky"; ic
   viewer: { variant: "emerald", icon: Eye },
 };
 
+/** Map a raw entity record from the API into the User shape the UI expects. */
+function entityToUser(rec: Record<string, unknown>, index: number): User {
+  return {
+    id: (rec._id as string) ?? `api_${index}`,
+    email: (rec.email as string) ?? "",
+    name: (rec.name as string) ?? (rec.email as string) ?? "Unknown",
+    role: (["admin", "developer", "viewer"].includes(rec.role as string)
+      ? (rec.role as User["role"])
+      : "viewer"),
+    createdAt: typeof rec.createdAt === "number"
+      ? (rec.createdAt as number)
+      : typeof rec.created_at === "string"
+        ? new Date(rec.created_at as string).getTime()
+        : (rec._creationTime as number) ?? Date.now(),
+    lastLogin: typeof rec.lastLogin === "number"
+      ? (rec.lastLogin as number)
+      : Date.now(),
+    sessions: [], // API does not expose per-user sessions yet
+  };
+}
+
 export function AuthUsers() {
   const [search, setSearch] = useState("");
   const [roleFilter, setRoleFilter] = useState<string>("all");
   const [selectedUser, setSelectedUser] = useState<User | null>(null);
 
-  const filtered = mockUsers.filter((user) => {
+  // Live data state
+  const [users, setUsers] = useState<User[]>(mockUsers);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [isLive, setIsLive] = useState(false);
+
+  // Create user dialog
+  const [showCreate, setShowCreate] = useState(false);
+  const [createEmail, setCreateEmail] = useState("");
+  const [createName, setCreateName] = useState("");
+  const [createPassword, setCreatePassword] = useState("");
+  const [creating, setCreating] = useState(false);
+  const [createError, setCreateError] = useState<string | null>(null);
+
+  const loadUsers = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      // Try fetching "users" entity type from the data API.
+      // First check if a "users" or "user" entity type exists in schema.
+      const schema = await fetchSchema();
+      const userType = schema.find(
+        (et) => et.name === "users" || et.name === "user",
+      );
+
+      if (!userType) {
+        // No user entity type -- fall back to mock
+        setUsers(mockUsers);
+        setIsLive(false);
+        setLoading(false);
+        return;
+      }
+
+      const res = await fetchEntities(userType.name, 200);
+      if (res.data.length === 0) {
+        // Empty result -- fall back to mock for a nicer demo experience
+        setUsers(mockUsers);
+        setIsLive(false);
+      } else {
+        setUsers(res.data.map((r, i) => entityToUser(r, i)));
+        setIsLive(true);
+      }
+    } catch (err) {
+      // API unavailable -- fall back to mock data silently
+      console.warn("[AuthUsers] API unavailable, using mock data:", err);
+      setUsers(mockUsers);
+      setIsLive(false);
+      if (err instanceof ApiError) {
+        setError(`API ${err.status}: ${err.body}`);
+      }
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadUsers();
+  }, [loadUsers]);
+
+  const handleCreateUser = async () => {
+    if (!createEmail || !createPassword) return;
+    setCreating(true);
+    setCreateError(null);
+    try {
+      await createUser({
+        email: createEmail,
+        password: createPassword,
+        name: createName || undefined,
+      });
+      // Refresh the list
+      setShowCreate(false);
+      setCreateEmail("");
+      setCreateName("");
+      setCreatePassword("");
+      await loadUsers();
+    } catch (err) {
+      if (err instanceof ApiError) {
+        setCreateError(err.body || err.message);
+      } else {
+        setCreateError("Failed to create user");
+      }
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  const filtered = users.filter((user) => {
     if (roleFilter !== "all" && user.role !== roleFilter) return false;
     if (search) {
       const q = search.toLowerCase();
@@ -44,14 +156,121 @@ export function AuthUsers() {
           <div>
             <h2 className="text-lg font-semibold text-zinc-100">Auth & Users</h2>
             <p className="text-sm text-zinc-500 mt-0.5">
-              {mockUsers.length} users, {mockUsers.filter((u) => u.sessions.length > 0).length} active
+              {loading ? (
+                <span className="flex items-center gap-1.5">
+                  <Loader2 className="w-3 h-3 animate-spin" />
+                  Loading users...
+                </span>
+              ) : (
+                <>
+                  {users.length} users
+                  {!isLive && (
+                    <Badge variant="zinc" className="ml-2 text-[9px]">mock data</Badge>
+                  )}
+                  {isLive && (
+                    <Badge variant="emerald" className="ml-2 text-[9px]">live</Badge>
+                  )}
+                </>
+              )}
             </p>
           </div>
-          <button className="btn-primary text-sm">
-            <Shield className="w-4 h-4" />
-            Invite User
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={loadUsers}
+              className="btn-ghost text-xs"
+              title="Refresh"
+            >
+              <RefreshCw className={cn("w-3.5 h-3.5", loading && "animate-spin")} />
+            </button>
+            <button
+              onClick={() => setShowCreate(true)}
+              className="btn-primary text-sm"
+            >
+              <UserPlus className="w-4 h-4" />
+              Create User
+            </button>
+          </div>
         </div>
+
+        {error && (
+          <div className="glass-panel p-3 mb-4 border-amber-500/30 flex items-center gap-2 text-xs text-amber-400">
+            <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" />
+            <span>{error} -- showing mock data as fallback</span>
+          </div>
+        )}
+
+        {/* Create user dialog */}
+        {showCreate && (
+          <div className="glass-panel p-4 mb-4 border-amber-500/20">
+            <h3 className="text-sm font-semibold text-zinc-100 mb-3">Create New User</h3>
+            <div className="space-y-3">
+              <div>
+                <label className="text-[10px] font-semibold uppercase tracking-wider text-zinc-600">
+                  Email *
+                </label>
+                <input
+                  value={createEmail}
+                  onChange={(e) => setCreateEmail(e.target.value)}
+                  placeholder="user@example.com"
+                  className="input-field text-xs mt-1"
+                  type="email"
+                />
+              </div>
+              <div>
+                <label className="text-[10px] font-semibold uppercase tracking-wider text-zinc-600">
+                  Name
+                </label>
+                <input
+                  value={createName}
+                  onChange={(e) => setCreateName(e.target.value)}
+                  placeholder="Full name"
+                  className="input-field text-xs mt-1"
+                />
+              </div>
+              <div>
+                <label className="text-[10px] font-semibold uppercase tracking-wider text-zinc-600">
+                  Password * (min 8 chars)
+                </label>
+                <input
+                  value={createPassword}
+                  onChange={(e) => setCreatePassword(e.target.value)}
+                  placeholder="Minimum 8 characters"
+                  className="input-field text-xs mt-1"
+                  type="password"
+                />
+              </div>
+              {createError && (
+                <p className="text-xs text-red-400 flex items-center gap-1.5">
+                  <AlertCircle className="w-3 h-3" />
+                  {createError}
+                </p>
+              )}
+              <div className="flex items-center gap-2 pt-1">
+                <button
+                  onClick={handleCreateUser}
+                  disabled={creating || !createEmail || createPassword.length < 8}
+                  className="btn-primary text-xs disabled:opacity-50"
+                >
+                  {creating ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <UserPlus className="w-3.5 h-3.5" />
+                  )}
+                  {creating ? "Creating..." : "Create"}
+                </button>
+                <button
+                  onClick={() => {
+                    setShowCreate(false);
+                    setCreateError(null);
+                  }}
+                  className="btn-ghost text-xs"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Filters */}
         <div className="flex items-center gap-3 mb-4">
@@ -164,6 +383,14 @@ export function AuthUsers() {
 
             {/* Info */}
             <div className="space-y-3">
+              <div>
+                <label className="text-[10px] font-semibold uppercase tracking-wider text-zinc-600">
+                  User ID
+                </label>
+                <p className="text-xs text-zinc-300 mt-0.5 font-mono break-all">
+                  {selectedUser.id}
+                </p>
+              </div>
               <div>
                 <label className="text-[10px] font-semibold uppercase tracking-wider text-zinc-600">
                   Created

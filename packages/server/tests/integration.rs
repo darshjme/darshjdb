@@ -11,6 +11,7 @@
 //! Each test creates its own data in isolated entity namespaces and cleans
 //! up after itself so tests can run in parallel without interference.
 
+use darshandb_server::triple_store::TripleStore;
 use serde_json::json;
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -188,10 +189,11 @@ async fn test_schema_inference() {
     let schema = store.get_schema().await.expect("get_schema failed");
 
     // Schema should contain at least the entity types we wrote.
+    // Schema.entity_types is HashMap<String, EntityType> — keys are type names.
     let type_names: Vec<&str> = schema
         .entity_types
-        .iter()
-        .map(|t| t.name.as_str())
+        .keys()
+        .map(|k| k.as_str())
         .collect();
     assert!(
         type_names.contains(&"User"),
