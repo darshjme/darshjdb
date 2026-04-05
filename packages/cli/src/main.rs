@@ -38,7 +38,7 @@ enum Commands {
     /// Start a local development server
     Dev {
         /// Port to listen on
-        #[arg(short, long, default_value = "4820")]
+        #[arg(short, long, default_value = "7700")]
         port: u16,
 
         /// Watch for file changes and hot-reload functions
@@ -987,7 +987,7 @@ async fn cmd_init(name: &str) -> Result<()> {
     let config_content = r#"# DarshanDB project configuration
 
 [server]
-url = "http://localhost:4820"
+url = "http://localhost:7700"
 
 [functions]
 dir = "darshan/functions"
