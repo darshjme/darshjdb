@@ -24,11 +24,13 @@
 pub mod broadcaster;
 pub mod diff;
 pub mod presence;
+pub mod pubsub;
 pub mod registry;
 pub mod session;
 
 pub use broadcaster::{Broadcaster, ChangeEvent};
 pub use diff::{EntityPatch, QueryDiff, compute_diff};
 pub use presence::{PresenceManager, PresenceRoom};
+pub use pubsub::{PubSubEngine, PubSubEvent};
 pub use registry::SubscriptionRegistry;
 pub use session::{ActiveSubscription, SessionManager, SyncSession};

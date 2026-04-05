@@ -61,6 +61,8 @@ pub fn generate_openapi_spec() -> Value {
             "/storage/upload": storage_upload_path(),
             "/storage/{path}": storage_item_path(),
             "/subscribe": subscribe_path(),
+            "/events": events_path(),
+            "/events/publish": events_publish_path(),
             "/admin/schema": admin_schema_path(),
             "/admin/functions": admin_functions_path(),
             "/admin/sessions": admin_sessions_path(),
@@ -700,6 +702,94 @@ fn subscribe_path() -> Value {
                     "content": {
                         "text/event-stream": {
                             "schema": { "type": "string" }
+                        }
+                    }
+                },
+                "401": error_response("Not authenticated")
+            }
+        }
+    })
+}
+
+fn events_path() -> Value {
+    json!({
+        "get": {
+            "tags": ["Pub/Sub"],
+            "summary": "Subscribe to pub/sub events via Server-Sent Events",
+            "operationId": "eventsSse",
+            "description": "Streams keyspace notification events matching the given channel pattern. Supports glob patterns like `entity:users:*`, `mutation:*`, `auth:*`.",
+            "security": [{ "bearerAuth": [] }],
+            "parameters": [
+                {
+                    "name": "channel",
+                    "in": "query",
+                    "required": true,
+                    "schema": { "type": "string" },
+                    "description": "Channel pattern to subscribe to (e.g., `entity:users:*`)"
+                }
+            ],
+            "responses": {
+                "200": {
+                    "description": "SSE stream of matching pub/sub events",
+                    "content": {
+                        "text/event-stream": {
+                            "schema": { "type": "string" }
+                        }
+                    }
+                },
+                "401": error_response("Not authenticated")
+            }
+        }
+    })
+}
+
+fn events_publish_path() -> Value {
+    json!({
+        "post": {
+            "tags": ["Pub/Sub"],
+            "summary": "Publish a custom event to a channel",
+            "operationId": "eventsPublish",
+            "description": "Broadcasts a custom event to all subscribers matching the given channel. Used for webhooks, notifications, or inter-service communication.",
+            "security": [{ "bearerAuth": [] }],
+            "requestBody": {
+                "required": true,
+                "content": {
+                    "application/json": {
+                        "schema": {
+                            "type": "object",
+                            "required": ["channel", "event"],
+                            "properties": {
+                                "channel": {
+                                    "type": "string",
+                                    "description": "Channel to publish to (e.g., `custom:notifications`)"
+                                },
+                                "event": {
+                                    "type": "string",
+                                    "description": "Event name (e.g., `new-message`)"
+                                },
+                                "payload": {
+                                    "description": "Optional event payload",
+                                    "nullable": true
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "responses": {
+                "200": {
+                    "description": "Event published successfully",
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "type": "object",
+                                "properties": {
+                                    "ok": { "type": "boolean" },
+                                    "channel": { "type": "string" },
+                                    "event": { "type": "string" },
+                                    "receivers": { "type": "integer" }
+                                }
+                            }
                         }
                     }
                 },

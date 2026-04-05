@@ -34,11 +34,62 @@ pub struct QueryAST {
     pub offset: Option<u32>,
     /// Full-text search term.
     pub search: Option<String>,
-    /// Semantic / vector search term (placeholder for future embeddings).
-    pub semantic: Option<String>,
+    /// Semantic / vector search clause (pgvector cosine similarity).
+    pub semantic: Option<SemanticQuery>,
+    /// Hybrid search clause (combines tsvector + pgvector via RRF).
+    pub hybrid: Option<HybridQuery>,
     /// Nested entity references to resolve inline.
     #[serde(default)]
     pub nested: Vec<NestedQuery>,
+}
+
+/// Semantic (vector) search clause for `$semantic`.
+///
+/// Accepts either a pre-computed `vector` or a `query` text string.
+/// When `query` is supplied without `vector`, the engine logs a warning
+/// that an embedding API must be configured to convert text to vectors.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SemanticQuery {
+    /// Pre-computed embedding vector for similarity search.
+    #[serde(default)]
+    pub vector: Option<Vec<f32>>,
+    /// Text query (requires embedding API to convert to vector).
+    #[serde(default)]
+    pub query: Option<String>,
+    /// Maximum number of results to return from the vector search.
+    #[serde(default = "default_semantic_limit")]
+    pub limit: u32,
+}
+
+/// Hybrid search clause for `$hybrid` — Reciprocal Rank Fusion of
+/// full-text (tsvector) and vector (pgvector) results.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HybridQuery {
+    /// Text query for full-text search component.
+    pub text: String,
+    /// Pre-computed embedding vector for vector search component.
+    pub vector: Vec<f32>,
+    /// Weight for text search results in RRF (0.0..=1.0).
+    #[serde(default = "default_text_weight")]
+    pub text_weight: f32,
+    /// Weight for vector search results in RRF (0.0..=1.0).
+    #[serde(default = "default_vector_weight")]
+    pub vector_weight: f32,
+    /// Maximum number of results to return.
+    #[serde(default = "default_semantic_limit")]
+    pub limit: u32,
+}
+
+fn default_semantic_limit() -> u32 {
+    10
+}
+
+fn default_text_weight() -> f32 {
+    0.3
+}
+
+fn default_vector_weight() -> f32 {
+    0.7
 }
 
 /// A single predicate in a `$where` clause.
@@ -150,10 +201,39 @@ pub fn parse_darshan_ql(input: &serde_json::Value) -> Result<QueryAST> {
         .get("$search")
         .and_then(|v| v.as_str())
         .map(String::from);
-    let semantic = obj
-        .get("$semantic")
-        .and_then(|v| v.as_str())
-        .map(String::from);
+    let semantic: Option<SemanticQuery> = match obj.get("$semantic") {
+        Some(v) if v.is_null() => None,
+        Some(v) if v.is_string() => {
+            // Legacy string form: { "$semantic": "meaning of life" }
+            Some(SemanticQuery {
+                vector: None,
+                query: v.as_str().map(String::from),
+                limit: default_semantic_limit(),
+            })
+        }
+        Some(v) if v.is_object() => {
+            // Rich form: { "$semantic": { "vector": [...], "limit": 10 } }
+            Some(
+                serde_json::from_value(v.clone())
+                    .map_err(|e| DarshanError::InvalidQuery(format!("invalid $semantic: {e}")))?,
+            )
+        }
+        Some(_) => {
+            return Err(DarshanError::InvalidQuery(
+                "$semantic must be a string, object, or null".into(),
+            ));
+        }
+        None => None,
+    };
+
+    let hybrid: Option<HybridQuery> = match obj.get("$hybrid") {
+        Some(v) if v.is_null() => None,
+        Some(v) => Some(
+            serde_json::from_value(v.clone())
+                .map_err(|e| DarshanError::InvalidQuery(format!("invalid $hybrid: {e}")))?,
+        ),
+        None => None,
+    };
 
     let nested: Vec<NestedQuery> = match obj.get("$nested") {
         Some(v) => serde_json::from_value(v.clone())
@@ -169,6 +249,7 @@ pub fn parse_darshan_ql(input: &serde_json::Value) -> Result<QueryAST> {
         offset,
         search,
         semantic,
+        hybrid,
         nested,
     })
 }
@@ -259,18 +340,52 @@ pub fn plan_query(ast: &QueryAST) -> Result<QueryPlan> {
         param_idx += 1;
     }
 
-    // Semantic search is parsed but not yet wired to an embedding backend.
-    // Emit a warning so callers know the operator was acknowledged but not applied.
-    if ast.semantic.is_some() {
-        tracing::warn!("$semantic operator is not yet implemented; clause ignored");
+    // Semantic (vector) search: join the embeddings table and use pgvector's
+    // cosine distance operator (<=>) for nearest-neighbour ordering.
+    if let Some(ref sem) = ast.semantic {
+        if let Some(ref vec) = sem.vector {
+            // Pre-computed vector supplied — wire directly to pgvector.
+            let vec_literal = format_vector_literal(vec);
+            sql.push_str("INNER JOIN embeddings t_emb ON t_emb.entity_id = t0.entity_id\n");
+            sql.push_str(&format!(
+                "  AND t_emb.embedding <=> '{vec_literal}'::vector < 2.0\n"
+            ));
+            // We store the vector literal as a param for the ORDER BY clause later.
+        } else if sem.query.is_some() {
+            tracing::warn!(
+                "$semantic.query requires an embedding API to convert text to vectors; \
+                 pass a pre-computed vector via $semantic.vector instead"
+            );
+        }
+    }
+
+    // Hybrid search uses a CTE-based approach, so it is handled in
+    // plan_hybrid_query() rather than here.
+    if ast.hybrid.is_some() && ast.semantic.is_none() {
+        // Hybrid is handled separately; this branch catches the case where
+        // someone passes $hybrid without $semantic.
     }
 
     sql.push_str("WHERE NOT t0.retracted\n");
 
-    // Ordering: join the order attributes and sort
-    if !ast.order.is_empty() {
+    // Ordering: when semantic search is active with a vector, order by
+    // cosine distance (ascending = most similar first). Explicit $order
+    // clauses are appended after the distance sort as tiebreakers.
+    let has_semantic_vector = ast.semantic.as_ref().is_some_and(|s| s.vector.is_some());
+
+    if has_semantic_vector || !ast.order.is_empty() {
         sql.push_str("ORDER BY ");
         let mut first = true;
+
+        // Vector distance sort (most similar first).
+        if let Some(ref sem) = ast.semantic {
+            if let Some(ref vec) = sem.vector {
+                let vec_literal = format_vector_literal(vec);
+                sql.push_str(&format!("t_emb.embedding <=> '{vec_literal}'::vector ASC"));
+                first = false;
+            }
+        }
+
         for (i, oc) in ast.order.iter().enumerate() {
             if !first {
                 sql.push_str(", ");
@@ -296,7 +411,9 @@ pub fn plan_query(ast: &QueryAST) -> Result<QueryPlan> {
 
     // Pagination — parameterised to keep plan shapes reusable and to
     // follow the same bind-everything policy as the rest of the query.
-    if let Some(limit) = ast.limit {
+    // For semantic queries, use the semantic limit if no explicit $limit.
+    let effective_limit = ast.limit.or_else(|| ast.semantic.as_ref().map(|s| s.limit));
+    if let Some(limit) = effective_limit {
         sql.push_str(&format!("LIMIT ${param_idx}\n"));
         params.push(serde_json::json!(limit));
         param_idx += 1;
@@ -311,6 +428,119 @@ pub fn plan_query(ast: &QueryAST) -> Result<QueryPlan> {
     }
 
     // Nested plans
+    let nested_plans: Vec<NestedPlan> = ast
+        .nested
+        .iter()
+        .map(|n| NestedPlan {
+            via_attribute: n.via_attribute.clone(),
+            sql:
+                "SELECT id, entity_id, attribute, value, value_type, tx_id, created_at, retracted \
+                 FROM triples WHERE entity_id = $1 AND NOT retracted ORDER BY attribute, tx_id DESC"
+                    .to_string(),
+        })
+        .collect();
+
+    Ok(QueryPlan {
+        sql,
+        params,
+        nested_plans,
+    })
+}
+
+/// Format a vector of f32 values as a pgvector literal string: `[0.1,0.2,0.3]`.
+fn format_vector_literal(vec: &[f32]) -> String {
+    let mut s = String::with_capacity(vec.len() * 8 + 2);
+    s.push('[');
+    for (i, v) in vec.iter().enumerate() {
+        if i > 0 {
+            s.push(',');
+        }
+        s.push_str(&v.to_string());
+    }
+    s.push(']');
+    s
+}
+
+/// Build a hybrid search query plan that combines tsvector full-text search
+/// with pgvector cosine similarity using Reciprocal Rank Fusion (RRF).
+///
+/// The plan executes two CTEs — one for text ranking, one for vector ranking —
+/// then merges them with weighted RRF scores: `weight / (k + rank)`.
+pub fn plan_hybrid_query(ast: &QueryAST) -> Result<QueryPlan> {
+    let hybrid = ast
+        .hybrid
+        .as_ref()
+        .ok_or_else(|| DarshanError::InvalidQuery("$hybrid clause is required".into()))?;
+
+    let vec_literal = format_vector_literal(&hybrid.vector);
+    let text_w = hybrid.text_weight;
+    let vector_w = hybrid.vector_weight;
+    let limit = hybrid.limit;
+    let k = 60; // RRF constant (standard value from the literature)
+
+    // The SQL uses two CTEs:
+    //   text_ranked: full-text search results ranked by ts_rank_cd
+    //   vector_ranked: cosine similarity results ranked by distance
+    // Then a FULL OUTER JOIN with RRF scoring to merge both lists.
+    let sql = format!(
+        r#"WITH type_entities AS (
+    SELECT DISTINCT entity_id
+    FROM triples
+    WHERE attribute = ':db/type'
+      AND value = $1::jsonb
+      AND NOT retracted
+),
+text_ranked AS (
+    SELECT t.entity_id,
+           ROW_NUMBER() OVER (ORDER BY ts_rank_cd(
+               to_tsvector('english', t.value #>> '{{}}'),
+               plainto_tsquery('english', $2)
+           ) DESC) AS rank
+    FROM triples t
+    INNER JOIN type_entities te ON te.entity_id = t.entity_id
+    WHERE NOT t.retracted
+      AND to_tsvector('english', t.value #>> '{{}}') @@ plainto_tsquery('english', $2)
+    LIMIT {limit_inner}
+),
+vector_ranked AS (
+    SELECT e.entity_id,
+           ROW_NUMBER() OVER (ORDER BY e.embedding <=> '{vec_literal}'::vector) AS rank,
+           (e.embedding <=> '{vec_literal}'::vector) AS distance
+    FROM embeddings e
+    INNER JOIN type_entities te ON te.entity_id = e.entity_id
+    ORDER BY e.embedding <=> '{vec_literal}'::vector
+    LIMIT {limit_inner}
+),
+rrf_merged AS (
+    SELECT COALESCE(tr.entity_id, vr.entity_id) AS entity_id,
+           COALESCE({text_w} / ({k} + tr.rank), 0.0) +
+           COALESCE({vector_w} / ({k} + vr.rank), 0.0) AS rrf_score,
+           vr.distance
+    FROM text_ranked tr
+    FULL OUTER JOIN vector_ranked vr ON tr.entity_id = vr.entity_id
+    ORDER BY rrf_score DESC
+    LIMIT {limit}
+)
+SELECT t0.entity_id, t0.attribute, t0.value, t0.value_type, t0.tx_id, t0.created_at
+FROM triples t0
+INNER JOIN rrf_merged rm ON rm.entity_id = t0.entity_id
+WHERE NOT t0.retracted
+ORDER BY rm.rrf_score DESC
+"#,
+        vec_literal = vec_literal,
+        text_w = text_w,
+        vector_w = vector_w,
+        k = k,
+        limit = limit,
+        limit_inner = limit * 3, // Oversample for better RRF fusion
+    );
+
+    let params = vec![
+        serde_json::Value::String(ast.entity_type.clone()),
+        serde_json::Value::String(hybrid.text.clone()),
+    ];
+
+    // Nested plans reuse the standard approach.
     let nested_plans: Vec<NestedPlan> = ast
         .nested
         .iter()
@@ -491,6 +721,9 @@ impl PlanCache {
         if ast.semantic.is_some() {
             hasher.update(b"V"); // V for vector/semantic
         }
+        if ast.hybrid.is_some() {
+            hasher.update(b"H"); // H for hybrid
+        }
         for n in &ast.nested {
             hasher.update(n.via_attribute.as_bytes());
         }
@@ -525,17 +758,24 @@ pub async fn run_query(
 ) -> Result<Vec<QueryResultRow>> {
     let ast = parse_darshan_ql(input)?;
 
+    // Route hybrid queries to the dedicated RRF planner.
+    let plan_fn: fn(&QueryAST) -> Result<QueryPlan> = if ast.hybrid.is_some() {
+        plan_hybrid_query
+    } else {
+        plan_query
+    };
+
     let plan = match cache.get(&ast) {
         Some(cached) => {
             tracing::debug!("plan cache hit for type={}", ast.entity_type);
             // Re-plan to get fresh params (cache stores the shape, not values).
-            let mut fresh = plan_query(&ast)?;
+            let mut fresh = plan_fn(&ast)?;
             fresh.sql = cached.sql;
             fresh
         }
         None => {
             tracing::debug!("plan cache miss for type={}", ast.entity_type);
-            let plan = plan_query(&ast)?;
+            let plan = plan_fn(&ast)?;
             cache.insert(&ast, plan.clone());
             plan
         }
@@ -559,6 +799,7 @@ mod tests {
             offset: None,
             search: None,
             semantic: None,
+            hybrid: None,
             nested: vec![],
         }
     }
@@ -642,13 +883,59 @@ mod tests {
     }
 
     #[test]
-    fn parse_semantic() {
+    fn parse_semantic_legacy_string() {
         let input = serde_json::json!({
             "type": "Doc",
             "$semantic": "meaning of life"
         });
         let ast = parse_darshan_ql(&input).expect("should parse");
-        assert_eq!(ast.semantic.as_deref(), Some("meaning of life"));
+        let sem = ast.semantic.as_ref().expect("semantic should be Some");
+        assert_eq!(sem.query.as_deref(), Some("meaning of life"));
+        assert!(sem.vector.is_none());
+        assert_eq!(sem.limit, 10); // default
+    }
+
+    #[test]
+    fn parse_semantic_with_vector() {
+        let input = serde_json::json!({
+            "type": "Doc",
+            "$semantic": { "vector": [0.1, 0.2, 0.3], "limit": 5 }
+        });
+        let ast = parse_darshan_ql(&input).expect("should parse");
+        let sem = ast.semantic.as_ref().expect("semantic should be Some");
+        assert_eq!(sem.vector.as_ref().unwrap().len(), 3);
+        assert_eq!(sem.limit, 5);
+    }
+
+    #[test]
+    fn parse_semantic_null_is_none() {
+        let input = serde_json::json!({
+            "type": "Doc",
+            "$semantic": null
+        });
+        let ast = parse_darshan_ql(&input).expect("should parse");
+        assert!(ast.semantic.is_none());
+    }
+
+    #[test]
+    fn parse_hybrid() {
+        let input = serde_json::json!({
+            "type": "Article",
+            "$hybrid": {
+                "text": "machine learning",
+                "vector": [0.1, 0.2, 0.3],
+                "text_weight": 0.4,
+                "vector_weight": 0.6,
+                "limit": 20
+            }
+        });
+        let ast = parse_darshan_ql(&input).expect("should parse");
+        let hyb = ast.hybrid.as_ref().expect("hybrid should be Some");
+        assert_eq!(hyb.text, "machine learning");
+        assert_eq!(hyb.vector.len(), 3);
+        assert!((hyb.text_weight - 0.4).abs() < f32::EPSILON);
+        assert!((hyb.vector_weight - 0.6).abs() < f32::EPSILON);
+        assert_eq!(hyb.limit, 20);
     }
 
     #[test]
@@ -1178,11 +1465,31 @@ mod tests {
     #[test]
     fn shape_key_differs_with_without_semantic() {
         let with = QueryAST {
-            semantic: Some("x".into()),
+            semantic: Some(SemanticQuery {
+                vector: None,
+                query: Some("x".into()),
+                limit: 10,
+            }),
             ..bare_ast("T")
         };
         let without = bare_ast("T");
         assert_ne!(PlanCache::shape_key(&with), PlanCache::shape_key(&without),);
+    }
+
+    #[test]
+    fn shape_key_differs_with_without_hybrid() {
+        let with = QueryAST {
+            hybrid: Some(HybridQuery {
+                text: "test".into(),
+                vector: vec![0.1, 0.2],
+                text_weight: 0.3,
+                vector_weight: 0.7,
+                limit: 10,
+            }),
+            ..bare_ast("T")
+        };
+        let without = bare_ast("T");
+        assert_ne!(PlanCache::shape_key(&with), PlanCache::shape_key(&without));
     }
 
     #[test]
@@ -1212,5 +1519,135 @@ mod tests {
         let ast = bare_ast("T");
         cache.insert(&ast, plan_query(&ast).unwrap());
         assert!(cache.get(&ast).is_some());
+    }
+
+    // ── Vector helpers ─────────────────────────────────────────────
+
+    #[test]
+    fn format_vector_literal_empty() {
+        assert_eq!(format_vector_literal(&[]), "[]");
+    }
+
+    #[test]
+    fn format_vector_literal_single() {
+        assert_eq!(format_vector_literal(&[0.5]), "[0.5]");
+    }
+
+    #[test]
+    fn format_vector_literal_multiple() {
+        let result = format_vector_literal(&[0.1, 0.2, 0.3]);
+        assert_eq!(result, "[0.1,0.2,0.3]");
+    }
+
+    // ── Semantic plan generation ───────────────────────────────────
+
+    #[test]
+    fn plan_semantic_with_vector_joins_embeddings() {
+        let ast = QueryAST {
+            semantic: Some(SemanticQuery {
+                vector: Some(vec![0.1, 0.2, 0.3]),
+                query: None,
+                limit: 5,
+            }),
+            ..bare_ast("Doc")
+        };
+        let plan = plan_query(&ast).expect("should plan");
+        assert!(
+            plan.sql.contains("embeddings"),
+            "should join embeddings table: {}",
+            plan.sql
+        );
+        assert!(
+            plan.sql.contains("<=>"),
+            "should use cosine distance operator: {}",
+            plan.sql
+        );
+        assert!(
+            plan.sql.contains("ORDER BY"),
+            "should order by distance: {}",
+            plan.sql
+        );
+        assert!(
+            plan.sql.contains("LIMIT"),
+            "should apply semantic limit: {}",
+            plan.sql
+        );
+    }
+
+    #[test]
+    fn plan_semantic_text_only_no_join() {
+        // Text-only semantic queries (no vector) should NOT join embeddings
+        // because there is no vector to compare against.
+        let ast = QueryAST {
+            semantic: Some(SemanticQuery {
+                vector: None,
+                query: Some("cats".into()),
+                limit: 10,
+            }),
+            ..bare_ast("Doc")
+        };
+        let plan = plan_query(&ast).expect("should plan");
+        assert!(
+            !plan.sql.contains("embeddings"),
+            "text-only semantic should not join embeddings: {}",
+            plan.sql
+        );
+    }
+
+    // ── Hybrid plan generation ─────────────────────────────────────
+
+    #[test]
+    fn plan_hybrid_generates_rrf_ctes() {
+        let ast = QueryAST {
+            hybrid: Some(HybridQuery {
+                text: "machine learning".into(),
+                vector: vec![0.1, 0.2, 0.3],
+                text_weight: 0.3,
+                vector_weight: 0.7,
+                limit: 10,
+            }),
+            ..bare_ast("Article")
+        };
+        let plan = plan_hybrid_query(&ast).expect("should plan hybrid");
+
+        assert!(
+            plan.sql.contains("text_ranked"),
+            "should have text_ranked CTE: {}",
+            plan.sql
+        );
+        assert!(
+            plan.sql.contains("vector_ranked"),
+            "should have vector_ranked CTE: {}",
+            plan.sql
+        );
+        assert!(
+            plan.sql.contains("rrf_merged"),
+            "should have rrf_merged CTE: {}",
+            plan.sql
+        );
+        assert!(
+            plan.sql.contains("rrf_score"),
+            "should compute RRF score: {}",
+            plan.sql
+        );
+        assert!(
+            plan.sql.contains("<=>"),
+            "should use cosine distance: {}",
+            plan.sql
+        );
+        assert!(
+            plan.sql.contains("plainto_tsquery"),
+            "should use full-text search: {}",
+            plan.sql
+        );
+    }
+
+    #[test]
+    fn plan_hybrid_requires_hybrid_clause() {
+        let ast = bare_ast("T");
+        assert!(
+            plan_hybrid_query(&ast).is_err(),
+            "should error without $hybrid clause"
+        );
     }
 }

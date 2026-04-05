@@ -307,6 +307,7 @@ mod tests {
             offset: None,
             search: None,
             semantic: None,
+            hybrid: None,
             nested: vec![],
         }
     }

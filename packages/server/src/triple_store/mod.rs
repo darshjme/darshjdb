@@ -58,6 +58,9 @@ pub struct Triple {
     pub created_at: DateTime<Utc>,
     /// Whether the triple has been logically retracted.
     pub retracted: bool,
+    /// Optional expiry timestamp for TTL support. When set, the triple
+    /// will be automatically retracted after this time.
+    pub expires_at: Option<DateTime<Utc>>,
 }
 
 /// Input for writing a new triple (before assignment of id / tx / timestamp).
@@ -71,6 +74,10 @@ pub struct TripleInput {
     pub value: serde_json::Value,
     /// Value type tag.
     pub value_type: i16,
+    /// Optional TTL in seconds. When set, `expires_at` will be computed
+    /// as `NOW() + interval` on insert.
+    #[serde(default)]
+    pub ttl_seconds: Option<i64>,
 }
 
 impl TripleInput {
@@ -193,7 +200,8 @@ impl PgTripleStore {
                 value_type  SMALLINT    NOT NULL DEFAULT 0,
                 tx_id       BIGINT      NOT NULL,
                 created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-                retracted   BOOLEAN     NOT NULL DEFAULT false
+                retracted   BOOLEAN     NOT NULL DEFAULT false,
+                expires_at  TIMESTAMPTZ
             );
 
             -- Composite index for entity lookups filtered by attribute.
@@ -219,9 +227,17 @@ impl PgTripleStore {
                 ON triples (attribute)
                 WHERE NOT retracted;
 
+            -- TTL expiry scan index: find expired triples efficiently.
+            CREATE INDEX IF NOT EXISTS idx_triples_expires
+                ON triples (expires_at)
+                WHERE expires_at IS NOT NULL AND NOT retracted;
+
             -- Sequence for transaction ids.
             CREATE SEQUENCE IF NOT EXISTS darshan_tx_seq
                 START WITH 1 INCREMENT BY 1;
+
+            -- Add expires_at column to existing tables (idempotent migration).
+            ALTER TABLE triples ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ;
             "#,
         )
         .execute(&self.pool)
@@ -264,10 +280,13 @@ impl PgTripleStore {
             t.validate()?;
         }
         for t in triples {
+            let expires_at = t
+                .ttl_seconds
+                .map(|secs| Utc::now() + chrono::Duration::seconds(secs));
             sqlx::query(
                 r#"
-                INSERT INTO triples (entity_id, attribute, value, value_type, tx_id)
-                VALUES ($1, $2, $3, $4, $5)
+                INSERT INTO triples (entity_id, attribute, value, value_type, tx_id, expires_at)
+                VALUES ($1, $2, $3, $4, $5, $6)
                 "#,
             )
             .bind(t.entity_id)
@@ -275,6 +294,7 @@ impl PgTripleStore {
             .bind(&t.value)
             .bind(t.value_type)
             .bind(tx_id)
+            .bind(expires_at)
             .execute(&mut **tx)
             .await?;
         }
@@ -308,7 +328,7 @@ impl PgTripleStore {
     ) -> Result<Vec<Triple>> {
         let triples = sqlx::query_as::<_, Triple>(
             r#"
-            SELECT id, entity_id, attribute, value, value_type, tx_id, created_at, retracted
+            SELECT id, entity_id, attribute, value, value_type, tx_id, created_at, retracted, expires_at
             FROM triples
             WHERE entity_id = $1 AND NOT retracted
             ORDER BY attribute, tx_id DESC
@@ -355,20 +375,25 @@ impl PgTripleStore {
         let mut attributes: Vec<String> = Vec::with_capacity(count);
         let mut values: Vec<serde_json::Value> = Vec::with_capacity(count);
         let mut value_types: Vec<i16> = Vec::with_capacity(count);
+        let mut expires_at_vec: Vec<Option<DateTime<Utc>>> = Vec::with_capacity(count);
 
         for t in triples {
+            let exp = t
+                .ttl_seconds
+                .map(|secs| Utc::now() + chrono::Duration::seconds(secs));
             entity_ids.push(t.entity_id);
             attributes.push(t.attribute);
             values.push(t.value);
             value_types.push(t.value_type);
+            expires_at_vec.push(exp);
         }
 
         // Single-query bulk insert using UNNEST — Postgres processes all
         // rows in one shot, dramatically reducing parse/plan/WAL overhead.
         sqlx::query(
             r#"
-            INSERT INTO triples (entity_id, attribute, value, value_type, tx_id)
-            SELECT * FROM UNNEST($1::uuid[], $2::text[], $3::jsonb[], $4::smallint[], $5::bigint[])
+            INSERT INTO triples (entity_id, attribute, value, value_type, tx_id, expires_at)
+            SELECT * FROM UNNEST($1::uuid[], $2::text[], $3::jsonb[], $4::smallint[], $5::bigint[], $6::timestamptz[])
             "#,
         )
         .bind(&entity_ids)
@@ -376,6 +401,7 @@ impl PgTripleStore {
         .bind(&values)
         .bind(&value_types)
         .bind(&vec![tx_id; count])
+        .bind(&expires_at_vec)
         .execute(&self.pool)
         .await?;
 
@@ -400,7 +426,7 @@ impl TripleStore for PgTripleStore {
     async fn get_entity(&self, entity_id: Uuid) -> Result<Vec<Triple>> {
         let triples = sqlx::query_as::<_, Triple>(
             r#"
-            SELECT id, entity_id, attribute, value, value_type, tx_id, created_at, retracted
+            SELECT id, entity_id, attribute, value, value_type, tx_id, created_at, retracted, expires_at
             FROM triples
             WHERE entity_id = $1 AND NOT retracted
             ORDER BY attribute, tx_id DESC
@@ -416,7 +442,7 @@ impl TripleStore for PgTripleStore {
     async fn get_attribute(&self, entity_id: Uuid, attribute: &str) -> Result<Vec<Triple>> {
         let triples = sqlx::query_as::<_, Triple>(
             r#"
-            SELECT id, entity_id, attribute, value, value_type, tx_id, created_at, retracted
+            SELECT id, entity_id, attribute, value, value_type, tx_id, created_at, retracted, expires_at
             FROM triples
             WHERE entity_id = $1 AND attribute = $2 AND NOT retracted
             ORDER BY tx_id DESC
@@ -446,10 +472,13 @@ impl TripleStore for PgTripleStore {
         let mut tx = self.pool.begin().await?;
 
         for t in triples {
+            let expires_at = t
+                .ttl_seconds
+                .map(|secs| Utc::now() + chrono::Duration::seconds(secs));
             sqlx::query(
                 r#"
-                INSERT INTO triples (entity_id, attribute, value, value_type, tx_id)
-                VALUES ($1, $2, $3, $4, $5)
+                INSERT INTO triples (entity_id, attribute, value, value_type, tx_id, expires_at)
+                VALUES ($1, $2, $3, $4, $5, $6)
                 "#,
             )
             .bind(t.entity_id)
@@ -457,6 +486,7 @@ impl TripleStore for PgTripleStore {
             .bind(&t.value)
             .bind(t.value_type)
             .bind(tx_id)
+            .bind(expires_at)
             .execute(&mut *tx)
             .await?;
         }
@@ -490,7 +520,7 @@ impl TripleStore for PgTripleStore {
             Some(v) => {
                 sqlx::query_as::<_, Triple>(
                     r#"
-                    SELECT id, entity_id, attribute, value, value_type, tx_id, created_at, retracted
+                    SELECT id, entity_id, attribute, value, value_type, tx_id, created_at, retracted, expires_at
                     FROM triples
                     WHERE attribute = $1 AND value = $2 AND NOT retracted
                     ORDER BY tx_id DESC
@@ -504,7 +534,7 @@ impl TripleStore for PgTripleStore {
             None => {
                 sqlx::query_as::<_, Triple>(
                     r#"
-                    SELECT id, entity_id, attribute, value, value_type, tx_id, created_at, retracted
+                    SELECT id, entity_id, attribute, value, value_type, tx_id, created_at, retracted, expires_at
                     FROM triples
                     WHERE attribute = $1 AND NOT retracted
                     ORDER BY tx_id DESC
@@ -578,7 +608,7 @@ impl TripleStore for PgTripleStore {
         let triples = sqlx::query_as::<_, Triple>(
             r#"
             SELECT DISTINCT ON (attribute)
-                id, entity_id, attribute, value, value_type, tx_id, created_at, retracted
+                id, entity_id, attribute, value, value_type, tx_id, created_at, retracted, expires_at
             FROM triples
             WHERE entity_id = $1 AND tx_id <= $2
             ORDER BY attribute, tx_id DESC
@@ -592,6 +622,70 @@ impl TripleStore for PgTripleStore {
         // Filter out triples that were retracted as of that tx.
         let active: Vec<Triple> = triples.into_iter().filter(|t| !t.retracted).collect();
         Ok(active)
+    }
+}
+
+// ── TTL / Expiry methods ──────────────────────────────────────────
+
+impl PgTripleStore {
+    /// Retract all triples whose `expires_at` has passed. Returns the
+    /// list of distinct entity IDs that were expired so callers can emit
+    /// change events for reactive subscriptions.
+    pub async fn expire_triples(&self) -> Result<Vec<Uuid>> {
+        let rows: Vec<(Uuid,)> = sqlx::query_as(
+            r#"
+            UPDATE triples
+            SET retracted = true
+            WHERE expires_at IS NOT NULL
+              AND expires_at < now()
+              AND NOT retracted
+            RETURNING DISTINCT entity_id
+            "#,
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows.into_iter().map(|(id,)| id).collect())
+    }
+
+    /// Set or update the TTL for all active triples belonging to an entity.
+    /// A `ttl_seconds` value of `-1` removes the TTL (persists forever).
+    pub async fn set_entity_ttl(&self, entity_id: Uuid, ttl_seconds: i64) -> Result<u64> {
+        let expires_at: Option<DateTime<Utc>> = if ttl_seconds < 0 {
+            None
+        } else {
+            Some(Utc::now() + chrono::Duration::seconds(ttl_seconds))
+        };
+
+        let result = sqlx::query(
+            r#"
+            UPDATE triples
+            SET expires_at = $2
+            WHERE entity_id = $1 AND NOT retracted
+            "#,
+        )
+        .bind(entity_id)
+        .bind(expires_at)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(result.rows_affected())
+    }
+
+    /// Get the earliest `expires_at` for an entity (its effective TTL).
+    pub async fn get_entity_ttl(&self, entity_id: Uuid) -> Result<Option<DateTime<Utc>>> {
+        let row: (Option<DateTime<Utc>>,) = sqlx::query_as(
+            r#"
+            SELECT MIN(expires_at)
+            FROM triples
+            WHERE entity_id = $1 AND NOT retracted AND expires_at IS NOT NULL
+            "#,
+        )
+        .bind(entity_id)
+        .fetch_one(&self.pool)
+        .await?;
+
+        Ok(row.0)
     }
 }
 
@@ -1001,6 +1095,7 @@ mod tests {
             tx_id: 42,
             created_at: chrono::Utc::now(),
             retracted: false,
+            expires_at: None,
         };
 
         let serialized = serde_json::to_string(&t).unwrap();
@@ -1026,6 +1121,7 @@ mod tests {
             tx_id: 1,
             created_at: chrono::Utc::now(),
             retracted: false,
+            expires_at: None,
         };
         let mut cloned = t.clone();
         cloned.retracted = true;
@@ -1042,6 +1138,7 @@ mod tests {
             attribute: "user/email".into(),
             value: json!("a@b.com"),
             value_type: ValueType::String as i16,
+            ttl_seconds: None,
         };
         assert!(input.validate().is_ok());
     }
@@ -1053,6 +1150,7 @@ mod tests {
             attribute: "".into(),
             value: json!("x"),
             value_type: 0,
+            ttl_seconds: None,
         };
         let err = input.validate().unwrap_err();
         assert!(
@@ -1068,6 +1166,7 @@ mod tests {
             attribute: "a".repeat(513),
             value: json!("x"),
             value_type: 0,
+            ttl_seconds: None,
         };
         let err = input.validate().unwrap_err();
         assert!(
@@ -1083,6 +1182,7 @@ mod tests {
             attribute: "valid".into(),
             value: json!(null),
             value_type: 99,
+            ttl_seconds: None,
         };
         let err = input.validate().unwrap_err();
         assert!(
@@ -1098,6 +1198,7 @@ mod tests {
             attribute: "valid".into(),
             value: json!(true),
             value_type: -1,
+            ttl_seconds: None,
         };
         assert!(input.validate().is_err());
     }
@@ -1110,6 +1211,7 @@ mod tests {
                 attribute: "a".into(),
                 value: json!(null),
                 value_type: vt,
+                ttl_seconds: None,
             };
             assert!(input.validate().is_ok(), "value_type {vt} should be valid");
         }
@@ -1123,6 +1225,7 @@ mod tests {
             attribute: "a".repeat(512),
             value: json!(null),
             value_type: 0,
+            ttl_seconds: None,
         };
         assert!(input.validate().is_ok());
     }

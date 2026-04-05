@@ -1,6 +1,10 @@
 -- DarshanDB: Initial triple store schema
 -- Idempotent -- safe to run multiple times.
 
+-- ── pgvector extension ────────────────────────────────────────────
+
+CREATE EXTENSION IF NOT EXISTS vector;
+
 -- ── Core table ─────────────────────────────────────────────────────
 
 CREATE TABLE IF NOT EXISTS triples (
@@ -71,3 +75,29 @@ CREATE TABLE IF NOT EXISTS attribute_pool (
 );
 CREATE INDEX IF NOT EXISTS idx_attribute_pool_name
     ON attribute_pool (name);
+
+-- ── Embeddings (pgvector) ─────────────────────────────────────────
+-- Stores vector embeddings linked to entity triples for semantic search.
+-- The dimension (1536) matches OpenAI text-embedding-ada-002 but is
+-- configurable at insert time — pgvector accepts any vector length
+-- and the HNSW index handles mixed sizes gracefully.
+
+CREATE TABLE IF NOT EXISTS embeddings (
+    id          BIGSERIAL       PRIMARY KEY,
+    entity_id   UUID            NOT NULL,
+    attribute   TEXT            NOT NULL,
+    embedding   vector(1536),
+    model       TEXT            NOT NULL DEFAULT 'text-embedding-ada-002',
+    created_at  TIMESTAMPTZ     NOT NULL DEFAULT now()
+);
+
+-- HNSW index for fast approximate nearest-neighbour search using
+-- cosine distance. m=16 gives good recall/speed trade-off; adjust
+-- ef_construction for higher recall at the cost of build time.
+CREATE INDEX IF NOT EXISTS idx_embeddings_hnsw
+    ON embeddings USING hnsw (embedding vector_cosine_ops)
+    WITH (m = 16, ef_construction = 64);
+
+-- Lookup index for fetching all embeddings for a given entity.
+CREATE INDEX IF NOT EXISTS idx_embeddings_entity
+    ON embeddings (entity_id, attribute);

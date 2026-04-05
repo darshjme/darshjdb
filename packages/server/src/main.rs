@@ -160,6 +160,46 @@ async fn main() -> Result<()> {
 
     let triple_store_arc = Arc::new(triple_store);
 
+    // -- TTL Expiry Background Task -------------------------------------------
+    // Every 10 seconds, scan for expired triples and retract them.
+    {
+        let ttl_store = triple_store_arc.clone();
+        let ttl_change_tx = change_tx.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(10));
+            loop {
+                interval.tick().await;
+                match ttl_store.expire_triples().await {
+                    Ok(expired_ids) => {
+                        if !expired_ids.is_empty() {
+                            tracing::info!(
+                                count = expired_ids.len(),
+                                "TTL expiry: retracted expired entities"
+                            );
+                            // Emit change events so WebSocket subscriptions update.
+                            for entity_id in &expired_ids {
+                                let _ = ttl_change_tx.send(darshandb_server::sync::ChangeEvent {
+                                    tx_id: 0,
+                                    entity_ids: vec![entity_id.to_string()],
+                                    attributes: vec![":ttl/expired".to_string()],
+                                    entity_type: None,
+                                    actor_id: None,
+                                });
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "TTL expiry scan failed");
+                    }
+                }
+            }
+        });
+        tracing::info!("TTL expiry background task started (10s interval)");
+    }
+
+    // Pub/sub engine for keyspace notifications (shared between WS and REST).
+    let (pubsub_engine, _pubsub_rx) = darshandb_server::sync::pubsub::PubSubEngine::new(4096);
+
     let ws_state = WsState {
         sessions: sync_sessions.clone(),
         registry: subscription_registry,
@@ -168,6 +208,7 @@ async fn main() -> Result<()> {
         pool: pool.clone(),
         triple_store: triple_store_arc.clone(),
         change_tx: change_tx.clone(),
+        pubsub: pubsub_engine.clone(),
     };
 
     tracing::info!("sync engine initialized");
@@ -201,6 +242,43 @@ async fn main() -> Result<()> {
 
             tracing::info!("connector plugin system initialized");
         }
+    }
+
+    // -- Embedding Pipeline ---------------------------------------------------
+    if let Some(embed_config) = darshandb_server::embeddings::EmbeddingConfig::from_env() {
+        let embed_service = darshandb_server::embeddings::EmbeddingService::new(
+            embed_config.clone(),
+            pool.clone(),
+            triple_store_arc.clone(),
+        );
+
+        // Ensure pgvector extension and entity_embeddings table exist.
+        // Non-fatal: log warning and continue without embeddings if schema fails.
+        match embed_service.ensure_schema().await {
+            Ok(()) => {
+                let embed_manager = Arc::new(darshandb_server::embeddings::EmbeddingManager::new(
+                    embed_service,
+                ));
+                let embed_rx = change_tx.subscribe();
+                tokio::spawn(embed_manager.run(embed_rx));
+
+                tracing::info!(
+                    provider = ?embed_config.provider,
+                    dimensions = embed_config.dimensions,
+                    auto_attributes = ?embed_config.auto_embed_attributes,
+                    "embedding pipeline initialized"
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "failed to initialize embedding schema, auto-embedding disabled. \
+                     Ensure pgvector is installed: https://github.com/pgvector/pgvector"
+                );
+            }
+        }
+    } else {
+        tracing::info!("embedding pipeline disabled (DARSHAN_EMBEDDING_PROVIDER=none or unset)");
     }
 
     // -- Storage Engine -------------------------------------------------------
@@ -316,6 +394,7 @@ async fn main() -> Result<()> {
     if let (Some(reg), Some(rt)) = (fn_registry, fn_runtime) {
         app_state = app_state.with_functions(reg, rt);
     }
+    app_state = app_state.with_pubsub(pubsub_engine);
 
     // -- CORS Layer -----------------------------------------------------------
     let dev_mode = std::env::var("DARSHAN_DEV")
@@ -370,6 +449,7 @@ async fn main() -> Result<()> {
     let health_pool_ready = pool.clone();
     let health_ws_sessions = sync_sessions.clone();
     let health_ws_sessions_ready = sync_sessions.clone();
+    let health_pool_stats = app_state.pool_stats.clone();
 
     // -- Router Assembly ------------------------------------------------------
     let api_router = build_router(app_state);
@@ -387,6 +467,7 @@ async fn main() -> Result<()> {
                     health_pool.clone(),
                     health_ws_sessions.clone(),
                     server_started_at,
+                    health_pool_stats.clone(),
                 )
             }),
         )
@@ -505,6 +586,7 @@ async fn health_check(
     pool: sqlx::PgPool,
     ws_sessions: Arc<SyncSessionManager>,
     started_at: Instant,
+    pool_stats: Arc<darshandb_server::api::pool_stats::PoolStats>,
 ) -> Response {
     let pool_size = pool.size();
     let idle = pool.num_idle();
@@ -534,6 +616,9 @@ async fn health_check(
         StatusCode::SERVICE_UNAVAILABLE
     };
 
+    // Build pool + latency stats snapshot from the histogram.
+    let stats_snapshot = pool_stats.snapshot(&pool);
+
     let body = serde_json::json!({
         "status": status,
         "service": "darshandb",
@@ -542,8 +627,10 @@ async fn health_check(
         "pool": {
             "size": pool_size,
             "idle": idle,
+            "active": pool_size - idle as u32,
             "max": pool.options().get_max_connections(),
         },
+        "pool_stats": stats_snapshot,
         "websockets": {
             "active_connections": ws_connections,
         },
