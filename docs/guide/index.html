@@ -1,0 +1,2193 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DarshanDB Developer Guide</title>
+  <meta name="description" content="The self-hosted Backend-as-a-Service that sees everything your app needs. One binary. Every framework. Zero loopholes.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <style>
+    /* ===== RESET & BASE ===== */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg-primary: #0d1117;
+      --bg-secondary: #161b22;
+      --bg-tertiary: #1c2128;
+      --bg-code: #0d1117;
+      --border: #30363d;
+      --border-light: #21262d;
+      --text-primary: #e6edf3;
+      --text-secondary: #8b949e;
+      --text-muted: #6e7681;
+      --accent: #F59E0B;
+      --accent-dim: #B45309;
+      --accent-glow: rgba(245, 158, 11, 0.15);
+      --accent-soft: rgba(245, 158, 11, 0.08);
+      --green: #3fb950;
+      --red: #f85149;
+      --blue: #58a6ff;
+      --purple: #bc8cff;
+      --cyan: #39d353;
+      --sidebar-w: 280px;
+      --header-h: 64px;
+      --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      --font-mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+    }
+
+    html { scroll-behavior: smooth; scroll-padding-top: calc(var(--header-h) + 24px); }
+
+    body {
+      font-family: var(--font-sans);
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      line-height: 1.7;
+      font-size: 15px;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+    }
+
+    /* ===== SCROLLBAR ===== */
+    ::-webkit-scrollbar { width: 8px; height: 8px; }
+    ::-webkit-scrollbar-track { background: var(--bg-primary); }
+    ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+    ::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
+
+    /* ===== HEADER ===== */
+    .header {
+      position: fixed; top: 0; left: 0; right: 0; z-index: 100;
+      height: var(--header-h);
+      background: rgba(13, 17, 23, 0.85);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 0 24px;
+    }
+
+    .header-left { display: flex; align-items: center; gap: 16px; }
+    .header-logo {
+      width: 36px; height: 36px;
+      background: var(--accent);
+      border-radius: 10px;
+      display: flex; align-items: center; justify-content: center;
+      font-weight: 800; font-size: 18px; color: #000;
+    }
+    .header-title { font-weight: 700; font-size: 18px; letter-spacing: -0.02em; }
+    .header-title span { color: var(--accent); }
+    .header-badge {
+      background: var(--accent-soft);
+      color: var(--accent);
+      font-size: 11px; font-weight: 600;
+      padding: 3px 10px; border-radius: 100px;
+      border: 1px solid rgba(245, 158, 11, 0.2);
+    }
+    .header-right { display: flex; align-items: center; gap: 16px; }
+    .header-link {
+      color: var(--text-secondary); text-decoration: none; font-size: 14px; font-weight: 500;
+      transition: color 0.15s;
+    }
+    .header-link:hover { color: var(--text-primary); }
+    .header-link-gh {
+      display: flex; align-items: center; gap: 6px;
+    }
+    .header-link-gh svg { width: 20px; height: 20px; fill: currentColor; }
+
+    .mobile-toggle {
+      display: none; background: none; border: none; color: var(--text-primary); cursor: pointer;
+      padding: 4px;
+    }
+    .mobile-toggle svg { width: 24px; height: 24px; }
+
+    /* ===== SIDEBAR ===== */
+    .sidebar {
+      position: fixed; top: var(--header-h); left: 0; bottom: 0;
+      width: var(--sidebar-w);
+      background: var(--bg-secondary);
+      border-right: 1px solid var(--border);
+      overflow-y: auto;
+      padding: 20px 0;
+      z-index: 90;
+      transition: transform 0.3s ease;
+    }
+
+    .sidebar-section { margin-bottom: 8px; }
+    .sidebar-heading {
+      font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em;
+      color: var(--text-muted); padding: 12px 20px 6px; user-select: none;
+    }
+
+    .sidebar-link {
+      display: block;
+      padding: 6px 20px 6px 24px;
+      color: var(--text-secondary);
+      text-decoration: none;
+      font-size: 13.5px; font-weight: 450;
+      border-left: 2px solid transparent;
+      transition: all 0.15s;
+    }
+    .sidebar-link:hover { color: var(--text-primary); background: var(--accent-soft); }
+    .sidebar-link.active {
+      color: var(--accent); border-left-color: var(--accent);
+      background: var(--accent-soft); font-weight: 600;
+    }
+
+    /* ===== MAIN CONTENT ===== */
+    .main {
+      margin-left: var(--sidebar-w);
+      margin-top: var(--header-h);
+      min-height: calc(100vh - var(--header-h));
+    }
+
+    .content {
+      max-width: 820px;
+      margin: 0 auto;
+      padding: 40px 48px 80px;
+    }
+
+    /* ===== TYPOGRAPHY ===== */
+    h1 { font-size: 40px; font-weight: 800; letter-spacing: -0.04em; line-height: 1.15; margin-bottom: 16px; }
+    h2 {
+      font-size: 28px; font-weight: 700; letter-spacing: -0.03em; line-height: 1.25;
+      margin-top: 64px; margin-bottom: 20px; padding-top: 24px;
+      border-top: 1px solid var(--border);
+    }
+    h2:first-child { border-top: none; margin-top: 0; padding-top: 0; }
+    h3 { font-size: 20px; font-weight: 600; letter-spacing: -0.02em; margin-top: 36px; margin-bottom: 12px; color: var(--text-primary); }
+    h4 { font-size: 16px; font-weight: 600; margin-top: 24px; margin-bottom: 8px; color: var(--text-secondary); }
+
+    p { margin-bottom: 16px; color: var(--text-secondary); }
+    p strong { color: var(--text-primary); font-weight: 600; }
+
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    ul, ol { margin-bottom: 16px; padding-left: 24px; color: var(--text-secondary); }
+    li { margin-bottom: 6px; }
+    li strong { color: var(--text-primary); }
+
+    hr { border: none; border-top: 1px solid var(--border); margin: 40px 0; }
+
+    /* ===== CODE ===== */
+    code {
+      font-family: var(--font-mono);
+      font-size: 0.875em;
+      background: var(--bg-tertiary);
+      padding: 2px 7px;
+      border-radius: 4px;
+      color: var(--accent);
+    }
+
+    .code-block-wrapper {
+      position: relative;
+      margin: 16px 0 24px;
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      overflow: hidden;
+      background: var(--bg-code);
+    }
+
+    .code-block-header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 8px 16px;
+      background: var(--bg-tertiary);
+      border-bottom: 1px solid var(--border);
+      font-size: 12px; color: var(--text-muted); font-weight: 500;
+    }
+
+    .code-block-lang { font-family: var(--font-mono); text-transform: uppercase; letter-spacing: 0.05em; }
+
+    .copy-btn {
+      background: none; border: 1px solid var(--border); color: var(--text-muted);
+      font-size: 12px; font-family: var(--font-sans); font-weight: 500;
+      padding: 3px 10px; border-radius: 6px; cursor: pointer;
+      transition: all 0.15s; display: flex; align-items: center; gap: 4px;
+    }
+    .copy-btn:hover { color: var(--text-primary); border-color: var(--text-muted); }
+    .copy-btn.copied { color: var(--green); border-color: var(--green); }
+    .copy-btn svg { width: 14px; height: 14px; }
+
+    pre {
+      margin: 0; padding: 16px 20px;
+      overflow-x: auto; font-family: var(--font-mono);
+      font-size: 13.5px; line-height: 1.65;
+      color: var(--text-primary); tab-size: 2;
+    }
+    pre code {
+      background: none; padding: 0; border-radius: 0;
+      color: inherit; font-size: inherit;
+    }
+
+    /* Syntax highlighting via CSS classes */
+    .kw { color: #ff7b72; }       /* keywords */
+    .fn { color: #d2a8ff; }       /* functions */
+    .str { color: #a5d6ff; }      /* strings */
+    .num { color: #79c0ff; }      /* numbers */
+    .cm { color: #6e7681; font-style: italic; }  /* comments */
+    .op { color: #ff7b72; }       /* operators */
+    .ty { color: #ffa657; }       /* types */
+    .prop { color: #79c0ff; }     /* properties */
+    .tag { color: #7ee787; }      /* tags/labels */
+    .param { color: #ffa657; }    /* parameters */
+    .punct { color: #8b949e; }    /* punctuation */
+    .var { color: #ffa657; }      /* variables */
+
+    /* ===== HERO ===== */
+    .hero {
+      text-align: center;
+      padding: 60px 0 48px;
+    }
+    .hero-logo {
+      width: 88px; height: 88px;
+      background: linear-gradient(135deg, var(--accent), #D97706);
+      border-radius: 22px;
+      display: inline-flex; align-items: center; justify-content: center;
+      font-size: 44px; font-weight: 900; color: #000;
+      margin-bottom: 24px;
+      box-shadow: 0 0 60px rgba(245, 158, 11, 0.25);
+    }
+    .hero h1 { font-size: 48px; margin-bottom: 8px; }
+    .hero h1 span { color: var(--accent); }
+    .hero-tagline {
+      font-size: 20px; color: var(--text-secondary); font-weight: 400;
+      max-width: 560px; margin: 0 auto 8px;
+    }
+    .hero-sub {
+      font-size: 14px; color: var(--text-muted); font-style: italic;
+      margin-bottom: 28px;
+    }
+    .hero-actions { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
+    .btn {
+      display: inline-flex; align-items: center; gap: 8px;
+      padding: 12px 28px;
+      border-radius: 10px;
+      font-size: 15px; font-weight: 600;
+      text-decoration: none;
+      transition: all 0.2s;
+      cursor: pointer; border: none;
+    }
+    .btn-primary {
+      background: var(--accent); color: #000;
+      box-shadow: 0 0 20px rgba(245, 158, 11, 0.3);
+    }
+    .btn-primary:hover { background: #FBBF24; transform: translateY(-1px); text-decoration: none; box-shadow: 0 0 30px rgba(245, 158, 11, 0.4); }
+    .btn-secondary { background: var(--bg-tertiary); color: var(--text-primary); border: 1px solid var(--border); }
+    .btn-secondary:hover { border-color: var(--text-muted); transform: translateY(-1px); text-decoration: none; }
+    .hero-version {
+      display: inline-block;
+      margin-top: 20px;
+      font-size: 13px; color: var(--text-muted);
+      background: var(--bg-tertiary);
+      padding: 6px 14px; border-radius: 100px;
+      border: 1px solid var(--border);
+    }
+    .hero-version strong { color: var(--accent); }
+
+    /* ===== FEATURE CARDS ===== */
+    .feature-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+      gap: 16px;
+      margin: 24px 0;
+    }
+    .feature-card {
+      background: var(--bg-secondary);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 24px;
+      transition: border-color 0.2s, transform 0.2s;
+    }
+    .feature-card:hover { border-color: var(--accent); transform: translateY(-2px); }
+    .feature-card-icon { font-size: 28px; margin-bottom: 12px; }
+    .feature-card h4 { margin-top: 0; margin-bottom: 8px; color: var(--text-primary); font-size: 15px; }
+    .feature-card p { font-size: 13.5px; margin: 0; line-height: 1.55; }
+
+    /* ===== SDK TABS ===== */
+    .tabs {
+      display: flex; gap: 0; border-bottom: 1px solid var(--border);
+      margin-top: 24px; overflow-x: auto;
+    }
+    .tab-btn {
+      background: none; border: none; border-bottom: 2px solid transparent;
+      color: var(--text-muted); font-family: var(--font-sans);
+      font-size: 13.5px; font-weight: 500;
+      padding: 10px 18px; cursor: pointer;
+      white-space: nowrap;
+      transition: all 0.15s;
+    }
+    .tab-btn:hover { color: var(--text-secondary); }
+    .tab-btn.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+    .tab-panel { display: none; }
+    .tab-panel.active { display: block; }
+
+    /* ===== TABLES ===== */
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 16px 0 24px;
+      font-size: 14px;
+    }
+    th, td {
+      text-align: left; padding: 10px 14px;
+      border-bottom: 1px solid var(--border);
+    }
+    th {
+      color: var(--text-muted); font-weight: 600; font-size: 12px;
+      text-transform: uppercase; letter-spacing: 0.05em;
+      background: var(--bg-secondary);
+    }
+    td { color: var(--text-secondary); }
+    td code { font-size: 12.5px; }
+    tr:hover td { background: var(--accent-soft); }
+
+    /* ===== INFO BOXES ===== */
+    .info-box {
+      border-radius: 10px; padding: 16px 20px;
+      margin: 20px 0; font-size: 14px;
+      display: flex; gap: 12px; align-items: flex-start;
+    }
+    .info-box-icon { font-size: 18px; flex-shrink: 0; margin-top: 1px; }
+    .info-box p { margin: 0; }
+    .info-box-tip { background: rgba(59, 130, 246, 0.08); border: 1px solid rgba(59, 130, 246, 0.2); }
+    .info-box-tip .info-box-icon { color: var(--blue); }
+    .info-box-warn { background: rgba(245, 158, 11, 0.08); border: 1px solid rgba(245, 158, 11, 0.2); }
+    .info-box-warn .info-box-icon { color: var(--accent); }
+    .info-box-note { background: rgba(139, 148, 158, 0.08); border: 1px solid rgba(139, 148, 158, 0.15); }
+    .info-box-note .info-box-icon { color: var(--text-muted); }
+
+    /* ===== COLLAPSIBLE ===== */
+    .collapsible {
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      margin: 16px 0;
+      overflow: hidden;
+    }
+    .collapsible-trigger {
+      width: 100%;
+      background: var(--bg-secondary);
+      border: none;
+      color: var(--text-primary);
+      font-family: var(--font-sans);
+      font-size: 14px; font-weight: 600;
+      padding: 14px 20px;
+      cursor: pointer;
+      display: flex; align-items: center; justify-content: space-between;
+      transition: background 0.15s;
+    }
+    .collapsible-trigger:hover { background: var(--bg-tertiary); }
+    .collapsible-arrow {
+      transition: transform 0.2s;
+      color: var(--text-muted);
+    }
+    .collapsible.open .collapsible-arrow { transform: rotate(90deg); }
+    .collapsible-body {
+      display: none; padding: 16px 20px;
+      border-top: 1px solid var(--border);
+    }
+    .collapsible.open .collapsible-body { display: block; }
+
+    /* ===== ARCHITECTURE DIAGRAM ===== */
+    .arch-diagram {
+      background: var(--bg-secondary);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 32px;
+      margin: 24px 0;
+      overflow-x: auto;
+    }
+    .arch-row { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; margin-bottom: 16px; }
+    .arch-box {
+      padding: 10px 18px;
+      border-radius: 8px;
+      font-size: 13px; font-weight: 600;
+      text-align: center;
+      border: 1px solid;
+      min-width: 100px;
+    }
+    .arch-arrow {
+      text-align: center;
+      color: var(--text-muted);
+      font-size: 20px;
+      margin: 4px 0;
+      letter-spacing: 8px;
+    }
+    .arch-label {
+      text-align: center;
+      font-size: 11px; font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: var(--text-muted);
+      margin-bottom: 8px;
+    }
+    .arch-clients { background: rgba(245, 158, 11, 0.1); border-color: rgba(245, 158, 11, 0.3); color: var(--accent); }
+    .arch-protocol { background: rgba(88, 166, 255, 0.1); border-color: rgba(88, 166, 255, 0.3); color: var(--blue); }
+    .arch-security { background: rgba(248, 81, 73, 0.1); border-color: rgba(248, 81, 73, 0.3); color: var(--red); }
+    .arch-core { background: rgba(188, 140, 255, 0.1); border-color: rgba(188, 140, 255, 0.3); color: var(--purple); }
+    .arch-data { background: rgba(63, 185, 80, 0.1); border-color: rgba(63, 185, 80, 0.3); color: var(--green); }
+
+    /* ===== COMPARISON TABLE HIGHLIGHT ===== */
+    .comparison td:last-child { color: var(--green); font-weight: 600; }
+
+    /* ===== STEP LIST ===== */
+    .step-list { counter-reset: step; list-style: none; padding-left: 0; }
+    .step-list li {
+      counter-increment: step;
+      position: relative;
+      padding-left: 48px;
+      margin-bottom: 24px;
+    }
+    .step-list li::before {
+      content: counter(step);
+      position: absolute; left: 0; top: 0;
+      width: 32px; height: 32px;
+      background: var(--accent);
+      color: #000; font-weight: 700; font-size: 14px;
+      display: flex; align-items: center; justify-content: center;
+      border-radius: 50%;
+    }
+    .step-list li strong { display: block; color: var(--text-primary); margin-bottom: 4px; }
+
+    /* ===== FOOTER ===== */
+    .footer {
+      border-top: 1px solid var(--border);
+      padding: 40px 48px;
+      margin-top: 80px;
+    }
+    .footer-inner {
+      max-width: 820px; margin: 0 auto;
+      display: flex; justify-content: space-between; align-items: flex-start;
+      flex-wrap: wrap; gap: 32px;
+    }
+    .footer-col h4 {
+      color: var(--text-primary); font-size: 13px; font-weight: 600;
+      text-transform: uppercase; letter-spacing: 0.06em;
+      margin-bottom: 12px; margin-top: 0;
+    }
+    .footer-col a {
+      display: block; color: var(--text-muted); font-size: 13.5px;
+      margin-bottom: 6px; text-decoration: none; transition: color 0.15s;
+    }
+    .footer-col a:hover { color: var(--accent); }
+    .footer-bottom {
+      max-width: 820px; margin: 24px auto 0;
+      padding-top: 20px;
+      border-top: 1px solid var(--border-light);
+      font-size: 13px; color: var(--text-muted);
+      display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px;
+    }
+    .footer-bottom a { color: var(--text-muted); }
+    .footer-bottom a:hover { color: var(--accent); }
+
+    /* ===== RESPONSIVE ===== */
+    @media (max-width: 960px) {
+      .sidebar { transform: translateX(-100%); }
+      .sidebar.open { transform: translateX(0); box-shadow: 4px 0 20px rgba(0,0,0,0.5); }
+      .mobile-toggle { display: block; }
+      .main { margin-left: 0; }
+      .content { padding: 32px 20px 60px; }
+      h1 { font-size: 32px; }
+      .hero h1 { font-size: 36px; }
+      h2 { font-size: 24px; }
+      .header-link:not(.header-link-gh) { display: none; }
+    }
+
+    @media (max-width: 640px) {
+      .hero h1 { font-size: 28px; }
+      .hero-tagline { font-size: 16px; }
+      .feature-grid { grid-template-columns: 1fr; }
+      .arch-diagram { padding: 16px; }
+      .footer-inner { flex-direction: column; }
+      table { font-size: 13px; }
+      th, td { padding: 8px 10px; }
+    }
+
+    /* ===== SIDEBAR OVERLAY (mobile) ===== */
+    .sidebar-overlay {
+      display: none;
+      position: fixed; inset: 0; z-index: 85;
+      background: rgba(0,0,0,0.5);
+    }
+    .sidebar-overlay.open { display: block; }
+
+    /* ===== SEARCH STYLING ===== */
+    .search-box {
+      margin: 0 16px 16px;
+      position: relative;
+    }
+    .search-box input {
+      width: 100%;
+      background: var(--bg-tertiary);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 8px 12px 8px 34px;
+      color: var(--text-primary);
+      font-family: var(--font-sans);
+      font-size: 13px;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+    .search-box input::placeholder { color: var(--text-muted); }
+    .search-box input:focus { border-color: var(--accent); }
+    .search-box svg {
+      position: absolute; left: 10px; top: 50%; transform: translateY(-50%);
+      width: 16px; height: 16px; color: var(--text-muted);
+    }
+
+    /* Smooth anchor offset so content isn't hidden behind header */
+    section[id] { scroll-margin-top: calc(var(--header-h) + 24px); }
+  </style>
+</head>
+<body>
+
+  <!-- ===== HEADER ===== -->
+  <header class="header">
+    <div class="header-left">
+      <button class="mobile-toggle" onclick="toggleSidebar()" aria-label="Toggle navigation">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12h18M3 6h18M3 18h18"/></svg>
+      </button>
+      <div class="header-logo">D</div>
+      <div class="header-title">Darshan<span>DB</span></div>
+      <span class="header-badge">v0.1.0-alpha</span>
+    </div>
+    <div class="header-right">
+      <a href="https://darshj.ai" class="header-link" target="_blank">darshj.ai</a>
+      <a href="https://darshj.me" class="header-link" target="_blank">darshj.me</a>
+      <a href="https://github.com/darshjme/darshandb" class="header-link header-link-gh" target="_blank">
+        <svg viewBox="0 0 24 24"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.3 3.44 9.8 8.2 11.39.6.11.82-.26.82-.58 0-.28-.01-1.04-.02-2.04-3.34.72-4.04-1.61-4.04-1.61-.55-1.39-1.34-1.76-1.34-1.76-1.09-.75.08-.73.08-.73 1.2.08 1.84 1.24 1.84 1.24 1.07 1.83 2.81 1.3 3.5 1 .11-.78.42-1.3.76-1.6-2.66-.3-5.47-1.33-5.47-5.93 0-1.31.47-2.38 1.24-3.22-.13-.3-.54-1.52.12-3.18 0 0 1.01-.32 3.3 1.23a11.5 11.5 0 0 1 6.02 0c2.3-1.55 3.3-1.23 3.3-1.23.66 1.66.25 2.88.12 3.18.77.84 1.24 1.91 1.24 3.22 0 4.61-2.81 5.63-5.48 5.93.43.37.81 1.1.81 2.22 0 1.6-.01 2.89-.01 3.28 0 .32.22.7.82.58C20.56 21.8 24 17.3 24 12c0-6.63-5.37-12-12-12z"/></svg>
+        GitHub
+      </a>
+    </div>
+  </header>
+
+  <!-- ===== SIDEBAR OVERLAY ===== -->
+  <div class="sidebar-overlay" id="sidebarOverlay" onclick="toggleSidebar()"></div>
+
+  <!-- ===== SIDEBAR ===== -->
+  <nav class="sidebar" id="sidebar">
+    <div class="search-box">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+      <input type="text" placeholder="Search docs..." id="sidebarSearch" oninput="filterSidebar(this.value)">
+    </div>
+
+    <div class="sidebar-section">
+      <div class="sidebar-heading">Getting Started</div>
+      <a href="#hero" class="sidebar-link active" data-section="hero">Introduction</a>
+      <a href="#what-is" class="sidebar-link" data-section="what-is">What is DarshanDB?</a>
+      <a href="#quickstart" class="sidebar-link" data-section="quickstart">Quick Start</a>
+    </div>
+
+    <div class="sidebar-section">
+      <div class="sidebar-heading">Core Concepts</div>
+      <a href="#triple-store" class="sidebar-link" data-section="triple-store">Triple Store (EAV)</a>
+      <a href="#darshanql" class="sidebar-link" data-section="darshanql">DarshanQL</a>
+      <a href="#realtime" class="sidebar-link" data-section="realtime">Real-Time Sync</a>
+      <a href="#server-functions" class="sidebar-link" data-section="server-functions">Server Functions</a>
+      <a href="#presence" class="sidebar-link" data-section="presence">Presence</a>
+    </div>
+
+    <div class="sidebar-section">
+      <div class="sidebar-heading">Security</div>
+      <a href="#auth" class="sidebar-link" data-section="auth">Authentication</a>
+      <a href="#permissions" class="sidebar-link" data-section="permissions">Permissions</a>
+    </div>
+
+    <div class="sidebar-section">
+      <div class="sidebar-heading">SDKs & API</div>
+      <a href="#sdks" class="sidebar-link" data-section="sdks">SDK Reference</a>
+      <a href="#rest-api" class="sidebar-link" data-section="rest-api">REST API</a>
+      <a href="#storage" class="sidebar-link" data-section="storage">File Storage</a>
+    </div>
+
+    <div class="sidebar-section">
+      <div class="sidebar-heading">Deployment</div>
+      <a href="#self-hosting" class="sidebar-link" data-section="self-hosting">Self-Hosting</a>
+      <a href="#architecture" class="sidebar-link" data-section="architecture">Architecture</a>
+      <a href="#performance" class="sidebar-link" data-section="performance">Performance</a>
+    </div>
+
+    <div class="sidebar-section">
+      <div class="sidebar-heading">Reference</div>
+      <a href="#faq" class="sidebar-link" data-section="faq">FAQ</a>
+    </div>
+  </nav>
+
+  <!-- ===== MAIN ===== -->
+  <main class="main">
+    <div class="content">
+
+      <!-- ===== HERO ===== -->
+      <section id="hero" class="hero">
+        <div class="hero-logo">D</div>
+        <h1>Darshan<span>DB</span></h1>
+        <p class="hero-tagline">The Self-Hosted Backend-as-a-Service That Sees Everything Your App Needs</p>
+        <p class="hero-sub">"Darshan" means "vision" in Sanskrit -- to perceive the complete picture.</p>
+        <div class="hero-actions">
+          <a href="#quickstart" class="btn btn-primary">Get Started</a>
+          <a href="https://github.com/darshjme/darshandb" class="btn btn-secondary" target="_blank">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.3 3.44 9.8 8.2 11.39.6.11.82-.26.82-.58 0-.28-.01-1.04-.02-2.04-3.34.72-4.04-1.61-4.04-1.61-.55-1.39-1.34-1.76-1.34-1.76-1.09-.75.08-.73.08-.73 1.2.08 1.84 1.24 1.84 1.24 1.07 1.83 2.81 1.3 3.5 1 .11-.78.42-1.3.76-1.6-2.66-.3-5.47-1.33-5.47-5.93 0-1.31.47-2.38 1.24-3.22-.13-.3-.54-1.52.12-3.18 0 0 1.01-.32 3.3 1.23a11.5 11.5 0 0 1 6.02 0c2.3-1.55 3.3-1.23 3.3-1.23.66 1.66.25 2.88.12 3.18.77.84 1.24 1.91 1.24 3.22 0 4.61-2.81 5.63-5.48 5.93.43.37.81 1.1.81 2.22 0 1.6-.01 2.89-.01 3.28 0 .32.22.7.82.58C20.56 21.8 24 17.3 24 12c0-6.63-5.37-12-12-12z"/></svg>
+            View on GitHub
+          </a>
+        </div>
+        <div class="hero-version">Latest: <strong>v0.1.0-alpha</strong> &middot; Built with Rust &middot; MIT License</div>
+      </section>
+
+      <!-- ===== WHAT IS ===== -->
+      <section id="what-is">
+        <h2>What is DarshanDB?</h2>
+        <p>Every backend project starts the same way: three weeks of plumbing before you write a single line of business logic. Setting up Postgres. Writing REST APIs. Building auth. Wiring WebSockets. Handling file uploads. Managing permissions. <strong>DarshanDB eliminates all of that.</strong></p>
+        <p>DarshanDB is a complete backend-as-a-service compiled into a single Rust binary you can run on a $5 VPS. It takes the best ideas from Firebase (real-time sync), Supabase (PostgreSQL foundation), InstantDB (declarative query language), and Convex (server functions) -- and combines them into one open-source, self-hosted system. No vendor lock-in, no cloud dependency, no compromises.</p>
+        <p>Built by <a href="https://darshj.ai" target="_blank">Darsh Joshi</a> from Ahmedabad, India. The name comes from the Sanskrit word <strong>darshan</strong>, meaning "vision" -- the ability to perceive the complete picture. DarshanDB sees every change, every query, every permission, and reactively pushes exactly the right data to exactly the right clients. Learn more at <a href="https://darshj.me" target="_blank">darshj.me</a>.</p>
+
+        <div class="feature-grid">
+          <div class="feature-card">
+            <div class="feature-card-icon">&#9889;</div>
+            <h4>Real-Time by Default</h4>
+            <p>Every query is a live subscription. Data updates push to clients in under 1ms. No polling.</p>
+          </div>
+          <div class="feature-card">
+            <div class="feature-card-icon">&#128272;</div>
+            <h4>Zero-Trust Security</h4>
+            <p>11 security layers. Row-level and field-level permissions. Everything denied unless allowed.</p>
+          </div>
+          <div class="feature-card">
+            <div class="feature-card-icon">&#128230;</div>
+            <h4>Single Binary</h4>
+            <p>~30MB Rust binary. No runtime dependencies. Docker, bare metal, or Kubernetes.</p>
+          </div>
+          <div class="feature-card">
+            <div class="feature-card-icon">&#127760;</div>
+            <h4>Every Framework</h4>
+            <p>First-class SDKs for React, Next.js, Angular, Vue, Svelte, PHP, Python, and REST.</p>
+          </div>
+          <div class="feature-card">
+            <div class="feature-card-icon">&#128451;</div>
+            <h4>Triple Store</h4>
+            <p>EAV architecture over PostgreSQL. Schema-on-read in dev, strict mode for production.</p>
+          </div>
+          <div class="feature-card">
+            <div class="feature-card-icon">&#9881;</div>
+            <h4>Server Functions</h4>
+            <p>Queries, mutations, actions, and cron jobs. V8-sandboxed TypeScript on the server.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- ===== QUICK START ===== -->
+      <section id="quickstart">
+        <h2>Quick Start</h2>
+        <p>Get a complete backend running in under five minutes. You need Docker (for Postgres) or an existing PostgreSQL 16+ instance, and Node.js 18+ for client SDKs.</p>
+
+        <ol class="step-list">
+          <li>
+            <strong>Install DarshanDB</strong>
+            <p>A single ~30MB binary. No runtime dependencies.</p>
+            <div class="code-block-wrapper">
+              <div class="code-block-header">
+                <span class="code-block-lang">bash</span>
+                <button class="copy-btn" onclick="copyCode(this)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> Copy</button>
+              </div>
+              <pre><code><span class="cm"># macOS / Linux</span>
+curl -fsSL https://darshandb.dev/install | sh
+
+<span class="cm"># Or with Docker</span>
+docker compose up -d</code></pre>
+            </div>
+          </li>
+          <li>
+            <strong>Start the Dev Server</strong>
+            <p>Auto-creates PostgreSQL, seeds the admin user, starts the dashboard.</p>
+            <div class="code-block-wrapper">
+              <div class="code-block-header">
+                <span class="code-block-lang">bash</span>
+                <button class="copy-btn" onclick="copyCode(this)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> Copy</button>
+              </div>
+              <pre><code>darshan dev
+
+<span class="cm"># Dashboard  ->  http://localhost:7700/admin</span>
+<span class="cm"># WebSocket  ->  ws://localhost:7700</span>
+<span class="cm"># REST API   ->  http://localhost:7700/api/</span></code></pre>
+            </div>
+          </li>
+          <li>
+            <strong>Install the SDK and Connect</strong>
+            <p>Pick your framework. Here is React:</p>
+            <div class="code-block-wrapper">
+              <div class="code-block-header">
+                <span class="code-block-lang">bash</span>
+                <button class="copy-btn" onclick="copyCode(this)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> Copy</button>
+              </div>
+              <pre><code>npm install @darshan/react</code></pre>
+            </div>
+            <div class="code-block-wrapper">
+              <div class="code-block-header">
+                <span class="code-block-lang">tsx</span>
+                <button class="copy-btn" onclick="copyCode(this)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> Copy</button>
+              </div>
+              <pre><code><span class="kw">import</span> { <span class="ty">DarshanProvider</span>, <span class="ty">DarshanDB</span> } <span class="kw">from</span> <span class="str">'@darshan/react'</span>;
+
+<span class="kw">const</span> <span class="var">db</span> = <span class="ty">DarshanDB</span>.<span class="fn">init</span>({ <span class="prop">appId</span>: <span class="str">'my-app'</span> });
+
+<span class="kw">function</span> <span class="fn">App</span>() {
+  <span class="kw">return</span> (
+    <span class="tag">&lt;DarshanProvider</span> <span class="prop">db</span>={db}<span class="tag">&gt;</span>
+      <span class="tag">&lt;TodoApp /&gt;</span>
+    <span class="tag">&lt;/DarshanProvider&gt;</span>
+  );
+}
+
+<span class="kw">function</span> <span class="fn">TodoApp</span>() {
+  <span class="cm">// This is a LIVE query -- updates when anyone changes data</span>
+  <span class="kw">const</span> { <span class="var">data</span>, <span class="var">isLoading</span> } = db.<span class="fn">useQuery</span>({
+    <span class="prop">todos</span>: {
+      <span class="prop">$where</span>: { <span class="prop">done</span>: <span class="num">false</span> },
+      <span class="prop">$order</span>: { <span class="prop">createdAt</span>: <span class="str">'desc'</span> },
+      <span class="prop">owner</span>: {}  <span class="cm">// fetch related user in one query</span>
+    }
+  });
+
+  <span class="kw">if</span> (isLoading) <span class="kw">return</span> <span class="tag">&lt;p&gt;</span>Loading...<span class="tag">&lt;/p&gt;</span>;
+
+  <span class="kw">return</span> (
+    <span class="tag">&lt;ul&gt;</span>
+      {data.todos.<span class="fn">map</span>(<span class="param">todo</span> <span class="op">=&gt;</span> (
+        <span class="tag">&lt;li</span> <span class="prop">key</span>={todo.id}<span class="tag">&gt;</span>{todo.title}<span class="tag">&lt;/li&gt;</span>
+      ))}
+    <span class="tag">&lt;/ul&gt;</span>
+  );
+}</code></pre>
+            </div>
+            <p><strong>That is it.</strong> Real-time sync, offline support, optimistic updates, type safety -- all from five lines of configuration.</p>
+          </li>
+        </ol>
+      </section>
+
+      <!-- ===== TRIPLE STORE ===== -->
+      <section id="triple-store">
+        <h2>Triple Store (EAV Architecture)</h2>
+        <p>DarshanDB stores all data as <strong>triples</strong>: <code>(entity, attribute, value)</code>. This is an Entity-Attribute-Value model built on top of PostgreSQL, giving you the flexibility of a document database with the power of relational queries.</p>
+
+        <h3>How It Works</h3>
+        <p>Instead of rigid tables with fixed columns, every piece of data is a triple. When you write <code>{ title: "Buy groceries", done: false }</code> to a <code>todos</code> entity, DarshanDB stores three rows internally:</p>
+
+        <table>
+          <thead>
+            <tr><th>Entity ID</th><th>Attribute</th><th>Value</th></tr>
+          </thead>
+          <tbody>
+            <tr><td><code>todo-abc</code></td><td><code>title</code></td><td><code>"Buy groceries"</code></td></tr>
+            <tr><td><code>todo-abc</code></td><td><code>done</code></td><td><code>false</code></td></tr>
+            <tr><td><code>todo-abc</code></td><td><code>createdAt</code></td><td><code>1712345678000</code></td></tr>
+          </tbody>
+        </table>
+
+        <h3>Why Triples?</h3>
+        <ul>
+          <li><strong>Schema-on-read in development</strong> -- Write first, schema emerges. No migrations needed while prototyping.</li>
+          <li><strong>Strict mode for production</strong> -- Opt-in enforcement with auto-generated migrations when you are ready.</li>
+          <li><strong>Graph traversal</strong> -- Relations between entities are just triples pointing to other entities, enabling nested queries.</li>
+          <li><strong>Time-travel</strong> -- MVCC snapshots let you query any past state of your data.</li>
+          <li><strong>Multi-tenancy</strong> -- Namespace isolation with shared infrastructure.</li>
+        </ul>
+
+        <div class="info-box info-box-tip">
+          <div class="info-box-icon">&#128161;</div>
+          <p>Despite being stored as triples internally, you interact with DarshanDB using familiar JSON objects. The triple store is an implementation detail -- your application code looks like any modern database client.</p>
+        </div>
+      </section>
+
+      <!-- ===== DARSHANQL ===== -->
+      <section id="darshanql">
+        <h2>DarshanQL</h2>
+        <p>DarshanQL is a declarative, relational query language designed for client-side use. Every query is automatically a live subscription -- when data changes, your app updates instantly.</p>
+
+        <h3>Basic Query</h3>
+        <div class="code-block-wrapper">
+          <div class="code-block-header">
+            <span class="code-block-lang">typescript</span>
+            <button class="copy-btn" onclick="copyCode(this)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> Copy</button>
+          </div>
+          <pre><code><span class="cm">// Fetch all todos</span>
+<span class="kw">const</span> { <span class="var">data</span> } = db.<span class="fn">useQuery</span>({ <span class="prop">todos</span>: {} });
+
+<span class="cm">// Filter, sort, paginate</span>
+<span class="kw">const</span> { <span class="var">data</span> } = db.<span class="fn">useQuery</span>({
+  <span class="prop">todos</span>: {
+    <span class="prop">$where</span>: { <span class="prop">done</span>: <span class="num">false</span>, <span class="prop">priority</span>: { <span class="prop">$gte</span>: <span class="num">3</span> } },
+    <span class="prop">$order</span>: { <span class="prop">priority</span>: <span class="str">'desc'</span>, <span class="prop">createdAt</span>: <span class="str">'asc'</span> },
+    <span class="prop">$limit</span>: <span class="num">10</span>,
+    <span class="prop">owner</span>: {}  <span class="cm">// include the related user</span>
+  }
+});</code></pre>
+        </div>
+
+        <h3>Filter Operators</h3>
+        <table>
+          <thead>
+            <tr><th>Operator</th><th>Description</th><th>Example</th></tr>
+          </thead>
+          <tbody>
+            <tr><td><code>$gt</code></td><td>Greater than</td><td><code>{ priority: { $gt: 3 } }</code></td></tr>
+            <tr><td><code>$gte</code></td><td>Greater than or equal</td><td><code>{ priority: { $gte: 3 } }</code></td></tr>
+            <tr><td><code>$lt</code></td><td>Less than</td><td><code>{ priority: { $lt: 3 } }</code></td></tr>
+            <tr><td><code>$lte</code></td><td>Less than or equal</td><td><code>{ priority: { $lte: 3 } }</code></td></tr>
+            <tr><td><code>$ne</code></td><td>Not equal</td><td><code>{ priority: { $ne: 0 } }</code></td></tr>
+            <tr><td><code>$in</code></td><td>In set</td><td><code>{ status: { $in: ['active', 'pending'] } }</code></td></tr>
+            <tr><td><code>$nin</code></td><td>Not in set</td><td><code>{ status: { $nin: ['archived'] } }</code></td></tr>
+            <tr><td><code>$contains</code></td><td>String contains</td><td><code>{ title: { $contains: 'buy' } }</code></td></tr>
+            <tr><td><code>$startsWith</code></td><td>String starts with</td><td><code>{ title: { $startsWith: 'Important' } }</code></td></tr>
+          </tbody>
+        </table>
+
+        <h3>Nested Relations</h3>
+        <p>Follow references to load related entities in a single query. No N+1 problem.</p>
+        <div class="code-block-wrapper">
+          <div class="code-block-header">
+            <span class="code-block-lang">typescript</span>
+            <button class="copy-btn" onclick="copyCode(this)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> Copy</button>
+          </div>
+          <pre><code><span class="cm">// Load todos with their owners</span>
+{ <span class="prop">todos</span>: { <span class="prop">owner</span>: {} } }
+
+<span class="cm">// Load users with their todos and each todo's tags</span>
+{ <span class="prop">users</span>: { <span class="prop">todos</span>: { <span class="prop">tags</span>: {} } } }
+
+<span class="cm">// Filter nested relations</span>
+{ <span class="prop">users</span>: { <span class="prop">todos</span>: { <span class="prop">$where</span>: { <span class="prop">done</span>: <span class="num">false</span> }, <span class="prop">$limit</span>: <span class="num">5</span> } } }</code></pre>
+        </div>
+
+        <h3>Mutations</h3>
+        <div class="code-block-wrapper">
+          <div class="code-block-header">
+            <span class="code-block-lang">typescript</span>
+            <button class="copy-btn" onclick="copyCode(this)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> Copy</button>
+          </div>
+          <pre><code><span class="cm">// Create</span>
+db.<span class="fn">transact</span>(db.tx.todos[db.<span class="fn">id</span>()].<span class="fn">set</span>({
+  <span class="prop">title</span>: <span class="str">'Buy groceries'</span>,
+  <span class="prop">done</span>: <span class="num">false</span>,
+  <span class="prop">createdAt</span>: Date.<span class="fn">now</span>()
+}));
+
+<span class="cm">// Update (partial merge)</span>
+db.<span class="fn">transact</span>(db.tx.todos[existingId].<span class="fn">merge</span>({ <span class="prop">done</span>: <span class="num">true</span> }));
+
+<span class="cm">// Delete</span>
+db.<span class="fn">transact</span>(db.tx.todos[existingId].<span class="fn">delete</span>());
+
+<span class="cm">// Link relations</span>
+db.<span class="fn">transact</span>(db.tx.users[userId].<span class="fn">link</span>({ <span class="prop">todos</span>: todoId }));
+
+<span class="cm">// Multiple operations in one transaction</span>
+db.<span class="fn">transact</span>([
+  db.tx.todos[id1].<span class="fn">merge</span>({ <span class="prop">done</span>: <span class="num">true</span> }),
+  db.tx.todos[id2].<span class="fn">delete</span>(),
+  db.tx.users[userId].<span class="fn">unlink</span>({ <span class="prop">todos</span>: id2 })
+]);</code></pre>
+        </div>
+
+        <h3>Full-Text and Semantic Search</h3>
+        <div class="code-block-wrapper">
+          <div class="code-block-header">
+            <span class="code-block-lang">typescript</span>
+            <button class="copy-btn" onclick="copyCode(this)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> Copy</button>
+          </div>
+          <pre><code><span class="cm">// Full-text search (Postgres tsvector)</span>
+{ <span class="prop">articles</span>: { <span class="prop">$search</span>: <span class="str">'machine learning tutorial'</span> } }
+
+<span class="cm">// Semantic / vector search (pgvector)</span>
+{ <span class="prop">articles</span>: { <span class="prop">$semantic</span>: {
+  <span class="prop">field</span>: <span class="str">'embedding'</span>,
+  <span class="prop">query</span>: <span class="str">'things about cats'</span>,
+  <span class="prop">limit</span>: <span class="num">10</span>
+} } }</code></pre>
+        </div>
+      </section>
+
+      <!-- ===== REAL-TIME SYNC ===== -->
+      <section id="realtime">
+        <h2>Real-Time Sync</h2>
+        <p>Every query in DarshanDB is a live subscription by default. When data changes anywhere, every connected client with a matching query receives the diff in under 1ms. No polling, no manual invalidation, no extra code.</p>
+
+        <h3>How It Works</h3>
+        <div class="arch-diagram">
+          <div class="arch-label">Real-Time Data Flow</div>
+          <div class="arch-row">
+            <div class="arch-box arch-clients">Client A subscribes</div>
+            <div class="arch-box arch-clients">Client B mutates</div>
+          </div>
+          <div class="arch-arrow">&darr; &darr;</div>
+          <div class="arch-row">
+            <div class="arch-box arch-protocol">WebSocket + MsgPack</div>
+          </div>
+          <div class="arch-arrow">&darr;</div>
+          <div class="arch-row">
+            <div class="arch-box arch-core">Query Engine</div>
+            <div class="arch-box arch-core">Mutation Engine</div>
+            <div class="arch-box arch-core">Sync Engine</div>
+          </div>
+          <div class="arch-arrow">&darr;</div>
+          <div class="arch-row">
+            <div class="arch-box arch-security">Permission Engine (RLS)</div>
+          </div>
+          <div class="arch-arrow">&darr;</div>
+          <div class="arch-row">
+            <div class="arch-box arch-data">Triple Store (PostgreSQL)</div>
+          </div>
+          <div class="arch-arrow">&uarr;</div>
+          <div class="arch-row">
+            <div class="arch-box arch-core">Delta Diff &rarr; Push to Client A</div>
+          </div>
+        </div>
+
+        <h3>Key Features</h3>
+        <ul>
+          <li><strong>Persistent WebSocket</strong> with multiplexed subscriptions over a single connection</li>
+          <li><strong>Reactive queries</strong> -- every <code>useQuery</code> is automatically a live subscription</li>
+          <li><strong>Optimistic mutations</strong> -- instant UI updates, server reconciliation, auto-rollback on conflict</li>
+          <li><strong>Offline-first</strong> -- IndexedDB persistence, operation queue, automatic sync on reconnect</li>
+          <li><strong>Delta compression</strong> -- only changed fields are transmitted, not the full object</li>
+          <li><strong>Catch-up protocol</strong> -- reconnecting clients receive only the diff since their last transaction</li>
+        </ul>
+
+        <h3>WebSocket Protocol</h3>
+        <div class="code-block-wrapper">
+          <div class="code-block-header">
+            <span class="code-block-lang">javascript</span>
+            <button class="copy-btn" onclick="copyCode(this)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> Copy</button>
+          </div>
+          <pre><code><span class="kw">const</span> <span class="var">ws</span> = <span class="kw">new</span> <span class="ty">WebSocket</span>(<span class="str">'ws://localhost:7700/ws'</span>);
+
+<span class="cm">// 1. Authenticate</span>
+ws.<span class="fn">send</span>(JSON.<span class="fn">stringify</span>({ <span class="prop">type</span>: <span class="str">'auth'</span>, <span class="prop">token</span>: <span class="str">'ACCESS_TOKEN'</span> }));
+
+<span class="cm">// 2. Subscribe to a query</span>
+ws.<span class="fn">send</span>(JSON.<span class="fn">stringify</span>({
+  <span class="prop">type</span>: <span class="str">'subscribe'</span>,
+  <span class="prop">id</span>: <span class="str">'sub-1'</span>,
+  <span class="prop">query</span>: { <span class="prop">todos</span>: { <span class="prop">$where</span>: { <span class="prop">done</span>: <span class="num">false</span> } } }
+}));
+
+<span class="cm">// 3. Receive initial data</span>
+<span class="cm">// { type: "q-init", id: "sub-1", data: { todos: [...] }, tx: 42 }</span>
+
+<span class="cm">// 4. Receive live updates (delta only)</span>
+<span class="cm">// { type: "q-diff", id: "sub-1", added: [], updated: [...], removed: [], tx: 43 }</span>
+
+<span class="cm">// 5. Unsubscribe</span>
+ws.<span class="fn">send</span>(JSON.<span class="fn">stringify</span>({ <span class="prop">type</span>: <span class="str">'unsubscribe'</span>, <span class="prop">id</span>: <span class="str">'sub-1'</span> }));</code></pre>
+        </div>
+      </section>
+
+      <!-- ===== SERVER FUNCTIONS ===== -->
+      <section id="server-functions">
+        <h2>Server Functions</h2>
+        <p>Server functions are TypeScript files in <code>darshan/functions/</code> that run on the server inside V8 sandboxes with full database access. Four types cover every backend need.</p>
+
+        <h3>Query -- Read-only, Cacheable, Reactive</h3>
+        <div class="code-block-wrapper">
+          <div class="code-block-header">
+            <span class="code-block-lang">typescript</span>
+            <button class="copy-btn" onclick="copyCode(this)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> Copy</button>
+          </div>
+          <pre><code><span class="kw">import</span> { <span class="var">query</span>, <span class="var">v</span> } <span class="kw">from</span> <span class="str">'@darshan/server'</span>;
+
+<span class="kw">export const</span> <span class="var">getTodos</span> = <span class="fn">query</span>({
+  <span class="prop">args</span>: { <span class="prop">listId</span>: v.<span class="fn">id</span>(), <span class="prop">status</span>: v.<span class="fn">optional</span>(v.<span class="fn">string</span>()) },
+  <span class="prop">handler</span>: <span class="kw">async</span> (<span class="param">ctx</span>, { <span class="var">listId</span>, <span class="var">status</span> }) <span class="op">=&gt;</span> {
+    <span class="kw">const</span> <span class="var">filter</span> = { listId };
+    <span class="kw">if</span> (status) filter.status = status;
+    <span class="kw">return</span> ctx.db.<span class="fn">query</span>({ <span class="prop">todos</span>: { <span class="prop">$where</span>: filter } });
+  },
+});</code></pre>
+        </div>
+
+        <h3>Mutation -- Transactional ACID Writes</h3>
+        <div class="code-block-wrapper">
+          <div class="code-block-header">
+            <span class="code-block-lang">typescript</span>
+            <button class="copy-btn" onclick="copyCode(this)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> Copy</button>
+          </div>
+          <pre><code><span class="kw">import</span> { <span class="var">mutation</span>, <span class="var">v</span> } <span class="kw">from</span> <span class="str">'@darshan/server'</span>;
+
+<span class="kw">export const</span> <span class="var">createTodo</span> = <span class="fn">mutation</span>({
+  <span class="prop">args</span>: {
+    <span class="prop">title</span>: v.<span class="fn">string</span>().<span class="fn">min</span>(<span class="num">1</span>).<span class="fn">max</span>(<span class="num">500</span>),
+    <span class="prop">listId</span>: v.<span class="fn">id</span>(),
+  },
+  <span class="prop">handler</span>: <span class="kw">async</span> (<span class="param">ctx</span>, { <span class="var">title</span>, <span class="var">listId</span> }) <span class="op">=&gt;</span> {
+    <span class="kw">const</span> <span class="var">todoId</span> = ctx.db.<span class="fn">id</span>();
+    <span class="kw">await</span> ctx.db.<span class="fn">transact</span>([
+      ctx.db.tx.todos[todoId].<span class="fn">set</span>({
+        title, <span class="prop">done</span>: <span class="num">false</span>, listId,
+        <span class="prop">userId</span>: ctx.auth.userId,
+        <span class="prop">createdAt</span>: Date.<span class="fn">now</span>(),
+      }),
+    ]);
+    <span class="kw">return</span> todoId;
+  },
+});</code></pre>
+        </div>
+
+        <h3>Action -- Side Effects</h3>
+        <div class="code-block-wrapper">
+          <div class="code-block-header">
+            <span class="code-block-lang">typescript</span>
+            <button class="copy-btn" onclick="copyCode(this)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> Copy</button>
+          </div>
+          <pre><code><span class="kw">import</span> { <span class="var">action</span>, <span class="var">v</span> } <span class="kw">from</span> <span class="str">'@darshan/server'</span>;
+
+<span class="kw">export const</span> <span class="var">sendWelcomeEmail</span> = <span class="fn">action</span>({
+  <span class="prop">args</span>: { <span class="prop">userId</span>: v.<span class="fn">id</span>() },
+  <span class="prop">handler</span>: <span class="kw">async</span> (<span class="param">ctx</span>, { <span class="var">userId</span> }) <span class="op">=&gt;</span> {
+    <span class="kw">const</span> <span class="var">user</span> = <span class="kw">await</span> ctx.db.<span class="fn">query</span>({ <span class="prop">users</span>: { <span class="prop">$where</span>: { <span class="prop">id</span>: userId } } });
+    <span class="kw">await</span> ctx.<span class="fn">fetch</span>(<span class="str">'https://api.sendgrid.com/v3/mail/send'</span>, {
+      <span class="prop">method</span>: <span class="str">'POST'</span>,
+      <span class="prop">headers</span>: { <span class="prop">Authorization</span>: <span class="str">`Bearer ${process.env.SENDGRID_KEY}`</span> },
+      <span class="prop">body</span>: JSON.<span class="fn">stringify</span>({ <span class="prop">to</span>: user.email, <span class="prop">subject</span>: <span class="str">'Welcome!'</span> }),
+    });
+  },
+});</code></pre>
+        </div>
+
+        <h3>Scheduled -- Cron Jobs</h3>
+        <div class="code-block-wrapper">
+          <div class="code-block-header">
+            <span class="code-block-lang">typescript</span>
+            <button class="copy-btn" onclick="copyCode(this)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> Copy</button>
+          </div>
+          <pre><code><span class="kw">import</span> { <span class="var">scheduled</span> } <span class="kw">from</span> <span class="str">'@darshan/server'</span>;
+
+<span class="kw">export const</span> <span class="var">dailyCleanup</span> = <span class="fn">scheduled</span>({
+  <span class="prop">cron</span>: <span class="str">'0 3 * * *'</span>,  <span class="cm">// 3 AM daily</span>
+  <span class="prop">handler</span>: <span class="kw">async</span> (<span class="param">ctx</span>) <span class="op">=&gt;</span> {
+    <span class="kw">const</span> <span class="var">cutoff</span> = Date.<span class="fn">now</span>() - <span class="num">30</span> * <span class="num">86400000</span>;
+    <span class="kw">const</span> <span class="var">stale</span> = <span class="kw">await</span> ctx.db.<span class="fn">query</span>({
+      <span class="prop">sessions</span>: { <span class="prop">$where</span>: { <span class="prop">lastUsedAt</span>: { <span class="prop">$lt</span>: cutoff } } }
+    });
+    <span class="kw">for</span> (<span class="kw">const</span> <span class="var">s</span> <span class="kw">of</span> stale.sessions) {
+      <span class="kw">await</span> ctx.db.<span class="fn">transact</span>(ctx.db.tx.sessions[s.id].<span class="fn">delete</span>());
+    }
+  },
+});</code></pre>
+        </div>
+
+        <h3>Argument Validation</h3>
+        <table>
+          <thead><tr><th>Validator</th><th>Description</th></tr></thead>
+          <tbody>
+            <tr><td><code>v.string()</code></td><td>String, chainable with <code>.min()</code>, <code>.max()</code></td></tr>
+            <tr><td><code>v.number()</code></td><td>Number, chainable with <code>.min()</code>, <code>.max()</code></td></tr>
+            <tr><td><code>v.boolean()</code></td><td>Boolean</td></tr>
+            <tr><td><code>v.id()</code></td><td>UUID entity reference</td></tr>
+            <tr><td><code>v.array(v.string())</code></td><td>Array of a given type</td></tr>
+            <tr><td><code>v.object({ key: v.string() })</code></td><td>Object with known shape</td></tr>
+            <tr><td><code>v.optional(v.string())</code></td><td>Optional field</td></tr>
+            <tr><td><code>v.union(v.string(), v.number())</code></td><td>Union type</td></tr>
+          </tbody>
+        </table>
+
+        <h3>Resource Limits</h3>
+        <table>
+          <thead><tr><th>Resource</th><th>Default</th><th>Configurable</th></tr></thead>
+          <tbody>
+            <tr><td>CPU time</td><td>30 seconds</td><td>Per function</td></tr>
+            <tr><td>Memory</td><td>128 MB</td><td>Per function</td></tr>
+            <tr><td>Network</td><td>Allowlist only</td><td>Global config</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <!-- ===== PRESENCE ===== -->
+      <section id="presence">
+        <h2>Presence</h2>
+        <p>Built-in real-time presence for tracking online users, cursors, typing indicators, and arbitrary ephemeral state. Presence data lives in memory -- it is not persisted to the database.</p>
+
+        <div class="code-block-wrapper">
+          <div class="code-block-header">
+            <span class="code-block-lang">tsx</span>
+            <button class="copy-btn" onclick="copyCode(this)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> Copy</button>
+          </div>
+          <pre><code><span class="kw">import</span> { <span class="var">usePresence</span> } <span class="kw">from</span> <span class="str">'@darshan/react'</span>;
+
+<span class="kw">function</span> <span class="fn">CollaborativeEditor</span>() {
+  <span class="kw">const</span> { <span class="var">peers</span>, <span class="var">updatePresence</span> } = <span class="fn">usePresence</span>(<span class="str">'document-123'</span>, {
+    <span class="prop">name</span>: currentUser.name,
+    <span class="prop">cursor</span>: <span class="num">null</span>,
+    <span class="prop">isTyping</span>: <span class="num">false</span>,
+  });
+
+  <span class="kw">const</span> <span class="fn">handleMouseMove</span> = (<span class="param">e</span>) <span class="op">=&gt;</span> {
+    <span class="fn">updatePresence</span>({ <span class="prop">cursor</span>: { <span class="prop">x</span>: e.clientX, <span class="prop">y</span>: e.clientY } });
+  };
+
+  <span class="kw">return</span> (
+    <span class="tag">&lt;div</span> <span class="prop">onMouseMove</span>={handleMouseMove}<span class="tag">&gt;</span>
+      {peers.<span class="fn">map</span>((<span class="param">peer</span>) <span class="op">=&gt;</span> (
+        <span class="tag">&lt;RemoteCursor</span>
+          <span class="prop">key</span>={peer.id}
+          <span class="prop">name</span>={peer.data.name}
+          <span class="prop">position</span>={peer.data.cursor}
+        <span class="tag">/&gt;</span>
+      ))}
+    <span class="tag">&lt;/div&gt;</span>
+  );
+}</code></pre>
+        </div>
+      </section>
+
+      <!-- ===== AUTHENTICATION ===== -->
+      <section id="auth">
+        <h2>Authentication</h2>
+        <p>DarshanDB includes a complete auth system. No third-party services required. Passwords are hashed with <strong>Argon2id</strong> (memory=64MB, iterations=3, parallelism=4). Accounts lock after 5 failed attempts for 30 minutes.</p>
+
+        <h3>Email / Password</h3>
+        <div class="code-block-wrapper">
+          <div class="code-block-header">
+            <span class="code-block-lang">typescript</span>
+            <button class="copy-btn" onclick="copyCode(this)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> Copy</button>
+          </div>
+          <pre><code><span class="cm">// Sign up</span>
+<span class="kw">await</span> db.auth.<span class="fn">signUp</span>({ <span class="prop">email</span>: <span class="str">'user@example.com'</span>, <span class="prop">password</span>: <span class="str">'SecurePass123!'</span> });
+
+<span class="cm">// Sign in</span>
+<span class="kw">await</span> db.auth.<span class="fn">signIn</span>({ <span class="prop">email</span>: <span class="str">'user@example.com'</span>, <span class="prop">password</span>: <span class="str">'SecurePass123!'</span> });
+
+<span class="cm">// Sign out</span>
+<span class="kw">await</span> db.auth.<span class="fn">signOut</span>();
+
+<span class="cm">// Get current user</span>
+<span class="kw">const</span> <span class="var">user</span> = db.auth.<span class="fn">getUser</span>();</code></pre>
+        </div>
+
+        <h3>Magic Links</h3>
+        <div class="code-block-wrapper">
+          <div class="code-block-header">
+            <span class="code-block-lang">typescript</span>
+            <button class="copy-btn" onclick="copyCode(this)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> Copy</button>
+          </div>
+          <pre><code><span class="kw">await</span> db.auth.<span class="fn">sendMagicLink</span>({ <span class="prop">email</span>: <span class="str">'user@example.com'</span> });
+<span class="kw">await</span> db.auth.<span class="fn">verifyMagicLink</span>({ <span class="prop">token</span>: <span class="str">'abc123...'</span> });</code></pre>
+        </div>
+
+        <h3>OAuth (Google, GitHub, Apple, Discord)</h3>
+        <div class="code-block-wrapper">
+          <div class="code-block-header">
+            <span class="code-block-lang">typescript</span>
+            <button class="copy-btn" onclick="copyCode(this)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> Copy</button>
+          </div>
+          <pre><code><span class="kw">await</span> db.auth.<span class="fn">signInWithOAuth</span>(<span class="str">'google'</span>);
+<span class="kw">await</span> db.auth.<span class="fn">signInWithOAuth</span>(<span class="str">'github'</span>);
+<span class="kw">await</span> db.auth.<span class="fn">signInWithOAuth</span>(<span class="str">'apple'</span>);
+<span class="kw">await</span> db.auth.<span class="fn">signInWithOAuth</span>(<span class="str">'discord'</span>);</code></pre>
+        </div>
+
+        <h3>Multi-Factor Authentication</h3>
+        <div class="code-block-wrapper">
+          <div class="code-block-header">
+            <span class="code-block-lang">typescript</span>
+            <button class="copy-btn" onclick="copyCode(this)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> Copy</button>
+          </div>
+          <pre><code><span class="cm">// Enable TOTP (Google Authenticator)</span>
+<span class="kw">const</span> { <span class="var">secret</span>, <span class="var">qrCodeUri</span> } = <span class="kw">await</span> db.auth.<span class="fn">enableMFA</span>();
+<span class="cm">// Show QR code, then verify:</span>
+<span class="kw">await</span> db.auth.<span class="fn">verifyMFA</span>({ <span class="prop">code</span>: <span class="str">'123456'</span> });</code></pre>
+        </div>
+
+        <h3>React Hook</h3>
+        <div class="code-block-wrapper">
+          <div class="code-block-header">
+            <span class="code-block-lang">tsx</span>
+            <button class="copy-btn" onclick="copyCode(this)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> Copy</button>
+          </div>
+          <pre><code><span class="kw">function</span> <span class="fn">AuthButton</span>() {
+  <span class="kw">const</span> { <span class="var">user</span>, <span class="var">signIn</span>, <span class="var">signOut</span>, <span class="var">isLoading</span> } = db.<span class="fn">useAuth</span>();
+
+  <span class="kw">if</span> (isLoading) <span class="kw">return</span> <span class="tag">&lt;Spinner /&gt;</span>;
+  <span class="kw">if</span> (user) <span class="kw">return</span> <span class="tag">&lt;button</span> <span class="prop">onClick</span>={signOut}<span class="tag">&gt;</span>Sign Out ({user.email})<span class="tag">&lt;/button&gt;</span>;
+  <span class="kw">return</span> <span class="tag">&lt;button</span> <span class="prop">onClick</span>={() <span class="op">=&gt;</span> <span class="fn">signIn</span>({ email, password })}<span class="tag">&gt;</span>Sign In<span class="tag">&lt;/button&gt;</span>;
+}</code></pre>
+        </div>
+
+        <h3>Session Management</h3>
+        <div class="code-block-wrapper">
+          <div class="code-block-header">
+            <span class="code-block-lang">typescript</span>
+            <button class="copy-btn" onclick="copyCode(this)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> Copy</button>
+          </div>
+          <pre><code><span class="kw">const</span> <span class="var">sessions</span> = <span class="kw">await</span> db.auth.<span class="fn">listSessions</span>();
+<span class="kw">await</span> db.auth.<span class="fn">revokeSession</span>(sessionId);
+<span class="kw">await</span> db.auth.<span class="fn">revokeAllSessions</span>();
+
+db.auth.<span class="fn">onAuthStateChange</span>((<span class="param">user</span>) <span class="op">=&gt;</span> {
+  <span class="kw">if</span> (user) console.<span class="fn">log</span>(<span class="str">'Signed in:'</span>, user.email);
+  <span class="kw">else</span> console.<span class="fn">log</span>(<span class="str">'Signed out'</span>);
+});</code></pre>
+        </div>
+
+        <h3>Configuration</h3>
+        <table>
+          <thead><tr><th>Variable</th><th>Default</th><th>Description</th></tr></thead>
+          <tbody>
+            <tr><td><code>DARSHAN_JWT_SECRET</code></td><td>auto-generated</td><td>RS256 signing key</td></tr>
+            <tr><td><code>DARSHAN_ACCESS_TOKEN_EXPIRY</code></td><td><code>900</code></td><td>Access token lifetime (15 min)</td></tr>
+            <tr><td><code>DARSHAN_REFRESH_TOKEN_EXPIRY</code></td><td><code>2592000</code></td><td>Refresh token lifetime (30 days)</td></tr>
+            <tr><td><code>DARSHAN_MFA_ISSUER</code></td><td><code>DarshanDB</code></td><td>TOTP issuer name</td></tr>
+            <tr><td><code>DARSHAN_LOCKOUT_ATTEMPTS</code></td><td><code>5</code></td><td>Failed attempts before lockout</td></tr>
+            <tr><td><code>DARSHAN_LOCKOUT_DURATION</code></td><td><code>1800</code></td><td>Lockout duration (30 min)</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <!-- ===== PERMISSIONS ===== -->
+      <section id="permissions">
+        <h2>Permissions</h2>
+        <p>DarshanDB uses a <strong>zero-trust model</strong>: everything is denied unless explicitly allowed. Define permissions in <code>darshan/permissions.ts</code> using a TypeScript DSL.</p>
+
+        <div class="arch-diagram">
+          <div class="arch-label">Permission Evaluation Flow</div>
+          <div class="arch-row">
+            <div class="arch-box arch-clients">Client Query</div>
+          </div>
+          <div class="arch-arrow">&darr;</div>
+          <div class="arch-row">
+            <div class="arch-box arch-security">Auth Check (JWT verified?)</div>
+          </div>
+          <div class="arch-arrow">&darr;</div>
+          <div class="arch-row">
+            <div class="arch-box arch-security">Role Resolution (admin / editor / viewer)</div>
+          </div>
+          <div class="arch-arrow">&darr;</div>
+          <div class="arch-row">
+            <div class="arch-box arch-core">Row-Level Security (WHERE clause injected)</div>
+          </div>
+          <div class="arch-arrow">&darr;</div>
+          <div class="arch-row">
+            <div class="arch-box arch-core">Field Filtering (restricted fields stripped)</div>
+          </div>
+          <div class="arch-arrow">&darr;</div>
+          <div class="arch-row">
+            <div class="arch-box arch-data">Filtered Result Returned</div>
+          </div>
+        </div>
+
+        <h3>Permission DSL</h3>
+        <div class="code-block-wrapper">
+          <div class="code-block-header">
+            <span class="code-block-lang">typescript</span>
+            <button class="copy-btn" onclick="copyCode(this)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> Copy</button>
+          </div>
+          <pre><code><span class="cm">// darshan/permissions.ts</span>
+<span class="kw">export default</span> {
+  <span class="prop">todos</span>: {
+    <span class="cm">// Only the owner can read their todos</span>
+    <span class="prop">read</span>: (<span class="param">ctx</span>) <span class="op">=&gt;</span> ({ <span class="prop">userId</span>: ctx.auth.userId }),
+
+    <span class="cm">// Any authenticated user can create</span>
+    <span class="prop">create</span>: (<span class="param">ctx</span>) <span class="op">=&gt;</span> !!ctx.auth,
+
+    <span class="cm">// Only the owner can update</span>
+    <span class="prop">update</span>: (<span class="param">ctx</span>) <span class="op">=&gt;</span> ({ <span class="prop">userId</span>: ctx.auth.userId }),
+
+    <span class="cm">// Only admins can delete</span>
+    <span class="prop">delete</span>: (<span class="param">ctx</span>) <span class="op">=&gt;</span> ctx.auth.role === <span class="str">'admin'</span>,
+  },
+
+  <span class="prop">users</span>: {
+    <span class="prop">read</span>: {
+      <span class="prop">allow</span>: <span class="num">true</span>,
+      <span class="prop">fields</span>: {
+        <span class="prop">email</span>: (<span class="param">ctx</span>, <span class="param">entity</span>) <span class="op">=&gt;</span> entity.id === ctx.auth.userId,
+        <span class="prop">passwordHash</span>: <span class="num">false</span>,  <span class="cm">// never exposed</span>
+      },
+    },
+  },
+};</code></pre>
+        </div>
+
+        <h3>Permission Rule Types</h3>
+        <table>
+          <thead><tr><th>Rule Type</th><th>Example</th><th>Behavior</th></tr></thead>
+          <tbody>
+            <tr><td>Boolean</td><td><code>true</code> / <code>false</code></td><td>Allow or deny all</td></tr>
+            <tr><td>Auth check</td><td><code>(ctx) => !!ctx.auth</code></td><td>Require authentication</td></tr>
+            <tr><td>Filter object</td><td><code>(ctx) => ({ userId: ctx.auth.userId })</code></td><td>Row-level filtering (becomes SQL WHERE)</td></tr>
+            <tr><td>Role check</td><td><code>(ctx) => ctx.auth.role === 'admin'</code></td><td>Role-based access control</td></tr>
+            <tr><td>Field restriction</td><td><code>fields: { email: false }</code></td><td>Hide specific fields from response</td></tr>
+          </tbody>
+        </table>
+
+        <div class="info-box info-box-warn">
+          <div class="info-box-icon">&#9888;</div>
+          <p><strong>Zero-trust default:</strong> When no permissions are defined for an entity, DarshanDB denies all access. You must explicitly allow every operation. Unauthorized data never leaves the database -- it is filtered at the SQL level, not after fetching.</p>
+        </div>
+      </section>
+
+      <!-- ===== SDK REFERENCE ===== -->
+      <section id="sdks">
+        <h2>SDK Reference</h2>
+        <p>DarshanDB provides first-class SDKs for every major framework. All SDKs share the same core -- <code>@darshan/client</code> -- and add framework-specific bindings on top.</p>
+
+        <table>
+          <thead><tr><th>Framework</th><th>Package</th><th>Features</th></tr></thead>
+          <tbody>
+            <tr><td><strong>React</strong></td><td><code>@darshan/react</code></td><td>Hooks, Suspense, useSyncExternalStore</td></tr>
+            <tr><td><strong>Next.js</strong></td><td><code>@darshan/nextjs</code></td><td>Server Components, Server Actions, App Router</td></tr>
+            <tr><td><strong>Angular</strong></td><td><code>@darshan/angular</code></td><td>Signals (17+), RxJS, Route Guards, SSR</td></tr>
+            <tr><td><strong>Vue 3</strong></td><td><code>@darshan/vue</code></td><td>Composables, Nuxt support</td></tr>
+            <tr><td><strong>Svelte</strong></td><td><code>@darshan/svelte</code></td><td>Stores, SvelteKit support</td></tr>
+            <tr><td><strong>PHP</strong></td><td><code>darshan/darshan-php</code></td><td>Composer, Laravel ServiceProvider</td></tr>
+            <tr><td><strong>Python</strong></td><td><code>darshandb</code></td><td>pip, FastAPI + Django integration</td></tr>
+            <tr><td><strong>Vanilla JS</strong></td><td>CDN <code>&lt;script&gt;</code></td><td><code>window.DarshanDB</code>, zero build tools</td></tr>
+          </tbody>
+        </table>
+
+        <div class="tabs" id="sdk-tabs">
+          <button class="tab-btn active" onclick="switchTab('sdk-tabs', 'sdk-react')">React</button>
+          <button class="tab-btn" onclick="switchTab('sdk-tabs', 'sdk-nextjs')">Next.js</button>
+          <button class="tab-btn" onclick="switchTab('sdk-tabs', 'sdk-angular')">Angular</button>
+          <button class="tab-btn" onclick="switchTab('sdk-tabs', 'sdk-vue')">Vue</button>
+          <button class="tab-btn" onclick="switchTab('sdk-tabs', 'sdk-php')">PHP</button>
+          <button class="tab-btn" onclick="switchTab('sdk-tabs', 'sdk-python')">Python</button>
+          <button class="tab-btn" onclick="switchTab('sdk-tabs', 'sdk-curl')">cURL</button>
+        </div>
+
+        <!-- React -->
+        <div class="tab-panel active" id="sdk-react">
+          <div class="code-block-wrapper">
+            <div class="code-block-header">
+              <span class="code-block-lang">bash</span>
+              <button class="copy-btn" onclick="copyCode(this)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> Copy</button>
+            </div>
+            <pre><code>npm install @darshan/react</code></pre>
+          </div>
+          <div class="code-block-wrapper">
+            <div class="code-block-header">
+              <span class="code-block-lang">tsx</span>
+              <button class="copy-btn" onclick="copyCode(this)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> Copy</button>
+            </div>
+            <pre><code><span class="kw">import</span> { <span class="ty">DarshanProvider</span>, <span class="ty">DarshanDB</span> } <span class="kw">from</span> <span class="str">'@darshan/react'</span>;
+
+<span class="kw">const</span> <span class="var">db</span> = <span class="ty">DarshanDB</span>.<span class="fn">init</span>({ <span class="prop">appId</span>: <span class="str">'my-app'</span> });
+
+<span class="kw">function</span> <span class="fn">App</span>() {
+  <span class="kw">return</span> (
+    <span class="tag">&lt;DarshanProvider</span> <span class="prop">db</span>={db}<span class="tag">&gt;</span>
+      <span class="tag">&lt;TodoApp /&gt;</span>
+    <span class="tag">&lt;/DarshanProvider&gt;</span>
+  );
+}
+
+<span class="kw">function</span> <span class="fn">TodoApp</span>() {
+  <span class="kw">const</span> { <span class="var">data</span>, <span class="var">isLoading</span> } = db.<span class="fn">useQuery</span>({
+    <span class="prop">todos</span>: {
+      <span class="prop">$where</span>: { <span class="prop">done</span>: <span class="num">false</span> },
+      <span class="prop">$order</span>: { <span class="prop">createdAt</span>: <span class="str">'desc'</span> }
+    }
+  });
+
+  <span class="kw">const</span> <span class="fn">addTodo</span> = (<span class="param">title</span>) <span class="op">=&gt;</span> {
+    db.<span class="fn">transact</span>(db.tx.todos[db.<span class="fn">id</span>()].<span class="fn">set</span>({ title, <span class="prop">done</span>: <span class="num">false</span> }));
+  };
+
+  <span class="kw">if</span> (isLoading) <span class="kw">return</span> <span class="tag">&lt;p&gt;</span>Loading...<span class="tag">&lt;/p&gt;</span>;
+  <span class="kw">return</span> <span class="tag">&lt;TodoList</span> <span class="prop">items</span>={data?.todos} <span class="prop">onAdd</span>={addTodo} <span class="tag">/&gt;</span>;
+}</code></pre>
+          </div>
+        </div>
+
+        <!-- Next.js -->
+        <div class="tab-panel" id="sdk-nextjs">
+          <div class="code-block-wrapper">
+            <div class="code-block-header">
+              <span class="code-block-lang">bash</span>
+              <button class="copy-btn" onclick="copyCode(this)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> Copy</button>
+            </div>
+            <pre><code>npm install @darshan/nextjs</code></pre>
+          </div>
+          <div class="code-block-wrapper">
+            <div class="code-block-header">
+              <span class="code-block-lang">tsx</span>
+              <button class="copy-btn" onclick="copyCode(this)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> Copy</button>
+            </div>
+            <pre><code><span class="cm">// app/page.tsx (Server Component)</span>
+<span class="kw">import</span> { <span class="var">queryServer</span> } <span class="kw">from</span> <span class="str">'@darshan/nextjs'</span>;
+
+<span class="kw">export default async function</span> <span class="fn">Page</span>() {
+  <span class="kw">const</span> <span class="var">data</span> = <span class="kw">await</span> <span class="fn">queryServer</span>({
+    <span class="prop">todos</span>: { <span class="prop">$order</span>: { <span class="prop">createdAt</span>: <span class="str">'desc'</span> } }
+  });
+
+  <span class="kw">return</span> <span class="tag">&lt;TodoList</span> <span class="prop">items</span>={data.todos} <span class="tag">/&gt;</span>;
+}</code></pre>
+          </div>
+        </div>
+
+        <!-- Angular -->
+        <div class="tab-panel" id="sdk-angular">
+          <div class="code-block-wrapper">
+            <div class="code-block-header">
+              <span class="code-block-lang">bash</span>
+              <button class="copy-btn" onclick="copyCode(this)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> Copy</button>
+            </div>
+            <pre><code>npm install @darshan/angular</code></pre>
+          </div>
+          <div class="code-block-wrapper">
+            <div class="code-block-header">
+              <span class="code-block-lang">typescript</span>
+              <button class="copy-btn" onclick="copyCode(this)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> Copy</button>
+            </div>
+            <pre><code><span class="kw">import</span> { <span class="ty">Component</span>, <span class="ty">inject</span> } <span class="kw">from</span> <span class="str">'@angular/core'</span>;
+<span class="kw">import</span> { <span class="ty">DarshanService</span>, <span class="ty">injectQuery</span> } <span class="kw">from</span> <span class="str">'@darshan/angular'</span>;
+
+@<span class="fn">Component</span>({
+  <span class="prop">selector</span>: <span class="str">'app-todos'</span>,
+  <span class="prop">template</span>: <span class="str">`
+    @for (todo of todos(); track todo.id) {
+      &lt;div&gt;{{ todo.title }}&lt;/div&gt;
+    }
+  `</span>
+})
+<span class="kw">export class</span> <span class="ty">TodosComponent</span> {
+  <span class="cm">// Angular Signals integration</span>
+  <span class="var">todos</span> = <span class="fn">injectQuery</span>({
+    <span class="prop">todos</span>: { <span class="prop">$where</span>: { <span class="prop">done</span>: <span class="num">false</span> } }
+  });
+}</code></pre>
+          </div>
+        </div>
+
+        <!-- Vue -->
+        <div class="tab-panel" id="sdk-vue">
+          <div class="code-block-wrapper">
+            <div class="code-block-header">
+              <span class="code-block-lang">bash</span>
+              <button class="copy-btn" onclick="copyCode(this)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> Copy</button>
+            </div>
+            <pre><code>npm install @darshan/vue</code></pre>
+          </div>
+          <div class="code-block-wrapper">
+            <div class="code-block-header">
+              <span class="code-block-lang">vue</span>
+              <button class="copy-btn" onclick="copyCode(this)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> Copy</button>
+            </div>
+            <pre><code><span class="tag">&lt;script setup&gt;</span>
+<span class="kw">import</span> { <span class="var">useQuery</span>, <span class="var">useTransact</span> } <span class="kw">from</span> <span class="str">'@darshan/vue'</span>;
+
+<span class="kw">const</span> { <span class="var">data</span>, <span class="var">isLoading</span> } = <span class="fn">useQuery</span>({
+  <span class="prop">todos</span>: {
+    <span class="prop">$where</span>: { <span class="prop">done</span>: <span class="num">false</span> },
+    <span class="prop">$order</span>: { <span class="prop">createdAt</span>: <span class="str">'desc'</span> }
+  }
+});
+
+<span class="kw">const</span> <span class="var">transact</span> = <span class="fn">useTransact</span>();
+<span class="tag">&lt;/script&gt;</span>
+
+<span class="tag">&lt;template&gt;</span>
+  <span class="tag">&lt;div</span> <span class="prop">v-if</span>="isLoading"<span class="tag">&gt;</span>Loading...<span class="tag">&lt;/div&gt;</span>
+  <span class="tag">&lt;ul</span> <span class="prop">v-else</span><span class="tag">&gt;</span>
+    <span class="tag">&lt;li</span> <span class="prop">v-for</span>="todo in data?.todos" <span class="prop">:key</span>="todo.id"<span class="tag">&gt;</span>
+      {{ todo.title }}
+    <span class="tag">&lt;/li&gt;</span>
+  <span class="tag">&lt;/ul&gt;</span>
+<span class="tag">&lt;/template&gt;</span></code></pre>
+          </div>
+        </div>
+
+        <!-- PHP -->
+        <div class="tab-panel" id="sdk-php">
+          <div class="code-block-wrapper">
+            <div class="code-block-header">
+              <span class="code-block-lang">bash</span>
+              <button class="copy-btn" onclick="copyCode(this)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> Copy</button>
+            </div>
+            <pre><code>composer require darshan/darshan-php</code></pre>
+          </div>
+          <div class="code-block-wrapper">
+            <div class="code-block-header">
+              <span class="code-block-lang">php</span>
+              <button class="copy-btn" onclick="copyCode(this)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> Copy</button>
+            </div>
+            <pre><code><span class="kw">use</span> <span class="ty">DarshanDB\Client</span>;
+
+<span class="var">$db</span> = <span class="kw">new</span> <span class="ty">Client</span>([
+  <span class="str">'serverUrl'</span> <span class="op">=&gt;</span> <span class="str">'http://localhost:7700'</span>,
+  <span class="str">'apiKey'</span>    <span class="op">=&gt;</span> <span class="str">'your-key'</span>,
+]);
+
+<span class="cm">// Query</span>
+<span class="var">$todos</span> = <span class="var">$db</span>-&gt;<span class="fn">query</span>([
+  <span class="str">'todos'</span> <span class="op">=&gt;</span> [<span class="str">'$where'</span> <span class="op">=&gt;</span> [<span class="str">'done'</span> <span class="op">=&gt;</span> <span class="num">false</span>]]
+]);
+
+<span class="cm">// Call server function</span>
+<span class="var">$result</span> = <span class="var">$db</span>-&gt;<span class="fn">fn</span>(<span class="str">'createTodo'</span>, [
+  <span class="str">'title'</span>  <span class="op">=&gt;</span> <span class="str">'Buy milk'</span>,
+  <span class="str">'listId'</span> <span class="op">=&gt;</span> <span class="str">'list-1'</span>,
+]);</code></pre>
+          </div>
+        </div>
+
+        <!-- Python -->
+        <div class="tab-panel" id="sdk-python">
+          <div class="code-block-wrapper">
+            <div class="code-block-header">
+              <span class="code-block-lang">bash</span>
+              <button class="copy-btn" onclick="copyCode(this)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> Copy</button>
+            </div>
+            <pre><code>pip install darshandb</code></pre>
+          </div>
+          <div class="code-block-wrapper">
+            <div class="code-block-header">
+              <span class="code-block-lang">python</span>
+              <button class="copy-btn" onclick="copyCode(this)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> Copy</button>
+            </div>
+            <pre><code><span class="kw">from</span> <span class="ty">darshandb</span> <span class="kw">import</span> <span class="ty">DarshanDB</span>
+
+<span class="var">db</span> = <span class="ty">DarshanDB</span>(<span class="str">"http://localhost:7700"</span>, <span class="prop">api_key</span>=<span class="str">"your-key"</span>)
+
+<span class="cm"># Query</span>
+<span class="var">todos</span> = db.<span class="fn">query</span>({<span class="str">"todos"</span>: {<span class="str">"$where"</span>: {<span class="str">"done"</span>: <span class="num">False</span>}}})
+
+<span class="cm"># Call server function</span>
+<span class="var">result</span> = db.<span class="fn">fn</span>(<span class="str">"createTodo"</span>, {<span class="str">"title"</span>: <span class="str">"Buy milk"</span>, <span class="str">"listId"</span>: <span class="str">"list-1"</span>})
+
+<span class="cm"># Auth</span>
+db.auth.<span class="fn">sign_in</span>(<span class="prop">email</span>=<span class="str">"user@example.com"</span>, <span class="prop">password</span>=<span class="str">"SecurePass123!"</span>)</code></pre>
+          </div>
+        </div>
+
+        <!-- cURL -->
+        <div class="tab-panel" id="sdk-curl">
+          <div class="code-block-wrapper">
+            <div class="code-block-header">
+              <span class="code-block-lang">bash</span>
+              <button class="copy-btn" onclick="copyCode(this)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> Copy</button>
+            </div>
+            <pre><code><span class="cm"># Sign in</span>
+curl -X POST http://localhost:7700/api/auth/signin \
+  -H <span class="str">"Content-Type: application/json"</span> \
+  -d <span class="str">'{"email": "user@example.com", "password": "SecurePass123!"}'</span>
+
+<span class="cm"># Query</span>
+curl -X POST http://localhost:7700/api/query \
+  -H <span class="str">"Authorization: Bearer TOKEN"</span> \
+  -H <span class="str">"Content-Type: application/json"</span> \
+  -d <span class="str">'{"todos": {"$where": {"done": false}}}'</span>
+
+<span class="cm"># Call server function</span>
+curl -X POST http://localhost:7700/api/fn/createTodo \
+  -H <span class="str">"Authorization: Bearer TOKEN"</span> \
+  -H <span class="str">"Content-Type: application/json"</span> \
+  -d <span class="str">'{"title": "Buy milk", "listId": "list-1"}'</span></code></pre>
+          </div>
+        </div>
+      </section>
+
+      <!-- ===== REST API ===== -->
+      <section id="rest-api">
+        <h2>REST API</h2>
+        <p>All endpoints are available at <code>http://localhost:7700/api/</code>. Every response includes rate limit headers. An auto-generated OpenAPI spec is served at <code>/api/openapi.json</code>.</p>
+
+        <h3>Authentication Endpoints</h3>
+        <div class="code-block-wrapper">
+          <div class="code-block-header">
+            <span class="code-block-lang">bash</span>
+            <button class="copy-btn" onclick="copyCode(this)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> Copy</button>
+          </div>
+          <pre><code><span class="cm"># Sign up</span>
+curl -X POST http://localhost:7700/api/auth/signup \
+  -H <span class="str">"Content-Type: application/json"</span> \
+  -d <span class="str">'{"email": "user@example.com", "password": "SecurePass123!"}'</span>
+
+<span class="cm"># Sign in  ->  returns { accessToken, refreshToken }</span>
+curl -X POST http://localhost:7700/api/auth/signin \
+  -H <span class="str">"Content-Type: application/json"</span> \
+  -d <span class="str">'{"email": "user@example.com", "password": "SecurePass123!"}'</span>
+
+<span class="cm"># Get current user</span>
+curl http://localhost:7700/api/auth/me \
+  -H <span class="str">"Authorization: Bearer ACCESS_TOKEN"</span>
+
+<span class="cm"># Refresh token</span>
+curl -X POST http://localhost:7700/api/auth/refresh \
+  -H <span class="str">"Content-Type: application/json"</span> \
+  -d <span class="str">'{"refreshToken": "..."}'</span></code></pre>
+        </div>
+
+        <h3>Data CRUD</h3>
+        <div class="code-block-wrapper">
+          <div class="code-block-header">
+            <span class="code-block-lang">bash</span>
+            <button class="copy-btn" onclick="copyCode(this)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> Copy</button>
+          </div>
+          <pre><code><span class="cm"># List all todos</span>
+curl http://localhost:7700/api/data/todos \
+  -H <span class="str">"Authorization: Bearer TOKEN"</span>
+
+<span class="cm"># Get one todo</span>
+curl http://localhost:7700/api/data/todos/UUID \
+  -H <span class="str">"Authorization: Bearer TOKEN"</span>
+
+<span class="cm"># Create</span>
+curl -X POST http://localhost:7700/api/data/todos \
+  -H <span class="str">"Authorization: Bearer TOKEN"</span> \
+  -H <span class="str">"Content-Type: application/json"</span> \
+  -d <span class="str">'{"title": "Buy groceries", "done": false}'</span>
+
+<span class="cm"># Update (partial)</span>
+curl -X PATCH http://localhost:7700/api/data/todos/UUID \
+  -H <span class="str">"Authorization: Bearer TOKEN"</span> \
+  -H <span class="str">"Content-Type: application/json"</span> \
+  -d <span class="str">'{"done": true}'</span>
+
+<span class="cm"># Delete</span>
+curl -X DELETE http://localhost:7700/api/data/todos/UUID \
+  -H <span class="str">"Authorization: Bearer TOKEN"</span></code></pre>
+        </div>
+
+        <h3>DarshanQL via REST</h3>
+        <div class="code-block-wrapper">
+          <div class="code-block-header">
+            <span class="code-block-lang">bash</span>
+            <button class="copy-btn" onclick="copyCode(this)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> Copy</button>
+          </div>
+          <pre><code>curl -X POST http://localhost:7700/api/query \
+  -H <span class="str">"Authorization: Bearer TOKEN"</span> \
+  -H <span class="str">"Content-Type: application/json"</span> \
+  -d <span class="str">'{"todos": {"$where": {"done": false}, "$order": {"createdAt": "desc"}, "$limit": 20}}'</span></code></pre>
+        </div>
+
+        <h3>HTTP Status Codes</h3>
+        <table>
+          <thead><tr><th>Code</th><th>Meaning</th></tr></thead>
+          <tbody>
+            <tr><td><code>200</code></td><td>Success</td></tr>
+            <tr><td><code>201</code></td><td>Created (new entity)</td></tr>
+            <tr><td><code>400</code></td><td>Bad request (validation error)</td></tr>
+            <tr><td><code>401</code></td><td>Unauthorized (missing or invalid token)</td></tr>
+            <tr><td><code>403</code></td><td>Forbidden (permission denied)</td></tr>
+            <tr><td><code>404</code></td><td>Not found</td></tr>
+            <tr><td><code>409</code></td><td>Conflict (duplicate key, concurrent edit)</td></tr>
+            <tr><td><code>429</code></td><td>Rate limited</td></tr>
+            <tr><td><code>500</code></td><td>Internal server error</td></tr>
+          </tbody>
+        </table>
+
+        <h3>Error Format</h3>
+        <div class="code-block-wrapper">
+          <div class="code-block-header">
+            <span class="code-block-lang">json</span>
+            <button class="copy-btn" onclick="copyCode(this)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> Copy</button>
+          </div>
+          <pre><code>{
+  <span class="prop">"error"</span>: {
+    <span class="prop">"code"</span>: <span class="str">"PERMISSION_DENIED"</span>,
+    <span class="prop">"message"</span>: <span class="str">"You do not have read access to users.email"</span>,
+    <span class="prop">"status"</span>: <span class="num">403</span>
+  }
+}</code></pre>
+        </div>
+      </section>
+
+      <!-- ===== STORAGE ===== -->
+      <section id="storage">
+        <h2>File Storage</h2>
+        <p>S3-compatible file storage with signed URLs, image transforms, and resumable uploads. Supports local filesystem, Amazon S3, Cloudflare R2, and MinIO.</p>
+
+        <div class="code-block-wrapper">
+          <div class="code-block-header">
+            <span class="code-block-lang">typescript</span>
+            <button class="copy-btn" onclick="copyCode(this)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> Copy</button>
+          </div>
+          <pre><code><span class="cm">// Upload a file</span>
+<span class="kw">const</span> <span class="var">result</span> = <span class="kw">await</span> db.storage.<span class="fn">upload</span>(file, {
+  <span class="prop">path</span>: <span class="str">'avatars/user-123.jpg'</span>,
+});
+
+<span class="cm">// Get signed URL with image transforms</span>
+<span class="kw">const</span> <span class="var">url</span> = <span class="kw">await</span> db.storage.<span class="fn">getUrl</span>(<span class="str">'avatars/user-123.jpg'</span>, {
+  <span class="prop">width</span>: <span class="num">200</span>, <span class="prop">height</span>: <span class="num">200</span>, <span class="prop">fit</span>: <span class="str">'cover'</span>, <span class="prop">format</span>: <span class="str">'webp'</span>,
+});
+
+<span class="cm">// Delete</span>
+<span class="kw">await</span> db.storage.<span class="fn">delete</span>(<span class="str">'avatars/old-avatar.jpg'</span>);</code></pre>
+        </div>
+
+        <h3>Image Transform Parameters</h3>
+        <table>
+          <thead><tr><th>Parameter</th><th>Values</th><th>Description</th></tr></thead>
+          <tbody>
+            <tr><td><code>width</code></td><td>1-4096</td><td>Target width in pixels</td></tr>
+            <tr><td><code>height</code></td><td>1-4096</td><td>Target height in pixels</td></tr>
+            <tr><td><code>fit</code></td><td><code>cover</code>, <code>contain</code>, <code>fill</code></td><td>Resize strategy</td></tr>
+            <tr><td><code>format</code></td><td><code>webp</code>, <code>avif</code>, <code>jpeg</code>, <code>png</code></td><td>Output format</td></tr>
+            <tr><td><code>quality</code></td><td>1-100</td><td>Compression quality</td></tr>
+            <tr><td><code>blur</code></td><td>0.3-1000</td><td>Gaussian blur sigma</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <!-- ===== SELF-HOSTING ===== -->
+      <section id="self-hosting">
+        <h2>Self-Hosting</h2>
+        <p>DarshanDB runs anywhere you can run a single binary and connect to PostgreSQL. Requirements: PostgreSQL 16+ with pgvector, ~30MB disk, 256MB RAM minimum.</p>
+
+        <h3>Docker (Recommended)</h3>
+        <div class="code-block-wrapper">
+          <div class="code-block-header">
+            <span class="code-block-lang">bash</span>
+            <button class="copy-btn" onclick="copyCode(this)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> Copy</button>
+          </div>
+          <pre><code>curl -fsSL https://darshandb.dev/docker -o docker-compose.yml
+docker compose up -d
+
+<span class="cm"># Includes DarshanDB + PostgreSQL 16 with pgvector</span></code></pre>
+        </div>
+
+        <h3>Bare Metal</h3>
+        <div class="code-block-wrapper">
+          <div class="code-block-header">
+            <span class="code-block-lang">bash</span>
+            <button class="copy-btn" onclick="copyCode(this)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> Copy</button>
+          </div>
+          <pre><code>curl -fsSL https://darshandb.dev/install | sh
+
+<span class="kw">export</span> DATABASE_URL=<span class="str">"postgres://user:pass@localhost:5432/darshandb"</span>
+darshan start --prod</code></pre>
+        </div>
+
+        <h3>Kubernetes</h3>
+        <div class="code-block-wrapper">
+          <div class="code-block-header">
+            <span class="code-block-lang">bash</span>
+            <button class="copy-btn" onclick="copyCode(this)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> Copy</button>
+          </div>
+          <pre><code>helm repo add darshan https://charts.darshandb.dev
+helm install darshan darshan/darshandb \
+  --set postgres.enabled=true \
+  --set postgres.storageClass=ssd \
+  --set replicas=3 \
+  --set ingress.enabled=true \
+  --set ingress.host=api.example.com</code></pre>
+        </div>
+
+        <h3>Environment Variables</h3>
+        <table>
+          <thead><tr><th>Variable</th><th>Default</th><th>Description</th></tr></thead>
+          <tbody>
+            <tr><td><code>DATABASE_URL</code></td><td>--</td><td>PostgreSQL connection string</td></tr>
+            <tr><td><code>DARSHAN_PORT</code></td><td><code>7700</code></td><td>Server listen port</td></tr>
+            <tr><td><code>DARSHAN_JWT_SECRET</code></td><td>auto</td><td>JWT signing key (RS256)</td></tr>
+            <tr><td><code>DARSHAN_STORAGE_BACKEND</code></td><td><code>local</code></td><td><code>local</code>, <code>s3</code>, <code>r2</code>, <code>minio</code></td></tr>
+            <tr><td><code>RUST_LOG</code></td><td><code>info</code></td><td>Log level</td></tr>
+          </tbody>
+        </table>
+
+        <h3>Backups</h3>
+        <div class="code-block-wrapper">
+          <div class="code-block-header">
+            <span class="code-block-lang">bash</span>
+            <button class="copy-btn" onclick="copyCode(this)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> Copy</button>
+          </div>
+          <pre><code><span class="cm"># Manual backup</span>
+darshan backup --output /backups/darshan-$(date +%Y%m%d).sql.gz
+
+<span class="cm"># Restore</span>
+darshan restore --input /backups/darshan-20260405.sql.gz</code></pre>
+        </div>
+      </section>
+
+      <!-- ===== ARCHITECTURE ===== -->
+      <section id="architecture">
+        <h2>Architecture</h2>
+        <p>DarshanDB is a layered system where every request passes through protocol negotiation, authentication, authorization, and row-level security before touching the database.</p>
+
+        <div class="arch-diagram">
+          <div class="arch-label">System Architecture</div>
+
+          <div class="arch-row">
+            <div class="arch-box arch-clients">React</div>
+            <div class="arch-box arch-clients">Next.js</div>
+            <div class="arch-box arch-clients">Angular</div>
+            <div class="arch-box arch-clients">Vue</div>
+            <div class="arch-box arch-clients">PHP</div>
+            <div class="arch-box arch-clients">Python</div>
+            <div class="arch-box arch-clients">cURL</div>
+          </div>
+
+          <div class="arch-arrow">&darr;</div>
+
+          <div class="arch-row">
+            <div class="arch-box arch-protocol">WebSocket + MsgPack</div>
+            <div class="arch-box arch-protocol">HTTP/2 + MsgPack</div>
+            <div class="arch-box arch-protocol">REST + JSON</div>
+          </div>
+
+          <div class="arch-arrow">&darr;</div>
+
+          <div class="arch-row">
+            <div class="arch-box arch-security">TLS 1.3</div>
+            <div class="arch-box arch-security">CORS</div>
+            <div class="arch-box arch-security">Rate Limiter</div>
+            <div class="arch-box arch-security">Auth Check</div>
+          </div>
+
+          <div class="arch-arrow">&darr;</div>
+
+          <div class="arch-row">
+            <div class="arch-box arch-core">Query Engine</div>
+            <div class="arch-box arch-core">Mutation Engine</div>
+            <div class="arch-box arch-core">Sync Engine</div>
+          </div>
+
+          <div class="arch-arrow">&darr;</div>
+
+          <div class="arch-row">
+            <div class="arch-box arch-security">Row-Level Security</div>
+            <div class="arch-box arch-security">ABAC</div>
+            <div class="arch-box arch-security">Field Filtering</div>
+          </div>
+
+          <div class="arch-arrow">&darr;</div>
+
+          <div class="arch-row">
+            <div class="arch-box arch-core">Triple Store</div>
+            <div class="arch-box arch-core">Auth Engine</div>
+            <div class="arch-box arch-core">V8 Functions</div>
+            <div class="arch-box arch-core">Storage Engine</div>
+          </div>
+
+          <div class="arch-arrow">&darr;</div>
+
+          <div class="arch-row">
+            <div class="arch-box arch-data">PostgreSQL 16+ with pgvector</div>
+          </div>
+        </div>
+
+        <h3>Technology Stack</h3>
+        <table>
+          <thead><tr><th>Layer</th><th>Choice</th><th>Why</th></tr></thead>
+          <tbody>
+            <tr><td>Server</td><td>Rust (Axum + Tokio)</td><td>Single binary, zero GC pauses, millions of connections</td></tr>
+            <tr><td>Functions</td><td>Deno Core (V8)</td><td>Secure sandboxing, TypeScript native</td></tr>
+            <tr><td>Database</td><td>PostgreSQL 16+</td><td>Battle-tested, pgvector, MVCC, streaming replication</td></tr>
+            <tr><td>Wire Protocol</td><td>MsgPack over WebSocket</td><td>28% smaller than JSON, zero-copy decode</td></tr>
+            <tr><td>Client Core</td><td>TypeScript</td><td>Universal, type-safe, tree-shakeable</td></tr>
+            <tr><td>Password Hash</td><td>Argon2id</td><td>PHC winner, GPU-resistant</td></tr>
+            <tr><td>JWT</td><td>RS256 + Ed25519</td><td>Asymmetric verification</td></tr>
+            <tr><td>Encryption</td><td>AES-256-GCM</td><td>Hardware-accelerated</td></tr>
+          </tbody>
+        </table>
+
+        <h3>Security Layers</h3>
+        <p>11 layers of defense-in-depth, evaluated in order on every request:</p>
+        <ol>
+          <li><strong>TLS 1.3</strong> -- No plaintext, no TLS 1.2 fallback</li>
+          <li><strong>Rate Limiting</strong> -- Token bucket per IP/user/API key</li>
+          <li><strong>Input Validation</strong> -- Schema-validated at API boundary</li>
+          <li><strong>Authentication</strong> -- JWT RS256 + refresh + device binding</li>
+          <li><strong>Authorization</strong> -- Permission engine on every request</li>
+          <li><strong>Row-Level Security</strong> -- SQL WHERE injection, data invisible not forbidden</li>
+          <li><strong>Field Filtering</strong> -- Restricted fields stripped from response</li>
+          <li><strong>Query Complexity</strong> -- Rejects expensive queries</li>
+          <li><strong>V8 Sandboxing</strong> -- Functions isolated from system</li>
+          <li><strong>Audit Logging</strong> -- Every mutation: actor + timestamp + diff</li>
+          <li><strong>Anomaly Detection</strong> -- Unusual patterns trigger alerts</li>
+        </ol>
+      </section>
+
+      <!-- ===== PERFORMANCE ===== -->
+      <section id="performance">
+        <h2>Performance</h2>
+        <p>DarshanDB is built for speed at every layer. A persistent WebSocket with binary MsgPack encoding and delta-only patches eliminates the overhead of traditional REST APIs.</p>
+
+        <h3>DarshanDB vs Traditional REST</h3>
+        <table class="comparison">
+          <thead><tr><th>Metric</th><th>REST (20 req/s)</th><th>DarshanDB</th><th>Improvement</th></tr></thead>
+          <tbody>
+            <tr><td><strong>Latency</strong></td><td>~248ms avg</td><td>~1.2ms avg</td><td>206x faster</td></tr>
+            <tr><td><strong>Bandwidth</strong></td><td>~4,800 B/s overhead</td><td>~180 B/s overhead</td><td>26x less</td></tr>
+            <tr><td><strong>Payload size</strong></td><td>58 bytes/obj (JSON)</td><td>42 bytes/obj (MsgPack)</td><td>28% smaller</td></tr>
+            <tr><td><strong>Auth overhead</strong></td><td>Verify every request</td><td>Verify once at connection</td><td>Zero redundancy</td></tr>
+            <tr><td><strong>Data transfer</strong></td><td>Full response on poll</td><td>Delta-only patches</td><td>98% less data</td></tr>
+          </tbody>
+        </table>
+
+        <h3>Tuning Guide</h3>
+        <div class="code-block-wrapper">
+          <div class="code-block-header">
+            <span class="code-block-lang">bash</span>
+            <button class="copy-btn" onclick="copyCode(this)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> Copy</button>
+          </div>
+          <pre><code><span class="cm"># Connection pool (default: 10)</span>
+DARSHAN_PG_POOL_SIZE=20
+
+<span class="cm"># Query complexity limits</span>
+DARSHAN_MAX_QUERY_DEPTH=8        <span class="cm"># max nesting depth (default: 12)</span>
+DARSHAN_MAX_QUERY_RESULTS=5000   <span class="cm"># max entities per result (default: 10000)</span>
+
+<span class="cm"># Rate limits</span>
+DARSHAN_RATE_LIMIT_AUTH=200      <span class="cm"># auth'd requests/min (default: 100)</span>
+DARSHAN_RATE_LIMIT_ANON=10       <span class="cm"># anon requests/min (default: 20)</span>
+
+<span class="cm"># WebSocket</span>
+DARSHAN_MAX_CONNECTIONS=50000    <span class="cm"># max concurrent (default: 10000)</span>
+
+<span class="cm"># Query cache</span>
+DARSHAN_QUERY_CACHE_SIZE=5000    <span class="cm"># LRU entries (default: 1000)</span></code></pre>
+        </div>
+
+        <h3>Benchmarking</h3>
+        <div class="code-block-wrapper">
+          <div class="code-block-header">
+            <span class="code-block-lang">bash</span>
+            <button class="copy-btn" onclick="copyCode(this)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> Copy</button>
+          </div>
+          <pre><code>darshan bench --connections 100 --duration 30s --queries-per-sec 1000
+
+<span class="cm"># Reports: P50/P95/P99 latency, throughput, WS capacity, memory usage</span></code></pre>
+        </div>
+
+        <h3>Production Checklist</h3>
+        <ul>
+          <li>Set <code>DARSHAN_PG_POOL_SIZE</code> to 2x CPU cores</li>
+          <li>Enable PgBouncer for multi-server deployments</li>
+          <li>Set <code>DARSHAN_MAX_QUERY_DEPTH</code> to your app's minimum</li>
+          <li>Configure rate limits for auth and anon traffic</li>
+          <li>Monitor <code>/metrics</code> with Prometheus + Grafana</li>
+          <li>Set <code>RUST_LOG=warn</code> in production</li>
+          <li>Set up automated database backups</li>
+        </ul>
+      </section>
+
+      <!-- ===== FAQ ===== -->
+      <section id="faq">
+        <h2>FAQ</h2>
+
+        <div class="collapsible open">
+          <button class="collapsible-trigger" onclick="toggleCollapsible(this)">
+            How is DarshanDB different from Firebase?
+            <span class="collapsible-arrow">&#9654;</span>
+          </button>
+          <div class="collapsible-body">
+            <p>Firebase is NoSQL (document-based), cloud-only, and proprietary. DarshanDB uses PostgreSQL (relational), is self-hosted, and is open-source (MIT). You get real-time sync like Firebase, but with relational queries, SQL-level row security, and zero vendor lock-in.</p>
+          </div>
+        </div>
+
+        <div class="collapsible">
+          <button class="collapsible-trigger" onclick="toggleCollapsible(this)">
+            How is DarshanDB different from Supabase?
+            <span class="collapsible-arrow">&#9654;</span>
+          </button>
+          <div class="collapsible-body">
+            <p>Supabase is a REST wrapper around PostgreSQL with real-time bolted on via Postgres logical replication. DarshanDB uses a purpose-built triple store with a reactive query engine -- every query is a live subscription with delta-only patches. DarshanDB also includes V8-sandboxed server functions, a declarative query language, and offline-first support.</p>
+          </div>
+        </div>
+
+        <div class="collapsible">
+          <button class="collapsible-trigger" onclick="toggleCollapsible(this)">
+            Can I use DarshanDB with my existing PostgreSQL database?
+            <span class="collapsible-arrow">&#9654;</span>
+          </button>
+          <div class="collapsible-body">
+            <p>Yes. Point <code>DATABASE_URL</code> to your existing PostgreSQL 16+ instance. DarshanDB creates its own schema (<code>darshan_*</code> tables) and does not interfere with your existing tables. You need the <code>pgvector</code> extension for semantic search features.</p>
+          </div>
+        </div>
+
+        <div class="collapsible">
+          <button class="collapsible-trigger" onclick="toggleCollapsible(this)">
+            Is DarshanDB production-ready?
+            <span class="collapsible-arrow">&#9654;</span>
+          </button>
+          <div class="collapsible-body">
+            <p>DarshanDB is currently in <strong>alpha</strong> (v0.1.0-alpha). The core architecture, query engine, and security model are stable, but the API surface may change before v1.0. We recommend it for side projects, internal tools, and early-stage products. Production use at scale should wait for the beta release.</p>
+          </div>
+        </div>
+
+        <div class="collapsible">
+          <button class="collapsible-trigger" onclick="toggleCollapsible(this)">
+            What are the minimum system requirements?
+            <span class="collapsible-arrow">&#9654;</span>
+          </button>
+          <div class="collapsible-body">
+            <p>~30MB disk for the binary, 256MB RAM minimum (1GB recommended), PostgreSQL 16+ with pgvector. DarshanDB runs on any Linux, macOS, or Windows system. A $5/month VPS is sufficient for small to medium applications.</p>
+          </div>
+        </div>
+
+        <div class="collapsible">
+          <button class="collapsible-trigger" onclick="toggleCollapsible(this)">
+            Does DarshanDB support multi-tenancy?
+            <span class="collapsible-arrow">&#9654;</span>
+          </button>
+          <div class="collapsible-body">
+            <p>Yes. DarshanDB supports namespace isolation with shared infrastructure. Each tenant gets their own logical namespace while sharing the same PostgreSQL instance and DarshanDB binary. Data isolation is enforced at the triple-store level.</p>
+          </div>
+        </div>
+
+        <div class="collapsible">
+          <button class="collapsible-trigger" onclick="toggleCollapsible(this)">
+            How does offline support work?
+            <span class="collapsible-arrow">&#9654;</span>
+          </button>
+          <div class="collapsible-body">
+            <p>Client SDKs persist data to IndexedDB. When offline, reads are served from the local cache and writes are queued. On reconnect, queued operations are sent to the server and the client receives only the diff since its last transaction. Conflicts are resolved automatically with last-write-wins or custom merge functions.</p>
+          </div>
+        </div>
+
+        <div class="collapsible">
+          <button class="collapsible-trigger" onclick="toggleCollapsible(this)">
+            What license is DarshanDB under?
+            <span class="collapsible-arrow">&#9654;</span>
+          </button>
+          <div class="collapsible-body">
+            <p>MIT License. Use it for anything -- personal projects, commercial products, SaaS platforms, internal tools. No restrictions, no attribution required (though it is appreciated).</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- ===== FOOTER ===== -->
+      <footer class="footer">
+        <div class="footer-inner">
+          <div class="footer-col">
+            <h4>Product</h4>
+            <a href="#quickstart">Quick Start</a>
+            <a href="#sdks">SDKs</a>
+            <a href="#rest-api">REST API</a>
+            <a href="#self-hosting">Self-Hosting</a>
+          </div>
+          <div class="footer-col">
+            <h4>Resources</h4>
+            <a href="https://github.com/darshjme/darshandb" target="_blank">GitHub</a>
+            <a href="https://github.com/darshjme/darshandb/blob/main/CONTRIBUTING.md" target="_blank">Contributing</a>
+            <a href="https://github.com/darshjme/darshandb/blob/main/CHANGELOG.md" target="_blank">Changelog</a>
+            <a href="https://discord.gg/darshandb" target="_blank">Discord</a>
+          </div>
+          <div class="footer-col">
+            <h4>Creator</h4>
+            <a href="https://darshj.ai" target="_blank">darshj.ai</a>
+            <a href="https://darshj.me" target="_blank">darshj.me</a>
+            <a href="https://github.com/darshjme" target="_blank">@darshjme</a>
+            <a href="https://twitter.com/darshandb" target="_blank">@darshandb</a>
+          </div>
+        </div>
+        <div class="footer-bottom">
+          <span>MIT License &middot; Built by <a href="https://darshj.ai" target="_blank">Darsh Joshi</a></span>
+          <span>DarshanDB v0.1.0-alpha</span>
+        </div>
+      </footer>
+
+    </div>
+  </main>
+
+  <!-- ===== JAVASCRIPT ===== -->
+  <script>
+    // ===== Copy to Clipboard =====
+    function copyCode(btn) {
+      const pre = btn.closest('.code-block-wrapper').querySelector('pre');
+      const text = pre.textContent;
+      navigator.clipboard.writeText(text).then(() => {
+        btn.classList.add('copied');
+        btn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg> Copied!';
+        setTimeout(() => {
+          btn.classList.remove('copied');
+          btn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> Copy';
+        }, 2000);
+      });
+    }
+
+    // ===== SDK Tabs =====
+    function switchTab(tabGroupId, panelId) {
+      const tabGroup = document.getElementById(tabGroupId);
+      const buttons = tabGroup.querySelectorAll('.tab-btn');
+      buttons.forEach(b => b.classList.remove('active'));
+      event.target.classList.add('active');
+
+      // Find all tab panels that belong to this tab group
+      const allPanels = ['sdk-react','sdk-nextjs','sdk-angular','sdk-vue','sdk-php','sdk-python','sdk-curl'];
+      allPanels.forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.classList.remove('active');
+      });
+      const target = document.getElementById(panelId);
+      if (target) target.classList.add('active');
+    }
+
+    // ===== Collapsible Sections =====
+    function toggleCollapsible(trigger) {
+      const parent = trigger.closest('.collapsible');
+      parent.classList.toggle('open');
+    }
+
+    // ===== Mobile Sidebar =====
+    function toggleSidebar() {
+      document.getElementById('sidebar').classList.toggle('open');
+      document.getElementById('sidebarOverlay').classList.toggle('open');
+    }
+
+    // ===== Sidebar Search =====
+    function filterSidebar(query) {
+      const links = document.querySelectorAll('.sidebar-link');
+      const q = query.toLowerCase().trim();
+      links.forEach(link => {
+        if (!q || link.textContent.toLowerCase().includes(q)) {
+          link.style.display = '';
+        } else {
+          link.style.display = 'none';
+        }
+      });
+    }
+
+    // ===== Active Sidebar Link on Scroll =====
+    (function() {
+      const sections = document.querySelectorAll('section[id]');
+      const links = document.querySelectorAll('.sidebar-link[data-section]');
+
+      function updateActive() {
+        let current = '';
+        const scrollY = window.scrollY + 100;
+
+        sections.forEach(section => {
+          if (section.offsetTop <= scrollY) {
+            current = section.id;
+          }
+        });
+
+        links.forEach(link => {
+          link.classList.remove('active');
+          if (link.dataset.section === current) {
+            link.classList.add('active');
+          }
+        });
+      }
+
+      let ticking = false;
+      window.addEventListener('scroll', () => {
+        if (!ticking) {
+          window.requestAnimationFrame(() => {
+            updateActive();
+            ticking = false;
+          });
+          ticking = true;
+        }
+      });
+
+      updateActive();
+    })();
+
+    // ===== Close sidebar on link click (mobile) =====
+    document.querySelectorAll('.sidebar-link').forEach(link => {
+      link.addEventListener('click', () => {
+        if (window.innerWidth <= 960) {
+          document.getElementById('sidebar').classList.remove('open');
+          document.getElementById('sidebarOverlay').classList.remove('open');
+        }
+      });
+    });
+  </script>
+
+</body>
+</html>
