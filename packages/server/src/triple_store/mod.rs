@@ -543,6 +543,20 @@ impl TripleStore for PgTripleStore {
         .execute(&mut *tx)
         .await?;
 
+        // Send NOTIFY inside the transaction so listeners see it atomically.
+        // Derive entity_type from the first attribute's namespace prefix (e.g. "user/email" -> "user").
+        let entity_type = triples
+            .first()
+            .and_then(|t| t.attribute.split('/').next())
+            .unwrap_or("unknown");
+        let notify_payload = format!("{}:{}", tx_id, entity_type);
+        sqlx::query(&format!(
+            "NOTIFY ddb_changes, '{}'",
+            notify_payload.replace('\'', "''")
+        ))
+        .execute(&mut *tx)
+        .await?;
+
         tx.commit().await?;
 
         // Record the pre-computed Merkle root (no Postgres re-read needed).
