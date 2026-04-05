@@ -81,6 +81,15 @@ async fn main() -> Result<()> {
     let triple_store = darshandb_server::triple_store::PgTripleStore::new(pool.clone()).await?;
     tracing::info!("triple store initialized (schema ensured)");
 
+    // ── Auth Schema (users + sessions tables) ─────────────────────
+    darshandb_server::api::rest::ensure_auth_schema(&pool)
+        .await
+        .map_err(|e| {
+            tracing::error!("Failed to ensure auth schema: {e}");
+            darshandb_server::error::DarshanError::Database(e)
+        })?;
+    tracing::info!("auth schema ensured (users + sessions tables)");
+
     // ── Auth Engine ────────────────────────────────────────────────
     let key_manager = match (&jwt_private_key_path, &jwt_public_key_path) {
         (Some(priv_path), Some(pub_path)) => {
@@ -124,11 +133,6 @@ async fn main() -> Result<()> {
     // Spawn background rate-limiter cleanup.
     let _rate_limit_cleanup = rate_limiter.spawn_cleanup_task(RATE_LIMIT_CLEANUP_INTERVAL);
 
-    // Auth middleware layer is available for route-specific application:
-    // let auth_layer = AuthLayer { session_manager, rate_limiter };
-    // Individual routes already perform bearer token extraction inline.
-    let _ = &session_manager; // retained for future middleware wiring
-
     tracing::info!("auth engine initialized");
 
     // ── Sync Engine ────────────────────────────────────────────────
@@ -148,7 +152,11 @@ async fn main() -> Result<()> {
 
     // ── REST API State ─────────────────────────────────────────────
     let triple_store_arc = Arc::new(triple_store);
-    let app_state = AppState::with_pool(pool.clone(), triple_store_arc.clone());
+    let app_state = AppState::with_pool(
+        pool.clone(),
+        triple_store_arc.clone(),
+        session_manager.clone(),
+    );
 
     // ── CORS Layer ─────────────────────────────────────────────────
     let cors = CorsLayer::new()

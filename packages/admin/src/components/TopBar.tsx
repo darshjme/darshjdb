@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect, useCallback } from "react";
 import {
   Search,
   Wifi,
@@ -9,6 +9,7 @@ import {
   Loader2,
 } from "lucide-react";
 import type { ConnectionStatus } from "../types";
+import { fetchHealth } from "../lib/api";
 import { cn } from "../lib/utils";
 
 interface TopBarProps {
@@ -26,7 +27,19 @@ const statusConfig: Record<
 };
 
 export function TopBar({ title, onOpenCommandPalette }: TopBarProps) {
-  const [status] = useState<ConnectionStatus>("connected");
+  const [status, setStatus] = useState<ConnectionStatus>("connecting");
+
+  const checkHealth = useCallback(async () => {
+    const healthy = await fetchHealth();
+    setStatus(healthy ? "connected" : "disconnected");
+  }, []);
+
+  useEffect(() => {
+    checkHealth();
+    const interval = setInterval(checkHealth, 10_000);
+    return () => clearInterval(interval);
+  }, [checkHealth]);
+
   const statusInfo = statusConfig[status];
 
   return (

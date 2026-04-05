@@ -427,6 +427,15 @@ pub fn evaluate_permission(
     evaluate_rule(ctx, rule)
 }
 
+/// Recursively evaluate a single permission rule (public entry point).
+///
+/// This is exposed for use by [`super::default_permissions`] where rules
+/// are looked up with wildcard fallback rather than through the engine's
+/// `evaluate_permission` function.
+pub fn evaluate_rule_public(ctx: &AuthContext, rule: &PermissionRule) -> PermissionResult {
+    evaluate_rule(ctx, rule)
+}
+
 /// Recursively evaluate a single permission rule.
 fn evaluate_rule(ctx: &AuthContext, rule: &PermissionRule) -> PermissionResult {
     match rule {
