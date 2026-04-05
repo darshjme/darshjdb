@@ -56,6 +56,21 @@ export interface MutationOp {
 }
 
 // ---------------------------------------------------------------------------
+// Admin client factory (used by api.ts route helpers)
+// ---------------------------------------------------------------------------
+
+import { DarshanDB } from '@darshan/client';
+
+/**
+ * Create an admin DarshanDB client from environment variables.
+ * Reads DARSHAN_URL and DARSHAN_ADMIN_TOKEN.
+ */
+export function getAdminDb(): DarshanDB {
+  const { url, token } = getConfig();
+  return new DarshanDB({ serverUrl: url, adminToken: token });
+}
+
+// ---------------------------------------------------------------------------
 // Admin configuration
 // ---------------------------------------------------------------------------
 
