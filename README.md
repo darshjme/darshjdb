@@ -184,8 +184,9 @@ MIT. See [LICENSE](LICENSE).
 
 <div align="center">
 
-**Built by [Darsh Joshi](https://darshj.ai)** from Ahmedabad, India.
+**Built by [Darsh Joshi](https://darshj.ai)** — born in Navsari, Gujarat. Now in Ahmedabad.
+CEO at [GraymatterOnline LLP](https://graymatteronline.com). CTO at [KnowAI](https://knowai.biz).
 
-An experiment in building the backend I always wanted.
+Building the backend I kept wishing existed.
 
 </div>
