@@ -243,6 +243,11 @@ impl PgTripleStore {
         .execute(&self.pool)
         .await?;
 
+        // Ensure the Merkle audit trail table exists.
+        crate::audit::ensure_audit_schema(&self.pool)
+            .await
+            .map_err(DarshanError::Database)?;
+
         Ok(())
     }
 
@@ -413,6 +418,18 @@ impl PgTripleStore {
             count as f64 // sub-millisecond => report count as rate
         };
 
+        // Record the Merkle root for the bulk-loaded transaction.
+        let written: Vec<Triple> = sqlx::query_as(
+            "SELECT id, entity_id, attribute, value, value_type, tx_id, created_at, retracted, expires_at FROM triples WHERE tx_id = $1 ORDER BY id",
+        )
+        .bind(tx_id)
+        .fetch_all(&self.pool)
+        .await?;
+
+        if let Err(e) = crate::audit::record_merkle_root(&self.pool, tx_id, &written).await {
+            tracing::warn!(tx_id, error = %e, "Failed to record Merkle root for bulk load");
+        }
+
         Ok(BulkLoadResult {
             triples_loaded: count,
             tx_id,
@@ -492,6 +509,21 @@ impl TripleStore for PgTripleStore {
         }
 
         tx.commit().await?;
+
+        // Record the Merkle root for this transaction (post-commit).
+        // We re-read the committed triples to compute the root over the
+        // canonical database state, ensuring hash determinism.
+        let written: Vec<Triple> = sqlx::query_as(
+            "SELECT id, entity_id, attribute, value, value_type, tx_id, created_at, retracted, expires_at FROM triples WHERE tx_id = $1 ORDER BY id",
+        )
+        .bind(tx_id)
+        .fetch_all(&self.pool)
+        .await?;
+
+        if let Err(e) = crate::audit::record_merkle_root(&self.pool, tx_id, &written).await {
+            tracing::warn!(tx_id, error = %e, "Failed to record Merkle root for transaction");
+        }
+
         Ok(tx_id)
     }
 

@@ -29,7 +29,7 @@ use std::time::Instant;
 
 use axum::extract::State;
 use axum::http::HeaderMap;
-use axum::response::{IntoResponse, Response};
+use axum::response::Response;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
@@ -699,6 +699,202 @@ fn infer_value_type(value: &Value) -> i16 {
         Value::Object(_) | Value::Array(_) => 6,
         Value::Null => 0,
     }
+}
+
+// ---------------------------------------------------------------------------
+// Parallel batch handler (Solana-inspired wave execution)
+// ---------------------------------------------------------------------------
+
+/// `POST /api/batch/parallel` -- Execute operations with Solana-inspired parallelism.
+///
+/// Analyzes each operation for the entity types it touches, groups non-conflicting
+/// operations into waves, and executes each wave concurrently. Waves are processed
+/// sequentially to preserve causal ordering between conflicting operations.
+///
+/// **Conflict model:**
+/// - Two reads on the same entity type do NOT conflict (parallel).
+/// - A read and a write on the same entity type DO conflict (sequential).
+/// - Two writes on the same entity type DO conflict (sequential).
+/// - Operations on different entity types never conflict (parallel).
+///
+/// Falls back to sequential execution for batches with mutations that share
+/// a Postgres transaction (atomicity requires serialized writes).
+pub async fn parallel_batch_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    axum::Json(body): axum::Json<BatchRequest>,
+) -> Result<Response, ApiError> {
+    use crate::query::parallel::{compute_stats, profile_op, schedule_waves};
+
+    let batch_start = Instant::now();
+
+    // Validate batch size.
+    if body.ops.is_empty() {
+        return Err(ApiError::bad_request(
+            "Batch must contain at least one operation",
+        ));
+    }
+    if body.ops.len() > MAX_BATCH_OPS {
+        return Err(ApiError::bad_request(format!(
+            "Batch exceeds maximum of {MAX_BATCH_OPS} operations (got {})",
+            body.ops.len()
+        )));
+    }
+
+    // Pre-validate mutation count.
+    let mut total_mutations = 0usize;
+    for op in &body.ops {
+        if let BatchOp::Mutate {
+            body: mutate_body, ..
+        } = op
+        {
+            if let Some(mutations) = mutate_body.get("mutations").and_then(|m| m.as_array()) {
+                total_mutations += mutations.len();
+            }
+        }
+    }
+    if total_mutations > MAX_BATCH_MUTATIONS {
+        return Err(ApiError::bad_request(format!(
+            "Batch exceeds maximum of {MAX_BATCH_MUTATIONS} total mutations (got {total_mutations})"
+        )));
+    }
+
+    let has_mutations = body
+        .ops
+        .iter()
+        .any(|op| matches!(op, BatchOp::Mutate { .. }));
+
+    // If the batch contains mutations, fall back to sequential execution
+    // because mutations share a single Postgres transaction for atomicity.
+    if has_mutations {
+        tracing::debug!(
+            "parallel_batch: batch contains mutations, falling back to sequential execution"
+        );
+        return batch_handler(State(state), headers, axum::Json(body)).await;
+    }
+
+    // Profile each operation and schedule into waves.
+    let profiles: Vec<_> = body
+        .ops
+        .iter()
+        .enumerate()
+        .map(|(i, op)| profile_op(i, op))
+        .collect();
+
+    let waves = schedule_waves(&profiles);
+    let stats = compute_stats(&waves, body.ops.len());
+
+    tracing::info!(
+        total_ops = stats.total_ops,
+        wave_count = stats.wave_count,
+        parallel_ops = stats.parallel_ops,
+        wave_sizes = ?stats.wave_sizes,
+        "parallel_batch: scheduled {} ops into {} waves",
+        stats.total_ops,
+        stats.wave_count,
+    );
+
+    let token = extract_bearer_token_from_headers(&headers).ok();
+
+    // Pre-allocate results vector (filled out of order, then sorted).
+    let total_ops = body.ops.len();
+    let mut results: Vec<Option<BatchOpResult>> = (0..total_ops).map(|_| None).collect();
+
+    // Execute waves sequentially; within each wave, execute ops in parallel.
+    for (wave_idx, wave) in waves.iter().enumerate() {
+        if wave.op_indices.len() == 1 {
+            // Single op in wave -- no need for tokio::join overhead.
+            let idx = wave.op_indices[0];
+            let result = execute_single_op(&body.ops[idx], &state, token.as_deref()).await;
+            results[idx] = Some(result);
+        } else {
+            // Multiple ops in wave -- execute in parallel.
+            let futs: Vec<_> = wave
+                .op_indices
+                .iter()
+                .map(|&idx| {
+                    let state_ref = &state;
+                    let token_ref = token.as_deref();
+                    let op = &body.ops[idx];
+                    async move { (idx, execute_single_op(op, state_ref, token_ref).await) }
+                })
+                .collect();
+
+            let wave_results = futures::future::join_all(futs).await;
+            for (idx, result) in wave_results {
+                results[idx] = Some(result);
+            }
+        }
+
+        tracing::debug!(
+            wave = wave_idx,
+            ops = wave.op_indices.len(),
+            "parallel_batch: completed wave {wave_idx}"
+        );
+    }
+
+    // Unwrap results (all slots should be filled).
+    let results: Vec<BatchOpResult> = results.into_iter().map(|r| r.unwrap()).collect();
+
+    let duration_us = batch_start.elapsed().as_micros() as u64;
+    let duration_ms = batch_start.elapsed().as_secs_f64() * 1000.0;
+
+    // Record metrics.
+    state.parallel_metrics.record_batch(
+        stats.total_ops as u64,
+        stats.parallel_ops as u64,
+        stats.wave_count as u64,
+        duration_us,
+    );
+
+    let response = ParallelBatchResponse {
+        results,
+        duration_ms,
+        waves: stats.wave_count,
+        parallel_ops: stats.parallel_ops,
+        sequential_ops: stats.total_ops - stats.parallel_ops,
+    };
+
+    Ok(super::rest::negotiate_response_pub(&headers, &response))
+}
+
+/// Execute a single read-only operation (query or function call).
+async fn execute_single_op(op: &BatchOp, state: &AppState, token: Option<&str>) -> BatchOpResult {
+    match op {
+        BatchOp::Query { id, body } => execute_batch_query(id, body, state).await,
+        BatchOp::Fn { id, name, args } => execute_batch_fn(id, name, args, state, token).await,
+        BatchOp::Mutate { id, .. } => {
+            // Should not reach here in the parallel path, but handle gracefully.
+            BatchOpResult {
+                id: id.clone(),
+                status: 400,
+                data: None,
+                error: Some("Mutations not supported in parallel batch mode".to_string()),
+            }
+        }
+    }
+}
+
+/// Extended batch response that includes parallelism metrics.
+#[derive(Debug, Serialize)]
+pub struct ParallelBatchResponse {
+    pub results: Vec<BatchOpResult>,
+    pub duration_ms: f64,
+    /// Number of execution waves (fewer waves = more parallelism).
+    pub waves: usize,
+    /// Number of operations that ran in parallel (wave size > 1).
+    pub parallel_ops: usize,
+    /// Number of operations that ran sequentially.
+    pub sequential_ops: usize,
+}
+
+/// `GET /api/batch/metrics` -- Return parallel execution metrics.
+pub async fn parallel_metrics_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    let snapshot = state.parallel_metrics.snapshot();
+    Ok(super::rest::negotiate_response_pub(&headers, &snapshot))
 }
 
 // ---------------------------------------------------------------------------

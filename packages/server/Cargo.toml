@@ -39,3 +39,5 @@ cron.workspace = true
 rmp-serde.workspace = true
 tokio-stream.workspace = true
 reqwest.workspace = true
+hex.workspace = true
+futures.workspace = true

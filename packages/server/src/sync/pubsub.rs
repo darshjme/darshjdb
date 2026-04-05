@@ -356,9 +356,10 @@ impl PubSubEngine {
             channels.push((format!("entity:{entity_type}"), type_event));
         }
 
-        // Mutation-level channel.
+        // Mutation-level channel: mutation:<event_kind> (e.g., mutation:updated).
+        let mut_channel = format!("mutation:{event_kind}");
         let mut_event = PubSubEvent {
-            channel: "mutation".to_string(),
+            channel: mut_channel.clone(),
             event: event_kind.to_string(),
             entity_type: event.entity_type.clone(),
             entity_id: None,
@@ -366,7 +367,7 @@ impl PubSubEngine {
             tx_id: event.tx_id,
             payload: None,
         };
-        channels.push(("mutation".to_string(), mut_event));
+        channels.push((mut_channel, mut_event));
 
         channels
     }

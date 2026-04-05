@@ -18,7 +18,6 @@
 use std::collections::HashMap;
 use std::convert::Infallible;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use axum::Router;
@@ -107,6 +106,8 @@ pub struct AppState {
     pub pubsub: Arc<PubSubEngine>,
     /// Latency histogram for connection pool stats exposed via /health.
     pub pool_stats: Arc<super::pool_stats::PoolStats>,
+    /// Metrics for Solana-inspired parallel batch execution.
+    pub parallel_metrics: Arc<crate::query::parallel::ParallelMetrics>,
 }
 
 /// Load OAuth2 provider configurations from environment variables.
@@ -223,6 +224,7 @@ impl AppState {
             query_cache: Arc::new(QueryCache::from_env()),
             pubsub,
             pool_stats: Arc::new(super::pool_stats::PoolStats::new()),
+            parallel_metrics: Arc::new(crate::query::parallel::ParallelMetrics::new()),
         }
     }
 
@@ -290,6 +292,7 @@ impl AppState {
             query_cache: Arc::new(QueryCache::new(100, Duration::from_secs(60), true)),
             pubsub,
             pool_stats: Arc::new(super::pool_stats::PoolStats::new()),
+            parallel_metrics: Arc::new(crate::query::parallel::ParallelMetrics::new()),
         }
     }
 }
@@ -509,12 +512,33 @@ pub fn build_router(state: AppState) -> Router {
         .route("/admin/sessions", get(admin_sessions))
         .route("/admin/bulk-load", post(admin_bulk_load))
         .route("/admin/cache", get(admin_cache))
+        // -- Audit (Merkle tree) ------------------------------------------
+        .route(
+            "/admin/audit/verify/{tx_id}",
+            get(crate::audit::handlers::audit_verify_tx),
+        )
+        .route(
+            "/admin/audit/chain",
+            get(crate::audit::handlers::audit_verify_chain),
+        )
+        .route(
+            "/admin/audit/proof/{entity_id}",
+            get(crate::audit::handlers::audit_entity_proof),
+        )
         // -- Embeddings / Semantic Search (TODO: wire handlers) ------------
         // .route("/embeddings", post(embeddings_store))
         // .route("/embeddings/{entity_id}", get(embeddings_get))
         // .route("/search/semantic", post(search_semantic))
         // -- Batch / Pipeline ---------------------------------------------
         .route("/batch", post(super::batch::batch_handler))
+        .route(
+            "/batch/parallel",
+            post(super::batch::parallel_batch_handler),
+        )
+        .route(
+            "/batch/metrics",
+            get(super::batch::parallel_metrics_handler),
+        )
         .layer(middleware::from_fn_with_state(
             state.clone(),
             require_auth_middleware,
