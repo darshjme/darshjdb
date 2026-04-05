@@ -141,21 +141,30 @@ async fn main() -> Result<()> {
     let presence_manager = Arc::new(PresenceManager::new());
     let (diff_tx, _diff_rx) = tokio::sync::mpsc::channel(1024);
 
+    // Broadcast channel for triple-store change events (REST -> WS fan-out).
+    let (change_tx, _change_rx) =
+        tokio::sync::broadcast::channel::<darshandb_server::sync::ChangeEvent>(4096);
+
+    let triple_store_arc = Arc::new(triple_store);
+
     let ws_state = WsState {
         sessions: sync_sessions,
         registry: subscription_registry,
         presence: presence_manager,
         diff_tx,
+        pool: pool.clone(),
+        triple_store: triple_store_arc.clone(),
+        change_tx: change_tx.clone(),
     };
 
     tracing::info!("sync engine initialized");
 
     // ── REST API State ─────────────────────────────────────────────
-    let triple_store_arc = Arc::new(triple_store);
     let app_state = AppState::with_pool(
         pool.clone(),
         triple_store_arc.clone(),
         session_manager.clone(),
+        change_tx,
     );
 
     // ── CORS Layer ─────────────────────────────────────────────────
