@@ -1,7 +1,7 @@
 {
   "name": "@darshan/angular",
   "version": "0.1.0",
-  "description": "Angular SDK for DarshanDB — Signals, Observables, SSR, and standalone component support",
+  "description": "Angular SDK for DarshanDB \u2014 Signals, Observables, SSR, and standalone component support",
   "type": "module",
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
@@ -50,7 +50,8 @@
     "rxjs": "^7.8.0",
     "tsup": "^8.3.6",
     "typescript": "^5.7.3",
-    "vitest": "^3.0.4"
+    "vitest": "^3.0.4",
+    "@types/node": "^22.0.0"
   },
   "sideEffects": false,
   "license": "MIT",

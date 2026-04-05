@@ -13,7 +13,7 @@
  * from the actual client-core implementation.
  */
 
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import React, { createElement } from 'react';
 import { renderHook, act, cleanup } from '@testing-library/react';
 
@@ -47,7 +47,7 @@ function createMockClient(overrides: Partial<DarshanClientInterface> = {}): Dars
     connect: vi.fn().mockResolvedValue(undefined),
     disconnect: vi.fn(),
 
-    subscribe: vi.fn(<T>(query: unknown, callback: (snap: QuerySnapshot<T>) => void): Unsubscribe => {
+    subscribe: vi.fn(<T>(_query: unknown, callback: (snap: QuerySnapshot<T>) => void): Unsubscribe => {
       const id = `sub_${++subCounter}`;
       querySubscriptions.set(id, callback as (snap: QuerySnapshot<unknown>) => void);
       return () => { querySubscriptions.delete(id); };

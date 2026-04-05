@@ -25,7 +25,6 @@ import type {
   DarshanConfig,
   DarshanUser,
   DarshanError,
-  PresenceState,
   PresenceUser,
 } from './types';
 
