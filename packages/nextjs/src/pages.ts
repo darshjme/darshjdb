@@ -3,7 +3,7 @@
  *
  * Pages Router helpers for DarshanDB. Provides idiomatic wrappers around
  * `getServerSideProps` and `getStaticProps` that inject the admin
- * DarshanClient and handle serialization.
+ * DarshanDB and handle serialization.
  *
  * @example
  * ```tsx
@@ -45,7 +45,7 @@ import type {
   GetStaticPropsContext,
   GetStaticPropsResult,
 } from 'next';
-import type { DarshanClient } from '@darshan/client';
+import type { DarshanDB } from '@darshan/client';
 import type { ParsedUrlQuery } from 'querystring';
 import { getAdminDb } from './server';
 
@@ -54,7 +54,7 @@ import { getAdminDb } from './server';
 // ---------------------------------------------------------------------------
 
 /**
- * Callback for `queryServerSide`. Receives the admin DarshanClient
+ * Callback for `queryServerSide`. Receives the admin DarshanDB
  * and the standard `GetServerSidePropsContext`.
  *
  * Return a plain object of props, or `null` to trigger a 404.
@@ -63,12 +63,12 @@ export type ServerSideQueryFn<
   P extends Record<string, unknown> = Record<string, unknown>,
   Q extends ParsedUrlQuery = ParsedUrlQuery,
 > = (
-  db: DarshanClient,
+  db: DarshanDB,
   context: GetServerSidePropsContext<Q>,
 ) => Promise<P | null>;
 
 /**
- * Callback for `queryStaticProps`. Receives the admin DarshanClient
+ * Callback for `queryStaticProps`. Receives the admin DarshanDB
  * and the standard `GetStaticPropsContext`.
  *
  * Return a plain object of props, or `null` to trigger a 404.
@@ -77,7 +77,7 @@ export type StaticQueryFn<
   P extends Record<string, unknown> = Record<string, unknown>,
   Q extends ParsedUrlQuery = ParsedUrlQuery,
 > = (
-  db: DarshanClient,
+  db: DarshanDB,
   context: GetStaticPropsContext<Q>,
 ) => Promise<P | null>;
 

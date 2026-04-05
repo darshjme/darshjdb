@@ -34,7 +34,7 @@
  * ```
  */
 
-import type { DarshanClient } from '@darshan/client';
+import type { DarshanDB } from '@darshan/client';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -74,17 +74,17 @@ export interface QueryServerOptions {
   tags?: string[];
 }
 
-/** Callback receiving the admin DarshanClient instance. */
-export type MutateServerFn<T> = (db: DarshanClient) => Promise<T>;
+/** Callback receiving the admin DarshanDB instance. */
+export type MutateServerFn<T> = (db: DarshanDB) => Promise<T>;
 
 // ---------------------------------------------------------------------------
 // Admin client singleton
 // ---------------------------------------------------------------------------
 
-let _adminDb: DarshanClient | null = null;
+let _adminDb: DarshanDB | null = null;
 
 /**
- * Returns the admin DarshanClient singleton, lazily initialized from
+ * Returns the admin DarshanDB singleton, lazily initialized from
  * environment variables.
  *
  * | Variable              | Description                        |
@@ -100,7 +100,7 @@ let _adminDb: DarshanClient | null = null;
  * const doc = await adminDb.collection('config').findOne({ key: 'site' });
  * ```
  */
-export function getAdminDb(): DarshanClient {
+export function getAdminDb(): DarshanDB {
   if (_adminDb) {
     return _adminDb;
   }
@@ -138,7 +138,7 @@ export function getAdminDb(): DarshanClient {
  * Convenience re-export of the admin client.
  * Accessing the property triggers lazy initialization.
  */
-export const adminDb: DarshanClient = new Proxy({} as DarshanClient, {
+export const adminDb: DarshanDB = new Proxy({} as DarshanDB, {
   get(_target, prop, receiver) {
     const db = getAdminDb();
     const value = Reflect.get(db, prop, receiver);
@@ -231,7 +231,7 @@ export async function queryServer<T = unknown>(
  * supports it. On failure the mutation is rolled back.
  *
  * @typeParam T - The return type of the mutation callback.
- * @param fn - Callback receiving the admin `DarshanClient`.
+ * @param fn - Callback receiving the admin `DarshanDB`.
  * @returns The value returned by the callback.
  *
  * @example

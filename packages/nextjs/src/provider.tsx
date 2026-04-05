@@ -47,7 +47,7 @@
 
 import React, { useRef, useMemo, useEffect, type ReactNode } from 'react';
 import { DarshanReactProvider, type DarshanReactProviderProps } from '@darshan/react';
-import { createClient, type DarshanClient, type DarshanClientConfig } from '@darshan/client';
+import { createClient, type DarshanDB, type DarshanDBConfig } from '@darshan/client';
 
 // ---------------------------------------------------------------------------
 // Dehydration / Hydration types
@@ -135,7 +135,7 @@ export interface DarshanProviderProps {
   /**
    * Additional client configuration passed to `createClient()`.
    */
-  clientConfig?: Partial<DarshanClientConfig>;
+  clientConfig?: Partial<DarshanDBConfig>;
 
   /**
    * Dehydrated server state for SSR hydration.
@@ -193,7 +193,7 @@ export function DarshanProvider({
     token: resolvedToken,
   });
 
-  const client = useMemo<DarshanClient>(() => {
+  const client = useMemo<DarshanDB>(() => {
     configRef.current = { url: resolvedUrl, token: resolvedToken };
 
     if (!resolvedUrl) {
