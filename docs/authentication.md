@@ -2,6 +2,33 @@
 
 DarshanDB includes a complete auth system. No third-party services required.
 
+## Auth Flow Overview
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant S as DarshanDB
+    participant PG as PostgreSQL
+
+    C->>S: POST /auth/signin { email, password }
+    S->>PG: Lookup user by email
+    PG-->>S: User record (Argon2id hash)
+    S->>S: Verify password
+    S->>S: Check lockout (5 attempts / 30 min)
+
+    alt MFA enabled
+        S-->>C: { mfaRequired: true, mfaToken: "..." }
+        C->>S: POST /auth/mfa/verify { mfaToken, code: "123456" }
+        S->>S: Verify TOTP code
+    end
+
+    S->>S: Generate access token (RS256, 15 min)
+    S->>S: Generate refresh token (opaque, 30 days)
+    S->>S: Bind refresh token to device fingerprint
+    S->>PG: Store refresh token + device info
+    S-->>C: { accessToken, refreshToken }
+```
+
 ## Email / Password
 
 ```typescript
@@ -20,6 +47,12 @@ const user = db.auth.getUser();
 
 Passwords are hashed with **Argon2id** (memory=64MB, iterations=3, parallelism=4). Account locks after 5 failed attempts for 30 minutes.
 
+### Password Requirements
+
+- Minimum 8 characters
+- Top 10,000 breached passwords are rejected at signup
+- Password strength is evaluated server-side (not just character class rules)
+
 ## Magic Links
 
 ```typescript
@@ -29,6 +62,8 @@ await db.auth.sendMagicLink({ email: 'user@example.com' });
 // Verify (from the link callback)
 await db.auth.verifyMagicLink({ token: 'abc123...' });
 ```
+
+Magic link tokens are single-use and expire after 15 minutes.
 
 ## OAuth
 
@@ -49,57 +84,165 @@ DARSHAN_OAUTH_GOOGLE_CLIENT_ID=...
 DARSHAN_OAUTH_GOOGLE_CLIENT_SECRET=...
 DARSHAN_OAUTH_GITHUB_CLIENT_ID=...
 DARSHAN_OAUTH_GITHUB_CLIENT_SECRET=...
+DARSHAN_OAUTH_APPLE_CLIENT_ID=...
+DARSHAN_OAUTH_APPLE_TEAM_ID=...
+DARSHAN_OAUTH_APPLE_KEY_ID=...
+DARSHAN_OAUTH_DISCORD_CLIENT_ID=...
+DARSHAN_OAUTH_DISCORD_CLIENT_SECRET=...
 ```
+
+### OAuth Callback URL
+
+Configure the callback URL in your OAuth provider's settings:
+
+```
+https://your-domain.com/api/auth/callback/{provider}
+```
+
+For local development: `http://localhost:7700/api/auth/callback/google`
 
 ## Multi-Factor Authentication
 
-### TOTP (Google Authenticator)
+### TOTP (Google Authenticator, Authy)
 
 ```typescript
-// Enable MFA
+// Enable MFA -- returns a secret and QR code URI
 const { secret, qrCodeUri } = await db.auth.enableMFA();
-// Show QR code to user, then verify:
+// Show QR code to user, then verify their first code:
 await db.auth.verifyMFA({ code: '123456' });
+
+// Disable MFA
+await db.auth.disableMFA({ code: '123456' }); // requires current TOTP code
 ```
 
 ### Recovery Codes
 
-When MFA is enabled, 10 one-time recovery codes are generated. Display them once — they cannot be retrieved again.
+When MFA is enabled, 10 one-time recovery codes are generated. Display them once -- they cannot be retrieved again.
+
+```typescript
+const { recoveryCodes } = await db.auth.enableMFA();
+// recoveryCodes: ['ABCD-1234', 'EFGH-5678', ...]
+// Show these to the user and ask them to save securely
+
+// Using a recovery code instead of TOTP
+await db.auth.verifyMFA({ recoveryCode: 'ABCD-1234' });
+// This code is now consumed and cannot be reused
+```
+
+### Regenerating Recovery Codes
+
+```typescript
+const { recoveryCodes } = await db.auth.regenerateRecoveryCodes({ code: '123456' });
+// All previous recovery codes are invalidated
+```
 
 ## Session Management
+
+```mermaid
+flowchart LR
+    A[Sign In] --> B[Access Token<br/>RS256, 15 min]
+    A --> C[Refresh Token<br/>Opaque, 30 days]
+    B -->|Expires| D[Refresh Endpoint]
+    D -->|Valid refresh token| E[New Access Token]
+    D -->|Rotate| F[New Refresh Token]
+    C -->|Old token invalidated| F
+    F -->|Bind to device| G[Device Fingerprint]
+```
+
+### Token Refresh Flow
+
+The client SDK handles token refresh automatically. When the access token expires, the SDK uses the refresh token to obtain a new pair.
+
+```typescript
+// Manual refresh (usually handled by the SDK automatically)
+const { accessToken, refreshToken } = await db.auth.refresh();
+```
+
+**Refresh token rotation:** Each time a refresh token is used, a new one is issued and the old one is invalidated. This prevents token theft from being useful after the first refresh.
+
+**Device binding:** Refresh tokens are bound to a device fingerprint (User-Agent + IP range). If the fingerprint doesn't match, the refresh is rejected and all sessions for that user are revoked (potential token theft detected).
+
+### Listing and Revoking Sessions
 
 ```typescript
 // List active sessions
 const sessions = await db.auth.listSessions();
+// [
+//   { id: "sess-1", device: "Chrome on macOS", ip: "1.2.3.4", lastUsedAt: 1712300000000, current: true },
+//   { id: "sess-2", device: "Safari on iPhone", ip: "5.6.7.8", lastUsedAt: 1712290000000, current: false },
+// ]
 
 // Revoke a specific session
-await db.auth.revokeSession(sessionId);
+await db.auth.revokeSession('sess-2');
 
-// Revoke all other sessions
+// Revoke all other sessions (keep current)
 await db.auth.revokeAllSessions();
 ```
 
 ## Auth State Changes
 
 ```typescript
-db.auth.onAuthStateChange((user) => {
+// Subscribe to auth state changes
+const unsubscribe = db.auth.onAuthStateChange((user) => {
   if (user) {
     console.log('Signed in:', user.email);
   } else {
     console.log('Signed out');
   }
 });
+
+// Clean up
+unsubscribe();
 ```
 
 ## React Hook
 
 ```tsx
 function AuthButton() {
-  const { user, signIn, signOut, isLoading } = db.useAuth();
+  const { user, signIn, signOut, signUp, isLoading } = db.useAuth();
 
   if (isLoading) return <Spinner />;
-  if (user) return <button onClick={signOut}>Sign Out ({user.email})</button>;
-  return <button onClick={() => signIn({ email, password })}>Sign In</button>;
+
+  if (user) {
+    return (
+      <div>
+        <span>Signed in as {user.email}</span>
+        <button onClick={signOut}>Sign Out</button>
+      </div>
+    );
+  }
+
+  return (
+    <form onSubmit={(e) => {
+      e.preventDefault();
+      const data = new FormData(e.currentTarget);
+      signIn({ email: data.get('email') as string, password: data.get('password') as string });
+    }}>
+      <input name="email" type="email" required />
+      <input name="password" type="password" required />
+      <button type="submit">Sign In</button>
+    </form>
+  );
+}
+```
+
+## Angular Service
+
+```typescript
+import { Component, inject } from '@angular/core';
+import { DarshanAuthService } from '@darshan/angular';
+
+@Component({
+  template: `
+    @if (auth.user()) {
+      <button (click)="auth.signOut()">Sign Out ({{ auth.user()?.email }})</button>
+    } @else {
+      <button (click)="auth.signInWithOAuth('google')">Sign In with Google</button>
+    }
+  `
+})
+export class AuthComponent {
+  auth = inject(DarshanAuthService);
 }
 ```
 
@@ -109,7 +252,7 @@ Attach custom data to the user's JWT token:
 
 ```typescript
 // In a server function
-import { mutation } from '@darshan/server';
+import { mutation, v } from '@darshan/server';
 
 export const setUserRole = mutation({
   args: { userId: v.id(), role: v.string() },
@@ -125,18 +268,53 @@ Custom claims are available in permission rules via `ctx.auth`:
 ```typescript
 // darshan/permissions.ts
 delete: (ctx) => ctx.auth.role === 'admin'
+read: (ctx) => ctx.auth.plan === 'pro' || ctx.auth.plan === 'enterprise'
+```
+
+Claims are also available on the client:
+
+```typescript
+const user = db.auth.getUser();
+console.log(user.claims.role); // 'admin'
+console.log(user.claims.plan); // 'pro'
+```
+
+## Server-Side Auth (Next.js)
+
+```typescript
+// middleware.ts
+import { darshanMiddleware } from '@darshan/nextjs/middleware';
+
+export default darshanMiddleware({
+  publicRoutes: ['/', '/about', '/api/public(.*)'],
+  signInUrl: '/sign-in',
+});
+```
+
+```typescript
+// app/page.tsx (Server Component)
+import { getAuth } from '@darshan/nextjs/server';
+
+export default async function Dashboard() {
+  const auth = await getAuth();
+  if (!auth.userId) redirect('/sign-in');
+
+  return <h1>Welcome, {auth.email}</h1>;
+}
 ```
 
 ## Configuration
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `DARSHAN_JWT_SECRET` | auto-generated | RS256 signing key |
+| `DARSHAN_JWT_SECRET` | auto-generated | RS256 signing key (provide your own for multi-instance) |
 | `DARSHAN_ACCESS_TOKEN_EXPIRY` | `900` | Access token lifetime in seconds (15 min) |
 | `DARSHAN_REFRESH_TOKEN_EXPIRY` | `2592000` | Refresh token lifetime in seconds (30 days) |
 | `DARSHAN_MFA_ISSUER` | `DarshanDB` | TOTP issuer name shown in authenticator apps |
 | `DARSHAN_LOCKOUT_ATTEMPTS` | `5` | Failed login attempts before lockout |
 | `DARSHAN_LOCKOUT_DURATION` | `1800` | Lockout duration in seconds (30 min) |
+| `DARSHAN_MAGIC_LINK_EXPIRY` | `900` | Magic link token lifetime in seconds (15 min) |
+| `DARSHAN_EMAIL_FROM` | `noreply@darshandb.dev` | From address for auth emails |
 
 ---
 
