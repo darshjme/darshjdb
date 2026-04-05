@@ -172,6 +172,110 @@ fn load_oauth_providers_from_env() -> HashMap<OAuthProviderKind, GenericOAuth2Pr
         );
     }
 
+    // Microsoft (Azure AD / Entra ID)
+    if let (Ok(id), Ok(secret)) = (
+        std::env::var("DDB_OAUTH_MICROSOFT_CLIENT_ID"),
+        std::env::var("DDB_OAUTH_MICROSOFT_CLIENT_SECRET"),
+    ) {
+        let redirect = std::env::var("DDB_OAUTH_MICROSOFT_REDIRECT_URI")
+            .unwrap_or_else(|_| format!("{base_url}/api/auth/oauth/microsoft/callback"));
+        providers.insert(
+            OAuthProviderKind::Microsoft,
+            GenericOAuth2Provider::microsoft(id, secret, redirect),
+        );
+    }
+
+    // Twitter / X
+    if let (Ok(id), Ok(secret)) = (
+        std::env::var("DDB_OAUTH_TWITTER_CLIENT_ID"),
+        std::env::var("DDB_OAUTH_TWITTER_CLIENT_SECRET"),
+    ) {
+        let redirect = std::env::var("DDB_OAUTH_TWITTER_REDIRECT_URI")
+            .unwrap_or_else(|_| format!("{base_url}/api/auth/oauth/twitter/callback"));
+        providers.insert(
+            OAuthProviderKind::Twitter,
+            GenericOAuth2Provider::twitter(id, secret, redirect),
+        );
+    }
+
+    // LinkedIn
+    if let (Ok(id), Ok(secret)) = (
+        std::env::var("DDB_OAUTH_LINKEDIN_CLIENT_ID"),
+        std::env::var("DDB_OAUTH_LINKEDIN_CLIENT_SECRET"),
+    ) {
+        let redirect = std::env::var("DDB_OAUTH_LINKEDIN_REDIRECT_URI")
+            .unwrap_or_else(|_| format!("{base_url}/api/auth/oauth/linkedin/callback"));
+        providers.insert(
+            OAuthProviderKind::LinkedIn,
+            GenericOAuth2Provider::linkedin(id, secret, redirect),
+        );
+    }
+
+    // Slack
+    if let (Ok(id), Ok(secret)) = (
+        std::env::var("DDB_OAUTH_SLACK_CLIENT_ID"),
+        std::env::var("DDB_OAUTH_SLACK_CLIENT_SECRET"),
+    ) {
+        let redirect = std::env::var("DDB_OAUTH_SLACK_REDIRECT_URI")
+            .unwrap_or_else(|_| format!("{base_url}/api/auth/oauth/slack/callback"));
+        providers.insert(
+            OAuthProviderKind::Slack,
+            GenericOAuth2Provider::slack(id, secret, redirect),
+        );
+    }
+
+    // GitLab
+    if let (Ok(id), Ok(secret)) = (
+        std::env::var("DDB_OAUTH_GITLAB_CLIENT_ID"),
+        std::env::var("DDB_OAUTH_GITLAB_CLIENT_SECRET"),
+    ) {
+        let redirect = std::env::var("DDB_OAUTH_GITLAB_REDIRECT_URI")
+            .unwrap_or_else(|_| format!("{base_url}/api/auth/oauth/gitlab/callback"));
+        providers.insert(
+            OAuthProviderKind::GitLab,
+            GenericOAuth2Provider::gitlab(id, secret, redirect),
+        );
+    }
+
+    // Bitbucket
+    if let (Ok(id), Ok(secret)) = (
+        std::env::var("DDB_OAUTH_BITBUCKET_CLIENT_ID"),
+        std::env::var("DDB_OAUTH_BITBUCKET_CLIENT_SECRET"),
+    ) {
+        let redirect = std::env::var("DDB_OAUTH_BITBUCKET_REDIRECT_URI")
+            .unwrap_or_else(|_| format!("{base_url}/api/auth/oauth/bitbucket/callback"));
+        providers.insert(
+            OAuthProviderKind::Bitbucket,
+            GenericOAuth2Provider::bitbucket(id, secret, redirect),
+        );
+    }
+
+    // Facebook / Meta
+    if let (Ok(id), Ok(secret)) = (
+        std::env::var("DDB_OAUTH_FACEBOOK_CLIENT_ID"),
+        std::env::var("DDB_OAUTH_FACEBOOK_CLIENT_SECRET"),
+    ) {
+        let redirect = std::env::var("DDB_OAUTH_FACEBOOK_REDIRECT_URI")
+            .unwrap_or_else(|_| format!("{base_url}/api/auth/oauth/facebook/callback"));
+        providers.insert(
+            OAuthProviderKind::Facebook,
+            GenericOAuth2Provider::facebook(id, secret, redirect),
+        );
+    }
+
+    // Spotify
+    if let (Ok(id), Ok(secret)) = (
+        std::env::var("DDB_OAUTH_SPOTIFY_CLIENT_ID"),
+        std::env::var("DDB_OAUTH_SPOTIFY_CLIENT_SECRET"),
+    ) {
+        let redirect = std::env::var("DDB_OAUTH_SPOTIFY_REDIRECT_URI")
+            .unwrap_or_else(|_| format!("{base_url}/api/auth/oauth/spotify/callback"));
+        providers.insert(
+            OAuthProviderKind::Spotify,
+            GenericOAuth2Provider::spotify(id, secret, redirect),
+        );
+    }
+
     providers
 }
 
