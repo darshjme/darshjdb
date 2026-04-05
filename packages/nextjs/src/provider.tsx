@@ -45,9 +45,8 @@
  * ```
  */
 
-import React, { useRef, useMemo, useEffect, type ReactNode } from 'react';
-import { DarshanProvider as DarshanReactProvider, type DarshanProviderProps as DarshanReactProviderProps } from '@darshan/react';
-import { DarshanDB, type DarshanConfig } from '@darshan/client';
+import React, { type ReactNode } from 'react';
+import { DarshanProvider as DarshanReactProvider } from '@darshan/react';
 
 // ---------------------------------------------------------------------------
 // Dehydration / Hydration types
@@ -187,52 +186,22 @@ export function DarshanProvider({
     token ?? process.env.NEXT_PUBLIC_DARSHAN_TOKEN ?? undefined;
 
   // Maintain a stable client reference across renders.
-  // Recreate only if the URL or token changes.
-  const configRef = useRef<{ url: string; token?: string }>({
-    url: resolvedUrl,
-    token: resolvedToken,
-  });
+  if (!resolvedUrl) {
+    throw new Error(
+      '[DarshanDB] No URL provided. Set the `url` prop or the ' +
+        'NEXT_PUBLIC_DARSHAN_URL environment variable.',
+    );
+  }
 
-  const client = useMemo<DarshanDB>(() => {
-    configRef.current = { url: resolvedUrl, token: resolvedToken };
-
-    if (!resolvedUrl) {
-      throw new Error(
-        '[DarshanDB] No URL provided. Set the `url` prop or the ' +
-          'NEXT_PUBLIC_DARSHAN_URL environment variable.',
-      );
-    }
-
-    return new DarshanDB({
-      serverUrl: resolvedUrl,
-      appId: resolvedToken ?? 'nextjs-app',
-      ...clientConfig,
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [resolvedUrl, resolvedToken, realtime, offline]);
-
-  // Hydrate dehydrated server state into the client cache on mount
-  useEffect(() => {
-    if (!dehydratedState || !client) return;
-
-    // Hydration: client will receive dehydrated state via props
-    // The actual cache API depends on client-core implementation
-    void dehydratedState;
-  }, [dehydratedState, client]);
-
-  // Build the inner provider props
-  // DarshanDB class implements the client interface expected by the React provider
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const providerProps: DarshanReactProviderProps = {
-    client: client as any,
-    children,
-  };
-
-  return <DarshanReactProvider {...providerProps} />;
+  return (
+    <DarshanReactProvider serverUrl={resolvedUrl} appId={resolvedToken ?? 'nextjs-app'}>
+      {children}
+    </DarshanReactProvider>
+  );
 }
 
 // ---------------------------------------------------------------------------
 // Re-exports for convenience
 // ---------------------------------------------------------------------------
 
-export { DarshanProvider } from '@darshan/react';
+// React provider is wrapped by this module's DarshanProvider above
