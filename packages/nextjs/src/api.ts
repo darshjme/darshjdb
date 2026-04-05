@@ -32,8 +32,7 @@
 
 import type { NextApiRequest, NextApiResponse } from 'next';
 import type { NextRequest } from 'next/server';
-import type { DarshanDB } from '@darshan/client';
-import { getAdminDb } from './server';
+import { queryServer, mutateServer } from './server';
 import { DARSHAN_SESSION_COOKIE } from './middleware';
 
 // ---------------------------------------------------------------------------
@@ -50,16 +49,20 @@ export interface DarshanSession {
 
 /** Context injected into Pages Router API handlers by `withDarshan`. */
 export interface DarshanApiContext {
-  /** The admin DarshanDB instance. */
-  db: DarshanDB;
+  /** Query server data using DarshanQL. */
+  query: typeof queryServer;
+  /** Mutate server data. */
+  mutate: typeof mutateServer;
   /** Session information from the request cookie. */
   session: DarshanSession;
 }
 
 /** Context injected into App Router route handlers by `withDarshanRoute`. */
 export interface DarshanRouteContext {
-  /** The admin DarshanDB instance. */
-  db: DarshanDB;
+  /** Query server data using DarshanQL. */
+  query: typeof queryServer;
+  /** Mutate server data. */
+  mutate: typeof mutateServer;
   /** Session information from the request cookie. */
   session: DarshanSession;
   /** The original Next.js request object. */
@@ -214,8 +217,7 @@ export function withDarshan(
     }
 
     // Build context
-    const db = getAdminDb();
-    const context: DarshanApiContext = { db, session };
+    const context: DarshanApiContext = { query: queryServer, mutate: mutateServer, session };
 
     try {
       await handler(req, res, context);
@@ -296,9 +298,9 @@ export function withDarshanRoute(
     }
 
     // Build context
-    const db = getAdminDb();
     const context: DarshanRouteContext = {
-      db,
+      query: queryServer,
+      mutate: mutateServer,
       session,
       request,
       params: routeContext.params ?? {},
