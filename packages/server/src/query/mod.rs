@@ -248,9 +248,7 @@ pub fn plan_query(ast: &QueryAST) -> Result<QueryPlan> {
 
     // Full-text search clause (simple ILIKE across all values)
     if let Some(ref term) = ast.search {
-        sql.push_str(
-            "INNER JOIN triples t_search ON t_search.entity_id = t0.entity_id\n"
-        );
+        sql.push_str("INNER JOIN triples t_search ON t_search.entity_id = t0.entity_id\n");
         sql.push_str(&format!(
             "  AND NOT t_search.retracted\n  AND t_search.value #>> '{{}}' ILIKE ${param_idx}\n"
         ));
@@ -301,8 +299,10 @@ pub fn plan_query(ast: &QueryAST) -> Result<QueryPlan> {
         .iter()
         .map(|n| NestedPlan {
             via_attribute: n.via_attribute.clone(),
-            sql: "SELECT id, entity_id, attribute, value, value_type, tx_id, created_at, retracted \
-                 FROM triples WHERE entity_id = $1 AND NOT retracted ORDER BY attribute, tx_id DESC".to_string(),
+            sql:
+                "SELECT id, entity_id, attribute, value, value_type, tx_id, created_at, retracted \
+                 FROM triples WHERE entity_id = $1 AND NOT retracted ORDER BY attribute, tx_id DESC"
+                    .to_string(),
         })
         .collect();
 

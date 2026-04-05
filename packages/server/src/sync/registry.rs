@@ -46,10 +46,7 @@ impl SubscriptionRegistry {
     pub fn register(&self, query_hash: u64, session_id: SessionId, sub_id: SubId) {
         let handle = SubscriptionHandle { session_id, sub_id };
 
-        self.by_query
-            .entry(query_hash)
-            .or_default()
-            .insert(handle);
+        self.by_query.entry(query_hash).or_default().insert(handle);
 
         self.by_session
             .entry(session_id)
