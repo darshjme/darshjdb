@@ -19,6 +19,8 @@ pub mod log;
 pub mod webhook;
 
 use std::collections::HashMap;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
@@ -28,7 +30,7 @@ use uuid::Uuid;
 
 use crate::error::Result;
 use crate::sync::ChangeEvent;
-use crate::triple_store::PgTripleStore;
+use crate::triple_store::{PgTripleStore, TripleStore};
 
 // ---------------------------------------------------------------------------
 // Entity-level change event (hydrated from ChangeEvent + triple store)
@@ -56,7 +58,7 @@ pub struct EntityChangeEvent {
 }
 
 // ---------------------------------------------------------------------------
-// Connector trait
+// Connector trait  (dyn-compatible via Pin<Box<dyn Future>>)
 // ---------------------------------------------------------------------------
 
 /// A connector receives entity-level change events and syncs to an
@@ -64,7 +66,9 @@ pub struct EntityChangeEvent {
 ///
 /// Implementors must be `Send + Sync` so the manager can fan-out across
 /// connectors concurrently.
-#[allow(async_fn_in_trait)]
+///
+/// Methods return boxed futures for dyn-compatibility (Rust async fn in
+/// trait is not object-safe).
 pub trait Connector: Send + Sync {
     /// Human-readable name used in log spans and metrics.
     fn name(&self) -> &str;
@@ -73,15 +77,22 @@ pub trait Connector: Send + Sync {
     ///
     /// Receives the full entity (all current attributes) so connectors
     /// never need to query the triple store directly.
-    async fn on_entity_changed(&self, event: EntityChangeEvent) -> Result<()>;
+    fn on_entity_changed(
+        &self,
+        event: EntityChangeEvent,
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + '_>>;
 
     /// Called when an entity is deleted (all triples retracted).
-    async fn on_entity_deleted(&self, entity_id: Uuid, entity_type: &str) -> Result<()>;
+    fn on_entity_deleted(
+        &self,
+        entity_id: Uuid,
+        entity_type: &str,
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + '_>>;
 
     /// Called once on startup. Connectors can use this for initial sync,
     /// connection checks, or index creation.
-    async fn initialize(&self) -> Result<()> {
-        Ok(())
+    fn initialize(&self) -> Pin<Box<dyn Future<Output = Result<()>> + Send + '_>> {
+        Box::pin(async { Ok(()) })
     }
 }
 
@@ -186,10 +197,7 @@ impl ConnectorManager {
             if triples.is_empty() {
                 // Entity was fully deleted (all triples retracted).
                 for connector in &self.connectors {
-                    if let Err(e) = connector
-                        .on_entity_deleted(entity_id, &entity_type)
-                        .await
-                    {
+                    if let Err(e) = connector.on_entity_deleted(entity_id, &entity_type).await {
                         error!(
                             connector = connector.name(),
                             entity_id = %entity_id,

@@ -172,6 +172,37 @@ async fn main() -> Result<()> {
 
     tracing::info!("sync engine initialized");
 
+    // -- Connector Plugin System ----------------------------------------------
+    {
+        use darshandb_server::connectors::log::LogConnector;
+        use darshandb_server::connectors::webhook::WebhookConnector;
+        use darshandb_server::connectors::{Connector, ConnectorManager};
+
+        let mut connectors: Vec<Box<dyn Connector>> = Vec::new();
+
+        // Always register the log connector for observability.
+        connectors.push(Box::new(LogConnector::new()));
+
+        // Optionally register the webhook connector if DARSHAN_WEBHOOK_URL is set.
+        if let Some(wh) = WebhookConnector::from_env() {
+            tracing::info!("webhook connector enabled");
+            connectors.push(Box::new(wh));
+        }
+
+        if !connectors.is_empty() {
+            let manager = Arc::new(ConnectorManager::new(connectors, triple_store_arc.clone()));
+
+            // Initialize all connectors.
+            manager.initialize_all().await;
+
+            // Subscribe to the broadcast channel and spawn the fan-out loop.
+            let connector_rx = change_tx.subscribe();
+            tokio::spawn(manager.run(connector_rx));
+
+            tracing::info!("connector plugin system initialized");
+        }
+    }
+
     // -- Storage Engine -------------------------------------------------------
     let storage_dir =
         std::env::var("DARSHAN_STORAGE_DIR").unwrap_or_else(|_| "./darshan/storage".to_string());
@@ -253,6 +284,23 @@ async fn main() -> Result<()> {
         (None, None)
     };
 
+    // -- Rule Engine ----------------------------------------------------------
+    let rules_path = std::path::PathBuf::from(
+        std::env::var("DARSHAN_RULES_FILE").unwrap_or_else(|_| "./darshan/rules.json".to_string()),
+    );
+    let rules = darshandb_server::rules::load_rules_from_file(&rules_path).unwrap_or_else(|e| {
+        tracing::error!(error = %e, "failed to load rules, continuing without rule engine");
+        Vec::new()
+    });
+    let rule_engine = if rules.is_empty() {
+        None
+    } else {
+        Some(Arc::new(darshandb_server::rules::RuleEngine::new(
+            rules,
+            triple_store_arc.clone(),
+        )))
+    };
+
     // -- REST API State -------------------------------------------------------
     let mut app_state = AppState::with_pool(
         pool.clone(),
@@ -262,6 +310,9 @@ async fn main() -> Result<()> {
         rate_limiter.clone(),
         storage_engine,
     );
+    if let Some(engine) = rule_engine {
+        app_state = app_state.with_rules(engine);
+    }
     if let (Some(reg), Some(rt)) = (fn_registry, fn_runtime) {
         app_state = app_state.with_functions(reg, rt);
     }

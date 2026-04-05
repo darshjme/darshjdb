@@ -12,9 +12,11 @@
 
 pub mod api;
 pub mod auth;
+pub mod connectors;
 pub mod error;
 pub mod functions;
 pub mod query;
+pub mod rules;
 pub mod storage;
 pub mod sync;
 pub mod triple_store;

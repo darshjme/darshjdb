@@ -48,6 +48,7 @@ use crate::auth::{
 use crate::functions::registry::FunctionRegistry;
 use crate::functions::runtime::FunctionRuntime;
 use crate::query::{self, QueryResultRow};
+use crate::rules::RuleEngine;
 use crate::storage::{LocalFsBackend, StorageEngine, StorageError};
 use crate::sync::broadcaster::ChangeEvent;
 use crate::triple_store::{PgTripleStore, TripleInput, TripleStore};
@@ -95,6 +96,8 @@ pub struct AppState {
     pub oauth_providers: Arc<HashMap<OAuthProviderKind, GenericOAuth2Provider>>,
     /// HMAC secret for signing/verifying OAuth state parameters.
     pub oauth_state_secret: Arc<Vec<u8>>,
+    /// Forward-chaining rule engine for automatic triple inference.
+    pub rule_engine: Option<Arc<RuleEngine>>,
 }
 
 /// Load OAuth2 provider configurations from environment variables.
@@ -206,7 +209,14 @@ impl AppState {
             function_runtime: None,
             oauth_providers: Arc::new(load_oauth_providers_from_env()),
             oauth_state_secret: Arc::new(load_oauth_state_secret()),
+            rule_engine: None,
         }
+    }
+
+    /// Set the forward-chaining rule engine on this state.
+    pub fn with_rules(mut self, rule_engine: Arc<RuleEngine>) -> Self {
+        self.rule_engine = Some(rule_engine);
+        self
     }
 
     /// Set the function registry and runtime on this state.
@@ -256,6 +266,7 @@ impl AppState {
             function_runtime: None,
             oauth_providers: Arc::new(HashMap::new()),
             oauth_state_secret: Arc::new(b"test-oauth-state-secret-key-32b!".to_vec()),
+            rule_engine: None,
         }
     }
 }
@@ -466,6 +477,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/admin/schema", get(admin_schema))
         .route("/admin/functions", get(admin_functions))
         .route("/admin/sessions", get(admin_sessions))
+        .route("/admin/bulk-load", post(admin_bulk_load))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             require_auth_middleware,
@@ -1423,15 +1435,30 @@ async fn mutate(
             .map_err(|e| ApiError::internal(format!("Failed to write triples: {e}")))?;
     }
 
+    // Evaluate forward-chaining rules: implied triples are written in the
+    // same transaction so the entire mutation + inferences is atomic.
+    let mut implied_triples: Vec<TripleInput> = Vec::new();
+    if !all_triples.is_empty() {
+        if let Some(ref rule_engine) = state.rule_engine {
+            implied_triples = rule_engine
+                .evaluate_and_write_in_tx(&mut db_tx, &all_triples, tx_id)
+                .await
+                .map_err(|e| ApiError::internal(format!("Rule engine error: {e}")))?;
+        }
+    }
+
     // Commit the entire batch atomically.
     db_tx
         .commit()
         .await
         .map_err(|e| ApiError::internal(format!("Transaction commit failed: {e}")))?;
 
-    // Collect attributes touched (for change notification).
-    let mut touched_attributes: Vec<String> =
-        all_triples.iter().map(|t| t.attribute.clone()).collect();
+    // Collect attributes touched (for change notification), including implied.
+    let mut touched_attributes: Vec<String> = all_triples
+        .iter()
+        .chain(implied_triples.iter())
+        .map(|t| t.attribute.clone())
+        .collect();
     touched_attributes.sort();
     touched_attributes.dedup();
 
@@ -1563,6 +1590,21 @@ async fn data_create(
         .set_triples(&triples)
         .await
         .map_err(|e| ApiError::internal(format!("Failed to create entity: {e}")))?;
+
+    // Evaluate forward-chaining rules and write implied triples.
+    if let Some(ref rule_engine) = state.rule_engine {
+        let implied = rule_engine
+            .evaluate(&triples)
+            .await
+            .map_err(|e| ApiError::internal(format!("Rule engine error: {e}")))?;
+        if !implied.is_empty() {
+            let _ = state
+                .triple_store
+                .set_triples(&implied)
+                .await
+                .map_err(|e| ApiError::internal(format!("Failed to write implied triples: {e}")))?;
+        }
+    }
 
     // Emit change event for reactive subscriptions.
     let attributes: Vec<String> = triples.iter().map(|t| t.attribute.clone()).collect();
@@ -1761,6 +1803,15 @@ async fn data_patch(
         PgTripleStore::set_triples_in_tx(&mut db_tx, &triples, tid)
             .await
             .map_err(|e| ApiError::internal(format!("Failed to update entity: {e}")))?;
+
+        // Evaluate forward-chaining rules within the same transaction.
+        if let Some(ref rule_engine) = state.rule_engine {
+            let _ = rule_engine
+                .evaluate_and_write_in_tx(&mut db_tx, &triples, tid)
+                .await
+                .map_err(|e| ApiError::internal(format!("Rule engine error: {e}")))?;
+        }
+
         tid
     } else {
         0
@@ -2255,6 +2306,98 @@ async fn admin_sessions(
     let response = serde_json::json!({
         "sessions": [],
         "count": 0
+    });
+
+    Ok(negotiate_response(&headers, &response))
+}
+
+// ---------------------------------------------------------------------------
+// Bulk load
+// ---------------------------------------------------------------------------
+
+/// Request body for `POST /api/admin/bulk-load`.
+///
+/// Accepts an array of entities in the same format used by the migration
+/// scripts: each entity has a `type`, optional `id`, and a `data` map.
+/// The handler converts these into triples and uses the UNNEST-based
+/// bulk loader for 10-50x faster throughput compared to batched INSERT.
+#[derive(Deserialize)]
+struct BulkLoadRequest {
+    /// Entities to load.
+    entities: Vec<BulkLoadEntity>,
+}
+
+/// A single entity within a bulk-load request.
+#[derive(Deserialize)]
+struct BulkLoadEntity {
+    /// Entity type name (e.g. "users", "messages").
+    #[serde(rename = "type")]
+    entity_type: String,
+    /// Optional entity id; a new UUID is generated if absent.
+    id: Option<Uuid>,
+    /// Key-value data for the entity.
+    data: HashMap<String, Value>,
+}
+
+/// `POST /api/admin/bulk-load` — High-throughput data import.
+///
+/// Converts a JSON array of entities into triples and writes them using
+/// PostgreSQL UNNEST-based bulk insert. Returns the count, transaction id,
+/// duration, and throughput rate.
+async fn admin_bulk_load(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    axum::Json(body): axum::Json<BulkLoadRequest>,
+) -> Result<Response, ApiError> {
+    let _token = extract_bearer_token(&headers)?;
+    require_admin_role(&headers)?;
+
+    if body.entities.is_empty() {
+        return Err(ApiError::bad_request("At least one entity is required"));
+    }
+
+    // Convert entities to triples.
+    let mut triples: Vec<TripleInput> = Vec::new();
+
+    for entity in &body.entities {
+        validate_entity_name(&entity.entity_type)
+            .map_err(|e| ApiError::bad_request(format!("Invalid entity type: {}", e.message)))?;
+
+        let entity_id = entity.id.unwrap_or_else(Uuid::new_v4);
+
+        // Add the :db/type triple.
+        triples.push(TripleInput {
+            entity_id,
+            attribute: ":db/type".to_string(),
+            value: Value::String(entity.entity_type.clone()),
+            value_type: 0, // String
+        });
+
+        // Add a triple for each data field.
+        for (key, value) in &entity.data {
+            let value_type = infer_value_type(value);
+            triples.push(TripleInput {
+                entity_id,
+                attribute: format!("{}/{}", entity.entity_type, key),
+                value: value.clone(),
+                value_type,
+            });
+        }
+    }
+
+    let result = state
+        .triple_store
+        .bulk_load(triples)
+        .await
+        .map_err(|e| ApiError::internal(format!("Bulk load failed: {e}")))?;
+
+    let response = serde_json::json!({
+        "ok": true,
+        "entities": body.entities.len(),
+        "triples_loaded": result.triples_loaded,
+        "tx_id": result.tx_id,
+        "duration_ms": result.duration_ms,
+        "rate_per_sec": result.rate_per_sec,
     });
 
     Ok(negotiate_response(&headers, &response))

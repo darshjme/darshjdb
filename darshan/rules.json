@@ -1,0 +1,28 @@
+[
+  {
+    "name": "compute_fullName_on_firstName",
+    "pattern": { "attribute": "users/firstName" },
+    "action": {
+      "type": "compute",
+      "target": "users/fullName",
+      "computation": {
+        "type": "concat",
+        "fields": ["users/firstName", "users/lastName"],
+        "separator": " "
+      }
+    }
+  },
+  {
+    "name": "compute_fullName_on_lastName",
+    "pattern": { "attribute": "users/lastName" },
+    "action": {
+      "type": "compute",
+      "target": "users/fullName",
+      "computation": {
+        "type": "concat",
+        "fields": ["users/firstName", "users/lastName"],
+        "separator": " "
+      }
+    }
+  }
+]

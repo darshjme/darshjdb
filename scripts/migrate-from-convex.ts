@@ -186,6 +186,87 @@ async function sendBatch(
 }
 
 /* -------------------------------------------------------------------------- */
+/*  Bulk load client (UNNEST-based, 10-50x faster)                             */
+/* -------------------------------------------------------------------------- */
+
+interface BulkLoadEntity {
+  type: string;
+  id?: string;
+  data: Record<string, unknown>;
+}
+
+interface BulkLoadResponse {
+  ok: boolean;
+  entities: number;
+  triples_loaded: number;
+  tx_id: number;
+  duration_ms: number;
+  rate_per_sec: number;
+}
+
+/**
+ * Check if the server supports the bulk-load endpoint.
+ * Returns true if /api/admin/bulk-load is available.
+ */
+async function isBulkLoadAvailable(url: string, token: string): Promise<boolean> {
+  try {
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+    };
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`;
+    }
+    // Send a minimal request to probe the endpoint.
+    const resp = await fetch(`${url}/api/admin/bulk-load`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ entities: [] }),
+    });
+    // 400 = endpoint exists but rejected empty payload (expected).
+    // 404 = endpoint does not exist.
+    return resp.status !== 404;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Send entities via the bulk-load endpoint.
+ * Converts MutateOps to the BulkLoadEntity format expected by the server.
+ */
+async function sendBulkLoad(
+  url: string,
+  token: string,
+  ops: MutateOp[],
+): Promise<BulkLoadResponse> {
+  const entities: BulkLoadEntity[] = ops.map((op) => ({
+    type: op.entity,
+    id: op.id,
+    data: op.data,
+  }));
+
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+  };
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`;
+  }
+
+  const resp = await fetch(`${url}/api/admin/bulk-load`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ entities }),
+  });
+
+  if (!resp.ok) {
+    const body = await resp.text();
+    throw new Error(`Bulk load failed (${resp.status}): ${body}`);
+  }
+
+  return (await resp.json()) as BulkLoadResponse;
+}
+
+/* -------------------------------------------------------------------------- */
 /*  Progress reporting                                                         */
 /* -------------------------------------------------------------------------- */
 
@@ -220,9 +301,21 @@ async function main(): Promise<void> {
 
   console.log(`Found ${tableNames.length} table(s): ${tableNames.join(', ')}\n`);
 
+  // Detect bulk-load endpoint for 10-50x faster imports.
+  let useBulkLoad = false;
+  if (!config.dryRun) {
+    useBulkLoad = await isBulkLoadAvailable(config.url, config.token);
+    if (useBulkLoad) {
+      console.log('  [FAST] Bulk-load endpoint detected — using UNNEST-based import.\n');
+    } else {
+      console.log('  [COMPAT] Bulk-load not available — falling back to batched /api/mutate.\n');
+    }
+  }
+
   let totalDocs = 0;
   let totalOps = 0;
   let totalTx = 0;
+  let totalTriples = 0;
 
   for (const tableName of tableNames) {
     const docs = tables[tableName]!;
@@ -236,13 +329,32 @@ async function main(): Promise<void> {
     // Convert all docs to ops
     const ops = docs.map((doc) => convexDocToOp(tableName, doc));
 
-    // Send in batches
-    for (let i = 0; i < ops.length; i += config.batchSize) {
-      const batch = ops.slice(i, i + config.batchSize);
-
-      if (config.dryRun) {
+    if (config.dryRun) {
+      // Dry-run: just show progress.
+      for (let i = 0; i < ops.length; i += config.batchSize) {
         process.stdout.write(`  ${progressBar(Math.min(i + config.batchSize, ops.length), ops.length)} (dry run)\r`);
-      } else {
+      }
+    } else if (useBulkLoad) {
+      // Fast path: send entire table through bulk-load endpoint.
+      // Use larger batches (1000) since bulk-load handles them efficiently.
+      const bulkBatchSize = Math.max(config.batchSize, 1000);
+      for (let i = 0; i < ops.length; i += bulkBatchSize) {
+        const batch = ops.slice(i, i + bulkBatchSize);
+        try {
+          const result = await sendBulkLoad(config.url, config.token, batch);
+          totalTx = Math.max(totalTx, result.tx_id);
+          totalTriples += result.triples_loaded;
+        } catch (err) {
+          console.error(`\n  ERROR at bulk batch ${Math.floor(i / bulkBatchSize) + 1}: ${err}`);
+          console.error(`  Failed document IDs: ${batch.map((op) => op.id).join(', ')}`);
+          process.exit(1);
+        }
+        process.stdout.write(`  ${progressBar(Math.min(i + bulkBatchSize, ops.length), ops.length)}\r`);
+      }
+    } else {
+      // Legacy path: send in small batches via /api/mutate.
+      for (let i = 0; i < ops.length; i += config.batchSize) {
+        const batch = ops.slice(i, i + config.batchSize);
         try {
           const result = await sendBatch(config.url, config.token, batch);
           totalTx = Math.max(totalTx, result.tx);
@@ -265,6 +377,9 @@ async function main(): Promise<void> {
   console.log(`  Tables migrated: ${tableNames.length}`);
   console.log(`  Documents:       ${totalDocs}`);
   console.log(`  Operations:      ${totalOps}`);
+  if (totalTriples > 0) {
+    console.log(`  Triples loaded:  ${totalTriples} (via bulk-load)`);
+  }
   if (!config.dryRun) {
     console.log(`  Latest tx:       ${totalTx}`);
   }

@@ -8,13 +8,31 @@
 pub mod schema;
 
 use chrono::{DateTime, Utc};
+use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::Instant;
 use uuid::Uuid;
 
 use crate::error::{DarshanError, Result};
 use schema::{AttributeInfo, EntityType, ReferenceInfo, Schema, ValueType};
+
+// ── Bulk load result ───────────────────────────────────────────────
+
+/// Outcome of a [`PgTripleStore::bulk_load`] operation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BulkLoadResult {
+    /// Number of triples written.
+    pub triples_loaded: usize,
+    /// Transaction id assigned to the batch.
+    pub tx_id: i64,
+    /// Wall-clock duration of the UNNEST bulk insert in milliseconds.
+    pub duration_ms: u64,
+    /// Sustained throughput (triples per second).
+    pub rate_per_sec: f64,
+}
 
 // ── Triple ──────────────────────────────────────────────────────────
 
@@ -301,6 +319,81 @@ impl PgTripleStore {
         .await?;
         Ok(triples)
     }
+
+    /// Load triples using PostgreSQL UNNEST-based bulk insert for maximum
+    /// throughput. 10-50x faster than individual INSERT statements because
+    /// the entire batch is sent as a single query with array parameters,
+    /// eliminating per-row round-trip overhead and allowing Postgres to
+    /// optimise its WAL writes.
+    ///
+    /// The method:
+    /// 1. Validates every input up-front (fails fast, no partial writes).
+    /// 2. Allocates a single transaction id for the whole batch.
+    /// 3. Decomposes the `Vec<TripleInput>` into columnar arrays.
+    /// 4. Executes one `INSERT INTO triples ... SELECT ... FROM UNNEST(...)`.
+    /// 5. Returns a [`BulkLoadResult`] with count, tx_id, timing, and rate.
+    pub async fn bulk_load(&self, triples: Vec<TripleInput>) -> Result<BulkLoadResult> {
+        if triples.is_empty() {
+            return Err(DarshanError::InvalidQuery(
+                "cannot bulk-load an empty triple batch".into(),
+            ));
+        }
+
+        // Validate all inputs before touching the database.
+        for t in &triples {
+            t.validate()?;
+        }
+
+        let count = triples.len();
+        let start = Instant::now();
+
+        // Allocate a single tx_id for the entire bulk load.
+        let tx_id = self.next_tx_id().await?;
+
+        // Decompose into columnar arrays for UNNEST.
+        let mut entity_ids: Vec<Uuid> = Vec::with_capacity(count);
+        let mut attributes: Vec<String> = Vec::with_capacity(count);
+        let mut values: Vec<serde_json::Value> = Vec::with_capacity(count);
+        let mut value_types: Vec<i16> = Vec::with_capacity(count);
+
+        for t in triples {
+            entity_ids.push(t.entity_id);
+            attributes.push(t.attribute);
+            values.push(t.value);
+            value_types.push(t.value_type);
+        }
+
+        // Single-query bulk insert using UNNEST — Postgres processes all
+        // rows in one shot, dramatically reducing parse/plan/WAL overhead.
+        sqlx::query(
+            r#"
+            INSERT INTO triples (entity_id, attribute, value, value_type, tx_id)
+            SELECT * FROM UNNEST($1::uuid[], $2::text[], $3::jsonb[], $4::smallint[], $5::bigint[])
+            "#,
+        )
+        .bind(&entity_ids)
+        .bind(&attributes)
+        .bind(&values)
+        .bind(&value_types)
+        .bind(&vec![tx_id; count])
+        .execute(&self.pool)
+        .await?;
+
+        let elapsed = start.elapsed();
+        let duration_ms = elapsed.as_millis() as u64;
+        let rate_per_sec = if duration_ms > 0 {
+            (count as f64) / (duration_ms as f64 / 1000.0)
+        } else {
+            count as f64 // sub-millisecond => report count as rate
+        };
+
+        Ok(BulkLoadResult {
+            triples_loaded: count,
+            tx_id,
+            duration_ms,
+            rate_per_sec,
+        })
+    }
 }
 
 impl TripleStore for PgTripleStore {
@@ -499,6 +592,316 @@ impl TripleStore for PgTripleStore {
         // Filter out triples that were retracted as of that tx.
         let active: Vec<Triple> = triples.into_iter().filter(|t| !t.retracted).collect();
         Ok(active)
+    }
+}
+
+// ── Entity Pool ────────────────────────────────────────────────────
+//
+// Maps external UUIDs to compact internal i64 IDs. This is the core
+// of dictionary encoding from Ontotext GraphDB — all index lookups
+// become integer comparisons instead of 16-byte UUID comparisons.
+//
+// Hot entries are cached in a lock-free DashMap so repeated lookups
+// never touch Postgres.
+
+/// Maps external UUIDs to internal integer IDs for fast index lookups.
+#[derive(Clone)]
+pub struct EntityPool {
+    pool: PgPool,
+    /// UUID -> internal_id cache (hot path, lock-free).
+    fwd: Arc<DashMap<Uuid, i64>>,
+    /// internal_id -> UUID reverse cache.
+    rev: Arc<DashMap<i64, Uuid>>,
+}
+
+impl EntityPool {
+    /// Create a new entity pool backed by the given Postgres connection.
+    pub fn new(pool: PgPool) -> Self {
+        Self {
+            pool,
+            fwd: Arc::new(DashMap::new()),
+            rev: Arc::new(DashMap::new()),
+        }
+    }
+
+    /// Ensure the entity_pool table exists (idempotent).
+    pub async fn ensure_schema(&self) -> Result<()> {
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS entity_pool (
+                internal_id BIGSERIAL PRIMARY KEY,
+                external_id UUID NOT NULL UNIQUE
+            );
+            CREATE INDEX IF NOT EXISTS idx_entity_pool_external
+                ON entity_pool (external_id);
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Return the internal id for a UUID, creating a new mapping if needed.
+    ///
+    /// Uses INSERT ... ON CONFLICT DO NOTHING + a follow-up SELECT to
+    /// handle concurrent inserts without serialization errors.
+    pub async fn get_or_create(&self, uuid: Uuid) -> Result<i64> {
+        // Fast path: check cache first.
+        if let Some(id) = self.fwd.get(&uuid) {
+            return Ok(*id);
+        }
+
+        // Attempt insert; ignore conflict if another connection raced us.
+        sqlx::query("INSERT INTO entity_pool (external_id) VALUES ($1) ON CONFLICT DO NOTHING")
+            .bind(uuid)
+            .execute(&self.pool)
+            .await?;
+
+        // Always SELECT — either we just inserted or the row existed.
+        let row: (i64,) =
+            sqlx::query_as("SELECT internal_id FROM entity_pool WHERE external_id = $1")
+                .bind(uuid)
+                .fetch_one(&self.pool)
+                .await?;
+
+        let internal_id = row.0;
+        self.fwd.insert(uuid, internal_id);
+        self.rev.insert(internal_id, uuid);
+        Ok(internal_id)
+    }
+
+    /// Resolve an internal id back to its external UUID.
+    pub async fn resolve(&self, internal_id: i64) -> Result<Uuid> {
+        // Fast path: check reverse cache.
+        if let Some(uuid) = self.rev.get(&internal_id) {
+            return Ok(*uuid);
+        }
+
+        let row: (Uuid,) =
+            sqlx::query_as("SELECT external_id FROM entity_pool WHERE internal_id = $1")
+                .bind(internal_id)
+                .fetch_one(&self.pool)
+                .await
+                .map_err(|e| match e {
+                    sqlx::Error::RowNotFound => DarshanError::Internal(format!(
+                        "entity pool: no mapping for internal_id {internal_id}"
+                    )),
+                    other => DarshanError::Database(other),
+                })?;
+
+        let uuid = row.0;
+        self.fwd.insert(uuid, internal_id);
+        self.rev.insert(internal_id, uuid);
+        Ok(uuid)
+    }
+
+    /// Batch-resolve a slice of UUIDs to internal ids, creating mappings
+    /// for any that don't yet exist. Returns ids in the same order as input.
+    pub async fn batch_get_or_create(&self, uuids: &[Uuid]) -> Result<Vec<i64>> {
+        if uuids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Separate cached hits from misses.
+        let mut results = vec![0i64; uuids.len()];
+        let mut miss_indices = Vec::new();
+        let mut miss_uuids = Vec::new();
+
+        for (i, uuid) in uuids.iter().enumerate() {
+            if let Some(id) = self.fwd.get(uuid) {
+                results[i] = *id;
+            } else {
+                miss_indices.push(i);
+                miss_uuids.push(*uuid);
+            }
+        }
+
+        if miss_uuids.is_empty() {
+            return Ok(results);
+        }
+
+        // Bulk insert misses (ignore conflicts).
+        let mut tx = self.pool.begin().await?;
+        for uuid in &miss_uuids {
+            sqlx::query("INSERT INTO entity_pool (external_id) VALUES ($1) ON CONFLICT DO NOTHING")
+                .bind(uuid)
+                .execute(&mut *tx)
+                .await?;
+        }
+        tx.commit().await?;
+
+        // Bulk fetch all the ids we need.
+        let rows: Vec<(Uuid, i64)> = sqlx::query_as(
+            "SELECT external_id, internal_id FROM entity_pool WHERE external_id = ANY($1)",
+        )
+        .bind(&miss_uuids)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let fetched: HashMap<Uuid, i64> = rows.into_iter().collect();
+
+        for (idx, uuid) in miss_indices.iter().zip(miss_uuids.iter()) {
+            let internal_id = *fetched.get(uuid).ok_or_else(|| {
+                DarshanError::Internal(format!(
+                    "entity pool: batch insert succeeded but SELECT missed UUID {uuid}"
+                ))
+            })?;
+            results[*idx] = internal_id;
+            self.fwd.insert(*uuid, internal_id);
+            self.rev.insert(internal_id, *uuid);
+        }
+
+        Ok(results)
+    }
+
+    /// Batch-resolve internal ids back to UUIDs. Returns UUIDs in the
+    /// same order as input.
+    pub async fn batch_resolve(&self, ids: &[i64]) -> Result<Vec<Uuid>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut results = vec![Uuid::nil(); ids.len()];
+        let mut miss_indices = Vec::new();
+        let mut miss_ids = Vec::new();
+
+        for (i, id) in ids.iter().enumerate() {
+            if let Some(uuid) = self.rev.get(id) {
+                results[i] = *uuid;
+            } else {
+                miss_indices.push(i);
+                miss_ids.push(*id);
+            }
+        }
+
+        if miss_ids.is_empty() {
+            return Ok(results);
+        }
+
+        let rows: Vec<(i64, Uuid)> = sqlx::query_as(
+            "SELECT internal_id, external_id FROM entity_pool WHERE internal_id = ANY($1)",
+        )
+        .bind(&miss_ids)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let fetched: HashMap<i64, Uuid> = rows.into_iter().collect();
+
+        for (idx, id) in miss_indices.iter().zip(miss_ids.iter()) {
+            let uuid = *fetched.get(id).ok_or_else(|| {
+                DarshanError::Internal(format!("entity pool: no mapping for internal_id {id}"))
+            })?;
+            results[*idx] = uuid;
+            self.fwd.insert(uuid, *id);
+            self.rev.insert(*id, uuid);
+        }
+
+        Ok(results)
+    }
+}
+
+// ── Attribute Pool ─────────────────────────────────────────────────
+//
+// Maps attribute name strings (e.g. "user/email") to compact i32 IDs.
+// Same dictionary-encoding technique but for the attribute dimension.
+
+/// Maps attribute name strings to internal integer IDs.
+#[derive(Clone)]
+pub struct AttributePool {
+    pool: PgPool,
+    /// name -> internal_id cache.
+    fwd: Arc<DashMap<String, i32>>,
+    /// internal_id -> name reverse cache.
+    rev: Arc<DashMap<i32, String>>,
+}
+
+impl AttributePool {
+    /// Create a new attribute pool backed by the given Postgres connection.
+    pub fn new(pool: PgPool) -> Self {
+        Self {
+            pool,
+            fwd: Arc::new(DashMap::new()),
+            rev: Arc::new(DashMap::new()),
+        }
+    }
+
+    /// Ensure the attribute_pool table exists (idempotent).
+    pub async fn ensure_schema(&self) -> Result<()> {
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS attribute_pool (
+                internal_id SERIAL PRIMARY KEY,
+                name TEXT NOT NULL UNIQUE
+            );
+            CREATE INDEX IF NOT EXISTS idx_attribute_pool_name
+                ON attribute_pool (name);
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Return the internal id for an attribute name, creating a new mapping if needed.
+    pub async fn get_or_create(&self, name: &str) -> Result<i32> {
+        // Fast path: check cache.
+        if let Some(id) = self.fwd.get(name) {
+            return Ok(*id);
+        }
+
+        sqlx::query("INSERT INTO attribute_pool (name) VALUES ($1) ON CONFLICT DO NOTHING")
+            .bind(name)
+            .execute(&self.pool)
+            .await?;
+
+        let row: (i32,) = sqlx::query_as("SELECT internal_id FROM attribute_pool WHERE name = $1")
+            .bind(name)
+            .fetch_one(&self.pool)
+            .await?;
+
+        let internal_id = row.0;
+        self.fwd.insert(name.to_string(), internal_id);
+        self.rev.insert(internal_id, name.to_string());
+        Ok(internal_id)
+    }
+
+    /// Resolve an internal id back to its attribute name string.
+    pub async fn resolve(&self, internal_id: i32) -> Result<String> {
+        // Fast path: check reverse cache.
+        if let Some(name) = self.rev.get(&internal_id) {
+            return Ok(name.clone());
+        }
+
+        let row: (String,) =
+            sqlx::query_as("SELECT name FROM attribute_pool WHERE internal_id = $1")
+                .bind(internal_id)
+                .fetch_one(&self.pool)
+                .await
+                .map_err(|e| match e {
+                    sqlx::Error::RowNotFound => DarshanError::Internal(format!(
+                        "attribute pool: no mapping for internal_id {internal_id}"
+                    )),
+                    other => DarshanError::Database(other),
+                })?;
+
+        let name = row.0;
+        self.fwd.insert(name.clone(), internal_id);
+        self.rev.insert(internal_id, name.clone());
+        Ok(name)
+    }
+}
+
+// ── Pool accessors on PgTripleStore ────────────────────────────────
+
+impl PgTripleStore {
+    /// Create an [`EntityPool`] sharing this store's connection pool.
+    pub fn entity_pool(&self) -> EntityPool {
+        EntityPool::new(self.pool.clone())
+    }
+
+    /// Create an [`AttributePool`] sharing this store's connection pool.
+    pub fn attribute_pool(&self) -> AttributePool {
+        AttributePool::new(self.pool.clone())
     }
 }
 
