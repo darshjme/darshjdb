@@ -35,7 +35,7 @@ TIMEOUT_PID=$!
 BASE_URL="${DARSHAN_URL:-http://localhost:7700}"
 API_URL="$BASE_URL/api"
 DB_URL="${DATABASE_URL:-postgres://darshan:darshan@localhost:5432/darshandb}"
-SERVER_PORT="${DARSHAN_PORT:-7700}"
+SERVER_PORT="${DDB_PORT:-7700}"
 SERVER_PID=""
 POSTGRES_CONTAINER="darshandb-e2e-postgres"
 PASSED=0
@@ -181,8 +181,8 @@ step "Building DarshanDB server"
 if [ "${SKIP_BUILD:-0}" = "1" ]; then
     log "SKIP_BUILD=1, assuming binary already built"
 else
-    log "cargo build --bin darshandb-server (this may take a while on first run)"
-    cargo build --bin darshandb-server 2>&1 | tail -5
+    log "cargo build --bin ddb-server (this may take a while on first run)"
+    cargo build --bin ddb-server 2>&1 | tail -5
     log "Build complete"
 fi
 
@@ -195,8 +195,8 @@ step "Starting DarshanDB server"
 # Find the server binary — prefer release, fall back to debug
 SERVER_BIN=""
 for candidate in \
-    ./target/release/darshandb-server \
-    ./target/debug/darshandb-server; do
+    ./target/release/ddb-server \
+    ./target/debug/ddb-server; do
     if [ -x "$candidate" ]; then
         SERVER_BIN="$candidate"
         break
@@ -206,18 +206,18 @@ done
 if [ -z "$SERVER_BIN" ]; then
     log "No pre-built binary found, using cargo run"
     DATABASE_URL="$DB_URL" \
-    DARSHAN_PORT="$SERVER_PORT" \
-    DARSHAN_DEV=1 \
-    DARSHAN_JWT_SECRET="e2e-test-secret-do-not-use-in-production" \
+    DDB_PORT="$SERVER_PORT" \
+    DDB_DEV=1 \
+    DDB_JWT_SECRET="e2e-test-secret-do-not-use-in-production" \
     RUST_LOG="info" \
-        cargo run --bin darshandb-server &
+        cargo run --bin ddb-server &
     SERVER_PID=$!
 else
     log "Using binary: $SERVER_BIN"
     DATABASE_URL="$DB_URL" \
-    DARSHAN_PORT="$SERVER_PORT" \
-    DARSHAN_DEV=1 \
-    DARSHAN_JWT_SECRET="e2e-test-secret-do-not-use-in-production" \
+    DDB_PORT="$SERVER_PORT" \
+    DDB_DEV=1 \
+    DDB_JWT_SECRET="e2e-test-secret-do-not-use-in-production" \
     RUST_LOG="info" \
         "$SERVER_BIN" &
     SERVER_PID=$!

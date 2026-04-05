@@ -8,7 +8,7 @@
 #
 # Prerequisites:
 #   1. Postgres running (docker compose up postgres -d)
-#   2. Server running   (cargo run --bin darshandb-server)
+#   2. Server running   (cargo run --bin ddb-server)
 #
 # Usage:
 #   ./examples/curl-scripts/e2e-demo.sh

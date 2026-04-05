@@ -566,7 +566,7 @@ pub fn build_router(state: AppState) -> Router {
 
 /// Ensure the `users` and `sessions` tables exist for the auth subsystem.
 pub async fn ensure_auth_schema(pool: &PgPool) -> std::result::Result<(), sqlx::Error> {
-    sqlx::query(
+    sqlx::raw_sql(
         r#"
         CREATE TABLE IF NOT EXISTS users (
             id              UUID PRIMARY KEY,

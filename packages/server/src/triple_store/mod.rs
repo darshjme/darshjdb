@@ -190,7 +190,7 @@ impl PgTripleStore {
     /// Create the `triples` table and all supporting indexes if they
     /// do not already exist. This is idempotent.
     async fn ensure_schema(&self) -> Result<()> {
-        sqlx::query(
+        sqlx::raw_sql(
             r#"
             CREATE TABLE IF NOT EXISTS triples (
                 id          BIGSERIAL PRIMARY KEY,
@@ -778,7 +778,7 @@ impl EntityPool {
 
     /// Ensure the entity_pool table exists (idempotent).
     pub async fn ensure_schema(&self) -> Result<()> {
-        sqlx::query(
+        sqlx::raw_sql(
             r#"
             CREATE TABLE IF NOT EXISTS entity_pool (
                 internal_id BIGSERIAL PRIMARY KEY,
@@ -979,7 +979,7 @@ impl AttributePool {
 
     /// Ensure the attribute_pool table exists (idempotent).
     pub async fn ensure_schema(&self) -> Result<()> {
-        sqlx::query(
+        sqlx::raw_sql(
             r#"
             CREATE TABLE IF NOT EXISTS attribute_pool (
                 internal_id SERIAL PRIMARY KEY,
