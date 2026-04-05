@@ -1860,7 +1860,9 @@ async fn data_create(
     }
 
     let id = Uuid::new_v4();
-    let obj = body.as_object().unwrap();
+    let obj = body
+        .as_object()
+        .ok_or_else(|| ApiError::bad_request("Request body must be a JSON object"))?;
 
     // Extract optional TTL from the request body ($ttl key).
     let ttl_seconds: Option<i64> = obj.get("$ttl").and_then(|v| v.as_i64());
@@ -2090,7 +2092,9 @@ async fn data_patch(
         return Err(ApiError::bad_request("Request body must be a JSON object"));
     }
 
-    let obj = body.as_object().unwrap();
+    let obj = body
+        .as_object()
+        .ok_or_else(|| ApiError::bad_request("Request body must be a JSON object"))?;
 
     // Extract optional TTL from the request body ($ttl key).
     // $ttl: positive => set/extend TTL, -1 => remove TTL (persist forever).

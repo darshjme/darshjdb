@@ -114,7 +114,7 @@ pub fn merkle_root(triples: &[Triple]) -> [u8; 64] {
     while hashes.len() > 1 {
         // If odd number of leaves, duplicate the last (Bitcoin convention).
         if !hashes.len().is_multiple_of(2) {
-            let last = *hashes.last().unwrap();
+            let last = *hashes.last().expect("hashes is non-empty in merkle loop");
             hashes.push(last);
         }
 
@@ -157,7 +157,9 @@ pub fn merkle_root_from_inputs(inputs: &[TripleInput], tx_id: i64) -> [u8; 64] {
 
     while hashes.len() > 1 {
         if !hashes.len().is_multiple_of(2) {
-            let last = *hashes.last().unwrap();
+            let last = *hashes
+                .last()
+                .expect("hashes is non-empty in merkle_root_from_inputs loop");
             hashes.push(last);
         }
 
@@ -215,7 +217,9 @@ pub fn generate_proof(target: &Triple, all_triples: &[Triple]) -> Option<MerkleP
     // Walk up the tree, collecting sibling hashes.
     while hashes.len() > 1 {
         if !hashes.len().is_multiple_of(2) {
-            let last = *hashes.last().unwrap();
+            let last = *hashes
+                .last()
+                .expect("hashes is non-empty in generate_proof loop");
             hashes.push(last);
         }
 

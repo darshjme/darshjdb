@@ -355,7 +355,7 @@ async fn execute_batch_mutate(
             }
         }
     }
-    let tx_id = shared_tx_id.unwrap();
+    let tx_id = shared_tx_id.expect("shared_tx_id must be Some after allocation above");
 
     let mut triples: Vec<TripleInput> = Vec::new();
     let mut entity_ids: Vec<Uuid> = Vec::new();
@@ -829,7 +829,17 @@ pub async fn parallel_batch_handler(
     }
 
     // Unwrap results (all slots should be filled).
-    let results: Vec<BatchOpResult> = results.into_iter().map(|r| r.unwrap()).collect();
+    let results: Vec<BatchOpResult> = results
+        .into_iter()
+        .map(|r| {
+            r.unwrap_or_else(|| BatchOpResult {
+                id: String::new(),
+                status: 500,
+                data: None,
+                error: Some("Internal error: batch slot was not filled".to_string()),
+            })
+        })
+        .collect();
 
     let duration_us = batch_start.elapsed().as_micros() as u64;
     let duration_ms = batch_start.elapsed().as_secs_f64() * 1000.0;
