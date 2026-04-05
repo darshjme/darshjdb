@@ -1743,10 +1743,11 @@ async fn mutate(
     state.pool_stats.record(mutate_start.elapsed());
 
     // Collect attributes touched (for change notification), including implied.
+    // Drain the vecs to move strings instead of cloning -- they are not used after this.
     let mut touched_attributes: Vec<String> = all_triples
-        .iter()
-        .chain(implied_triples.iter())
-        .map(|t| t.attribute.clone())
+        .into_iter()
+        .chain(implied_triples)
+        .map(|t| t.attribute)
         .collect();
     touched_attributes.sort();
     touched_attributes.dedup();
@@ -1915,7 +1916,8 @@ async fn data_create(
     state.query_cache.invalidate_by_entity_type(&entity);
 
     // Emit change event for reactive subscriptions.
-    let attributes: Vec<String> = triples.iter().map(|t| t.attribute.clone()).collect();
+    // Move attribute strings out of triples (no longer needed) to avoid cloning.
+    let attributes: Vec<String> = triples.into_iter().map(|t| t.attribute).collect();
     let _ = state.change_tx.send(ChangeEvent {
         tx_id,
         entity_ids: vec![id.to_string()],
@@ -2172,7 +2174,7 @@ async fn data_patch(
 
     // Emit change event for reactive subscriptions.
     if tx_id > 0 {
-        let attributes: Vec<String> = triples.iter().map(|t| t.attribute.clone()).collect();
+        let attributes: Vec<String> = triples.into_iter().map(|t| t.attribute).collect();
         let _ = state.change_tx.send(ChangeEvent {
             tx_id,
             entity_ids: vec![id.to_string()],
@@ -2256,8 +2258,6 @@ async fn data_delete(
         }
     }
 
-    let deleted_attributes: Vec<String> = existing.iter().map(|t| t.attribute.clone()).collect();
-
     // Retract all triples in a single transaction so the delete is atomic.
     let mut db_tx = state
         .triple_store
@@ -2283,12 +2283,15 @@ async fn data_delete(
     // Invalidate hot cache for the affected entity type.
     state.query_cache.invalidate_by_entity_type(&entity);
 
+    // Move attribute strings out of existing (no longer needed) to avoid cloning.
+    let deleted_attributes: Vec<String> = existing.into_iter().map(|t| t.attribute).collect();
+
     // Emit change event for reactive subscriptions.
     let _ = state.change_tx.send(ChangeEvent {
         tx_id: del_tx_id,
         entity_ids: vec![id.to_string()],
         attributes: deleted_attributes,
-        entity_type: Some(entity.clone()),
+        entity_type: Some(entity),
         actor_id: None,
     });
 
