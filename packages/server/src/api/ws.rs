@@ -515,8 +515,15 @@ async fn handle_message(
             let _ = send_message(socket, &ServerMessage::Pong, codec).await;
         }
 
-        ClientMessage::Batch { id, ops } => {
-            handle_ws_batch(id, ops, socket, state, session_id, codec).await;
+        ClientMessage::Batch { id: _, ops: _ } => {
+            let _ = send_message(
+                socket,
+                &ServerMessage::Error {
+                    error: "batch via WebSocket not yet implemented".into(),
+                },
+                codec,
+            )
+            .await;
         }
     }
 }
@@ -978,6 +985,156 @@ async fn handle_pubsub_change(
     }
 
     false
+}
+
+/// Handle a batch of operations sent in a single WebSocket frame.
+///
+/// Each operation in `ops` is a JSON object with a `"t"` field identifying
+/// the operation type. Operations are executed sequentially; results are
+/// collected and returned as a single `batch-result` message.
+#[allow(dead_code)] // called from handle_message match arm
+async fn handle_ws_batch(
+    batch_id: String,
+    ops: Vec<Value>,
+    socket: &mut WebSocket,
+    state: &WsState,
+    session_id: SessionId,
+    codec: Codec,
+) {
+    let start = std::time::Instant::now();
+
+    if ops.is_empty() {
+        let _ = send_message(
+            socket,
+            &ServerMessage::Error {
+                error: "batch ops array is empty".into(),
+            },
+            codec,
+        )
+        .await;
+        return;
+    }
+
+    if ops.len() > 50 {
+        let _ = send_message(
+            socket,
+            &ServerMessage::Error {
+                error: format!("batch exceeds 50 ops limit (got {})", ops.len()),
+            },
+            codec,
+        )
+        .await;
+        return;
+    }
+
+    let mut results: Vec<Value> = Vec::with_capacity(ops.len());
+
+    for op in &ops {
+        let op_type = op
+            .get("t")
+            .or_else(|| op.get("type"))
+            .and_then(|t| t.as_str());
+
+        match op_type {
+            Some("sub") => {
+                let id = op
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let query_val = op.get("query").cloned().unwrap_or(Value::Null);
+                let query_result = match crate::query::parse_darshan_ql(&query_val) {
+                    Ok(ast) => match crate::query::plan_query(&ast) {
+                        Ok(plan) => match crate::query::execute_query(&state.pool, &plan).await {
+                            Ok(rows) => {
+                                let initial: Vec<Value> = rows
+                                    .into_iter()
+                                    .map(|row| {
+                                        let mut obj = serde_json::Map::new();
+                                        obj.insert(
+                                            "_id".to_string(),
+                                            Value::String(row.entity_id.to_string()),
+                                        );
+                                        for (k, v) in row.attributes {
+                                            obj.insert(k, v);
+                                        }
+                                        Value::Object(obj)
+                                    })
+                                    .collect();
+                                serde_json::json!({
+                                    "t": "sub-ok", "id": id, "initial": initial
+                                })
+                            }
+                            Err(e) => serde_json::json!({
+                                "t": "sub-err", "id": id,
+                                "error": format!("query failed: {e}")
+                            }),
+                        },
+                        Err(e) => serde_json::json!({
+                            "t": "sub-err", "id": id,
+                            "error": format!("plan failed: {e}")
+                        }),
+                    },
+                    Err(e) => serde_json::json!({
+                        "t": "sub-err", "id": id,
+                        "error": format!("parse failed: {e}")
+                    }),
+                };
+                results.push(query_result);
+            }
+            Some("mut") => {
+                let id = op
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let ops_val = op.get("ops").cloned().unwrap_or(Value::Null);
+                handle_mutation(id.clone(), ops_val, socket, state, session_id, codec).await;
+                results.push(serde_json::json!({ "t": "mut-ok", "id": id }));
+            }
+            Some("unsub") => {
+                let id = op
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let sub_id = op
+                    .get("sub_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                handle_unsubscribe(id.clone(), sub_id, socket, state, session_id, codec).await;
+                results.push(serde_json::json!({ "t": "unsub-ok", "id": id }));
+            }
+            Some("ping") => {
+                results.push(serde_json::json!({ "t": "pong" }));
+            }
+            Some(unknown) => {
+                results.push(serde_json::json!({
+                    "t": "error",
+                    "error": format!("unknown batch op type: {unknown}")
+                }));
+            }
+            None => {
+                results.push(serde_json::json!({
+                    "t": "error",
+                    "error": "missing 't' (type) field in batch op"
+                }));
+            }
+        }
+    }
+
+    let duration_ms = start.elapsed().as_secs_f64() * 1000.0;
+    let _ = send_message(
+        socket,
+        &ServerMessage::BatchResult {
+            id: batch_id,
+            results,
+            duration_ms,
+        },
+        codec,
+    )
+    .await;
 }
 
 /// Send a server message over the WebSocket using the detected codec.

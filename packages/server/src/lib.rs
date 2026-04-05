@@ -11,6 +11,7 @@
 //! - [`query`] — DarshanQL parsing, planning, execution, and caching.
 
 pub mod api;
+pub mod audit;
 pub mod auth;
 pub mod cache;
 pub mod connectors;

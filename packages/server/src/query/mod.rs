@@ -4,6 +4,7 @@
 //! by Datomic pull and GraphQL. The engine converts these into SQL plans
 //! that join across the `triples` table, caching plan shapes in an LRU.
 
+pub mod parallel;
 pub mod reactive;
 
 use lru::LruCache;
