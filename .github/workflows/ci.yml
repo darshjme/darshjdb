@@ -53,14 +53,12 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - name: Typecheck
-        run: npm run typecheck --workspaces --if-present
+      - name: Build (generates types for cross-package refs)
+        run: npm run build --workspaces --if-present
       - name: Lint
         run: npm run lint --workspaces --if-present
       - name: Test
         run: npm test --workspaces --if-present
-      - name: Build
-        run: npm run build --workspaces --if-present
 
   php:
     name: PHP (test)
