@@ -30,7 +30,7 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@darshan/client": "workspace:*"
+    "@darshan/client": "*"
   },
   "peerDependencies": {
     "react": ">=18.0.0"

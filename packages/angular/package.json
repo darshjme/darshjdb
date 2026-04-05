@@ -30,7 +30,7 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@darshan/client": "workspace:*"
+    "@darshan/client": "*"
   },
   "peerDependencies": {
     "@angular/common": ">=16.0.0",

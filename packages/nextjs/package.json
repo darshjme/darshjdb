@@ -80,8 +80,8 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@darshan/client": "workspace:*",
-    "@darshan/react": "workspace:*"
+    "@darshan/client": "*",
+    "@darshan/react": "*"
   },
   "peerDependencies": {
     "next": ">=13.0.0",
