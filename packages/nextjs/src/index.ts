@@ -29,11 +29,10 @@
 export {
   queryServer,
   mutateServer,
-  adminDb,
-  getAdminDb,
+  callFunction,
   type DarshanQuery,
   type QueryServerOptions,
-  type MutateServerFn,
+  type MutationOp,
 } from './server';
 
 // ---------------------------------------------------------------------------
