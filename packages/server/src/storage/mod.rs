@@ -1315,8 +1315,8 @@ mod tests {
     // S3 backend path validation
     // -----------------------------------------------------------------------
 
-    #[test]
-    fn s3_effective_key_rejects_traversal() {
+    #[tokio::test]
+    async fn s3_effective_key_rejects_traversal() {
         let backend = S3Backend::new(S3Config {
             endpoint: "https://s3.example.com".into(),
             bucket: "test".into(),
@@ -1325,7 +1325,8 @@ mod tests {
             secret_access_key: "secret".into(),
             prefix: Some("data".into()),
             path_style: false,
-        });
+        })
+        .await;
         assert!(backend.effective_key("../../../etc/passwd").is_err());
         assert!(backend.effective_key("").is_err());
         assert!(backend.effective_key("/absolute").is_err());
