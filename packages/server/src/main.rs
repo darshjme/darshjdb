@@ -90,11 +90,16 @@ async fn main() -> Result<()> {
 
     tracing::info!("database connection pool established");
 
-    // -- Triple Store ---------------------------------------------------------
+    // -- Schema Creation (serialized with advisory lock) -----------------------
+    // Prevent concurrent connections from deadlocking on DDL.
+    sqlx::query("SELECT pg_advisory_lock(42)")
+        .execute(&pool)
+        .await
+        .map_err(ddb_server::error::DarshJError::Database)?;
+
     let triple_store = ddb_server::triple_store::PgTripleStore::new(pool.clone()).await?;
     tracing::info!("triple store initialized (schema ensured)");
 
-    // -- Auth Schema (users + sessions tables) --------------------------------
     ddb_server::api::rest::ensure_auth_schema(&pool)
         .await
         .map_err(|e| {
@@ -102,6 +107,11 @@ async fn main() -> Result<()> {
             ddb_server::error::DarshJError::Database(e)
         })?;
     tracing::info!("auth schema ensured (users + sessions tables)");
+
+    sqlx::query("SELECT pg_advisory_unlock(42)")
+        .execute(&pool)
+        .await
+        .map_err(ddb_server::error::DarshJError::Database)?;
 
     // -- Auth Engine ----------------------------------------------------------
     let key_manager = match (&jwt_private_key_path, &jwt_public_key_path) {
