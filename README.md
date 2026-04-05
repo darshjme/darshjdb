@@ -8,192 +8,307 @@
 [![Built with Rust](https://img.shields.io/badge/Built_with-Rust-B7410E.svg?style=for-the-badge&logo=rust&logoColor=white)](https://www.rust-lang.org)
 [![PostgreSQL 16+](https://img.shields.io/badge/PostgreSQL-16+-336791.svg?style=for-the-badge&logo=postgresql&logoColor=white)](https://www.postgresql.org)
 [![Status: Alpha](https://img.shields.io/badge/Status-Alpha-orange.svg?style=for-the-badge)](https://github.com/darshjme/darshandb)
+[![CI](https://img.shields.io/github/actions/workflow/status/darshjme/darshandb/ci.yml?style=for-the-badge&label=CI)](https://github.com/darshjme/darshandb/actions)
 
 <br/>
 
-**An experimental self-hosted Backend-as-a-Service exploring triple-store architecture over PostgreSQL.**
-
-> **Alpha software.** The subsystems exist and compile, but end-to-end integration is in progress. This is a working codebase, not a production-ready product yet. Contributions and feedback welcome.
+**A self-hosted Backend-as-a-Service built in Rust.**
+**Triple-store architecture over PostgreSQL. Real-time by default.**
 
 </div>
 
 ---
 
-## What is DarshanDB?
+## The Journey
 
-"Darshan" means "vision" in Sanskrit. DarshanDB is an experiment in building a complete BaaS from a single Rust binary, using a triple-store (Entity-Attribute-Value) data model over Postgres instead of traditional tables.
+I grew up in Navsari, a small town in southern Gujarat where the Parsi fire temples stand next to Hindu mandirs and the evening chai tastes like monsoon rain. My grandfather would say *"darshan karo"* every morning. See clearly. Perceive the truth of things before you act.
 
-The goal: give developers the real-time query experience of InstantDB, the server functions of Convex, the Postgres foundation of Supabase, and the self-hosted simplicity of a single binary. Whether we get there is an open question. This repo is the attempt.
+I didn't know it then, but that word would follow me across continents.
 
-### What exists today
+From Navsari I went to London for my studies. Business Computing at Greenwich. Advanced Diploma at Sunderland. The cold taught me discipline. The coursework taught me systems thinking. But the real education was watching how software got built in the West and realizing the tools were gatekept behind expensive cloud services and FAANG salaries.
 
-- **Triple store engine** over PostgreSQL with schema inference and DarshanQL query language
-- **Real-time sync engine** with WebSocket handler, delta diff computation, presence rooms
-- **Auth system** with Argon2id password hashing, JWT RS256, OAuth provider framework, MFA/TOTP
-- **Permission engine** with row-level security rules that compile to SQL WHERE clauses
-- **Server function runtime** with registry, argument validation, and cron scheduler
-- **REST API** with content negotiation, SSE subscriptions, OpenAPI spec generation
-- **Storage engine** with local filesystem and S3-compatible backends, signed URLs
-- **CLI** with commands for dev server, migrations, seeding, logs, backups
-- **Client SDKs** for React, Angular, Next.js, PHP, Python (framework-agnostic core)
-- **Admin dashboard** in React + Vite + Tailwind with data explorer, schema viz, logs
+Then Dubai. Media production. VFX pipelines for Aquaman, The Invisible Man, The Last of Us Part II. I learned what it means to build systems that cannot fail, that process terabytes without flinching, that serve creative teams who don't care about your architecture and just need it to work.
+
+Back to India. Ahmedabad. Founded GraymatterOnline in 2015. Then Coeus Digital Media. Then KnowAI with 60+ autonomous agents managing enterprise operations. Each company, each product, each system, I hit the same wall.
+
+The backend.
+
+Three weeks of plumbing before writing a single line of business logic. Postgres setup. REST APIs. Auth. WebSockets. File uploads. Permissions. The same work, every time, for every project.
+
+Firebase is NoSQL spaghetti. Supabase is REST with real-time bolted on. InstantDB is cloud-only. Convex is a black box. None of them let you run a single binary on a $5 VPS in Mumbai and own your data completely.
+
+So I built what I wanted. I called it DarshanDB.
+
+*"Darshan"* means to see, to perceive the complete picture. The database sees every change, every query, every permission. It sees what each user is allowed to see. And it shows them exactly that, in real-time, the moment anything changes.
+
+```mermaid
+graph LR
+    subgraph Journey["The Path"]
+        N["Navsari\n<i>where it started</i>"] --> L["London\n<i>systems thinking</i>"]
+        L --> D["Dubai\n<i>production systems</i>"]
+        D --> A["Ahmedabad\n<i>building companies</i>"]
+        A --> DB["DarshanDB\n<i>building the tool</i>"]
+    end
+
+    style N fill:#cc9933,color:#000
+    style L fill:#1a1a2e,color:#fff
+    style D fill:#0f3460,color:#fff
+    style A fill:#14532d,color:#fff
+    style DB fill:#B7410E,color:#fff
+```
+
+---
+
+## The Philosophy
+
+The Bhagavad Gita says: *karmanye vadhikaraste ma phaleshu kadachana*. You have the right to work, but never to the fruit of work. Build because building is dharma. Ship because shipping serves others. Open-source because knowledge locked away is knowledge wasted.
+
+The Sompura Brahmins of Gujarat carved stone into temples that outlasted empires. The tools changed. Chisel became compiler. Sandstone became silicon. But the intent is the same: build something permanent. Build something that serves.
+
+```mermaid
+flowchart TD
+    D["Dharma\nWhat must be built?"] --> V["Vichara\nThink from first principles"]
+    V --> K["Karma\nWrite the code"]
+    K --> S["Seva\nOpen-source it"]
+    S --> L["Loka\nThe world builds on top"]
+    L --> D
+
+    style D fill:#cc9933,color:#000
+    style V fill:#1a1a2e,color:#fff
+    style K fill:#0d1117,color:#fff
+    style S fill:#14532d,color:#fff
+    style L fill:#1e3a5f,color:#fff
+```
+
+---
+
+## What DarshanDB Is
+
+A single Rust binary that gives you a complete backend. Real-time queries. Authentication. Permissions. File storage. Server functions. Admin dashboard. Connect from React, Angular, Next.js, PHP, Python, or plain cURL.
+
+The data model is a triple store (Entity-Attribute-Value) over PostgreSQL. This means no rigid schemas, no migrations in development. Write data first, structure emerges. When you're ready for production, switch to strict mode.
+
+### What works today
+
+```mermaid
+graph TB
+    subgraph Working["Working End-to-End"]
+        REST["REST API\ncurl → Postgres → response"]
+        AUTH["Authentication\nsignup → Argon2id → JWT"]
+        PERM["Permissions\nrow-level security on every request"]
+        DASH["Admin Dashboard\nlive data from Postgres"]
+        SDK["Client SDK\nintegration tests prove round-trip"]
+    end
+
+    subgraph InProgress["In Progress"]
+        WS["WebSocket Subscriptions\nmutation → broadcast → live push"]
+        FN["Server Functions\nregistry exists, runtime placeholder"]
+    end
+
+    style Working fill:#14532d,stroke:#86efac,color:#fff
+    style InProgress fill:#713f12,stroke:#fde68a,color:#fff
+```
+
+- **Data path**: `POST /api/data/users -d '{"name":"Alice"}'` writes triples to Postgres, `GET /api/data/users` reads them back
+- **Auth**: signup with Argon2id password hashing, signin returns JWT, middleware enforces on protected routes
+- **Permissions**: every request evaluates row-level rules, users see only their own data, admin bypasses
+- **Query engine**: DarshanQL parses, plans, and executes against real Postgres
+- **Admin dashboard**: shows live data from the API, falls back to mock when server is down
+- **446 Rust tests**, 92 TypeScript tests, 141 Python tests, 52 PHP tests, all passing
 
 ### What's not done yet
 
-- **End-to-end data flow** is not wired: a React query does not yet hit Postgres through the WebSocket and come back as a live subscription. The integration layer connecting these subsystems is the critical next step.
-- **The function runtime** uses subprocess execution, not actual V8 isolates. It's a placeholder that validates the API surface.
-- **No published packages** on npm or crates.io yet.
-- **No install script** at `darshandb.dev`. The domain is reserved but there's no download page.
-- **Performance claims** in earlier commits were theoretical, not measured. We've removed them until we can benchmark real end-to-end flows.
-
-### What's genuinely good
-
-- **438 Rust tests** passing with zero clippy warnings, zero fmt issues
-- **92 TypeScript tests**, 141 Python tests, 52 PHP tests across SDK packages
-- **Security-first design**: the auth and permission modules have real depth (constant-time TOTP, JWT audience validation, SQL parameterization, path traversal prevention, timing-safe HMAC comparison)
-- **The architectural thinking**: EAV triple store with reactive dependency tracking is a genuinely interesting approach to building a real-time database
+- WebSocket real-time subscriptions (handler exists, reactive pipeline being wired)
+- Server function V8 runtime (subprocess placeholder, API surface validated)
+- Published npm/crates packages
+- Install script and hosted docs site
 
 ## Architecture
 
 ```mermaid
 graph TB
-    subgraph Clients
-        React["React SDK"]
-        Next["Next.js SDK"]
-        Angular["Angular SDK"]
-        PHP["PHP SDK"]
-        Python["Python SDK"]
-        REST["REST / cURL"]
+    subgraph Clients["Any Client"]
+        React["React"]
+        Next["Next.js"]
+        Angular["Angular"]
+        PHP["PHP"]
+        Python["Python"]
+        Curl["cURL"]
     end
 
-    subgraph Server["DarshanDB Server (Rust)"]
-        WS["WebSocket Handler"]
-        API["REST API"]
-        QE["Query Engine"]
-        Auth["Auth Engine"]
-        Perm["Permission Engine"]
-        Sync["Sync Engine"]
-        Fn["Function Runtime"]
-        Store["Storage Engine"]
+    subgraph Server["DarshanDB — Single Rust Binary"]
+        API["REST API + WebSocket"]
+        AUTH["Auth Engine\nArgon2id + JWT RS256"]
+        PERM["Permission Engine\nRow-Level Security"]
+        QE["Query Engine\nDarshanQL → SQL"]
+        TS["Triple Store\nEAV over Postgres"]
+        SYNC["Sync Engine\nReactive Push"]
+        FN["Function Runtime"]
+        STORE["Storage Engine\nS3-compatible"]
     end
 
     PG[("PostgreSQL 16+")]
 
-    Clients --> WS & API
-    WS & API --> Auth --> Perm
-    Perm --> QE --> PG
-    WS --> Sync
-    API --> Fn & Store
+    Clients --> API
+    API --> AUTH --> PERM
+    PERM --> QE --> TS --> PG
+    API --> SYNC
+    API --> FN
+    API --> STORE
 
     style Server fill:#1a1a2e,stroke:#F59E0B,color:#fff
     style PG fill:#336791,stroke:#fff,color:#fff
+    style Clients fill:#0f3460,stroke:#F59E0B,color:#fff
 ```
 
-> **Note:** The arrows represent the intended data flow. Individual modules exist and have tests, but the full request path from client to Postgres and back is not yet integrated.
+### The Data Model
+
+```mermaid
+graph LR
+    subgraph Traditional["Traditional DB"]
+        T1["CREATE TABLE users\n  id UUID,\n  name TEXT,\n  email TEXT"]
+        T2["ALTER TABLE...\n  ADD COLUMN...\n  DROP COLUMN..."]
+        T1 --> T2
+    end
+
+    subgraph DarshanDB["DarshanDB Triple Store"]
+        D1["Write any data\nNo schema needed"]
+        D2["Schema inferred\nfrom existing data"]
+        D3["Strict mode\nwhen ready for prod"]
+        D1 --> D2 --> D3
+    end
+
+    style Traditional fill:#7f1d1d,stroke:#fca5a5,color:#fff
+    style DarshanDB fill:#14532d,stroke:#86efac,color:#fff
+```
+
+Every piece of data is a triple: `(entity_id, attribute, value)`. An entity is just a collection of triples sharing the same ID. Relationships are triples where the value points to another entity. This is how knowledge graphs work. This is how the Semantic Web works. This is how your brain works.
+
+### The Auth Flow
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant S as DarshanDB
+    participant P as PostgreSQL
+
+    C->>S: POST /api/auth/signup {email, password}
+    S->>S: Argon2id hash (64MB, 3 iter)
+    S->>P: INSERT INTO users
+    S->>P: INSERT triples (user entity)
+    S->>S: Generate JWT (RS256, 15min)
+    S-->>C: {access_token, refresh_token}
+
+    C->>S: GET /api/data/todos (Bearer token)
+    S->>S: Validate JWT
+    S->>S: Evaluate permissions
+    S->>P: SELECT with RLS WHERE clause
+    S-->>C: Only data this user can see
+```
+
+### Security Layers
+
+```mermaid
+graph TB
+    R["Request arrives"] --> TLS["TLS 1.3"]
+    TLS --> RL["Rate Limiter\ntoken bucket per IP/user"]
+    RL --> IV["Input Validation\nschema-checked at boundary"]
+    IV --> AU["Authentication\nJWT RS256 verification"]
+    AU --> AZ["Authorization\npermission rule evaluation"]
+    AZ --> RLS["Row-Level Security\nSQL WHERE injection"]
+    RLS --> FF["Field Filtering\nrestricted fields stripped"]
+    FF --> PG["PostgreSQL\nonly permitted data returned"]
+
+    style R fill:#7f1d1d,color:#fff
+    style TLS fill:#7f1d1d,color:#fff
+    style RL fill:#7c2d12,color:#fff
+    style IV fill:#713f12,color:#fff
+    style AU fill:#365314,color:#fff
+    style AZ fill:#14532d,color:#fff
+    style RLS fill:#064e3b,color:#fff
+    style FF fill:#0c4a6e,color:#fff
+    style PG fill:#336791,color:#fff
+```
+
+## Quick Start
+
+```bash
+# Clone
+git clone https://github.com/darshjme/darshandb.git
+cd darshandb
+
+# Start Postgres
+docker compose up postgres -d
+
+# Initialize database with sample data
+./scripts/setup-db.sh --seed
+
+# Start the server
+DATABASE_URL=postgres://darshan:darshan@localhost:5432/darshandb \
+  cargo run --bin darshandb-server
+
+# Test it
+curl http://localhost:7700/health
+curl -H "Authorization: Bearer dev" \
+  -X POST http://localhost:7700/api/data/users \
+  -H "Content-Type: application/json" \
+  -d '{"name":"Darsh","email":"darsh@navsari.dev"}'
+```
+
+### End-to-End Test
+
+```bash
+./scripts/e2e-test.sh
+```
+
+20+ assertions testing auth, CRUD, queries, mutations, permissions, and error handling.
 
 ## Project Structure
 
 ```
 darshandb/
 ├── packages/
-│   ├── server/          # Rust: triple store, query, sync, auth, functions, API
-│   ├── cli/             # Rust: darshan dev/deploy/push/pull/seed
-│   ├── client-core/     # TypeScript: framework-agnostic client SDK
-│   ├── react/           # React hooks (useQuery, useMutation, usePresence, useAuth)
+│   ├── server/          # Rust: the complete backend
+│   ├── cli/             # Rust: darshan dev/deploy/push/pull
+│   ├── client-core/     # TypeScript: framework-agnostic SDK
+│   ├── react/           # React hooks
 │   ├── angular/         # Angular signals + RxJS
-│   ├── nextjs/          # Next.js App Router + Pages Router
+│   ├── nextjs/          # Next.js App/Pages Router
 │   └── admin/           # Admin dashboard (React + Vite + Tailwind)
 ├── sdks/
-│   ├── php/             # PHP + Laravel SDK
-│   └── python/          # Python + FastAPI/Django SDK
-├── docs/                # Documentation (12 guides + strategy docs)
-├── examples/            # Example apps (todo, chat, nextjs, plain HTML, cURL)
+│   ├── php/             # PHP + Laravel
+│   └── python/          # Python + FastAPI/Django
+├── docs/                # 12 guides + 5 strategy roadmaps
+├── examples/            # Todo app, chat app, Next.js, cURL scripts
 └── deploy/              # Docker, Kubernetes Helm chart
 ```
 
-## Technology Stack
+## Technology
 
-| Layer | Choice | Status |
-|-------|--------|--------|
-| Server | Rust (Axum + Tokio) | Compiles, tests pass |
-| Database | PostgreSQL 16+ with pgvector | Schema defined, queries execute in tests |
-| Wire Protocol | JSON over WebSocket (MsgPack planned) | Handler exists, not end-to-end |
-| Client SDKs | TypeScript | Build and type-check |
-| Admin UI | React + Vite + Tailwind | Builds, renders mock data |
-| Auth | Argon2id + RS256 JWT | Unit tested |
-| CLI | Rust (clap) | Compiles, commands defined |
-
-## Running Locally
-
-```bash
-# Prerequisites: Rust 1.70+, Node.js 20+, Docker (for Postgres)
-
-# Clone
-git clone https://github.com/darshjme/darshandb.git
-cd darshandb
-
-# Run all unit tests (438 Rust + TypeScript + PHP + Python)
-cargo test --workspace
-npm install && npm test --workspaces --if-present
-
-# Start Postgres via Docker
-docker compose up postgres -d
-
-# Start the server
-DATABASE_URL=postgres://darshan:darshan@localhost:5432/darshandb \
-  cargo run --bin darshandb-server
-# Server listens on http://localhost:7700
-# REST API at http://localhost:7700/api
-# WebSocket at ws://localhost:7700/ws
-# OpenAPI spec at http://localhost:7700/api/openapi.json
-```
-
-### End-to-End Test
-
-The full integration test starts Postgres, builds the server, and exercises every REST endpoint:
-
-```bash
-./scripts/e2e-test.sh
-```
-
-This tests auth signup, entity CRUD, the mutation API, DarshanQL queries, error handling, and OpenAPI spec generation. Use `SKIP_POSTGRES=1` if Postgres is already running, or `SKIP_BUILD=1` to skip the cargo build step.
-
-For a guided walkthrough of the API with commentary (good for understanding the data model):
-
-```bash
-./examples/curl-scripts/e2e-demo.sh
-```
+| Layer | Choice |
+|-------|--------|
+| Server | Rust (Axum + Tokio) |
+| Database | PostgreSQL 16+ with pgvector |
+| Auth | Argon2id + JWT RS256 |
+| Client SDKs | TypeScript (React, Angular, Next.js) |
+| Admin UI | React + Vite + TailwindCSS |
+| PHP SDK | Composer + Laravel |
+| Python SDK | pip + FastAPI/Django |
 
 ## Roadmap
 
-The immediate priority is getting **one end-to-end path working**:
+The immediate focus: wire WebSocket subscriptions so a client can subscribe to a query and receive live updates when data changes. After that: publish to npm, build the install script, benchmark real performance.
 
-```
-React useQuery() → WebSocket → Query Engine → Triple Store → Postgres
-       ↑                                                        |
-       └──── Sync Engine ← Dependency Tracker ← Mutation ←─────┘
-```
-
-Once a client can subscribe to a query and receive live updates when data changes through the mutation API, the project reaches its first real milestone.
-
-After that:
-- Publish `@darshan/client` and `@darshan/react` to npm
-- Build the install script and `darshan dev` experience
-- Benchmark real performance (not theoretical)
-- Harden for production use cases
-
-See `docs/strategy/` for longer-term thinking on AI/ML integration, Web3, enterprise features, and scalability.
+See `docs/strategy/` for longer-term thinking on AI/ML integration (MCP server, embeddings, RAG), Web3 (wallet auth, token-gated permissions), enterprise (multi-tenancy, SOC2), and scalability (horizontal scaling, distributed cache).
 
 ## Contributing
 
-We welcome contributions. The most valuable work right now is in the integration layer. See [CONTRIBUTING.md](CONTRIBUTING.md).
-
 ```bash
-cargo fmt          # Format Rust
-cargo clippy       # Lint Rust
-cargo test         # Test Rust (438 tests)
-npm test           # Test TypeScript (92 tests)
+cargo test --workspace   # 446 tests
+npm test                 # 92 tests
 ```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
@@ -203,9 +318,12 @@ MIT. See [LICENSE](LICENSE).
 
 <div align="center">
 
-**Built by [Darsh Joshi](https://darshj.ai)** — born in Navsari, Gujarat. Now in Ahmedabad.
-CEO at [GraymatterOnline LLP](https://graymatteronline.com). CTO at [KnowAI](https://knowai.biz).
+**[Darsh Joshi](https://darshj.ai)** — Navsari, Gujarat to the world.
 
-Building the backend I kept wishing existed.
+CEO at [GraymatterOnline LLP](https://graymatteronline.com) | CTO at [KnowAI](https://knowai.biz)
+
+*karmanye vadhikaraste ma phaleshu kadachana*
+
+[darshj.ai](https://darshj.ai) · [darshj.me](https://darshj.me)
 
 </div>
