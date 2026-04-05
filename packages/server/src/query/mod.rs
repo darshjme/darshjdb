@@ -302,7 +302,9 @@ pub fn plan_query(ast: &QueryAST) -> Result<QueryPlan> {
     sql.push_str("INNER JOIN triples t_type ON t_type.entity_id = t0.entity_id\n");
     sql.push_str("  AND t_type.attribute = ':db/type'\n");
     sql.push_str("  AND NOT t_type.retracted\n");
-    sql.push_str(&format!("  AND t_type.value = ${param_idx}::jsonb\n"));
+    sql.push_str(&format!(
+        "  AND t_type.value = to_jsonb(${param_idx}::text)\n"
+    ));
     params.push(serde_json::Value::String(ast.entity_type.clone()));
     param_idx += 1;
 
@@ -318,14 +320,23 @@ pub fn plan_query(ast: &QueryAST) -> Result<QueryPlan> {
 
         sql.push_str(&format!("  AND NOT {alias}.retracted\n"));
 
+        // For string params, bind_json_param sends TEXT which must be wrapped
+        // in to_jsonb() for JSONB column comparison.  Non-string JSON values
+        // are bound natively as JSONB so a plain cast works.
+        let is_string_value = wc.value.is_string();
+        let jsonb_param = if is_string_value {
+            format!("to_jsonb(${param_idx}::text)")
+        } else {
+            format!("${param_idx}::jsonb")
+        };
         let op_sql = match wc.op {
-            WhereOp::Eq => format!("  AND {alias}.value = ${param_idx}::jsonb\n"),
-            WhereOp::Neq => format!("  AND {alias}.value != ${param_idx}::jsonb\n"),
-            WhereOp::Gt => format!("  AND {alias}.value > ${param_idx}::jsonb\n"),
-            WhereOp::Gte => format!("  AND {alias}.value >= ${param_idx}::jsonb\n"),
-            WhereOp::Lt => format!("  AND {alias}.value < ${param_idx}::jsonb\n"),
-            WhereOp::Lte => format!("  AND {alias}.value <= ${param_idx}::jsonb\n"),
-            WhereOp::Contains => format!("  AND {alias}.value @> ${param_idx}::jsonb\n"),
+            WhereOp::Eq => format!("  AND {alias}.value = {jsonb_param}\n"),
+            WhereOp::Neq => format!("  AND {alias}.value != {jsonb_param}\n"),
+            WhereOp::Gt => format!("  AND {alias}.value > {jsonb_param}\n"),
+            WhereOp::Gte => format!("  AND {alias}.value >= {jsonb_param}\n"),
+            WhereOp::Lt => format!("  AND {alias}.value < {jsonb_param}\n"),
+            WhereOp::Lte => format!("  AND {alias}.value <= {jsonb_param}\n"),
+            WhereOp::Contains => format!("  AND {alias}.value @> {jsonb_param}\n"),
             WhereOp::Like => format!("  AND {alias}.value #>> '{{}}' ILIKE ${param_idx}\n"),
         };
         sql.push_str(&op_sql);
