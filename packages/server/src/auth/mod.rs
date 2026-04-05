@@ -38,7 +38,10 @@ pub use permissions::{
     Operation, PermissionEngine, PermissionResult, PermissionRule, evaluate_permission,
     evaluate_rule_public,
 };
-pub use providers::{MagicLinkProvider, OAuth2Provider, OAuthProviderKind, PasswordProvider};
+pub use providers::{
+    GenericOAuth2Provider, MagicLinkProvider, OAuth2Provider, OAuthConfig, OAuthProviderKind,
+    OAuthUserInfo, PasswordProvider,
+};
 pub use session::{KeyManager, SessionManager, SessionRecord, TokenPair};
 
 use serde::{Deserialize, Serialize};

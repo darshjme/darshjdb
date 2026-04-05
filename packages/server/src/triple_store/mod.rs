@@ -219,6 +219,88 @@ impl PgTripleStore {
             .await?;
         Ok(row.0)
     }
+
+    /// Begin a new database transaction.
+    pub async fn begin_tx(&self) -> Result<sqlx::Transaction<'_, sqlx::Postgres>> {
+        Ok(self.pool.begin().await?)
+    }
+
+    /// Allocate the next transaction id within an existing transaction.
+    pub async fn next_tx_id_in_tx(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>) -> Result<i64> {
+        let row: (i64,) = sqlx::query_as("SELECT nextval('darshan_tx_seq')")
+            .fetch_one(&mut **tx)
+            .await?;
+        Ok(row.0)
+    }
+
+    /// Write a batch of triples within an existing transaction.
+    ///
+    /// Unlike [`TripleStore::set_triples`], this does NOT commit — the
+    /// caller owns the transaction and decides when to commit/rollback.
+    pub async fn set_triples_in_tx(
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        triples: &[TripleInput],
+        tx_id: i64,
+    ) -> Result<()> {
+        for t in triples {
+            t.validate()?;
+        }
+        for t in triples {
+            sqlx::query(
+                r#"
+                INSERT INTO triples (entity_id, attribute, value, value_type, tx_id)
+                VALUES ($1, $2, $3, $4, $5)
+                "#,
+            )
+            .bind(t.entity_id)
+            .bind(&t.attribute)
+            .bind(&t.value)
+            .bind(t.value_type)
+            .bind(tx_id)
+            .execute(&mut **tx)
+            .await?;
+        }
+        Ok(())
+    }
+
+    /// Retract (soft-delete) triples within an existing transaction.
+    pub async fn retract_in_tx(
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        entity_id: Uuid,
+        attribute: &str,
+    ) -> Result<()> {
+        sqlx::query(
+            r#"
+            UPDATE triples
+            SET retracted = true
+            WHERE entity_id = $1 AND attribute = $2 AND NOT retracted
+            "#,
+        )
+        .bind(entity_id)
+        .bind(attribute)
+        .execute(&mut **tx)
+        .await?;
+        Ok(())
+    }
+
+    /// Fetch active triples for an entity within an existing transaction.
+    pub async fn get_entity_in_tx(
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        entity_id: Uuid,
+    ) -> Result<Vec<Triple>> {
+        let triples = sqlx::query_as::<_, Triple>(
+            r#"
+            SELECT id, entity_id, attribute, value, value_type, tx_id, created_at, retracted
+            FROM triples
+            WHERE entity_id = $1 AND NOT retracted
+            ORDER BY attribute, tx_id DESC
+            "#,
+        )
+        .bind(entity_id)
+        .fetch_all(&mut **tx)
+        .await?;
+        Ok(triples)
+    }
 }
 
 impl TripleStore for PgTripleStore {

@@ -22,7 +22,7 @@ use std::time::{Duration, Instant};
 
 use axum::Router;
 use axum::body::Body;
-use axum::extract::{Path, Query, State};
+use axum::extract::{FromRequest, Path, Query, State};
 use axum::http::header::{ACCEPT, CONTENT_TYPE};
 use axum::http::{HeaderMap, HeaderValue, Request, StatusCode};
 use axum::middleware::{self, Next};
@@ -39,11 +39,16 @@ use uuid::Uuid;
 
 use super::error::{ApiError, ErrorCode};
 use super::openapi;
+use crate::auth::middleware::RateLimitKey;
 use crate::auth::{
-    AuthContext, AuthOutcome, Operation, PasswordProvider, PermissionEngine, SessionManager,
+    AuthContext, AuthOutcome, GenericOAuth2Provider, OAuth2Provider, OAuthProviderKind,
+    OAuthUserInfo, Operation, PasswordProvider, PermissionEngine, RateLimiter, SessionManager,
     build_default_engine, evaluate_rule_public, get_rule_with_fallback,
 };
+use crate::functions::registry::FunctionRegistry;
+use crate::functions::runtime::FunctionRuntime;
 use crate::query::{self, QueryResultRow};
+use crate::storage::{LocalFsBackend, StorageEngine, StorageError};
 use crate::sync::broadcaster::ChangeEvent;
 use crate::triple_store::{PgTripleStore, TripleInput, TripleStore};
 
@@ -78,6 +83,97 @@ pub struct AppState {
     pub dev_mode: bool,
     /// Permission engine for row-level security and access control.
     pub permissions: Arc<PermissionEngine>,
+    /// Rate limiter for per-request throttling.
+    pub rate_limiter: Arc<RateLimiter>,
+    /// File storage engine backed by local filesystem (or S3/R2).
+    pub storage_engine: Arc<StorageEngine<LocalFsBackend>>,
+    /// Function registry for looking up server-side functions.
+    pub function_registry: Option<Arc<FunctionRegistry>>,
+    /// Function runtime for executing server-side functions.
+    pub function_runtime: Option<Arc<FunctionRuntime>>,
+    /// Configured OAuth2 providers keyed by provider kind.
+    pub oauth_providers: Arc<HashMap<OAuthProviderKind, GenericOAuth2Provider>>,
+    /// HMAC secret for signing/verifying OAuth state parameters.
+    pub oauth_state_secret: Arc<Vec<u8>>,
+}
+
+/// Load OAuth2 provider configurations from environment variables.
+///
+/// Reads `DARSHAN_OAUTH_{PROVIDER}_CLIENT_ID` and
+/// `DARSHAN_OAUTH_{PROVIDER}_CLIENT_SECRET` for each supported provider.
+/// Providers without both env vars are silently skipped.
+fn load_oauth_providers_from_env() -> HashMap<OAuthProviderKind, GenericOAuth2Provider> {
+    let base_url =
+        std::env::var("DARSHAN_BASE_URL").unwrap_or_else(|_| "http://localhost:4000".to_string());
+    let mut providers = HashMap::new();
+
+    // Google
+    if let (Ok(id), Ok(secret)) = (
+        std::env::var("DARSHAN_OAUTH_GOOGLE_CLIENT_ID"),
+        std::env::var("DARSHAN_OAUTH_GOOGLE_CLIENT_SECRET"),
+    ) {
+        let redirect = std::env::var("DARSHAN_OAUTH_GOOGLE_REDIRECT_URI")
+            .unwrap_or_else(|_| format!("{base_url}/api/auth/oauth/google/callback"));
+        providers.insert(
+            OAuthProviderKind::Google,
+            GenericOAuth2Provider::google(id, secret, redirect),
+        );
+    }
+
+    // GitHub
+    if let (Ok(id), Ok(secret)) = (
+        std::env::var("DARSHAN_OAUTH_GITHUB_CLIENT_ID"),
+        std::env::var("DARSHAN_OAUTH_GITHUB_CLIENT_SECRET"),
+    ) {
+        let redirect = std::env::var("DARSHAN_OAUTH_GITHUB_REDIRECT_URI")
+            .unwrap_or_else(|_| format!("{base_url}/api/auth/oauth/github/callback"));
+        providers.insert(
+            OAuthProviderKind::GitHub,
+            GenericOAuth2Provider::github(id, secret, redirect),
+        );
+    }
+
+    // Apple
+    if let (Ok(id), Ok(secret)) = (
+        std::env::var("DARSHAN_OAUTH_APPLE_CLIENT_ID"),
+        std::env::var("DARSHAN_OAUTH_APPLE_CLIENT_SECRET"),
+    ) {
+        let redirect = std::env::var("DARSHAN_OAUTH_APPLE_REDIRECT_URI")
+            .unwrap_or_else(|_| format!("{base_url}/api/auth/oauth/apple/callback"));
+        providers.insert(
+            OAuthProviderKind::Apple,
+            GenericOAuth2Provider::apple(id, secret, redirect),
+        );
+    }
+
+    // Discord
+    if let (Ok(id), Ok(secret)) = (
+        std::env::var("DARSHAN_OAUTH_DISCORD_CLIENT_ID"),
+        std::env::var("DARSHAN_OAUTH_DISCORD_CLIENT_SECRET"),
+    ) {
+        let redirect = std::env::var("DARSHAN_OAUTH_DISCORD_REDIRECT_URI")
+            .unwrap_or_else(|_| format!("{base_url}/api/auth/oauth/discord/callback"));
+        providers.insert(
+            OAuthProviderKind::Discord,
+            GenericOAuth2Provider::discord(id, secret, redirect),
+        );
+    }
+
+    providers
+}
+
+/// Load or generate the HMAC secret for OAuth2 state parameters.
+fn load_oauth_state_secret() -> Vec<u8> {
+    match std::env::var("DARSHAN_OAUTH_STATE_SECRET") {
+        Ok(s) if s.len() >= 32 => s.into_bytes(),
+        _ => {
+            use rand::RngCore;
+            let mut buf = vec![0u8; 32];
+            rand::rngs::OsRng.fill_bytes(&mut buf);
+            tracing::warn!("DARSHAN_OAUTH_STATE_SECRET not set; generated ephemeral secret");
+            buf
+        }
+    }
 }
 
 impl AppState {
@@ -87,6 +183,8 @@ impl AppState {
         triple_store: Arc<PgTripleStore>,
         session_manager: Arc<SessionManager>,
         change_tx: broadcast::Sender<ChangeEvent>,
+        rate_limiter: Arc<RateLimiter>,
+        storage_engine: Arc<StorageEngine<LocalFsBackend>>,
     ) -> Self {
         let dev_mode = std::env::var("DARSHAN_DEV")
             .map(|v| v == "1" || v == "true")
@@ -102,7 +200,24 @@ impl AppState {
             started_at: Instant::now(),
             dev_mode,
             permissions: Arc::new(build_default_engine()),
+            rate_limiter,
+            storage_engine,
+            function_registry: None,
+            function_runtime: None,
+            oauth_providers: Arc::new(load_oauth_providers_from_env()),
+            oauth_state_secret: Arc::new(load_oauth_state_secret()),
         }
+    }
+
+    /// Set the function registry and runtime on this state.
+    pub fn with_functions(
+        mut self,
+        registry: Arc<FunctionRegistry>,
+        runtime: Arc<FunctionRuntime>,
+    ) -> Self {
+        self.function_registry = Some(registry);
+        self.function_runtime = Some(runtime);
+        self
     }
 
     /// Create application state with default (test-only) configuration.
@@ -117,6 +232,14 @@ impl AppState {
         let triple_store = Arc::new(PgTripleStore::new_lazy(pool.clone()));
         let key_manager = crate::auth::KeyManager::generate();
         let session_manager = Arc::new(SessionManager::new(pool.clone(), key_manager));
+        let storage_backend = Arc::new(
+            LocalFsBackend::new("/tmp/darshandb-test-storage")
+                .expect("create test storage backend"),
+        );
+        let storage_engine = Arc::new(StorageEngine::new(
+            storage_backend,
+            b"test-signing-key".to_vec(),
+        ));
         Self {
             pool,
             triple_store,
@@ -127,6 +250,12 @@ impl AppState {
             started_at: Instant::now(),
             dev_mode: true,
             permissions: Arc::new(build_default_engine()),
+            rate_limiter: Arc::new(RateLimiter::new()),
+            storage_engine,
+            function_registry: None,
+            function_runtime: None,
+            oauth_providers: Arc::new(HashMap::new()),
+            oauth_state_secret: Arc::new(b"test-oauth-state-secret-key-32b!".to_vec()),
         }
     }
 }
@@ -208,27 +337,81 @@ fn negotiate_response_status(
 // Rate-limit middleware
 // ---------------------------------------------------------------------------
 
-/// Middleware that injects rate-limit headers into every response.
+/// Middleware that enforces per-request rate limiting and injects standard
+/// `X-RateLimit-*` headers into every response.
 ///
-/// The actual accounting is delegated to the auth module's [`RateLimiter`];
-/// this layer only adds the standard headers.
-async fn rate_limit_headers(req: Request<Body>, next: Next) -> Response {
+/// Authenticated requests (Bearer token present) get 100 req/min;
+/// anonymous requests get 20 req/min. Returns 429 with `Retry-After`
+/// when the budget is exhausted.
+async fn rate_limit_middleware(
+    State(state): State<AppState>,
+    req: Request<Body>,
+    next: Next,
+) -> Response {
+    let headers = req.headers();
+    let ip = req
+        .extensions()
+        .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+        .map(|ci| ci.0.ip().to_string())
+        .unwrap_or_else(|| "unknown".into());
+
+    let token = headers
+        .get(http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .map(|t| t.trim().to_string());
+
+    let is_authenticated = token.is_some();
+
+    let rate_key = if let Some(ref tok) = token {
+        use sha2::Digest;
+        let prefix = &tok[..std::cmp::min(tok.len(), 16)];
+        let hash = sha2::Sha256::digest(prefix.as_bytes());
+        RateLimitKey::Token(data_encoding::HEXLOWER.encode(&hash[..16]))
+    } else {
+        RateLimitKey::Ip(ip)
+    };
+
+    let (limit, reset) = if is_authenticated {
+        (100u64, 60u64)
+    } else {
+        (20u64, 60u64)
+    };
+
+    // Check rate limit; on failure return 429 with Retry-After.
+    if let Err(retry_after) = state.rate_limiter.check(&rate_key, is_authenticated) {
+        let body = serde_json::json!({
+            "error": {
+                "code": 429,
+                "message": format!("rate limit exceeded, retry after {}s", retry_after),
+            }
+        });
+        let mut response = (StatusCode::TOO_MANY_REQUESTS, axum::Json(body)).into_response();
+        let hdrs = response.headers_mut();
+        if let Ok(v) = HeaderValue::from_str(&retry_after.to_string()) {
+            hdrs.insert("retry-after", v);
+        }
+        if let Ok(v) = HeaderValue::from_str(&limit.to_string()) {
+            hdrs.insert("x-ratelimit-limit", v);
+        }
+        hdrs.insert("x-ratelimit-remaining", HeaderValue::from_static("0"));
+        if let Ok(v) = HeaderValue::from_str(&reset.to_string()) {
+            hdrs.insert("x-ratelimit-reset", v);
+        }
+        return response;
+    }
+
+    // Forward to inner handler, then stamp rate-limit headers on response.
     let mut response = next.run(req).await;
-    let headers = response.headers_mut();
-
-    // Defaults; a real implementation reads from the rate limiter state.
-    let limit = "1000";
-    let remaining = "999";
-    let reset = "60";
-
-    if let Ok(v) = HeaderValue::from_str(limit) {
-        headers.insert("X-RateLimit-Limit", v);
+    let hdrs = response.headers_mut();
+    if let Ok(v) = HeaderValue::from_str(&limit.to_string()) {
+        hdrs.insert("x-ratelimit-limit", v);
     }
-    if let Ok(v) = HeaderValue::from_str(remaining) {
-        headers.insert("X-RateLimit-Remaining", v);
+    if let Ok(v) = HeaderValue::from_str(&(limit.saturating_sub(1)).to_string()) {
+        hdrs.insert("x-ratelimit-remaining", v);
     }
-    if let Ok(v) = HeaderValue::from_str(reset) {
-        headers.insert("X-RateLimit-Reset", v);
+    if let Ok(v) = HeaderValue::from_str(&reset.to_string()) {
+        hdrs.insert("x-ratelimit-reset", v);
     }
 
     response
@@ -257,6 +440,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/auth/magic-link", post(auth_magic_link))
         .route("/auth/verify", post(auth_verify))
         .route("/auth/oauth/{provider}", post(auth_oauth))
+        .route("/auth/oauth/{provider}/callback", get(auth_oauth_callback))
         .route("/auth/refresh", post(auth_refresh));
 
     // Protected routes — require valid JWT (or "Bearer dev" in dev mode).
@@ -297,7 +481,10 @@ pub fn build_router(state: AppState) -> Router {
         .merge(protected_routes)
         .merge(docs_routes)
         // -- Middleware ----------------------------------------------------
-        .layer(middleware::from_fn(rate_limit_headers))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            rate_limit_middleware,
+        ))
         .with_state(state)
 }
 
@@ -332,6 +519,21 @@ pub async fn ensure_auth_schema(pool: &PgPool) -> std::result::Result<(), sqlx::
         );
         CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions (user_id) WHERE NOT revoked;
         CREATE INDEX IF NOT EXISTS idx_sessions_refresh ON sessions (refresh_token_hash) WHERE NOT revoked;
+        CREATE TABLE IF NOT EXISTS oauth_identities (
+            id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            user_id             UUID NOT NULL REFERENCES users(id),
+            provider            TEXT NOT NULL,
+            provider_user_id    TEXT NOT NULL,
+            email               TEXT,
+            name                TEXT,
+            avatar_url          TEXT,
+            created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+            updated_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+            UNIQUE (provider, provider_user_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_oauth_provider_user
+            ON oauth_identities (provider, provider_user_id);
+        CREATE INDEX IF NOT EXISTS idx_oauth_user_id ON oauth_identities (user_id);
         "#,
     )
     .execute(pool)
@@ -644,43 +846,228 @@ async fn auth_verify(
     Ok(negotiate_response(&headers, &response))
 }
 
-/// `POST /api/auth/oauth/:provider` — Exchange an OAuth2 authorization code.
+/// `POST /api/auth/oauth/:provider` — Generate an OAuth2 authorize URL with PKCE + HMAC state,
+/// or exchange an authorization code inline (SPA flow).
 #[derive(Deserialize)]
 struct OAuthRequest {
+    /// Authorization code (for inline exchange).
     code: Option<String>,
-    #[serde(rename = "redirect_uri")]
-    #[allow(dead_code)] // used by client protocol
-    _redirect_uri: Option<String>,
+    /// State parameter from the provider callback (for inline exchange).
+    state: Option<String>,
+    /// PKCE verifier (for inline exchange).
+    pkce_verifier: Option<String>,
 }
 
 async fn auth_oauth(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     Path(provider): Path<String>,
     headers: HeaderMap,
     axum::Json(body): axum::Json<OAuthRequest>,
 ) -> Result<Response, ApiError> {
-    let _valid_providers = ["google", "github", "apple"];
-    if !_valid_providers.contains(&provider.as_str()) {
-        return Err(ApiError::bad_request(format!(
-            "Unsupported OAuth provider: {provider}"
-        )));
+    let kind = OAuthProviderKind::from_name(&provider)
+        .ok_or_else(|| ApiError::bad_request(format!("Unsupported OAuth provider: {provider}")))?;
+
+    let oauth_provider = state.oauth_providers.get(&kind).ok_or_else(|| {
+        ApiError::bad_request(format!(
+            "OAuth provider '{}' is not configured on this server",
+            provider
+        ))
+    })?;
+
+    // If a code is provided, do inline exchange (SPA / backward-compat flow).
+    if let Some(code) = body.code.as_deref().filter(|c| !c.is_empty()) {
+        let oauth_state = body
+            .state
+            .as_deref()
+            .ok_or_else(|| ApiError::bad_request("state parameter required for code exchange"))?;
+        let verifier = body
+            .pkce_verifier
+            .as_deref()
+            .ok_or_else(|| ApiError::bad_request("pkce_verifier required for code exchange"))?;
+
+        let user_info = oauth_provider
+            .exchange_code(code, oauth_state, verifier, &state.oauth_state_secret)
+            .await
+            .map_err(|e| ApiError::bad_request(format!("OAuth exchange failed: {e}")))?;
+
+        let (user_id, roles) = find_or_create_oauth_user(&state.pool, &user_info).await?;
+
+        let ip = headers
+            .get("x-forwarded-for")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("unknown");
+        let ua = headers
+            .get("user-agent")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("unknown");
+        let dfp = headers
+            .get("x-device-fingerprint")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+
+        let token_pair = state
+            .session_manager
+            .create_session(user_id, roles, ip, ua, dfp)
+            .await
+            .map_err(|e| ApiError::internal(format!("Session creation failed: {e}")))?;
+
+        let response = serde_json::json!({
+            "user_id": user_id,
+            "access_token": token_pair.access_token,
+            "refresh_token": token_pair.refresh_token,
+            "expires_in": token_pair.expires_in,
+            "token_type": token_pair.token_type,
+        });
+
+        return Ok(negotiate_response(&headers, &response));
     }
 
-    let code = body
-        .code
-        .as_deref()
-        .filter(|c| !c.is_empty())
-        .ok_or_else(|| ApiError::bad_request("OAuth authorization code is required"))?;
+    // No code supplied — generate the authorize URL.
+    let (url, csrf_state, pkce_verifier) = oauth_provider
+        .authorization_url(&state.oauth_state_secret)
+        .map_err(|e| ApiError::internal(format!("Failed to build authorize URL: {e}")))?;
 
-    // TODO: wire to OAuth2Provider for the given provider kind.
-    let _ = code;
     let response = serde_json::json!({
-        "access_token": format!("ddb_at_{}", Uuid::new_v4()),
-        "refresh_token": format!("ddb_rt_{}", Uuid::new_v4()),
-        "expires_in": 3600
+        "authorize_url": url,
+        "state": csrf_state,
+        "pkce_verifier": pkce_verifier,
     });
 
     Ok(negotiate_response(&headers, &response))
+}
+
+/// `GET /api/auth/oauth/:provider/callback?code=...&state=...` — OAuth2 callback.
+///
+/// The provider redirects here after user consent. Verifies the HMAC state,
+/// exchanges the authorization code with PKCE, finds or creates the user,
+/// and issues a JWT token pair.
+#[derive(Deserialize)]
+struct OAuthCallbackQuery {
+    code: String,
+    state: String,
+}
+
+async fn auth_oauth_callback(
+    State(app): State<AppState>,
+    Path(provider): Path<String>,
+    Query(params): Query<OAuthCallbackQuery>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    let kind = OAuthProviderKind::from_name(&provider)
+        .ok_or_else(|| ApiError::bad_request(format!("Unsupported OAuth provider: {provider}")))?;
+
+    let oauth_provider = app.oauth_providers.get(&kind).ok_or_else(|| {
+        ApiError::bad_request(format!(
+            "OAuth provider '{}' is not configured on this server",
+            provider
+        ))
+    })?;
+
+    // For server-side callback flow, the PKCE verifier should be stored in
+    // a server-side session or secure HTTP-only cookie. We check the
+    // X-PKCE-Verifier header (set by a BFF proxy) or fall back to empty.
+    let pkce_verifier = headers
+        .get("x-pkce-verifier")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+
+    let user_info = oauth_provider
+        .exchange_code(
+            &params.code,
+            &params.state,
+            pkce_verifier,
+            &app.oauth_state_secret,
+        )
+        .await
+        .map_err(|e| ApiError::bad_request(format!("OAuth callback failed: {e}")))?;
+
+    let (user_id, roles) = find_or_create_oauth_user(&app.pool, &user_info).await?;
+
+    let ip = headers
+        .get("x-forwarded-for")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("unknown");
+    let ua = headers
+        .get("user-agent")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("unknown");
+    let dfp = headers
+        .get("x-device-fingerprint")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+
+    let token_pair = app
+        .session_manager
+        .create_session(user_id, roles, ip, ua, dfp)
+        .await
+        .map_err(|e| ApiError::internal(format!("Session creation failed: {e}")))?;
+
+    let response = serde_json::json!({
+        "user_id": user_id,
+        "access_token": token_pair.access_token,
+        "refresh_token": token_pair.refresh_token,
+        "expires_in": token_pair.expires_in,
+        "token_type": token_pair.token_type,
+    });
+
+    Ok(negotiate_response(&headers, &response))
+}
+
+/// Find or create a user from an OAuth identity.
+async fn find_or_create_oauth_user(
+    pool: &PgPool,
+    info: &OAuthUserInfo,
+) -> Result<(Uuid, Vec<String>), ApiError> {
+    let provider_str = info.provider.to_string();
+    let existing: Option<(Uuid,)> = sqlx::query_as(
+        "SELECT user_id FROM oauth_identities WHERE provider = $1 AND provider_user_id = $2",
+    )
+    .bind(&provider_str)
+    .bind(&info.provider_user_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| ApiError::internal(format!("OAuth lookup failed: {e}")))?;
+    if let Some((user_id,)) = existing {
+        let roles: Vec<String> =
+            sqlx::query_scalar("SELECT roles FROM users WHERE id = $1 AND deleted_at IS NULL")
+                .bind(user_id)
+                .fetch_optional(pool)
+                .await
+                .ok()
+                .flatten()
+                .and_then(|v: serde_json::Value| serde_json::from_value(v).ok())
+                .unwrap_or_else(|| vec!["user".to_string()]);
+        return Ok((user_id, roles));
+    }
+    let user_id = Uuid::new_v4();
+    let email = info
+        .email
+        .as_deref()
+        .map(|e| e.trim().to_lowercase())
+        .unwrap_or_else(|| format!("{}@oauth.{}", info.provider_user_id, provider_str));
+    sqlx::query(
+        "INSERT INTO users (id, email, password_hash, roles) VALUES ($1, $2, $3, $4::jsonb)",
+    )
+    .bind(user_id)
+    .bind(&email)
+    .bind("!oauth-only")
+    .bind(serde_json::json!(["user"]))
+    .execute(pool)
+    .await
+    .map_err(|e| ApiError::internal(format!("User creation failed: {e}")))?;
+    sqlx::query(
+        "INSERT INTO oauth_identities (user_id, provider, provider_user_id, email, name, avatar_url) VALUES ($1, $2, $3, $4, $5, $6)",
+    )
+    .bind(user_id)
+    .bind(&provider_str)
+    .bind(&info.provider_user_id)
+    .bind(&info.email)
+    .bind(&info.name)
+    .bind(&info.avatar_url)
+    .execute(pool)
+    .await
+    .map_err(|e| ApiError::internal(format!("OAuth link failed: {e}")))?;
+    Ok((user_id, vec!["user".to_string()]))
 }
 
 /// `POST /api/auth/refresh` — Rotate a refresh token for a new token pair.
@@ -690,7 +1077,7 @@ struct RefreshRequest {
 }
 
 async fn auth_refresh(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     headers: HeaderMap,
     axum::Json(body): axum::Json<RefreshRequest>,
 ) -> Result<Response, ApiError> {
@@ -698,11 +1085,33 @@ async fn auth_refresh(
         return Err(ApiError::bad_request("Refresh token is required"));
     }
 
-    // TODO: wire to SessionManager::rotate.
+    let dfp = headers
+        .get("x-device-fingerprint")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+
+    let token_pair = state
+        .session_manager
+        .refresh_session(&body.refresh_token, dfp)
+        .await
+        .map_err(|e| match &e {
+            crate::auth::AuthError::SessionRevoked => {
+                ApiError::unauthenticated("Session has been revoked")
+            }
+            crate::auth::AuthError::DeviceMismatch => ApiError::unauthenticated(
+                "Device fingerprint mismatch - session revoked for security",
+            ),
+            crate::auth::AuthError::TokenInvalid(msg) => {
+                ApiError::unauthenticated(format!("Invalid refresh token: {msg}"))
+            }
+            _ => ApiError::internal(format!("Refresh failed: {e}")),
+        })?;
+
     let response = serde_json::json!({
-        "access_token": format!("ddb_at_{}", Uuid::new_v4()),
-        "refresh_token": format!("ddb_rt_{}", Uuid::new_v4()),
-        "expires_in": 3600
+        "access_token": token_pair.access_token,
+        "refresh_token": token_pair.refresh_token,
+        "expires_in": token_pair.expires_in,
+        "token_type": token_pair.token_type,
     });
 
     Ok(negotiate_response(&headers, &response))
@@ -710,13 +1119,35 @@ async fn auth_refresh(
 
 /// `POST /api/auth/signout` — Revoke the current session.
 async fn auth_signout(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
-    // Require Bearer token.
-    let _token = extract_bearer_token(&headers)?;
+    let token = extract_bearer_token(&headers)?;
 
-    // TODO: wire to SessionManager::revoke.
+    let ip = headers
+        .get("x-forwarded-for")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("unknown");
+    let ua = headers
+        .get("user-agent")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("unknown");
+    let dfp = headers
+        .get("x-device-fingerprint")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+
+    let auth_ctx = state
+        .session_manager
+        .validate_token(&token, ip, ua, dfp)
+        .map_err(|e| ApiError::unauthenticated(format!("Invalid token: {e}")))?;
+
+    state
+        .session_manager
+        .revoke_session(auth_ctx.session_id)
+        .await
+        .map_err(|e| ApiError::internal(format!("Failed to revoke session: {e}")))?;
+
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
@@ -897,7 +1328,18 @@ async fn mutate(
         }
     }
 
-    // Convert mutations into triple operations and execute against the store.
+    // Execute ALL mutations inside a single database transaction so that
+    // the entire batch is atomic: either every mutation succeeds or none do.
+    let mut db_tx = state
+        .triple_store
+        .begin_tx()
+        .await
+        .map_err(|e| ApiError::internal(format!("Failed to begin transaction: {e}")))?;
+
+    let tx_id = PgTripleStore::next_tx_id_in_tx(&mut db_tx)
+        .await
+        .map_err(|e| ApiError::internal(format!("Failed to allocate tx_id: {e}")))?;
+
     let mut all_triples: Vec<TripleInput> = Vec::new();
     let mut entity_ids: Vec<Uuid> = Vec::new();
 
@@ -907,15 +1349,13 @@ async fn mutate(
                 let entity_id = m.id.unwrap_or_else(Uuid::new_v4);
                 entity_ids.push(entity_id);
 
-                // Set the :db/type attribute for this entity.
                 all_triples.push(TripleInput {
                     entity_id,
                     attribute: ":db/type".to_string(),
                     value: Value::String(m.entity.clone()),
-                    value_type: 0, // String
+                    value_type: 0,
                 });
 
-                // Convert each key-value pair in data to a triple.
                 if let Some(data) = &m.data
                     && let Some(obj) = data.as_object()
                 {
@@ -934,14 +1374,16 @@ async fn mutate(
                 let entity_id = m.id.unwrap_or_else(Uuid::new_v4);
                 entity_ids.push(entity_id);
 
-                // For update/upsert, retract old values for touched attributes
-                // then insert new ones.
                 if let Some(data) = &m.data
                     && let Some(obj) = data.as_object()
                 {
                     for (key, _) in obj {
                         let attr = format!("{}/{}", m.entity, key);
-                        let _ = state.triple_store.retract(entity_id, &attr).await;
+                        PgTripleStore::retract_in_tx(&mut db_tx, entity_id, &attr)
+                            .await
+                            .map_err(|e| {
+                                ApiError::internal(format!("Failed to retract attribute: {e}"))
+                            })?;
                     }
                     for (key, value) in obj {
                         let value_type = infer_value_type(value);
@@ -958,23 +1400,34 @@ async fn mutate(
                 let entity_id = m.id.expect("validated above");
                 entity_ids.push(entity_id);
 
-                // Retract all triples for this entity by fetching and retracting each attribute.
-                let existing = state
-                    .triple_store
-                    .get_entity(entity_id)
+                let existing = PgTripleStore::get_entity_in_tx(&mut db_tx, entity_id)
                     .await
                     .map_err(|e| {
                         ApiError::internal(format!("Failed to fetch entity for deletion: {e}"))
                     })?;
                 for triple in &existing {
-                    let _ = state
-                        .triple_store
-                        .retract(entity_id, &triple.attribute)
-                        .await;
+                    PgTripleStore::retract_in_tx(&mut db_tx, entity_id, &triple.attribute)
+                        .await
+                        .map_err(|e| {
+                            ApiError::internal(format!("Failed to retract triple: {e}"))
+                        })?;
                 }
             }
         }
     }
+
+    // Write all insert/update triples inside the same transaction.
+    if !all_triples.is_empty() {
+        PgTripleStore::set_triples_in_tx(&mut db_tx, &all_triples, tx_id)
+            .await
+            .map_err(|e| ApiError::internal(format!("Failed to write triples: {e}")))?;
+    }
+
+    // Commit the entire batch atomically.
+    db_tx
+        .commit()
+        .await
+        .map_err(|e| ApiError::internal(format!("Transaction commit failed: {e}")))?;
 
     // Collect attributes touched (for change notification).
     let mut touched_attributes: Vec<String> =
@@ -986,17 +1439,6 @@ async fn mutate(
     let mut entity_types: Vec<String> = body.mutations.iter().map(|m| m.entity.clone()).collect();
     entity_types.sort();
     entity_types.dedup();
-
-    // Write all insert/update triples in one batch.
-    let tx_id = if !all_triples.is_empty() {
-        state
-            .triple_store
-            .set_triples(&all_triples)
-            .await
-            .map_err(|e| ApiError::internal(format!("Failed to write triples: {e}")))?
-    } else {
-        0
-    };
 
     // Emit change event for reactive subscriptions.
     if tx_id > 0 {
@@ -1287,28 +1729,47 @@ async fn data_patch(
     let obj = body.as_object().unwrap();
     let mut triples = Vec::new();
 
-    // Retract old values for each attribute being patched, then insert new.
+    // Build triple inputs for the new values.
     for (key, value) in obj {
-        let attr = format!("{entity}/{key}");
-        let _ = state.triple_store.retract(id, &attr).await;
         let value_type = infer_value_type(value);
         triples.push(TripleInput {
             entity_id: id,
-            attribute: attr,
+            attribute: format!("{entity}/{key}"),
             value: value.clone(),
             value_type,
         });
     }
 
-    let tx_id = if !triples.is_empty() {
-        state
-            .triple_store
-            .set_triples(&triples)
+    // Retract old + write new in a single transaction so the patch is atomic.
+    let mut db_tx = state
+        .triple_store
+        .begin_tx()
+        .await
+        .map_err(|e| ApiError::internal(format!("Failed to begin transaction: {e}")))?;
+
+    for (key, _) in obj {
+        let attr = format!("{entity}/{key}");
+        PgTripleStore::retract_in_tx(&mut db_tx, id, &attr)
             .await
-            .map_err(|e| ApiError::internal(format!("Failed to update entity: {e}")))?
+            .map_err(|e| ApiError::internal(format!("Failed to retract attribute: {e}")))?;
+    }
+
+    let tx_id = if !triples.is_empty() {
+        let tid = PgTripleStore::next_tx_id_in_tx(&mut db_tx)
+            .await
+            .map_err(|e| ApiError::internal(format!("Failed to allocate tx_id: {e}")))?;
+        PgTripleStore::set_triples_in_tx(&mut db_tx, &triples, tid)
+            .await
+            .map_err(|e| ApiError::internal(format!("Failed to update entity: {e}")))?;
+        tid
     } else {
         0
     };
+
+    db_tx
+        .commit()
+        .await
+        .map_err(|e| ApiError::internal(format!("Transaction commit failed: {e}")))?;
 
     // Emit change event for reactive subscriptions.
     if tx_id > 0 {
@@ -1383,17 +1844,31 @@ async fn data_delete(
 
     let deleted_attributes: Vec<String> = existing.iter().map(|t| t.attribute.clone()).collect();
 
+    // Retract all triples in a single transaction so the delete is atomic.
+    let mut db_tx = state
+        .triple_store
+        .begin_tx()
+        .await
+        .map_err(|e| ApiError::internal(format!("Failed to begin transaction: {e}")))?;
+
+    let del_tx_id = PgTripleStore::next_tx_id_in_tx(&mut db_tx)
+        .await
+        .map_err(|e| ApiError::internal(format!("Failed to allocate tx_id: {e}")))?;
+
     for triple in &existing {
-        state
-            .triple_store
-            .retract(id, &triple.attribute)
+        PgTripleStore::retract_in_tx(&mut db_tx, id, &triple.attribute)
             .await
             .map_err(|e| ApiError::internal(format!("Failed to retract triple: {e}")))?;
     }
 
+    db_tx
+        .commit()
+        .await
+        .map_err(|e| ApiError::internal(format!("Transaction commit failed: {e}")))?;
+
     // Emit change event for reactive subscriptions.
     let _ = state.change_tx.send(ChangeEvent {
-        tx_id: 0, // Delete doesn't produce a new tx_id from set_triples
+        tx_id: del_tx_id,
         entity_ids: vec![id.to_string()],
         attributes: deleted_attributes,
         entity_type: Some(entity.clone()),
@@ -1408,32 +1883,65 @@ async fn data_delete(
 // ===========================================================================
 
 /// `POST /api/fn/:name` — Invoke a registered server-side function.
+///
+/// Looks up the function by name in the [`FunctionRegistry`], validates
+/// arguments, executes via the [`FunctionRuntime`], and returns the result.
+/// The function name can be either a fully-qualified name (`module:export`)
+/// or a simple name that is searched across all registered functions.
 async fn fn_invoke(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     Path(name): Path<String>,
     headers: HeaderMap,
-    axum::Json(_args): axum::Json<Value>,
+    axum::Json(args): axum::Json<Value>,
 ) -> Result<Response, ApiError> {
-    let _token = extract_bearer_token(&headers)?;
+    let token = extract_bearer_token(&headers).ok();
 
     if name.is_empty() {
         return Err(ApiError::bad_request("Function name is required"));
     }
 
-    // Validate function name format: alphanumeric, underscores, dots, hyphens.
+    // Validate function name format: alphanumeric, underscores, colons, dots, hyphens, slashes.
     if !name
         .chars()
-        .all(|c| c.is_alphanumeric() || c == '_' || c == '.' || c == '-')
+        .all(|c| c.is_alphanumeric() || c == '_' || c == '.' || c == '-' || c == ':' || c == '/')
     {
         return Err(ApiError::bad_request(
             "Function name contains invalid characters",
         ));
     }
 
-    // TODO: wire to FunctionRegistry lookup + Runtime execution.
+    // Ensure function subsystem is initialized.
+    let registry = state
+        .function_registry
+        .as_ref()
+        .ok_or_else(|| ApiError::internal("Function registry not initialized"))?;
+    let runtime = state
+        .function_runtime
+        .as_ref()
+        .ok_or_else(|| ApiError::internal("Function runtime not initialized"))?;
+
+    // Look up the function. Try exact match first, then search by export name.
+    let function_def = match registry.get(&name).await {
+        Some(def) => def,
+        None => {
+            // Search across all functions for a matching export name.
+            let all = registry.list().await;
+            all.into_iter()
+                .find(|f| f.export_name == name || f.name.ends_with(&format!(":{name}")))
+                .ok_or_else(|| ApiError::not_found(format!("Function `{name}` not found")))?
+        }
+    };
+
+    // Execute the function via the runtime.
+    let result = runtime
+        .execute(&function_def, args, token)
+        .await
+        .map_err(|e| ApiError::internal(format!("Function execution failed: {e}")))?;
+
     let response = serde_json::json!({
-        "result": Value::Null,
-        "duration_ms": 0.0
+        "result": result.value,
+        "duration_ms": result.duration_ms,
+        "logs": result.logs,
     });
 
     Ok(negotiate_response(&headers, &response))
@@ -1447,35 +1955,90 @@ async fn fn_invoke(
 ///
 /// Accepts `multipart/form-data` with a `file` field and optional `path` field.
 async fn storage_upload(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     headers: HeaderMap,
-    body: axum::body::Bytes,
+    request: Request<Body>,
 ) -> Result<Response, ApiError> {
     let _token = extract_bearer_token(&headers)?;
 
-    if body.is_empty() {
+    let content_type_str = headers
+        .get(CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("application/octet-stream")
+        .to_string();
+
+    let (file_data, file_content_type, upload_path) =
+        if content_type_str.starts_with("multipart/form-data") {
+            let mut multipart =
+                <axum::extract::Multipart as FromRequest<()>>::from_request(request, &())
+                    .await
+                    .map_err(|e| ApiError::bad_request(format!("Invalid multipart data: {e}")))?;
+
+            let mut file_data: Option<Vec<u8>> = None;
+            let mut file_ct = String::from("application/octet-stream");
+            let mut custom_path: Option<String> = None;
+
+            while let Some(field) = multipart
+                .next_field()
+                .await
+                .map_err(|e| ApiError::bad_request(format!("Failed to read field: {e}")))?
+            {
+                let name = field.name().unwrap_or("").to_string();
+                match name.as_str() {
+                    "file" => {
+                        if let Some(ct) = field.content_type() {
+                            file_ct = ct.to_string();
+                        }
+                        let bytes = field.bytes().await.map_err(|e| {
+                            ApiError::bad_request(format!("Failed to read file: {e}"))
+                        })?;
+                        file_data = Some(bytes.to_vec());
+                    }
+                    "path" => {
+                        let text = field.text().await.map_err(|e| {
+                            ApiError::bad_request(format!("Failed to read path: {e}"))
+                        })?;
+                        if !text.is_empty() {
+                            custom_path = Some(text);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            let data = file_data
+                .ok_or_else(|| ApiError::bad_request("Missing 'file' field in multipart upload"))?;
+            (data, file_ct, custom_path)
+        } else {
+            let body_bytes = axum::body::to_bytes(request.into_body(), 100 * 1024 * 1024)
+                .await
+                .map_err(|e| ApiError::bad_request(format!("Failed to read body: {e}")))?;
+            (body_bytes.to_vec(), content_type_str.clone(), None)
+        };
+
+    if file_data.is_empty() {
         return Err(ApiError::bad_request("Upload body is empty"));
     }
 
-    // Size guard (50 MB default limit).
-    const MAX_UPLOAD_SIZE: usize = 50 * 1024 * 1024;
-    if body.len() > MAX_UPLOAD_SIZE {
-        return Err(ApiError::new(
-            ErrorCode::PayloadTooLarge,
-            format!("File exceeds maximum size of {MAX_UPLOAD_SIZE} bytes"),
-        ));
-    }
+    let path = upload_path.unwrap_or_else(|| format!("uploads/{}", Uuid::new_v4()));
 
-    // TODO: wire to StorageEngine::put.
-    let path = format!("uploads/{}", Uuid::new_v4());
+    let result = state
+        .storage_engine
+        .upload(
+            &path,
+            &file_data,
+            &file_content_type,
+            std::collections::HashMap::new(),
+        )
+        .await
+        .map_err(storage_err_to_api)?;
+
     let response = serde_json::json!({
-        "path": path,
-        "size": body.len(),
-        "content_type": headers
-            .get(CONTENT_TYPE)
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("application/octet-stream"),
-        "signed_url": Value::Null
+        "path": result.path,
+        "size": result.size,
+        "content_type": result.content_type,
+        "etag": result.etag,
+        "signed_url": result.signed_url,
     });
 
     Ok(negotiate_response_status(
@@ -1492,11 +2055,15 @@ struct StorageGetParams {
     signed: Option<bool>,
     /// Image transformation string (e.g. `w=200,h=200,fit=cover`).
     transform: Option<String>,
+    /// Signed URL expiry timestamp (for verification).
+    expires: Option<i64>,
+    /// Signed URL signature (for verification).
+    sig: Option<String>,
 }
 
 /// `GET /api/storage/*path` — Download a file or retrieve a signed URL.
 async fn storage_get(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     Path(path): Path<String>,
     Query(params): Query<StorageGetParams>,
     headers: HeaderMap,
@@ -1510,23 +2077,51 @@ async fn storage_get(
         return Err(ApiError::bad_request("Path traversal is not allowed"));
     }
 
+    // If the request carries a signed URL signature, verify it.
+    if let (Some(expires), Some(sig)) = (params.expires, &params.sig) {
+        state
+            .storage_engine
+            .verify_signed_url(&path, expires, sig)
+            .map_err(storage_err_to_api)?;
+    }
+
     if params.signed.unwrap_or(false) {
-        // TODO: wire to StorageEngine::signed_url.
+        let signed = state
+            .storage_engine
+            .signed_url(&path, "/api/storage")
+            .map_err(storage_err_to_api)?;
         let response = serde_json::json!({
-            "signed_url": format!("/api/storage/{path}?token=signed_{}", Uuid::new_v4()),
-            "expires_in": 3600
+            "signed_url": signed.url,
+            "expires_at": signed.expires_at.to_rfc3339(),
+            "expires_in": signed.expires_in,
         });
         return Ok(negotiate_response(&headers, &response));
     }
 
-    // TODO: wire to StorageEngine::get, apply transforms if requested.
-    let _ = params.transform;
-    Err(ApiError::not_found("File not found"))
+    // Download the file from the storage engine.
+    let (data, meta) = state
+        .storage_engine
+        .download(&path)
+        .await
+        .map_err(storage_err_to_api)?;
+
+    let _ = params.transform; // TODO: apply image transforms when image processor is available.
+
+    let mut response = (StatusCode::OK, data).into_response();
+    response.headers_mut().insert(
+        CONTENT_TYPE,
+        HeaderValue::from_str(&meta.content_type)
+            .unwrap_or(HeaderValue::from_static("application/octet-stream")),
+    );
+    if let Ok(etag_val) = HeaderValue::from_str(&format!("\"{}\"", meta.etag)) {
+        response.headers_mut().insert("etag", etag_val);
+    }
+    Ok(response)
 }
 
 /// `DELETE /api/storage/*path` — Delete a stored file.
 async fn storage_delete(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     Path(path): Path<String>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
@@ -1539,8 +2134,26 @@ async fn storage_delete(
         return Err(ApiError::bad_request("Path traversal is not allowed"));
     }
 
-    // TODO: wire to StorageEngine::delete.
+    state
+        .storage_engine
+        .delete(&path)
+        .await
+        .map_err(storage_err_to_api)?;
+
     Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+/// Convert a [`StorageError`] into an [`ApiError`].
+fn storage_err_to_api(err: StorageError) -> ApiError {
+    match &err {
+        StorageError::NotFound(_) => ApiError::not_found(err.to_string()),
+        StorageError::InvalidPath(_) => ApiError::bad_request(err.to_string()),
+        StorageError::Rejected(_) => ApiError::new(ErrorCode::PayloadTooLarge, err.to_string()),
+        StorageError::SignatureExpired | StorageError::InvalidSignature => {
+            ApiError::new(ErrorCode::Unauthenticated, err.to_string())
+        }
+        _ => ApiError::internal(err.to_string()),
+    }
 }
 
 // ===========================================================================
@@ -1661,6 +2274,11 @@ async fn docs(State(_state): State<AppState>) -> impl IntoResponse {
     Html(openapi::docs_html("/api/openapi.json"))
 }
 
+/// Find or create a user from OAuth identity info.
+///
+/// Looks up `oauth_identities` by (provider, provider_user_id). If not found,
+/// checks for an existing user with the same email for account linking.
+/// If neither exists, creates a new user with a placeholder password hash.
 // ===========================================================================
 // Helpers
 // ===========================================================================
@@ -1832,6 +2450,7 @@ fn validate_entity_name(name: &str) -> Result<(), ApiError> {
     Ok(())
 }
 
+/// Find or create a user from OAuth2 user info for the OAuth callback flow.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2074,16 +2693,46 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn rate_limit_headers_injected() {
-        // Verify the rate-limit header values are valid HTTP header values.
-        assert!(HeaderValue::from_str("1000").is_ok());
-        assert!(HeaderValue::from_str("999").is_ok());
+    fn rate_limit_headers_valid() {
+        // Verify the rate-limit header values used by rate_limit_middleware are valid.
+        assert!(HeaderValue::from_str("100").is_ok());
+        assert!(HeaderValue::from_str("20").is_ok());
         assert!(HeaderValue::from_str("60").is_ok());
+        assert!(HeaderValue::from_str("0").is_ok());
 
         // Verify the header names are valid
-        let _ = "X-RateLimit-Limit";
-        let _ = "X-RateLimit-Remaining";
-        let _ = "X-RateLimit-Reset";
+        let _ = "x-ratelimit-limit";
+        let _ = "x-ratelimit-remaining";
+        let _ = "x-ratelimit-reset";
+        let _ = "retry-after";
+    }
+
+    #[test]
+    fn rate_limiter_enforces_anonymous_limit() {
+        let limiter = RateLimiter::new();
+        let key = RateLimitKey::Ip("test-ip".into());
+
+        // 20 anonymous requests should succeed.
+        for _ in 0..20 {
+            assert!(limiter.check(&key, false).is_ok());
+        }
+        // 21st should fail.
+        let result = limiter.check(&key, false);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn rate_limiter_enforces_authenticated_limit() {
+        let limiter = RateLimiter::new();
+        let key = RateLimitKey::Token("test-token-hash".into());
+
+        // 100 authenticated requests should succeed.
+        for _ in 0..100 {
+            assert!(limiter.check(&key, true).is_ok());
+        }
+        // 101st should fail.
+        let result = limiter.check(&key, true);
+        assert!(result.is_err());
     }
 
     // -----------------------------------------------------------------------

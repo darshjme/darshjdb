@@ -437,6 +437,7 @@ fn parse_exports(
 
         // Match: export default KIND({
         if let Some(rest) = trimmed.strip_prefix("export default ") {
+            let mut matched = false;
             for kind in [
                 FunctionKind::Query,
                 FunctionKind::Mutation,
@@ -450,7 +451,26 @@ fn parse_exports(
                     || rest.starts_with(&format!("{wrapper} ("))
                 {
                     results.push(("default".to_string(), kind, None, None));
+                    matched = true;
                     break;
+                }
+            }
+
+            // Match: export default function NAME(...) or export default function(...)
+            // Plain exported functions are treated as Action kind.
+            if !matched && rest.starts_with("function") {
+                let after_kw = &rest["function".len()..];
+                if after_kw.starts_with(' ') || after_kw.starts_with('(') {
+                    let trimmed = after_kw.trim_start();
+                    let name: String = trimmed
+                        .chars()
+                        .take_while(|c| c.is_alphanumeric() || *c == '_')
+                        .collect();
+                    if !name.is_empty() {
+                        results.push((name, FunctionKind::Action, None, None));
+                    } else {
+                        results.push(("default".to_string(), FunctionKind::Action, None, None));
+                    }
                 }
             }
         }
@@ -793,5 +813,31 @@ export const deleteAll = mutation({
     #[test]
     fn test_has_function_extension_empty() {
         assert!(!has_function_extension(&[]));
+    }
+
+    // -----------------------------------------------------------------------
+    // Plain export default function parsing
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_parse_default_function_named() {
+        let source = r#"export default function hello(args) {
+  return { message: "Hello " + args.name };
+}"#;
+        let exports = parse_exports(source, Path::new("hello.ts"));
+        assert_eq!(exports.len(), 1);
+        assert_eq!(exports[0].0, "hello");
+        assert_eq!(exports[0].1, FunctionKind::Action);
+    }
+
+    #[test]
+    fn test_parse_default_function_anonymous() {
+        let source = r#"export default function(args) {
+  return { result: true };
+}"#;
+        let exports = parse_exports(source, Path::new("anon.ts"));
+        assert_eq!(exports.len(), 1);
+        assert_eq!(exports[0].0, "default");
+        assert_eq!(exports[0].1, FunctionKind::Action);
     }
 }

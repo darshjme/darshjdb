@@ -263,7 +263,10 @@ async fn handle_connection(
             change = change_rx.recv() => {
                 match change {
                     Ok(event) => {
-                        handle_change_event(&event, &mut socket, &state, session_id, codec).await;
+                        if handle_change_event(&event, &mut socket, &state, session_id, codec).await {
+                            debug!(session_id = %session_id, "send failed during change event, closing");
+                            break;
+                        }
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
                         debug!(session_id = %session_id, skipped = n, "change receiver lagged");
@@ -682,13 +685,15 @@ fn get_user_id(state: &WsState, session_id: SessionId) -> Option<String> {
 /// Handle a change event from the triple store: for each of this session's
 /// subscriptions, check if the change is relevant, re-execute the query,
 /// compute a diff, and send it to the client.
+///
+/// Returns `true` if a send failed and the connection should be closed.
 async fn handle_change_event(
     event: &ChangeEvent,
     socket: &mut WebSocket,
     state: &WsState,
     session_id: SessionId,
     codec: Codec,
-) {
+) -> bool {
     // Get all subscriptions for this session.
     let subs: Vec<(SubId, Value, u64)> = state
         .sessions
@@ -701,7 +706,7 @@ async fn handle_change_event(
         .unwrap_or_default();
 
     if subs.is_empty() {
-        return;
+        return false;
     }
 
     for (sub_id, query_ast, _query_hash) in subs {
@@ -746,7 +751,7 @@ async fn handle_change_event(
             "updated": []
         });
 
-        let _ = send_message(
+        if send_message(
             socket,
             &ServerMessage::Diff {
                 sub_id: sub_id.to_string(),
@@ -755,8 +760,14 @@ async fn handle_change_event(
             },
             codec,
         )
-        .await;
+        .await
+        .is_err()
+        {
+            return true;
+        }
     }
+
+    false
 }
 
 /// Clean up all resources for a disconnected session.

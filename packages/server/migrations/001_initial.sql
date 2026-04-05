@@ -39,7 +39,35 @@ CREATE INDEX IF NOT EXISTS idx_triples_attribute
     ON triples (attribute)
     WHERE NOT retracted;
 
+-- Full-text search GIN index on the text representation of JSONB values.
+CREATE INDEX IF NOT EXISTS idx_triples_fts
+    ON triples USING gin (to_tsvector('english', value #>> '{}'))
+    WHERE NOT retracted;
+
 -- ── Transaction sequence ───────────────────────────────────────────
 
 CREATE SEQUENCE IF NOT EXISTS darshan_tx_seq
     START WITH 1 INCREMENT BY 1;
+
+-- ── Entity Pool ───────────────────────────────────────────────────
+-- Maps external UUIDs to compact internal integer IDs.
+-- All index lookups become integer comparisons instead of 16-byte
+-- UUID + text comparisons — the single biggest performance win
+-- from Ontotext GraphDB's dictionary encoding.
+
+CREATE TABLE IF NOT EXISTS entity_pool (
+    internal_id BIGSERIAL PRIMARY KEY,
+    external_id UUID NOT NULL UNIQUE
+);
+CREATE INDEX IF NOT EXISTS idx_entity_pool_external
+    ON entity_pool (external_id);
+
+-- ── Attribute Pool ────────────────────────────────────────────────
+-- Maps attribute name strings to compact integer IDs.
+
+CREATE TABLE IF NOT EXISTS attribute_pool (
+    internal_id SERIAL PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE
+);
+CREATE INDEX IF NOT EXISTS idx_attribute_pool_name
+    ON attribute_pool (name);

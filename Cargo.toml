@@ -12,7 +12,7 @@ license = "MIT"
 
 [workspace.dependencies]
 tokio = { version = "1", features = ["full"] }
-axum = { version = "0.8", features = ["ws"] }
+axum = { version = "0.8", features = ["ws", "multipart"] }
 sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "uuid", "json", "chrono"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 serde = { version = "1", features = ["derive"] }
@@ -21,7 +21,7 @@ thiserror = "2"
 anyhow = "1"
 lru = "0.12"
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 chrono = { version = "0.4", features = ["serde"] }
 sha2 = "0.10"
 sha1 = "0.10"
@@ -36,7 +36,7 @@ base64 = "0.22"
 url = "2"
 http = "1"
 tower = { version = "0.5", features = ["util"] }
-tower-http = { version = "0.6", features = ["cors"] }
+tower-http = { version = "0.6", features = ["cors", "catch-panic", "timeout", "trace"] }
 axum-extra = { version = "0.10", features = ["typed-header"] }
 pin-project-lite = "0.2"
 notify = { version = "7", features = ["macos_fsevent"] }

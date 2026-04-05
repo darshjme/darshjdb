@@ -6,8 +6,12 @@
 
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
+use axum::body::Body;
+use axum::http::{Request, StatusCode};
+use axum::middleware::{self, Next};
+use axum::response::{IntoResponse, Response};
 use darshandb_server::api::rest::{AppState, build_router};
 use darshandb_server::api::ws::{WsState, ws_routes};
 use darshandb_server::auth::middleware::RateLimiter;
@@ -19,7 +23,9 @@ use darshandb_server::sync::session::SessionManager as SyncSessionManager;
 
 use sqlx::postgres::PgPoolOptions;
 use tokio::signal;
+use tower_http::catch_panic::CatchPanicLayer;
 use tower_http::cors::{Any, CorsLayer};
+use tower_http::timeout::TimeoutLayer;
 
 /// Default server port when `DARSHAN_PORT` is not set.
 const DEFAULT_PORT: u16 = 7700;
@@ -30,9 +36,12 @@ const DEFAULT_MAX_CONNECTIONS: u32 = 20;
 /// Rate limiter cleanup interval.
 const RATE_LIMIT_CLEANUP_INTERVAL: Duration = Duration::from_secs(60);
 
+/// Request timeout for all REST handlers.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+
 #[tokio::main]
 async fn main() -> Result<()> {
-    // ── Tracing / Logging ──────────────────────────────────────────
+    // -- Tracing / Logging ----------------------------------------------------
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -42,7 +51,7 @@ async fn main() -> Result<()> {
 
     tracing::info!("DarshanDB server starting");
 
-    // ── Configuration from environment ─────────────────────────────
+    // -- Configuration from environment ---------------------------------------
     let database_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| {
         tracing::warn!("DATABASE_URL not set, using default localhost connection");
         "postgres://darshan:darshan@localhost:5432/darshandb".to_string()
@@ -62,12 +71,16 @@ async fn main() -> Result<()> {
     let jwt_private_key_path = std::env::var("DARSHAN_JWT_PRIVATE_KEY").ok();
     let jwt_public_key_path = std::env::var("DARSHAN_JWT_PUBLIC_KEY").ok();
 
-    // ── Database Pool ──────────────────────────────────────────────
+    // -- Database Pool --------------------------------------------------------
     tracing::info!(database_url = %mask_url(&database_url), "connecting to database");
 
     let pool = PgPoolOptions::new()
         .max_connections(max_connections)
+        .min_connections(1)
         .acquire_timeout(Duration::from_secs(5))
+        .idle_timeout(Duration::from_secs(600))
+        .max_lifetime(Duration::from_secs(1800))
+        .test_before_acquire(true)
         .connect(&database_url)
         .await
         .map_err(|e| {
@@ -77,11 +90,11 @@ async fn main() -> Result<()> {
 
     tracing::info!("database connection pool established");
 
-    // ── Triple Store ───────────────────────────────────────────────
+    // -- Triple Store ---------------------------------------------------------
     let triple_store = darshandb_server::triple_store::PgTripleStore::new(pool.clone()).await?;
     tracing::info!("triple store initialized (schema ensured)");
 
-    // ── Auth Schema (users + sessions tables) ─────────────────────
+    // -- Auth Schema (users + sessions tables) --------------------------------
     darshandb_server::api::rest::ensure_auth_schema(&pool)
         .await
         .map_err(|e| {
@@ -90,7 +103,7 @@ async fn main() -> Result<()> {
         })?;
     tracing::info!("auth schema ensured (users + sessions tables)");
 
-    // ── Auth Engine ────────────────────────────────────────────────
+    // -- Auth Engine ----------------------------------------------------------
     let key_manager = match (&jwt_private_key_path, &jwt_public_key_path) {
         (Some(priv_path), Some(pub_path)) => {
             // Production: RS256 with PEM key files.
@@ -135,7 +148,7 @@ async fn main() -> Result<()> {
 
     tracing::info!("auth engine initialized");
 
-    // ── Sync Engine ────────────────────────────────────────────────
+    // -- Sync Engine ----------------------------------------------------------
     let sync_sessions = Arc::new(SyncSessionManager::new());
     let subscription_registry = Arc::new(SubscriptionRegistry::new());
     let presence_manager = Arc::new(PresenceManager::new());
@@ -148,7 +161,7 @@ async fn main() -> Result<()> {
     let triple_store_arc = Arc::new(triple_store);
 
     let ws_state = WsState {
-        sessions: sync_sessions,
+        sessions: sync_sessions.clone(),
         registry: subscription_registry,
         presence: presence_manager,
         diff_tx,
@@ -159,32 +172,156 @@ async fn main() -> Result<()> {
 
     tracing::info!("sync engine initialized");
 
-    // ── REST API State ─────────────────────────────────────────────
-    let app_state = AppState::with_pool(
+    // -- Storage Engine -------------------------------------------------------
+    let storage_dir =
+        std::env::var("DARSHAN_STORAGE_DIR").unwrap_or_else(|_| "./darshan/storage".to_string());
+    let storage_backend = Arc::new(
+        darshandb_server::storage::LocalFsBackend::new(&storage_dir).unwrap_or_else(|e| {
+            tracing::warn!("Failed to create storage backend at {storage_dir}: {e}, using /tmp");
+            darshandb_server::storage::LocalFsBackend::new("/tmp/darshandb-storage")
+                .expect("fallback storage backend")
+        }),
+    );
+    let storage_signing_key =
+        std::env::var("DARSHAN_STORAGE_KEY").unwrap_or_else(|_| "dev-signing-key".to_string());
+    let storage_engine = Arc::new(darshandb_server::storage::StorageEngine::new(
+        storage_backend,
+        storage_signing_key.into_bytes(),
+    ));
+    tracing::info!(%storage_dir, "storage engine initialized");
+
+    // -- Function Runtime -----------------------------------------------------
+    let functions_dir = std::env::var("DARSHAN_FUNCTIONS_DIR")
+        .unwrap_or_else(|_| "./darshan/functions".to_string());
+    let functions_dir_path = std::path::PathBuf::from(&functions_dir);
+
+    let (fn_registry, fn_runtime) = if functions_dir_path.is_dir() {
+        // Harness lives next to the functions directory.
+        let harness_path = functions_dir_path
+            .parent()
+            .unwrap_or(std::path::Path::new("."))
+            .join("_darshan_harness.js");
+
+        if !harness_path.exists() {
+            tracing::warn!(
+                harness = %harness_path.display(),
+                "function harness not found, function execution disabled"
+            );
+            (None, None)
+        } else {
+            match darshandb_server::functions::FunctionRegistry::new(functions_dir_path.clone())
+                .await
+            {
+                Ok(registry) => {
+                    let fn_count = registry.count().await;
+                    tracing::info!(
+                        count = fn_count,
+                        dir = %functions_dir,
+                        "function registry initialized"
+                    );
+
+                    let process_runtime = darshandb_server::functions::runtime::ProcessRuntime::new(
+                        darshandb_server::functions::runtime::ProcessKind::Node,
+                        harness_path,
+                        functions_dir_path,
+                        darshandb_server::functions::ResourceLimits::default().max_concurrency,
+                    );
+
+                    let runtime = darshandb_server::functions::FunctionRuntime::new(
+                        Box::new(process_runtime),
+                        darshandb_server::functions::ResourceLimits::default(),
+                        database_url.clone(),
+                        format!("http://127.0.0.1:{port}"),
+                    );
+
+                    (Some(Arc::new(registry)), Some(Arc::new(runtime)))
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "failed to initialize function registry, functions disabled"
+                    );
+                    (None, None)
+                }
+            }
+        }
+    } else {
+        tracing::info!(
+            dir = %functions_dir,
+            "functions directory not found, function execution disabled"
+        );
+        (None, None)
+    };
+
+    // -- REST API State -------------------------------------------------------
+    let mut app_state = AppState::with_pool(
         pool.clone(),
         triple_store_arc.clone(),
         session_manager.clone(),
         change_tx,
+        rate_limiter.clone(),
+        storage_engine,
     );
+    if let (Some(reg), Some(rt)) = (fn_registry, fn_runtime) {
+        app_state = app_state.with_functions(reg, rt);
+    }
 
-    // ── CORS Layer ─────────────────────────────────────────────────
-    let cors = CorsLayer::new()
-        .allow_origin(Any)
-        .allow_methods(Any)
-        .allow_headers(Any)
-        .expose_headers(Any)
-        .max_age(Duration::from_secs(86400));
+    // -- CORS Layer -----------------------------------------------------------
+    let dev_mode = std::env::var("DARSHAN_DEV")
+        .map(|v| v == "1" || v == "true")
+        .unwrap_or(false);
 
-    // ── Count existing triples for startup log ──────────────────────
+    let cors = if dev_mode {
+        tracing::info!("CORS: dev mode, allowing all origins");
+        CorsLayer::new()
+            .allow_origin(Any)
+            .allow_methods(Any)
+            .allow_headers(Any)
+            .expose_headers(Any)
+            .max_age(Duration::from_secs(86400))
+    } else {
+        let cors_origins = std::env::var("DARSHAN_CORS_ORIGINS").unwrap_or_default();
+        if cors_origins.is_empty() {
+            tracing::warn!(
+                "DARSHAN_CORS_ORIGINS not set in production mode, denying cross-origin requests"
+            );
+            // No allow_origin call = no Access-Control-Allow-Origin header = browser blocks.
+            CorsLayer::new()
+                .allow_methods(Any)
+                .allow_headers(Any)
+                .expose_headers(Any)
+                .max_age(Duration::from_secs(86400))
+        } else {
+            let parsed: Vec<axum::http::HeaderValue> = cors_origins
+                .split(',')
+                .filter_map(|o| o.trim().parse().ok())
+                .collect();
+            tracing::info!(origins = ?parsed, "CORS: production mode with explicit origins");
+            CorsLayer::new()
+                .allow_origin(parsed)
+                .allow_methods(Any)
+                .allow_headers(Any)
+                .expose_headers(Any)
+                .max_age(Duration::from_secs(86400))
+        }
+    };
+
+    // -- Count existing triples for startup log --------------------------------
     let triple_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM triples")
         .fetch_one(&pool)
         .await
         .unwrap_or((0,));
     tracing::info!(triples = triple_count.0, "triple store stats");
 
-    // ── Router Assembly ────────────────────────────────────────────
-    let api_router = build_router(app_state);
+    // -- Shared state for health endpoints ------------------------------------
+    let server_started_at = Instant::now();
     let health_pool = pool.clone();
+    let health_pool_ready = pool.clone();
+    let health_ws_sessions = sync_sessions.clone();
+    let health_ws_sessions_ready = sync_sessions.clone();
+
+    // -- Router Assembly ------------------------------------------------------
+    let api_router = build_router(app_state);
 
     let app = axum::Router::new()
         // REST API routes under /api
@@ -194,12 +331,35 @@ async fn main() -> Result<()> {
         // Health check at root
         .route(
             "/health",
-            axum::routing::get(move || health_check(health_pool.clone())),
+            axum::routing::get(move || {
+                health_check(
+                    health_pool.clone(),
+                    health_ws_sessions.clone(),
+                    server_started_at,
+                )
+            }),
         )
-        // CORS (outermost layer, runs first)
+        // Readiness probe for K8s
+        .route(
+            "/health/ready",
+            axum::routing::get(move || {
+                readiness_check(health_pool_ready.clone(), health_ws_sessions_ready.clone())
+            }),
+        )
+        // -- Middleware stack (outermost = runs first) -------------------------
+        // Structured request logging
+        .layer(middleware::from_fn(request_logging_middleware))
+        // Catch panics in handlers -> 500
+        .layer(CatchPanicLayer::custom(handle_panic))
+        // 30s request timeout on all routes
+        .layer(TimeoutLayer::with_status_code(
+            StatusCode::GATEWAY_TIMEOUT,
+            REQUEST_TIMEOUT,
+        ))
+        // CORS
         .layer(cors);
 
-    // ── Start Server ───────────────────────────────────────────────
+    // -- Start Server ---------------------------------------------------------
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
     let listener = tokio::net::TcpListener::bind(addr)
         .await
@@ -209,6 +369,7 @@ async fn main() -> Result<()> {
     tracing::info!("  REST API:  http://{addr}/api");
     tracing::info!("  WebSocket: ws://{addr}/ws");
     tracing::info!("  Health:    http://{addr}/health");
+    tracing::info!("  Ready:     http://{addr}/health/ready");
     tracing::info!("  API Docs:  http://{addr}/api/docs");
 
     axum::serve(
@@ -224,27 +385,153 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-/// Health check endpoint. Returns 200 with server status and pool info.
-async fn health_check(pool: sqlx::PgPool) -> axum::Json<serde_json::Value> {
+// =============================================================================
+// Structured request logging middleware
+// =============================================================================
+
+/// Logs every request with method, path, status, duration_ms, and user_id.
+async fn request_logging_middleware(req: Request<Body>, next: Next) -> Response {
+    let method = req.method().clone();
+    let path = req.uri().path().to_string();
+
+    // Extract user_id from extensions if auth middleware already ran.
+    // We check both the auth context type and a simple string extension.
+    let user_id: Option<String> = req
+        .extensions()
+        .get::<darshandb_server::auth::AuthContext>()
+        .map(|ctx| ctx.user_id.to_string());
+
+    let start = Instant::now();
+    let response = next.run(req).await;
+    let duration_ms = start.elapsed().as_millis();
+    let status = response.status().as_u16();
+
+    tracing::info!(
+        http.method = %method,
+        http.path = %path,
+        http.status = status,
+        duration_ms = duration_ms,
+        user_id = user_id.as_deref().unwrap_or("-"),
+        "request"
+    );
+
+    response
+}
+
+// =============================================================================
+// Panic handler
+// =============================================================================
+
+/// Converts a caught panic into a structured 500 response.
+fn handle_panic(err: Box<dyn std::any::Any + Send + 'static>) -> Response {
+    let detail = if let Some(s) = err.downcast_ref::<String>() {
+        s.clone()
+    } else if let Some(s) = err.downcast_ref::<&str>() {
+        (*s).to_string()
+    } else {
+        "unknown panic".to_string()
+    };
+
+    tracing::error!(panic = %detail, "handler panicked");
+
+    let body = serde_json::json!({
+        "error": {
+            "code": "INTERNAL",
+            "message": "Internal server error",
+            "status": 500
+        }
+    });
+
+    (StatusCode::INTERNAL_SERVER_ERROR, axum::Json(body)).into_response()
+}
+
+// =============================================================================
+// Health endpoints
+// =============================================================================
+
+/// `GET /health` - Comprehensive health check with uptime, pool stats, WS connections.
+async fn health_check(
+    pool: sqlx::PgPool,
+    ws_sessions: Arc<SyncSessionManager>,
+    started_at: Instant,
+) -> Response {
     let pool_size = pool.size();
     let idle = pool.num_idle();
-    let triple_count: i64 = sqlx::query_as::<_, (i64,)>("SELECT COUNT(*) FROM triples")
+    let uptime_secs = started_at.elapsed().as_secs();
+    let ws_connections = ws_sessions.session_count();
+
+    // Check if Postgres is reachable.
+    let db_ok = sqlx::query_as::<_, (i64,)>("SELECT 1")
         .fetch_one(&pool)
         .await
-        .map(|r| r.0)
-        .unwrap_or(-1);
+        .is_ok();
 
-    axum::Json(serde_json::json!({
-        "status": "ok",
+    let triple_count: i64 = if db_ok {
+        sqlx::query_as::<_, (i64,)>("SELECT COUNT(*) FROM triples")
+            .fetch_one(&pool)
+            .await
+            .map(|r| r.0)
+            .unwrap_or(-1)
+    } else {
+        -1
+    };
+
+    let status = if db_ok { "ok" } else { "degraded" };
+    let http_status = if db_ok {
+        StatusCode::OK
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE
+    };
+
+    let body = serde_json::json!({
+        "status": status,
         "service": "darshandb",
         "version": env!("CARGO_PKG_VERSION"),
+        "uptime_secs": uptime_secs,
         "pool": {
             "size": pool_size,
             "idle": idle,
+            "max": pool.options().get_max_connections(),
+        },
+        "websockets": {
+            "active_connections": ws_connections,
         },
         "triples": triple_count,
-    }))
+        "database": if db_ok { "connected" } else { "disconnected" },
+    });
+
+    (http_status, axum::Json(body)).into_response()
 }
+
+/// `GET /health/ready` - K8s readiness probe. Returns 200 only when Postgres is connected.
+async fn readiness_check(pool: sqlx::PgPool, ws_sessions: Arc<SyncSessionManager>) -> Response {
+    match sqlx::query_as::<_, (i64,)>("SELECT 1")
+        .fetch_one(&pool)
+        .await
+    {
+        Ok(_) => {
+            let body = serde_json::json!({
+                "ready": true,
+                "pool_size": pool.size(),
+                "pool_idle": pool.num_idle(),
+                "ws_connections": ws_sessions.session_count(),
+            });
+            (StatusCode::OK, axum::Json(body)).into_response()
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "readiness check failed: database unreachable");
+            let body = serde_json::json!({
+                "ready": false,
+                "error": "database unreachable",
+            });
+            (StatusCode::SERVICE_UNAVAILABLE, axum::Json(body)).into_response()
+        }
+    }
+}
+
+// =============================================================================
+// Graceful shutdown
+// =============================================================================
 
 /// Wait for SIGINT (Ctrl+C) or SIGTERM for graceful shutdown.
 async fn shutdown_signal() {
@@ -270,6 +557,10 @@ async fn shutdown_signal() {
         _ = terminate => tracing::info!("received SIGTERM, initiating shutdown"),
     }
 }
+
+// =============================================================================
+// Helpers
+// =============================================================================
 
 /// Mask the password in a database URL for safe logging.
 fn mask_url(url: &str) -> String {

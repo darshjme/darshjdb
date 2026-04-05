@@ -246,19 +246,16 @@ pub fn plan_query(ast: &QueryAST) -> Result<QueryPlan> {
         param_idx += 1;
     }
 
-    // Full-text search clause (simple ILIKE across all values)
+    // Full-text search clause using PostgreSQL tsvector/tsquery.
+    // Uses the GIN index on to_tsvector('english', value #>> '{}') for
+    // efficient ranked full-text matching instead of brute-force ILIKE.
     if let Some(ref term) = ast.search {
         sql.push_str("INNER JOIN triples t_search ON t_search.entity_id = t0.entity_id\n");
+        sql.push_str("  AND NOT t_search.retracted\n");
         sql.push_str(&format!(
-            "  AND NOT t_search.retracted\n  AND t_search.value #>> '{{}}' ILIKE ${param_idx}\n"
+            "  AND to_tsvector('english', t_search.value #>> '{{}}') @@ plainto_tsquery('english', ${param_idx})\n"
         ));
-        // Escape LIKE metacharacters in the user-supplied search term to prevent
-        // wildcard injection (e.g. user typing "%" or "_" to match everything).
-        let escaped = term
-            .replace('\\', "\\\\")
-            .replace('%', "\\%")
-            .replace('_', "\\_");
-        params.push(serde_json::Value::String(format!("%{escaped}%")));
+        params.push(serde_json::Value::String(term.clone()));
         param_idx += 1;
     }
 
@@ -440,10 +437,11 @@ fn bind_json_param<'q>(
     query: sqlx::query::QueryAs<'q, sqlx::Postgres, TripleRow, sqlx::postgres::PgArguments>,
     param: &'q serde_json::Value,
 ) -> sqlx::query::QueryAs<'q, sqlx::Postgres, TripleRow, sqlx::postgres::PgArguments> {
-    // For JSONB comparisons we bind as serde_json::Value;
-    // for ILIKE we bind as String.
+    // Bind strings as text (SQL casts to ::jsonb where needed for
+    // WHERE-clause comparisons; plainto_tsquery and ILIKE expect text).
+    // Non-string JSON values bind as serde_json::Value for JSONB ops.
     match param {
-        serde_json::Value::String(s) if s.contains('%') => query.bind(s.as_str()),
+        serde_json::Value::String(s) => query.bind(s.as_str()),
         _ => query.bind(param),
     }
 }
@@ -942,25 +940,67 @@ mod tests {
     }
 
     #[test]
-    fn plan_search_escapes_wildcards() {
+    fn plan_search_uses_tsvector_tsquery() {
+        let ast = QueryAST {
+            search: Some("hello world".into()),
+            ..bare_ast("T")
+        };
+        let plan = plan_query(&ast).expect("should plan");
+
+        // SQL should use tsvector/tsquery, not ILIKE.
+        assert!(
+            plan.sql.contains("to_tsvector"),
+            "should use to_tsvector: {}",
+            plan.sql
+        );
+        assert!(
+            plan.sql.contains("plainto_tsquery"),
+            "should use plainto_tsquery: {}",
+            plan.sql
+        );
+        assert!(
+            plan.sql.contains("@@"),
+            "should use @@ match operator: {}",
+            plan.sql
+        );
+        assert!(
+            !plan.sql.contains("ILIKE"),
+            "should NOT use ILIKE: {}",
+            plan.sql
+        );
+
+        // The search term should be passed as-is (no LIKE wildcards).
+        let search_param = plan
+            .params
+            .iter()
+            .find(|p| p.as_str().is_some_and(|s| s.contains("hello")))
+            .expect("search param missing");
+        assert_eq!(
+            search_param.as_str().unwrap(),
+            "hello world",
+            "search term should be passed verbatim to plainto_tsquery"
+        );
+    }
+
+    #[test]
+    fn plan_search_passes_special_chars_verbatim() {
+        // plainto_tsquery handles sanitization internally, so special
+        // characters like % and _ should be passed through unchanged.
         let ast = QueryAST {
             search: Some("%_dangerous\\".into()),
             ..bare_ast("T")
         };
         let plan = plan_query(&ast).expect("should plan");
-        // The escaped search param should contain backslash-escaped metacharacters
         let search_param = plan
             .params
             .iter()
             .find(|p| p.as_str().is_some_and(|s| s.contains("dangerous")))
             .expect("search param missing");
-        let s = search_param.as_str().unwrap();
-        // User's % and _ must be escaped
-        assert!(s.contains("\\%"), "% should be escaped: {s}");
-        assert!(s.contains("\\_"), "_ should be escaped: {s}");
-        // Wrapping wildcards must be present
-        assert!(s.starts_with('%'), "should start with wildcard: {s}");
-        assert!(s.ends_with('%'), "should end with wildcard: {s}");
+        assert_eq!(
+            search_param.as_str().unwrap(),
+            "%_dangerous\\",
+            "special chars passed verbatim to plainto_tsquery"
+        );
     }
 
     #[test]

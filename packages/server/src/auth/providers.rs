@@ -481,39 +481,212 @@ impl OAuth2Provider for GenericOAuth2Provider {
 
     async fn exchange_code(
         &self,
-        _code: &str,
+        code: &str,
         state: &str,
-        _pkce_verifier: &str,
+        pkce_verifier: &str,
         state_secret: &[u8],
     ) -> Result<OAuthUserInfo, AuthError> {
         // Verify the state HMAC first.
         Self::verify_state(state, state_secret)?;
 
-        // NOTE: Actual HTTP calls to the token and userinfo endpoints require
-        // an HTTP client (e.g., reqwest). This implementation validates the
-        // security invariants (state, PKCE) and provides the correct
-        // request structure. In production, wire in the HTTP client here.
-        //
-        // The token exchange would POST to `self.config.token_url` with:
-        //   grant_type=authorization_code
-        //   code={code}
-        //   redirect_uri={redirect_uri}
-        //   client_id={client_id}
-        //   client_secret={client_secret}
-        //   code_verifier={pkce_verifier}
-        //
-        // Then fetch userinfo from `self.config.userinfo_url` with the
-        // access token in the Authorization header.
+        let http = reqwest::Client::new();
 
-        Err(AuthError::OAuth2(
-            "HTTP client not wired — implement with reqwest or similar".into(),
-        ))
+        // Exchange authorization code for an access token.
+        let token_resp = http
+            .post(&self.config.token_url)
+            .form(&[
+                ("grant_type", "authorization_code"),
+                ("code", code),
+                ("redirect_uri", &self.config.redirect_uri),
+                ("client_id", &self.config.client_id),
+                ("client_secret", &self.config.client_secret),
+                ("code_verifier", pkce_verifier),
+            ])
+            .header("Accept", "application/json")
+            .send()
+            .await
+            .map_err(|e| AuthError::OAuth2(format!("token request failed: {e}")))?;
+
+        if !token_resp.status().is_success() {
+            let status = token_resp.status();
+            let body = token_resp.text().await.unwrap_or_else(|_| "unknown".into());
+            return Err(AuthError::OAuth2(format!(
+                "token exchange failed ({status}): {body}"
+            )));
+        }
+
+        let token_json: serde_json::Value = token_resp
+            .json()
+            .await
+            .map_err(|e| AuthError::OAuth2(format!("token response parse: {e}")))?;
+
+        let access_token = token_json["access_token"]
+            .as_str()
+            .ok_or_else(|| AuthError::OAuth2("missing access_token in response".into()))?;
+
+        // For Apple, user info is in the ID token; for others, call userinfo endpoint.
+        if self.config.kind == OAuthProviderKind::Apple {
+            // Apple returns identity claims in the id_token JWT.
+            let id_token = token_json["id_token"]
+                .as_str()
+                .ok_or_else(|| AuthError::OAuth2("missing id_token from Apple".into()))?;
+
+            // Decode payload without verification (Apple's public keys would
+            // be needed for full verification; the state HMAC + PKCE already
+            // bind this flow to our server).
+            let parts: Vec<&str> = id_token.splitn(3, '.').collect();
+            if parts.len() < 2 {
+                return Err(AuthError::OAuth2("malformed Apple id_token".into()));
+            }
+            let payload_bytes = data_encoding::BASE64URL_NOPAD
+                .decode(parts[1].as_bytes())
+                .or_else(|_| {
+                    // Try with padding
+                    base64_decode_lenient(parts[1])
+                })
+                .map_err(|e| AuthError::OAuth2(format!("Apple id_token decode: {e}")))?;
+            let claims: serde_json::Value = serde_json::from_slice(&payload_bytes)
+                .map_err(|e| AuthError::OAuth2(format!("Apple claims parse: {e}")))?;
+
+            return Ok(OAuthUserInfo {
+                provider_user_id: claims["sub"].as_str().unwrap_or_default().to_string(),
+                email: claims["email"].as_str().map(String::from),
+                name: None, // Apple sends name only on first auth, via form_post
+                avatar_url: None,
+                provider: OAuthProviderKind::Apple,
+            });
+        }
+
+        // Fetch user info from the provider's userinfo endpoint.
+        let userinfo_resp = http
+            .get(&self.config.userinfo_url)
+            .bearer_auth(access_token)
+            .header("Accept", "application/json")
+            // GitHub API requires a User-Agent header.
+            .header("User-Agent", "DarshanDB")
+            .send()
+            .await
+            .map_err(|e| AuthError::OAuth2(format!("userinfo request failed: {e}")))?;
+
+        if !userinfo_resp.status().is_success() {
+            let status = userinfo_resp.status();
+            let body = userinfo_resp
+                .text()
+                .await
+                .unwrap_or_else(|_| "unknown".into());
+            return Err(AuthError::OAuth2(format!(
+                "userinfo fetch failed ({status}): {body}"
+            )));
+        }
+
+        let info: serde_json::Value = userinfo_resp
+            .json()
+            .await
+            .map_err(|e| AuthError::OAuth2(format!("userinfo parse: {e}")))?;
+
+        // Map provider-specific JSON shapes to our unified struct.
+        match self.config.kind {
+            OAuthProviderKind::Google => Ok(OAuthUserInfo {
+                provider_user_id: info["sub"].as_str().unwrap_or_default().to_string(),
+                email: info["email"].as_str().map(String::from),
+                name: info["name"].as_str().map(String::from),
+                avatar_url: info["picture"].as_str().map(String::from),
+                provider: OAuthProviderKind::Google,
+            }),
+            OAuthProviderKind::GitHub => {
+                // GitHub may not include email in /user; need separate call.
+                let mut email = info["email"].as_str().map(String::from);
+                if email.is_none() {
+                    // Fetch primary verified email from /user/emails.
+                    if let Ok(emails_resp) = http
+                        .get("https://api.github.com/user/emails")
+                        .bearer_auth(access_token)
+                        .header("Accept", "application/json")
+                        .header("User-Agent", "DarshanDB")
+                        .send()
+                        .await
+                    {
+                        if let Ok(emails) = emails_resp.json::<Vec<serde_json::Value>>().await {
+                            email = emails
+                                .iter()
+                                .find(|e| {
+                                    e["primary"].as_bool() == Some(true)
+                                        && e["verified"].as_bool() == Some(true)
+                                })
+                                .or_else(|| {
+                                    emails
+                                        .iter()
+                                        .find(|e| e["verified"].as_bool() == Some(true))
+                                })
+                                .and_then(|e| e["email"].as_str().map(String::from));
+                        }
+                    }
+                }
+
+                Ok(OAuthUserInfo {
+                    provider_user_id: info["id"]
+                        .as_i64()
+                        .map(|id| id.to_string())
+                        .or_else(|| info["id"].as_str().map(String::from))
+                        .unwrap_or_default(),
+                    email,
+                    name: info["name"]
+                        .as_str()
+                        .or_else(|| info["login"].as_str())
+                        .map(String::from),
+                    avatar_url: info["avatar_url"].as_str().map(String::from),
+                    provider: OAuthProviderKind::GitHub,
+                })
+            }
+            OAuthProviderKind::Discord => Ok(OAuthUserInfo {
+                provider_user_id: info["id"].as_str().unwrap_or_default().to_string(),
+                email: info["email"].as_str().map(String::from),
+                name: info["username"].as_str().map(String::from),
+                avatar_url: info["id"].as_str().and_then(|id| {
+                    info["avatar"]
+                        .as_str()
+                        .map(|av| format!("https://cdn.discordapp.com/avatars/{id}/{av}.png"))
+                }),
+                provider: OAuthProviderKind::Discord,
+            }),
+            OAuthProviderKind::Apple => {
+                // Handled above; unreachable.
+                unreachable!("Apple handled via id_token path above")
+            }
+        }
+    }
+}
+
+/// Parse a provider name string into an [`OAuthProviderKind`].
+impl OAuthProviderKind {
+    /// Parse a lowercase provider name (e.g. "google", "github") into the enum.
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name.to_lowercase().as_str() {
+            "google" => Some(Self::Google),
+            "github" => Some(Self::GitHub),
+            "apple" => Some(Self::Apple),
+            "discord" => Some(Self::Discord),
+            _ => None,
+        }
     }
 }
 
 /// Minimal percent-encoding for URL query parameters.
 fn urlencoding(s: &str) -> String {
     url::form_urlencoded::byte_serialize(s.as_bytes()).collect()
+}
+
+/// Lenient base64url decode that handles missing padding.
+fn base64_decode_lenient(input: &str) -> Result<Vec<u8>, data_encoding::DecodeError> {
+    // Add padding if needed.
+    let padded = match input.len() % 4 {
+        2 => format!("{input}=="),
+        3 => format!("{input}="),
+        _ => input.to_string(),
+    };
+    // Replace URL-safe chars with standard base64 for decoding.
+    let standard = padded.replace('-', "+").replace('_', "/");
+    data_encoding::BASE64.decode(standard.as_bytes())
 }
 
 #[cfg(test)]

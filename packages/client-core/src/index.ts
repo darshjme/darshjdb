@@ -60,6 +60,14 @@ export { StorageClient } from './storage.js';
 /* -- REST fallback -------------------------------------------------------- */
 export { RestTransport } from './rest.js';
 
+/* -- Convex compatibility ------------------------------------------------- */
+export {
+  ConvexCompat,
+  type ConvexFilter,
+  type ConvexQueryOptions,
+  type ConvexWatchCallback,
+} from './convex-compat.js';
+
 /* -- Types ---------------------------------------------------------------- */
 export type {
   /* Config */
