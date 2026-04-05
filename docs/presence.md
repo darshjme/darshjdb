@@ -195,4 +195,4 @@ export default {
 
 ---
 
-[Previous: Permissions](permissions.md) | [Next: Storage](storage.md)
+[Previous: Permissions](permissions.md) | [Next: Storage](storage.md) | [All Docs](README.md)

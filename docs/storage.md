@@ -236,4 +236,4 @@ export const processUpload = mutation({
 
 ---
 
-[Previous: Presence](presence.md) | [Next: Migration Guide](migration.md)
+[Previous: Presence](presence.md) | [Next: Migration Guide](migration.md) | [All Docs](README.md)
