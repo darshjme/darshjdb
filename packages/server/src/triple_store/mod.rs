@@ -697,13 +697,17 @@ impl PgTripleStore {
             WHERE expires_at IS NOT NULL
               AND expires_at < now()
               AND NOT retracted
-            RETURNING DISTINCT entity_id
+            RETURNING entity_id
             "#,
         )
         .fetch_all(&self.pool)
         .await?;
 
-        Ok(rows.into_iter().map(|(id,)| id).collect())
+        // Deduplicate entity_ids (multiple triples per entity may expire).
+        let mut ids: Vec<Uuid> = rows.into_iter().map(|(id,)| id).collect();
+        ids.sort();
+        ids.dedup();
+        Ok(ids)
     }
 
     /// Set or update the TTL for all active triples belonging to an entity.
