@@ -166,54 +166,77 @@ impl Broadcaster {
                 }
             }
 
-            // For each unique (session, sub) pair, re-execute the query and diff.
-            for handles in handles_by_hash.values() {
+            // Execute each unique query ONCE per (hash, user_id) and share
+            // the result across all subscribers with the same permission context.
+            for (query_hash, handles) in &handles_by_hash {
+                // Group handles by user_id so we execute once per permission context.
+                let mut by_user: HashMap<Option<String>, Vec<&SubscriptionHandle>> = HashMap::new();
                 for handle in handles {
-                    self.process_subscription(handle, &event, executor.as_ref())
-                        .await;
+                    let user_id = self
+                        .sessions
+                        .with_session(&handle.session_id, |s| s.user_id.clone())
+                        .flatten();
+                    by_user.entry(user_id).or_default().push(handle);
+                }
+
+                for (user_id, user_handles) in &by_user {
+                    // Pick the first handle's query AST (all share the same hash).
+                    let query_ast = match self
+                        .sessions
+                        .with_session(&user_handles[0].session_id, |s| {
+                            s.subscriptions
+                                .get(&user_handles[0].sub_id)
+                                .map(|sub| sub.query_ast.clone())
+                        })
+                        .flatten()
+                    {
+                        Some(ast) => ast,
+                        None => continue,
+                    };
+
+                    // Skip if the event's entity_type doesn't match the query target.
+                    if let Some(ref event_et) = event.entity_type {
+                        if let Some(query_et) = query_ast.get("from").and_then(|v| v.as_str()) {
+                            if query_et != event_et {
+                                continue;
+                            }
+                        }
+                    }
+
+                    // Execute the query ONCE for this (hash, user_id) group.
+                    let new_results = match executor.execute(&query_ast, user_id.as_deref()).await {
+                        Ok(results) => results,
+                        Err(e) => {
+                            error!(
+                                query_hash = query_hash,
+                                error = %e,
+                                "failed to re-execute query for subscription group"
+                            );
+                            continue;
+                        }
+                    };
+
+                    let new_hash = hash_result_set(&new_results);
+
+                    // Fan out the shared result to each subscriber in this group.
+                    for handle in user_handles {
+                        self.deliver_to_subscriber(handle, &new_results, new_hash, &event)
+                            .await;
+                    }
                 }
             }
         }
     }
 
-    /// Process a single subscription: re-execute query, compute diff, send.
-    async fn process_subscription<E: QueryExecutor>(
+    /// Deliver a shared query result to a single subscriber, computing
+    /// per-subscriber diffs against their cached state.
+    async fn deliver_to_subscriber(
         &self,
         handle: &SubscriptionHandle,
+        new_results: &[Value],
+        new_hash: u64,
         event: &ChangeEvent,
-        executor: &E,
     ) {
-        // Look up the query AST and user context.
-        let (query_ast, user_id) = match self.sessions.with_session(&handle.session_id, |s| {
-            let sub = s.subscriptions.get(&handle.sub_id)?;
-            Some((sub.query_ast.clone(), s.user_id.clone()))
-        }) {
-            Some(Some(data)) => data,
-            _ => {
-                debug!(
-                    session_id = %handle.session_id,
-                    sub_id = %handle.sub_id,
-                    "subscription no longer active, skipping"
-                );
-                return;
-            }
-        };
-
-        // Re-execute the query with the user's permission context.
-        let new_results = match executor.execute(&query_ast, user_id.as_deref()).await {
-            Ok(results) => results,
-            Err(e) => {
-                error!(
-                    session_id = %handle.session_id,
-                    sub_id = %handle.sub_id,
-                    error = %e,
-                    "failed to re-execute query for subscription"
-                );
-                return;
-            }
-        };
-
-        // Compute diff against cached results.
         let cache_key = (handle.session_id, handle.sub_id);
         let old_results = self
             .result_cache
@@ -221,22 +244,20 @@ impl Broadcaster {
             .map(|r| r.value().clone())
             .unwrap_or_default();
 
-        let new_hash = hash_result_set(&new_results);
         let old_hash = hash_result_set(&old_results);
 
         if new_hash == old_hash {
-            // No visible change for this subscriber.
             return;
         }
 
-        let diff = compute_diff(&old_results, &new_results);
+        let diff = compute_diff(&old_results, new_results);
 
         if diff.is_empty() {
             return;
         }
 
-        // Update cache.
-        self.result_cache.insert(cache_key, new_results);
+        // Update cache with the new results.
+        self.result_cache.insert(cache_key, new_results.to_vec());
 
         // Update session cursor.
         self.sessions.with_session_mut(&handle.session_id, |s| {
