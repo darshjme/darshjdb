@@ -6,7 +6,7 @@ RUN apk add --no-cache musl-dev openssl-dev openssl-libs-static pkgconf
 WORKDIR /build
 
 # Cache dependency layer
-COPY Cargo.toml Cargo.lock* ./
+COPY Cargo.toml Cargo.lock ./
 COPY packages/server/Cargo.toml packages/server/Cargo.toml
 COPY packages/cli/Cargo.toml packages/cli/Cargo.toml
 
@@ -26,16 +26,28 @@ RUN touch packages/server/src/main.rs packages/cli/src/main.rs && \
 FROM node:22-alpine AS frontend
 
 WORKDIR /build
-COPY package.json ./
+
+# Copy lockfile and root package.json first for cache
+COPY package.json package-lock.json ./
+COPY packages/client-core/package.json packages/client-core/package.json
+COPY packages/react/package.json packages/react/package.json
+COPY packages/admin/package.json packages/admin/package.json
+
+# Create workspace dirs so npm ci can resolve them
+RUN mkdir -p packages/client-core packages/react packages/admin
+
+# Use npm ci for deterministic installs; scope to needed workspaces
+RUN npm ci --workspace=packages/client-core --workspace=packages/react --workspace=packages/admin
+
+# Now copy the actual source
 COPY packages/client-core/ packages/client-core/
 COPY packages/react/ packages/react/
 COPY packages/admin/ packages/admin/
 
-RUN npm install --workspace=packages/client-core --workspace=packages/react --workspace=packages/admin
 RUN npm run build --workspace=packages/admin
 
 # ── Stage 3: Runtime ─────────────────────────────────────────────────
-FROM alpine:3.21
+FROM alpine:3.21 AS runtime
 
 RUN apk add --no-cache ca-certificates tini && \
     addgroup -S darshan && adduser -S darshan -G darshan
@@ -46,7 +58,9 @@ COPY --from=builder /build/target/release/darshandb-server /usr/local/bin/darsha
 COPY --from=builder /build/target/release/darshan /usr/local/bin/darshan
 COPY --from=frontend /build/packages/admin/dist /usr/share/darshan/admin
 
-RUN chown -R darshan:darshan /app
+# Ensure binaries are not writable by runtime user
+RUN chmod 555 /usr/local/bin/darshandb-server /usr/local/bin/darshan && \
+    chown -R darshan:darshan /app
 
 USER darshan
 

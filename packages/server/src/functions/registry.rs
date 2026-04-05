@@ -604,4 +604,194 @@ export type User = { name: string };
             assert_eq!(FunctionKind::from_wrapper_name(name), Some(kind));
         }
     }
+
+    // -----------------------------------------------------------------------
+    // FunctionKind edge cases
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_function_kind_unknown_wrapper() {
+        assert_eq!(FunctionKind::from_wrapper_name("unknown"), None);
+        assert_eq!(FunctionKind::from_wrapper_name(""), None);
+        assert_eq!(FunctionKind::from_wrapper_name("Query"), None); // case-sensitive
+    }
+
+    // -----------------------------------------------------------------------
+    // parse_exports edge cases
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_parse_scheduled_export() {
+        let source = r#"export const cleanup = scheduled({
+  cron: "0 * * * * *",
+  handler: async (ctx) => {},
+});"#;
+        let exports = parse_exports(source, Path::new("crons.ts"));
+        assert_eq!(exports.len(), 1);
+        assert_eq!(exports[0].0, "cleanup");
+        assert_eq!(exports[0].1, FunctionKind::Scheduled);
+    }
+
+    #[test]
+    fn test_parse_internal_fn_export() {
+        let source = r#"export const helper = internalFn({
+  handler: async (ctx) => {},
+});"#;
+        let exports = parse_exports(source, Path::new("internal.ts"));
+        assert_eq!(exports.len(), 1);
+        assert_eq!(exports[0].0, "helper");
+        assert_eq!(exports[0].1, FunctionKind::Internal);
+    }
+
+    #[test]
+    fn test_parse_with_space_before_paren() {
+        let source = r#"export const getUser = query ({
+  handler: async (ctx) => {},
+});"#;
+        let exports = parse_exports(source, Path::new("users.ts"));
+        assert_eq!(exports.len(), 1);
+        assert_eq!(exports[0].0, "getUser");
+        assert_eq!(exports[0].1, FunctionKind::Query);
+    }
+
+    #[test]
+    fn test_parse_empty_file() {
+        let exports = parse_exports("", Path::new("empty.ts"));
+        assert!(exports.is_empty());
+    }
+
+    #[test]
+    fn test_parse_comments_only() {
+        let source = r#"
+// export const foo = query({})
+/* export const bar = mutation({}) */
+"#;
+        // Line comments will match -- this is a known limitation of line-based
+        // parsing. The comment prefix is NOT stripped before matching.
+        let exports = parse_exports(source, Path::new("commented.ts"));
+        // The "// export const" line starts with "//", not "export", so no match.
+        assert!(exports.is_empty());
+    }
+
+    #[test]
+    fn test_parse_non_function_constant() {
+        let source = r#"
+export const MAX_SIZE = 100;
+export const config = { key: "value" };
+"#;
+        let exports = parse_exports(source, Path::new("config.ts"));
+        assert!(exports.is_empty());
+    }
+
+    #[test]
+    fn test_parse_default_mutation() {
+        let source = r#"export default mutation({
+  handler: async (ctx) => {},
+});"#;
+        let exports = parse_exports(source, Path::new("api.ts"));
+        assert_eq!(exports.len(), 1);
+        assert_eq!(exports[0].0, "default");
+        assert_eq!(exports[0].1, FunctionKind::Mutation);
+    }
+
+    #[test]
+    fn test_parse_mixed_exports_and_constants() {
+        let source = r#"
+export const TIMEOUT = 5000;
+export const getAll = query({
+  handler: async (ctx) => ctx.db.query("items").collect(),
+});
+export type Item = { name: string };
+export const deleteAll = mutation({
+  handler: async (ctx) => {},
+});
+"#;
+        let exports = parse_exports(source, Path::new("items.ts"));
+        assert_eq!(exports.len(), 2);
+        assert_eq!(exports[0].0, "getAll");
+        assert_eq!(exports[0].1, FunctionKind::Query);
+        assert_eq!(exports[1].0, "deleteAll");
+        assert_eq!(exports[1].1, FunctionKind::Mutation);
+    }
+
+    // -----------------------------------------------------------------------
+    // is_function_file edge cases
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_is_function_file_mjs() {
+        assert!(is_function_file(Path::new("utils.mjs")));
+    }
+
+    #[test]
+    fn test_is_function_file_mts() {
+        assert!(is_function_file(Path::new("utils.mts")));
+    }
+
+    #[test]
+    fn test_is_function_file_spec_excluded() {
+        assert!(!is_function_file(Path::new("users.spec.ts")));
+        assert!(!is_function_file(Path::new("users.spec.js")));
+    }
+
+    #[test]
+    fn test_is_function_file_underscore_excluded() {
+        assert!(!is_function_file(Path::new("_internal.ts")));
+        assert!(!is_function_file(Path::new("_darshan_harness.ts")));
+    }
+
+    #[test]
+    fn test_is_function_file_non_js_extensions() {
+        assert!(!is_function_file(Path::new("readme.md")));
+        assert!(!is_function_file(Path::new("config.json")));
+        assert!(!is_function_file(Path::new("data.csv")));
+        assert!(!is_function_file(Path::new("image.png")));
+    }
+
+    #[test]
+    fn test_is_function_file_no_extension() {
+        assert!(!is_function_file(Path::new("Makefile")));
+    }
+
+    // -----------------------------------------------------------------------
+    // module_name_from_path edge cases
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_module_name_nested() {
+        assert_eq!(
+            module_name_from_path(Path::new("api/v2/users.ts")),
+            "api/v2/users"
+        );
+    }
+
+    #[test]
+    fn test_module_name_windows_separators() {
+        // Backslashes get normalized to forward slashes.
+        assert_eq!(
+            module_name_from_path(Path::new("api\\users.ts")),
+            "api/users"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // has_function_extension
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_has_function_extension_mixed() {
+        let paths = vec![PathBuf::from("readme.md"), PathBuf::from("users.ts")];
+        assert!(has_function_extension(&paths));
+    }
+
+    #[test]
+    fn test_has_function_extension_none() {
+        let paths = vec![PathBuf::from("readme.md"), PathBuf::from("config.json")];
+        assert!(!has_function_extension(&paths));
+    }
+
+    #[test]
+    fn test_has_function_extension_empty() {
+        assert!(!has_function_extension(&[]));
+    }
 }

@@ -9,8 +9,22 @@ use std::path::PathBuf;
 pub struct Config {
     /// Base URL of the DarshanDB server.
     pub url: String,
-    /// Authentication token.
+    /// Authentication token (may be empty for local-only commands).
     pub token: String,
+}
+
+impl Config {
+    /// Returns an error if no authentication token is configured.
+    /// Call this before any command that contacts a remote server.
+    pub fn require_token(&self) -> Result<&str> {
+        if self.token.is_empty() {
+            anyhow::bail!(
+                "No authentication token configured.\n\
+                 Set DARSHAN_TOKEN, pass --token, or add [server].token to darshan.toml."
+            );
+        }
+        Ok(&self.token)
+    }
 }
 
 /// On-disk configuration format (`darshan.toml`).
@@ -23,6 +37,11 @@ struct FileConfig {
 struct ServerConfig {
     url: Option<String>,
     token: Option<String>,
+}
+
+impl Config {
+    /// Recognized log levels for the `logs --level` filter.
+    pub const VALID_LOG_LEVELS: &[&str] = &["debug", "info", "warn", "error"];
 }
 
 impl Config {

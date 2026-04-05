@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect } from "react";
 import {
   Play,
   Radio,
@@ -20,7 +20,6 @@ export function DataExplorer() {
   const [liveMode, setLiveMode] = useState(false);
   const [showQuery, setShowQuery] = useState(false);
   const [queryText, setQueryText] = useState(`SELECT * FROM "${mockEntityTypes[0].name}" LIMIT 100`);
-  const editorRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     setQueryText(`SELECT * FROM "${selectedEntity.name}" LIMIT 100`);
@@ -46,6 +45,7 @@ export function DataExplorer() {
           <input
             placeholder="Filter entities..."
             className="input-field text-xs py-1.5"
+            aria-label="Filter entities"
           />
         </div>
         <div className="overflow-y-auto py-1">
@@ -104,16 +104,16 @@ export function DataExplorer() {
               Query
             </button>
             <div className="w-px h-5 bg-zinc-800" />
-            <button className="btn-ghost text-xs">
+            <button className="btn-ghost text-xs" aria-label="Refresh data">
               <RefreshCw className="w-3.5 h-3.5" />
             </button>
-            <button className="btn-ghost text-xs">
+            <button className="btn-ghost text-xs" aria-label="Download data">
               <Download className="w-3.5 h-3.5" />
             </button>
-            <button className="btn-ghost text-xs">
+            <button className="btn-ghost text-xs" aria-label="Add record">
               <Plus className="w-3.5 h-3.5" />
             </button>
-            <button className="btn-ghost text-xs text-red-400 hover:text-red-300">
+            <button className="btn-ghost text-xs text-red-400 hover:text-red-300" aria-label="Delete selected">
               <Trash2 className="w-3.5 h-3.5" />
             </button>
           </div>
@@ -124,7 +124,6 @@ export function DataExplorer() {
           <div className="border-b border-zinc-800 bg-zinc-950/80">
             <div className="p-3">
               <div
-                ref={editorRef}
                 className="bg-zinc-900 border border-zinc-800 rounded-lg overflow-hidden"
               >
                 <textarea
@@ -134,6 +133,7 @@ export function DataExplorer() {
                   rows={3}
                   spellCheck={false}
                   placeholder='SELECT * FROM "users" WHERE role = "admin"'
+                  aria-label="SQL query editor"
                 />
               </div>
               <div className="flex items-center justify-between mt-2">

@@ -34,43 +34,74 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
-      - run: cargo fmt --all -- --check
-      - run: cargo clippy --workspace --all-targets -- -D warnings
-      - run: cargo test --workspace
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: Clippy lints
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Run tests
+        run: cargo test --workspace
         env:
           DATABASE_URL: postgres://darshan:darshan@localhost:5432/darshandb_test
 
   typescript:
-    name: TypeScript (lint + test)
+    name: TypeScript (typecheck + lint + test + build)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - run: npm install
-      - run: npm run lint --workspaces --if-present
-      - run: npm test --workspaces --if-present
+          cache: npm
+      - run: npm ci
+      - name: Typecheck
+        run: npm run typecheck --workspaces --if-present
+      - name: Lint
+        run: npm run lint --workspaces --if-present
+      - name: Test
+        run: npm test --workspaces --if-present
+      - name: Build
+        run: npm run build --workspaces --if-present
 
   php:
     name: PHP (test)
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sdks/php
     steps:
       - uses: actions/checkout@v4
       - uses: shivammathur/setup-php@v2
         with:
           php-version: "8.3"
           tools: composer
-      - run: cd sdks/php && composer install --no-interaction --prefer-dist
-      - run: cd sdks/php && vendor/bin/phpunit || echo "No tests configured yet"
+      - run: composer install --no-interaction --prefer-dist
+      - run: vendor/bin/phpunit || echo "No tests configured yet"
 
   python:
     name: Python (test)
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sdks/python
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: cd sdks/python && pip install -e ".[dev]"
-      - run: cd sdks/python && pytest --no-header -q 2>/dev/null || echo "No tests configured yet"
+      - run: pip install -e ".[dev]"
+      - run: pytest --no-header -q 2>/dev/null || echo "No tests configured yet"
+
+  docker:
+    name: Docker build (smoke test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: darshandb:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

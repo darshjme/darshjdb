@@ -8,7 +8,6 @@ import {
   AlertTriangle,
   Info,
   Bug,
-  Filter,
   Download,
   Trash2,
 } from "lucide-react";

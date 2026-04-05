@@ -44,3 +44,46 @@ DarshanDB implements 11 layers of defense-in-depth security.
 Every risk in the OWASP API Security Top 10 is addressed by design, not by configuration.
 
 See the main README for the full coverage matrix.
+
+## Encryption at Rest
+
+DarshanDB supports AES-256-GCM encryption for sensitive fields stored in the database:
+
+```typescript
+// darshan/schema.ts
+import { defineSchema, defineTable, v } from '@darshan/server';
+
+export default defineSchema({
+  users: defineTable({
+    name: v.string(),
+    email: v.string(),
+    ssn: v.string().encrypted(), // Encrypted at rest
+  }),
+});
+```
+
+Encryption keys are derived from `DARSHAN_ENCRYPTION_KEY`. Rotate keys with:
+
+```bash
+darshan keys rotate --old-key $OLD_KEY --new-key $NEW_KEY
+```
+
+## Security Headers
+
+DarshanDB sets the following response headers by default:
+
+| Header | Value |
+|--------|-------|
+| `Strict-Transport-Security` | `max-age=63072000; includeSubDomains` |
+| `X-Content-Type-Options` | `nosniff` |
+| `X-Frame-Options` | `DENY` |
+| `X-XSS-Protection` | `0` (relies on CSP instead) |
+| `Content-Security-Policy` | Configured per deployment |
+
+## Reporting Vulnerabilities
+
+If you discover a security vulnerability, please report it responsibly via email to security@darshandb.dev. Do not file a public GitHub issue.
+
+---
+
+[Previous: API Reference](api-reference.md) | [Next: Performance](performance.md) | [All Docs](README.md)

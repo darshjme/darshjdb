@@ -122,6 +122,9 @@ pub enum ImageFormat {
 
 impl ImageTransform {
     /// Parse a transform string like `w=200,h=200,fit=cover,format=webp,q=80`.
+    ///
+    /// Dimensions are clamped to [`MAX_IMAGE_DIMENSION`]. Quality is clamped
+    /// to the 1..=100 range.
     pub fn from_query(query: &str) -> Self {
         let mut transform = Self::default();
         for pair in query.split(',') {
@@ -129,8 +132,20 @@ impl ImageTransform {
             let key = parts.next().unwrap_or("").trim();
             let val = parts.next().unwrap_or("").trim();
             match key {
-                "w" | "width" => transform.width = val.parse().ok(),
-                "h" | "height" => transform.height = val.parse().ok(),
+                "w" | "width" => {
+                    transform.width = val
+                        .parse::<u32>()
+                        .ok()
+                        .map(|v| v.min(MAX_IMAGE_DIMENSION))
+                        .filter(|&v| v > 0)
+                }
+                "h" | "height" => {
+                    transform.height = val
+                        .parse::<u32>()
+                        .ok()
+                        .map(|v| v.min(MAX_IMAGE_DIMENSION))
+                        .filter(|&v| v > 0)
+                }
                 "fit" => {
                     transform.fit = match val {
                         "contain" => Some(ImageFit::Contain),
@@ -149,7 +164,9 @@ impl ImageTransform {
                         _ => None,
                     }
                 }
-                "q" | "quality" => transform.quality = val.parse().ok(),
+                "q" | "quality" => {
+                    transform.quality = val.parse::<u8>().ok().map(|v| v.clamp(1, 100))
+                }
                 _ => {}
             }
         }
@@ -284,6 +301,20 @@ impl LocalFsBackend {
     /// Resolve a storage path to an absolute filesystem path,
     /// preventing path traversal attacks.
     fn resolve_path(&self, path: &str) -> Result<PathBuf, StorageError> {
+        // Reject null bytes which can cause truncation on some OSes.
+        if path.contains('\0') {
+            return Err(StorageError::InvalidPath(
+                "null bytes are not allowed in paths".into(),
+            ));
+        }
+
+        // Reject empty paths.
+        if path.is_empty() {
+            return Err(StorageError::InvalidPath(
+                "empty path is not allowed".into(),
+            ));
+        }
+
         let clean = Path::new(path);
 
         // Reject absolute paths and traversal.
@@ -579,11 +610,34 @@ impl S3Backend {
     }
 
     /// Get the effective object key (with prefix if configured).
-    fn effective_key(&self, path: &str) -> String {
-        match &self.config.prefix {
+    ///
+    /// Validates the path to prevent traversal in S3 keys.
+    fn effective_key(&self, path: &str) -> Result<String, StorageError> {
+        // Reject null bytes, empty paths, absolute paths, and traversal.
+        if path.contains('\0') {
+            return Err(StorageError::InvalidPath(
+                "null bytes are not allowed in paths".into(),
+            ));
+        }
+        if path.is_empty() {
+            return Err(StorageError::InvalidPath(
+                "empty path is not allowed".into(),
+            ));
+        }
+        if path.starts_with('/') {
+            return Err(StorageError::InvalidPath(
+                "absolute paths are not allowed".into(),
+            ));
+        }
+        if path.contains("..") {
+            return Err(StorageError::InvalidPath(
+                "path traversal is not allowed".into(),
+            ));
+        }
+        Ok(match &self.config.prefix {
             Some(prefix) => format!("{prefix}/{path}"),
             None => path.to_string(),
-        }
+        })
     }
 }
 
@@ -595,7 +649,7 @@ impl StorageBackend for S3Backend {
         _content_type: &str,
         _metadata: &HashMap<String, String>,
     ) -> Result<String, StorageError> {
-        let _key = self.effective_key(path);
+        let _key = self.effective_key(path)?;
         // TODO: wire to aws-sdk-s3 PutObject.
         Err(StorageError::BackendUnavailable(
             "S3 backend not yet wired to aws-sdk-s3".into(),
@@ -603,21 +657,21 @@ impl StorageBackend for S3Backend {
     }
 
     async fn get_object(&self, path: &str) -> Result<(Vec<u8>, ObjectMeta), StorageError> {
-        let _key = self.effective_key(path);
+        let _key = self.effective_key(path)?;
         Err(StorageError::BackendUnavailable(
             "S3 backend not yet wired to aws-sdk-s3".into(),
         ))
     }
 
     async fn delete_object(&self, path: &str) -> Result<(), StorageError> {
-        let _key = self.effective_key(path);
+        let _key = self.effective_key(path)?;
         Err(StorageError::BackendUnavailable(
             "S3 backend not yet wired to aws-sdk-s3".into(),
         ))
     }
 
     async fn head_object(&self, path: &str) -> Result<ObjectMeta, StorageError> {
-        let _key = self.effective_key(path);
+        let _key = self.effective_key(path)?;
         Err(StorageError::BackendUnavailable(
             "S3 backend not yet wired to aws-sdk-s3".into(),
         ))
@@ -629,7 +683,7 @@ impl StorageBackend for S3Backend {
         _limit: usize,
         _cursor: Option<&str>,
     ) -> Result<Vec<ObjectMeta>, StorageError> {
-        let _key = self.effective_key(prefix);
+        let _key = self.effective_key(prefix)?;
         Err(StorageError::BackendUnavailable(
             "S3 backend not yet wired to aws-sdk-s3".into(),
         ))
@@ -639,6 +693,21 @@ impl StorageBackend for S3Backend {
 // ---------------------------------------------------------------------------
 // Storage engine (orchestrator)
 // ---------------------------------------------------------------------------
+
+/// Maximum upload size: 100 MiB by default.
+pub const DEFAULT_MAX_UPLOAD_SIZE: u64 = 100 * 1024 * 1024;
+
+/// Maximum allowed image dimension (width or height) for transforms.
+pub const MAX_IMAGE_DIMENSION: u32 = 16384;
+
+/// Content types that are always rejected (executable payloads).
+const BLOCKED_CONTENT_TYPES: &[&str] = &[
+    "application/x-executable",
+    "application/x-msdos-program",
+    "application/x-msdownload",
+    "application/x-sh",
+    "application/x-shellscript",
+];
 
 /// High-level storage engine that wraps a backend with hooks,
 /// signed URLs, image transforms, and resumable upload tracking.
@@ -653,6 +722,8 @@ pub struct StorageEngine<B: StorageBackend> {
     signed_url_ttl: Duration,
     /// Active resumable uploads.
     resumable_uploads: dashmap::DashMap<Uuid, ResumableUpload>,
+    /// Maximum upload size in bytes (0 = unlimited).
+    max_upload_size: u64,
 }
 
 impl<B: StorageBackend> StorageEngine<B> {
@@ -664,7 +735,13 @@ impl<B: StorageBackend> StorageEngine<B> {
             signing_key,
             signed_url_ttl: Duration::from_secs(3600),
             resumable_uploads: dashmap::DashMap::new(),
+            max_upload_size: DEFAULT_MAX_UPLOAD_SIZE,
         }
+    }
+
+    /// Set the maximum upload size in bytes.
+    pub fn set_max_upload_size(&mut self, size: u64) {
+        self.max_upload_size = size;
     }
 
     /// Add an upload hook.
@@ -677,6 +754,31 @@ impl<B: StorageBackend> StorageEngine<B> {
         self.signed_url_ttl = ttl;
     }
 
+    /// Validate a content-type string.
+    fn validate_content_type(content_type: &str) -> Result<(), StorageError> {
+        // Must not be empty.
+        if content_type.is_empty() {
+            return Err(StorageError::Rejected(
+                "content-type must not be empty".into(),
+            ));
+        }
+        // Must have a valid type/subtype structure.
+        if !content_type.contains('/') {
+            return Err(StorageError::Rejected(
+                "content-type must be in type/subtype format".into(),
+            ));
+        }
+        // Block dangerous executable types.
+        let normalized = content_type.to_ascii_lowercase();
+        let base_type = normalized.split(';').next().unwrap_or("").trim();
+        if BLOCKED_CONTENT_TYPES.contains(&base_type) {
+            return Err(StorageError::Rejected(format!(
+                "content-type '{base_type}' is not allowed"
+            )));
+        }
+        Ok(())
+    }
+
     /// Upload a file, running all pre/post hooks.
     pub async fn upload(
         &self,
@@ -685,6 +787,18 @@ impl<B: StorageBackend> StorageEngine<B> {
         content_type: &str,
         metadata: HashMap<String, String>,
     ) -> Result<UploadResult, StorageError> {
+        // Enforce upload size limit.
+        if self.max_upload_size > 0 && data.len() as u64 > self.max_upload_size {
+            return Err(StorageError::Rejected(format!(
+                "upload size {} exceeds maximum allowed size {}",
+                data.len(),
+                self.max_upload_size,
+            )));
+        }
+
+        // Validate content-type.
+        Self::validate_content_type(content_type)?;
+
         // Run pre-upload hooks.
         for hook in &self.hooks {
             hook.pre_upload(path, content_type, data.len() as u64, &metadata)?;
@@ -777,8 +891,21 @@ impl<B: StorageBackend> StorageEngine<B> {
         mac.update(b":");
         mac.update(expires.to_string().as_bytes());
 
-        let expected_sig = data_encoding::BASE64URL_NOPAD.encode(&mac.finalize().into_bytes());
-        if expected_sig != signature {
+        let expected_bytes = mac.finalize().into_bytes();
+        let sig_bytes = data_encoding::BASE64URL_NOPAD
+            .decode(signature.as_bytes())
+            .map_err(|_| StorageError::InvalidSignature)?;
+
+        // Constant-time comparison to prevent timing attacks.
+        use hmac::digest::CtOutput;
+        use hmac::digest::OutputSizeUser;
+        if sig_bytes.len() != <Hmac<Sha256> as OutputSizeUser>::output_size() {
+            return Err(StorageError::InvalidSignature);
+        }
+        let expected_ct = CtOutput::<Hmac<Sha256>>::new(expected_bytes);
+        let received = hmac::digest::generic_array::GenericArray::from_slice(&sig_bytes);
+        let received_ct = CtOutput::<Hmac<Sha256>>::new(*received);
+        if expected_ct != received_ct {
             return Err(StorageError::InvalidSignature);
         }
 
@@ -903,61 +1030,105 @@ pub enum StorageError {
 mod tests {
     use super::*;
 
-    #[test]
-    fn image_transform_parsing() {
-        let t = ImageTransform::from_query("w=200,h=150,fit=cover,format=webp,q=80");
-        assert_eq!(t.width, Some(200));
-        assert_eq!(t.height, Some(150));
-        assert!(matches!(t.fit, Some(ImageFit::Cover)));
-        assert!(matches!(t.format, Some(ImageFormat::Webp)));
-        assert_eq!(t.quality, Some(80));
+    // -----------------------------------------------------------------------
+    // Helpers
+    // -----------------------------------------------------------------------
+
+    fn temp_dir() -> String {
+        format!("/tmp/darshandb-test-{}", Uuid::new_v4())
     }
 
-    #[test]
-    fn image_transform_empty() {
-        let t = ImageTransform::from_query("");
-        assert!(t.is_empty());
+    fn make_engine(dir: &str) -> StorageEngine<LocalFsBackend> {
+        let backend = Arc::new(LocalFsBackend::new(dir).expect("create backend"));
+        StorageEngine::new(backend, b"test-secret-key".to_vec())
     }
 
+    // -----------------------------------------------------------------------
+    // Path traversal prevention
+    // -----------------------------------------------------------------------
+
     #[test]
-    fn local_fs_path_traversal_rejected() {
-        let backend = LocalFsBackend::new("/tmp/darshandb-test-storage").expect("create backend");
+    fn path_traversal_parent_dir() {
+        let backend = LocalFsBackend::new("/tmp/darshandb-test-pt").expect("create backend");
         assert!(backend.resolve_path("../../../etc/passwd").is_err());
+        let _ = std::fs::remove_dir_all("/tmp/darshandb-test-pt");
+    }
+
+    #[test]
+    fn path_traversal_nested_parent() {
+        let backend = LocalFsBackend::new("/tmp/darshandb-test-pt2").expect("create backend");
+        assert!(
+            backend
+                .resolve_path("a/b/../../../../../../etc/shadow")
+                .is_err()
+        );
+        let _ = std::fs::remove_dir_all("/tmp/darshandb-test-pt2");
+    }
+
+    #[test]
+    fn path_traversal_absolute_path() {
+        let backend = LocalFsBackend::new("/tmp/darshandb-test-pt3").expect("create backend");
+        assert!(backend.resolve_path("/etc/passwd").is_err());
         assert!(backend.resolve_path("/absolute/path").is_err());
+        let _ = std::fs::remove_dir_all("/tmp/darshandb-test-pt3");
+    }
+
+    #[test]
+    fn path_traversal_null_byte() {
+        let backend = LocalFsBackend::new("/tmp/darshandb-test-pt4").expect("create backend");
+        assert!(backend.resolve_path("file.txt\0.jpg").is_err());
+        assert!(backend.resolve_path("\0").is_err());
+        let _ = std::fs::remove_dir_all("/tmp/darshandb-test-pt4");
+    }
+
+    #[test]
+    fn path_traversal_empty_path() {
+        let backend = LocalFsBackend::new("/tmp/darshandb-test-pt5").expect("create backend");
+        assert!(backend.resolve_path("").is_err());
+        let _ = std::fs::remove_dir_all("/tmp/darshandb-test-pt5");
+    }
+
+    #[test]
+    fn path_traversal_safe_paths_accepted() {
+        let backend = LocalFsBackend::new("/tmp/darshandb-test-pt6").expect("create backend");
         assert!(backend.resolve_path("safe/path/file.txt").is_ok());
+        assert!(backend.resolve_path("uploads/image.png").is_ok());
+        assert!(backend.resolve_path("a.txt").is_ok());
+        let _ = std::fs::remove_dir_all("/tmp/darshandb-test-pt6");
     }
 
-    #[tokio::test]
-    async fn local_fs_roundtrip() {
-        let dir = format!("/tmp/darshandb-test-{}", Uuid::new_v4());
-        let backend = LocalFsBackend::new(&dir).expect("create backend");
+    // -----------------------------------------------------------------------
+    // S3 backend path validation
+    // -----------------------------------------------------------------------
 
-        let path = "test/hello.txt";
-        let data = b"Hello, DarshanDB!";
-        let meta = HashMap::new();
-
-        let etag = backend
-            .put_object(path, data, "text/plain", &meta)
-            .await
-            .expect("put");
-        assert!(!etag.is_empty());
-
-        let (got_data, got_meta) = backend.get_object(path).await.expect("get");
-        assert_eq!(got_data, data);
-        assert_eq!(got_meta.content_type, "text/plain");
-
-        backend.delete_object(path).await.expect("delete");
-        assert!(backend.get_object(path).await.is_err());
-
-        // Clean up.
-        let _ = std::fs::remove_dir_all(&dir);
+    #[test]
+    fn s3_effective_key_rejects_traversal() {
+        let backend = S3Backend::new(S3Config {
+            endpoint: "https://s3.example.com".into(),
+            bucket: "test".into(),
+            region: "us-east-1".into(),
+            access_key_id: "key".into(),
+            secret_access_key: "secret".into(),
+            prefix: Some("data".into()),
+            path_style: false,
+        });
+        assert!(backend.effective_key("../../../etc/passwd").is_err());
+        assert!(backend.effective_key("").is_err());
+        assert!(backend.effective_key("/absolute").is_err());
+        assert!(backend.effective_key("file\0.txt").is_err());
+        assert!(backend.effective_key("safe/file.txt").is_ok());
+        let key = backend.effective_key("safe/file.txt").unwrap();
+        assert_eq!(key, "data/safe/file.txt");
     }
+
+    // -----------------------------------------------------------------------
+    // Signed URL generation and validation
+    // -----------------------------------------------------------------------
 
     #[test]
     fn signed_url_roundtrip() {
-        let backend: Arc<LocalFsBackend> =
-            Arc::new(LocalFsBackend::new("/tmp/darshandb-test-sign").expect("create backend"));
-        let engine = StorageEngine::new(backend, b"test-secret-key".to_vec());
+        let dir = temp_dir();
+        let engine = make_engine(&dir);
 
         let signed = engine
             .signed_url("uploads/test.png", "https://example.com/api/storage")
@@ -975,27 +1146,393 @@ mod tests {
                 .is_ok()
         );
 
-        // Wrong path should fail.
-        assert!(
-            engine
-                .verify_signed_url("uploads/wrong.png", expires, sig)
-                .is_err()
-        );
-
-        let _ = std::fs::remove_dir_all("/tmp/darshandb-test-sign");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn resumable_upload_lifecycle() {
-        let backend: Arc<LocalFsBackend> =
-            Arc::new(LocalFsBackend::new("/tmp/darshandb-test-resumable").expect("create backend"));
-        let engine = StorageEngine::new(backend, b"key".to_vec());
+    fn signed_url_wrong_path_fails() {
+        let dir = temp_dir();
+        let engine = make_engine(&dir);
+
+        let signed = engine
+            .signed_url("uploads/test.png", "https://example.com")
+            .expect("sign");
+        let url = url::Url::parse(&signed.url).expect("parse url");
+        let params: HashMap<_, _> = url.query_pairs().collect();
+        let expires: i64 = params["expires"].parse().unwrap();
+        let sig = params["sig"].as_ref();
+
+        assert!(
+            engine
+                .verify_signed_url("uploads/WRONG.png", expires, sig)
+                .is_err()
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn signed_url_expired_fails() {
+        let dir = temp_dir();
+        let engine = make_engine(&dir);
+
+        // Use an already-expired timestamp.
+        let past = chrono::Utc::now().timestamp() - 3600;
+        assert!(
+            engine
+                .verify_signed_url("uploads/test.png", past, "bogus-sig")
+                .is_err()
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn signed_url_tampered_signature_fails() {
+        let dir = temp_dir();
+        let engine = make_engine(&dir);
+
+        let signed = engine
+            .signed_url("uploads/test.png", "https://example.com")
+            .expect("sign");
+        let url = url::Url::parse(&signed.url).expect("parse url");
+        let params: HashMap<_, _> = url.query_pairs().collect();
+        let expires: i64 = params["expires"].parse().unwrap();
+
+        assert!(
+            engine
+                .verify_signed_url("uploads/test.png", expires, "TAMPERED_SIG")
+                .is_err()
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // -----------------------------------------------------------------------
+    // Image transform parameter parsing
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn image_transform_full_parsing() {
+        let t = ImageTransform::from_query("w=200,h=150,fit=cover,format=webp,q=80");
+        assert_eq!(t.width, Some(200));
+        assert_eq!(t.height, Some(150));
+        assert!(matches!(t.fit, Some(ImageFit::Cover)));
+        assert!(matches!(t.format, Some(ImageFormat::Webp)));
+        assert_eq!(t.quality, Some(80));
+    }
+
+    #[test]
+    fn image_transform_empty_query() {
+        let t = ImageTransform::from_query("");
+        assert!(t.is_empty());
+    }
+
+    #[test]
+    fn image_transform_quality_clamped() {
+        // Quality 0 should be clamped to 1.
+        let t = ImageTransform::from_query("q=0");
+        assert_eq!(t.quality, Some(1));
+
+        // Quality 255 should be clamped to 100.
+        let t = ImageTransform::from_query("q=255");
+        assert_eq!(t.quality, Some(100));
+
+        // Quality 50 stays 50.
+        let t = ImageTransform::from_query("q=50");
+        assert_eq!(t.quality, Some(50));
+    }
+
+    #[test]
+    fn image_transform_dimension_clamped() {
+        let t = ImageTransform::from_query("w=999999,h=999999");
+        assert_eq!(t.width, Some(MAX_IMAGE_DIMENSION));
+        assert_eq!(t.height, Some(MAX_IMAGE_DIMENSION));
+    }
+
+    #[test]
+    fn image_transform_zero_dimension_rejected() {
+        let t = ImageTransform::from_query("w=0,h=0");
+        assert!(t.width.is_none());
+        assert!(t.height.is_none());
+    }
+
+    #[test]
+    fn image_transform_all_fits() {
+        for (val, expected) in [
+            ("contain", ImageFit::Contain),
+            ("cover", ImageFit::Cover),
+            ("fill", ImageFit::Fill),
+            ("inside", ImageFit::Inside),
+        ] {
+            let t = ImageTransform::from_query(&format!("fit={val}"));
+            assert!(
+                matches!(t.fit, Some(f) if std::mem::discriminant(&f) == std::mem::discriminant(&expected)),
+                "fit={val} should parse"
+            );
+        }
+    }
+
+    #[test]
+    fn image_transform_all_formats() {
+        for val in ["jpeg", "jpg", "png", "webp", "avif"] {
+            let t = ImageTransform::from_query(&format!("format={val}"));
+            assert!(t.format.is_some(), "format={val} should parse");
+        }
+    }
+
+    #[test]
+    fn image_transform_unknown_keys_ignored() {
+        let t = ImageTransform::from_query("w=100,unknown=foo,bar=baz");
+        assert_eq!(t.width, Some(100));
+        assert!(t.fit.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // Local filesystem backend CRUD
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn local_fs_put_get_delete() {
+        let dir = temp_dir();
+        let backend = LocalFsBackend::new(&dir).expect("create backend");
+
+        let path = "test/hello.txt";
+        let data = b"Hello, DarshanDB!";
+        let meta = HashMap::new();
+
+        let etag = backend
+            .put_object(path, data, "text/plain", &meta)
+            .await
+            .expect("put");
+        assert!(!etag.is_empty());
+
+        let (got_data, got_meta) = backend.get_object(path).await.expect("get");
+        assert_eq!(got_data, data);
+        assert_eq!(got_meta.content_type, "text/plain");
+        assert_eq!(got_meta.size, data.len() as u64);
+        assert_eq!(got_meta.path, path);
+
+        backend.delete_object(path).await.expect("delete");
+        assert!(backend.get_object(path).await.is_err());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn local_fs_head_object() {
+        let dir = temp_dir();
+        let backend = LocalFsBackend::new(&dir).expect("create backend");
+
+        let path = "docs/readme.md";
+        let data = b"# DarshanDB";
+        backend
+            .put_object(path, data, "text/markdown", &HashMap::new())
+            .await
+            .expect("put");
+
+        let meta = backend.head_object(path).await.expect("head");
+        assert_eq!(meta.path, path);
+        assert_eq!(meta.size, data.len() as u64);
+        assert!(!meta.etag.is_empty());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn local_fs_list_objects() {
+        let dir = temp_dir();
+        let backend = LocalFsBackend::new(&dir).expect("create backend");
+
+        for i in 0..5 {
+            backend
+                .put_object(
+                    &format!("listing/{i}.txt"),
+                    format!("file {i}").as_bytes(),
+                    "text/plain",
+                    &HashMap::new(),
+                )
+                .await
+                .expect("put");
+        }
+
+        let all = backend
+            .list_objects("listing", 100, None)
+            .await
+            .expect("list");
+        assert_eq!(all.len(), 5);
+
+        // Limit should be respected.
+        let limited = backend
+            .list_objects("listing", 2, None)
+            .await
+            .expect("list limited");
+        assert_eq!(limited.len(), 2);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn local_fs_get_nonexistent() {
+        let dir = temp_dir();
+        let backend = LocalFsBackend::new(&dir).expect("create backend");
+        let result = backend.get_object("does/not/exist.txt").await;
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), StorageError::NotFound(_)));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn local_fs_delete_nonexistent() {
+        let dir = temp_dir();
+        let backend = LocalFsBackend::new(&dir).expect("create backend");
+        let result = backend.delete_object("does/not/exist.txt").await;
+        assert!(matches!(result.unwrap_err(), StorageError::NotFound(_)));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn local_fs_metadata_preserved() {
+        let dir = temp_dir();
+        let backend = LocalFsBackend::new(&dir).expect("create backend");
+
+        let mut meta = HashMap::new();
+        meta.insert("author".into(), "darshan".into());
+        meta.insert("version".into(), "1".into());
+
+        backend
+            .put_object("meta-test.bin", b"data", "application/octet-stream", &meta)
+            .await
+            .expect("put");
+
+        let (_, obj_meta) = backend.get_object("meta-test.bin").await.expect("get");
+        assert_eq!(
+            obj_meta.metadata.get("author").map(|s| s.as_str()),
+            Some("darshan")
+        );
+        assert_eq!(
+            obj_meta.metadata.get("version").map(|s| s.as_str()),
+            Some("1")
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // -----------------------------------------------------------------------
+    // Content-type validation
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn upload_rejects_empty_content_type() {
+        let dir = temp_dir();
+        let engine = make_engine(&dir);
+        let result = engine
+            .upload("file.txt", b"hello", "", HashMap::new())
+            .await;
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), StorageError::Rejected(_)));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn upload_rejects_invalid_content_type() {
+        let dir = temp_dir();
+        let engine = make_engine(&dir);
+        let result = engine
+            .upload("file.txt", b"hello", "not-a-mime", HashMap::new())
+            .await;
+        assert!(result.is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn upload_rejects_blocked_content_types() {
+        let dir = temp_dir();
+        let engine = make_engine(&dir);
+
+        for ct in BLOCKED_CONTENT_TYPES {
+            let result = engine
+                .upload("evil.exe", b"\x7fELF", ct, HashMap::new())
+                .await;
+            assert!(result.is_err(), "should reject {ct}");
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn upload_accepts_valid_content_types() {
+        let dir = temp_dir();
+        let engine = make_engine(&dir);
+        let result = engine
+            .upload("file.txt", b"hello", "text/plain", HashMap::new())
+            .await;
+        assert!(result.is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // -----------------------------------------------------------------------
+    // Upload size limits
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn upload_rejects_oversized_payload() {
+        let dir = temp_dir();
+        let mut engine = make_engine(&dir);
+        engine.set_max_upload_size(100); // 100 bytes max
+
+        let data = vec![0u8; 200];
+        let result = engine
+            .upload("big.bin", &data, "application/octet-stream", HashMap::new())
+            .await;
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), StorageError::Rejected(_)));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn upload_accepts_within_size_limit() {
+        let dir = temp_dir();
+        let mut engine = make_engine(&dir);
+        engine.set_max_upload_size(1000);
+
+        let data = vec![0u8; 500];
+        let result = engine
+            .upload("ok.bin", &data, "application/octet-stream", HashMap::new())
+            .await;
+        assert!(result.is_ok());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // -----------------------------------------------------------------------
+    // Resumable upload state management
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn resumable_upload_create_and_status() {
+        let dir = temp_dir();
+        let engine = make_engine(&dir);
 
         let id = engine.create_resumable_upload("file.bin", "application/octet-stream", Some(100));
 
         let status = engine.resumable_upload_status(id).expect("status");
         assert_eq!(status.bytes_received, 0);
         assert_eq!(status.next_offset, 0);
+        assert_eq!(status.path, "file.bin");
+        assert_eq!(status.content_type, "application/octet-stream");
+        assert_eq!(status.total_size, Some(100));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn resumable_upload_sequential_chunks() {
+        let dir = temp_dir();
+        let engine = make_engine(&dir);
+
+        let id = engine.create_resumable_upload("file.bin", "application/octet-stream", Some(100));
 
         let next = engine.append_chunk(id, 0, &[0u8; 50]).expect("chunk 1");
         assert_eq!(next, 50);
@@ -1003,12 +1540,108 @@ mod tests {
         let next = engine.append_chunk(id, 50, &[0u8; 50]).expect("chunk 2");
         assert_eq!(next, 100);
 
-        // Wrong offset should fail.
-        assert!(engine.append_chunk(id, 0, &[0u8; 10]).is_err());
+        let status = engine.resumable_upload_status(id).expect("status");
+        assert_eq!(status.bytes_received, 100);
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn resumable_upload_wrong_offset_rejected() {
+        let dir = temp_dir();
+        let engine = make_engine(&dir);
+
+        let id = engine.create_resumable_upload("file.bin", "application/octet-stream", Some(100));
+        engine.append_chunk(id, 0, &[0u8; 50]).expect("chunk 1");
+
+        // Try to append at offset 0 again (should be 50).
+        let result = engine.append_chunk(id, 0, &[0u8; 10]);
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            StorageError::InvalidOffset {
+                expected: 50,
+                received: 0
+            }
+        ));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn resumable_upload_nonexistent_id() {
+        let dir = temp_dir();
+        let engine = make_engine(&dir);
+
+        let fake_id = Uuid::new_v4();
+        assert!(engine.append_chunk(fake_id, 0, &[0u8; 10]).is_err());
+        assert!(engine.resumable_upload_status(fake_id).is_none());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn resumable_upload_cancel() {
+        let dir = temp_dir();
+        let engine = make_engine(&dir);
+
+        let id = engine.create_resumable_upload("file.bin", "application/octet-stream", None);
         assert!(engine.cancel_resumable_upload(id));
         assert!(engine.resumable_upload_status(id).is_none());
 
-        let _ = std::fs::remove_dir_all("/tmp/darshandb-test-resumable");
+        // Double cancel returns false.
+        assert!(!engine.cancel_resumable_upload(id));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn resumable_upload_open_ended() {
+        let dir = temp_dir();
+        let engine = make_engine(&dir);
+
+        // total_size = None means open-ended.
+        let id = engine.create_resumable_upload("stream.bin", "application/octet-stream", None);
+        let status = engine.resumable_upload_status(id).expect("status");
+        assert!(status.total_size.is_none());
+
+        engine.append_chunk(id, 0, &[1u8; 1024]).expect("chunk");
+        let status = engine.resumable_upload_status(id).expect("status");
+        assert_eq!(status.bytes_received, 1024);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // -----------------------------------------------------------------------
+    // StorageEngine upload hook integration
+    // -----------------------------------------------------------------------
+
+    struct RejectHook;
+    impl UploadHook for RejectHook {
+        fn pre_upload(
+            &self,
+            _path: &str,
+            _content_type: &str,
+            _size: u64,
+            _metadata: &HashMap<String, String>,
+        ) -> Result<(), StorageError> {
+            Err(StorageError::Rejected("blocked by hook".into()))
+        }
+        fn post_upload(&self, _result: &UploadResult) {}
+    }
+
+    #[tokio::test]
+    async fn upload_hook_can_reject() {
+        let dir = temp_dir();
+        let mut engine = make_engine(&dir);
+        engine.add_hook(Arc::new(RejectHook));
+
+        let result = engine
+            .upload("file.txt", b"hello", "text/plain", HashMap::new())
+            .await;
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), StorageError::Rejected(_)));
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -39,7 +39,7 @@ export function App() {
   }, [handleKeyDown]);
 
   return (
-    <div className="flex h-screen overflow-hidden">
+    <div className="flex h-screen overflow-hidden bg-zinc-950">
       <Sidebar />
       <div className="flex flex-col flex-1 min-w-0">
         <TopBar

@@ -32,7 +32,7 @@
  * ```
  */
 
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { useDarshanClient } from './provider';
 import type { MutationOperation } from './types';
@@ -85,25 +85,13 @@ export function useMutation(): UseMutationResult {
 
   // Track mount status to avoid state updates after unmount.
   const mountedRef = useRef(true);
-  // Use a layout-safe pattern: set on render, clear on unmount.
-  mountedRef.current = true;
 
-  // Intentionally ignoring the return value of useEffect for the unmount flag.
-  // We set it in the cleanup only.
-  useState(() => {
-    // This runs once on mount (via useState initialiser -- sync, no effect needed).
-    return undefined;
-  });
-
-  // We use a separate effect solely for the unmount cleanup.
-  // Using useRef + cleanup avoids the double-invoke in StrictMode from
-  // incorrectly resetting the flag.
-  const unmountRef = useRef(false);
-  if (unmountRef.current) {
-    // Re-mounted after StrictMode teardown -- reset.
+  useEffect(() => {
     mountedRef.current = true;
-    unmountRef.current = false;
-  }
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   // Stable mutate callback.
   const mutate = useCallback(

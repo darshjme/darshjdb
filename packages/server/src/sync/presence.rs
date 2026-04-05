@@ -39,9 +39,9 @@ pub struct PresenceRoom {
     /// Map of user_id to their presence entry.
     entries: DashMap<String, PresenceEntry>,
 
-    /// Rate limiter state: tracks the last update timestamp and count.
-    rate_window_start: std::sync::Mutex<Instant>,
-    rate_count: std::sync::atomic::AtomicU32,
+    /// Rate limiter state: window start and count under a single lock
+    /// to prevent split-brain between window reset and count.
+    rate_state: std::sync::Mutex<(Instant, u32)>,
 
     /// TTL for presence entries.
     ttl: Duration,
@@ -53,8 +53,7 @@ impl PresenceRoom {
         Self {
             room_id,
             entries: DashMap::new(),
-            rate_window_start: std::sync::Mutex::new(Instant::now()),
-            rate_count: std::sync::atomic::AtomicU32::new(0),
+            rate_state: std::sync::Mutex::new((Instant::now(), 0)),
             ttl: DEFAULT_TTL,
         }
     }
@@ -64,8 +63,7 @@ impl PresenceRoom {
         Self {
             room_id,
             entries: DashMap::new(),
-            rate_window_start: std::sync::Mutex::new(Instant::now()),
-            rate_count: std::sync::atomic::AtomicU32::new(0),
+            rate_state: std::sync::Mutex::new((Instant::now(), 0)),
             ttl,
         }
     }
@@ -141,27 +139,33 @@ impl PresenceRoom {
     }
 
     /// Sliding-window rate limiter: max `MAX_UPDATES_PER_SEC` per second.
+    ///
+    /// Both the window start and the count are under a single mutex to prevent
+    /// races where one thread resets the window while another increments
+    /// a stale count from the previous window.
     fn check_rate_limit(&self) -> bool {
         let now = Instant::now();
 
-        let mut window_start = match self.rate_window_start.lock() {
+        let mut state = match self.rate_state.lock() {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
         };
 
+        let (ref mut window_start, ref mut count) = *state;
+
         if now.duration_since(*window_start) >= Duration::from_secs(1) {
             // Reset window.
             *window_start = now;
-            self.rate_count
-                .store(1, std::sync::atomic::Ordering::Relaxed);
+            *count = 1;
             return true;
         }
 
-        let count = self
-            .rate_count
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if *count >= MAX_UPDATES_PER_SEC {
+            return false;
+        }
 
-        count < MAX_UPDATES_PER_SEC
+        *count += 1;
+        true
     }
 }
 
@@ -270,5 +274,239 @@ impl PresenceManager {
 impl Default for PresenceManager {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    // --- PresenceRoom tests ---
+
+    #[test]
+    fn room_update_and_snapshot() {
+        let room = PresenceRoom::new("room-1".into());
+        room.update("alice", json!({"cursor": 10}));
+        room.update("bob", json!({"cursor": 20}));
+
+        let snap = room.snapshot();
+        assert_eq!(snap.len(), 2);
+        let alice_entry = snap.iter().find(|(uid, _)| uid == "alice");
+        assert!(alice_entry.is_some());
+        assert_eq!(alice_entry.unwrap().1, json!({"cursor": 10}));
+    }
+
+    #[test]
+    fn room_remove_user() {
+        let room = PresenceRoom::new("room-1".into());
+        room.update("alice", json!({}));
+        room.update("bob", json!({}));
+
+        let removed = room.remove("alice");
+        assert!(removed.is_some());
+        assert_eq!(room.active_count(), 1);
+        assert!(!room.is_present("alice"));
+        assert!(room.is_present("bob"));
+    }
+
+    #[test]
+    fn room_remove_nonexistent() {
+        let room = PresenceRoom::new("room-1".into());
+        assert!(room.remove("ghost").is_none());
+    }
+
+    #[test]
+    fn room_expiry() {
+        let room = PresenceRoom::with_ttl("room-1".into(), Duration::from_millis(1));
+        room.update("alice", json!({}));
+
+        // Wait for expiry.
+        std::thread::sleep(Duration::from_millis(10));
+
+        assert!(!room.is_present("alice"));
+        assert_eq!(room.active_count(), 0);
+
+        let expired = room.expire_stale();
+        assert_eq!(expired, vec!["alice"]);
+
+        // After expiry, the entry is gone.
+        let snap = room.snapshot();
+        assert!(snap.is_empty());
+    }
+
+    #[test]
+    fn room_expiry_mixed() {
+        let room = PresenceRoom::with_ttl("room-1".into(), Duration::from_millis(50));
+        room.update("alice", json!({}));
+
+        std::thread::sleep(Duration::from_millis(60));
+
+        // Alice expired, now add Bob.
+        room.update("bob", json!({}));
+
+        assert!(!room.is_present("alice"));
+        assert!(room.is_present("bob"));
+
+        let expired = room.expire_stale();
+        assert_eq!(expired, vec!["alice"]);
+        assert_eq!(room.active_count(), 1);
+    }
+
+    #[test]
+    fn room_rate_limiting() {
+        let room = PresenceRoom::new("room-1".into());
+
+        // The first MAX_UPDATES_PER_SEC updates should succeed.
+        for i in 0..MAX_UPDATES_PER_SEC {
+            assert!(
+                room.update("user", json!({"i": i})),
+                "update {i} should succeed"
+            );
+        }
+
+        // The next update should be rate-limited.
+        assert!(
+            !room.update("user", json!({"i": "over-limit"})),
+            "update over limit should be rejected"
+        );
+    }
+
+    #[test]
+    fn room_rate_limit_resets_after_window() {
+        let room = PresenceRoom::new("room-1".into());
+
+        for _ in 0..MAX_UPDATES_PER_SEC {
+            room.update("user", json!({}));
+        }
+        assert!(!room.update("user", json!({})));
+
+        // Wait for the rate window to reset.
+        std::thread::sleep(Duration::from_secs(1));
+
+        assert!(room.update("user", json!({"after_reset": true})));
+    }
+
+    #[test]
+    fn room_update_overwrites_state() {
+        let room = PresenceRoom::new("room-1".into());
+        room.update("alice", json!({"v": 1}));
+        room.update("alice", json!({"v": 2}));
+
+        let snap = room.snapshot();
+        assert_eq!(snap.len(), 1);
+        assert_eq!(snap[0].1, json!({"v": 2}));
+    }
+
+    // --- PresenceManager tests ---
+
+    #[test]
+    fn manager_join_creates_room() {
+        let mgr = PresenceManager::new();
+        assert_eq!(mgr.room_count(), 0);
+
+        mgr.join("room-1", "alice", json!({}));
+        assert_eq!(mgr.room_count(), 1);
+    }
+
+    #[test]
+    fn manager_join_and_snapshot() {
+        let mgr = PresenceManager::new();
+        mgr.join("room-1", "alice", json!({"status": "online"}));
+        mgr.join("room-1", "bob", json!({"status": "away"}));
+
+        let snap = mgr.room_snapshot("room-1");
+        assert_eq!(snap.len(), 2);
+    }
+
+    #[test]
+    fn manager_leave_removes_user() {
+        let mgr = PresenceManager::new();
+        mgr.join("room-1", "alice", json!({}));
+        mgr.join("room-1", "bob", json!({}));
+
+        mgr.leave("room-1", "alice");
+        let snap = mgr.room_snapshot("room-1");
+        assert_eq!(snap.len(), 1);
+        assert_eq!(snap[0].0, "bob");
+    }
+
+    #[test]
+    fn manager_leave_last_user_cleans_room() {
+        let mgr = PresenceManager::new();
+        mgr.join("room-1", "alice", json!({}));
+
+        mgr.leave("room-1", "alice");
+        assert_eq!(mgr.room_count(), 0);
+    }
+
+    #[test]
+    fn manager_leave_all() {
+        let mgr = PresenceManager::new();
+        mgr.join("room-1", "alice", json!({}));
+        mgr.join("room-2", "alice", json!({}));
+        mgr.join("room-2", "bob", json!({}));
+
+        mgr.leave_all("alice");
+
+        // room-1 should be cleaned up (was only alice).
+        assert_eq!(mgr.room_snapshot("room-1").len(), 0);
+        // room-2 still has bob.
+        assert_eq!(mgr.room_snapshot("room-2").len(), 1);
+    }
+
+    #[test]
+    fn manager_update_state_existing_room() {
+        let mgr = PresenceManager::new();
+        mgr.join("room-1", "alice", json!({"v": 1}));
+
+        mgr.update_state("room-1", "alice", json!({"v": 2}));
+        let snap = mgr.room_snapshot("room-1");
+        assert_eq!(snap[0].1, json!({"v": 2}));
+    }
+
+    #[test]
+    fn manager_update_state_auto_joins() {
+        let mgr = PresenceManager::new();
+        // update_state on nonexistent room auto-joins.
+        mgr.update_state("room-1", "alice", json!({"auto": true}));
+        assert_eq!(mgr.room_count(), 1);
+        let snap = mgr.room_snapshot("room-1");
+        assert_eq!(snap.len(), 1);
+    }
+
+    #[test]
+    fn manager_expire_all() {
+        let mgr = PresenceManager::new();
+
+        // Use a room that we can manipulate through the manager.
+        // Join with default TTL (60s), so nothing expires.
+        mgr.join("room-1", "alice", json!({}));
+        let expired = mgr.expire_all();
+        assert_eq!(expired, 0);
+        assert_eq!(mgr.room_count(), 1);
+    }
+
+    #[test]
+    fn manager_snapshot_nonexistent_room() {
+        let mgr = PresenceManager::new();
+        let snap = mgr.room_snapshot("no-such-room");
+        assert!(snap.is_empty());
+    }
+
+    #[test]
+    fn manager_leave_nonexistent_room() {
+        let mgr = PresenceManager::new();
+        // Should not panic.
+        mgr.leave("no-such-room", "alice");
+    }
+
+    #[test]
+    fn manager_leave_nonexistent_user() {
+        let mgr = PresenceManager::new();
+        mgr.join("room-1", "alice", json!({}));
+        // Leaving a user not in the room should not panic.
+        mgr.leave("room-1", "ghost");
+        assert_eq!(mgr.room_snapshot("room-1").len(), 1);
     }
 }

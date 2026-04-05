@@ -520,12 +520,72 @@ fn urlencoding(s: &str) -> String {
 mod tests {
     use super::*;
 
+    // -----------------------------------------------------------------------
+    // Password hashing
+    // -----------------------------------------------------------------------
+
     #[test]
     fn password_hash_and_verify() {
         let hash = PasswordProvider::hash_password("hunter2").expect("hash");
         assert!(PasswordProvider::verify_password("hunter2", &hash).expect("verify"));
         assert!(!PasswordProvider::verify_password("wrong", &hash).expect("verify"));
     }
+
+    #[test]
+    fn password_hash_produces_argon2id_phc_string() {
+        let hash = PasswordProvider::hash_password("test123").expect("hash");
+        // PHC string must start with the algorithm identifier.
+        assert!(
+            hash.starts_with("$argon2id$"),
+            "expected argon2id PHC format, got: {hash}"
+        );
+        // Must contain version 19 (0x13).
+        assert!(hash.contains("v=19"), "expected version 19 in PHC string");
+        // Must contain our tuned parameters: m=65536,t=3,p=4.
+        assert!(hash.contains("m=65536"), "expected 64 MiB memory cost");
+        assert!(hash.contains("t=3"), "expected 3 iterations");
+        assert!(hash.contains("p=4"), "expected parallelism 4");
+    }
+
+    #[test]
+    fn password_hash_uses_unique_salts() {
+        let h1 = PasswordProvider::hash_password("same-password").expect("hash1");
+        let h2 = PasswordProvider::hash_password("same-password").expect("hash2");
+        assert_ne!(
+            h1, h2,
+            "two hashes of the same password must differ (unique salts)"
+        );
+        // Both must still verify.
+        assert!(PasswordProvider::verify_password("same-password", &h1).expect("v1"));
+        assert!(PasswordProvider::verify_password("same-password", &h2).expect("v2"));
+    }
+
+    #[test]
+    fn password_verify_rejects_corrupted_hash() {
+        let result = PasswordProvider::verify_password("anything", "not-a-valid-hash");
+        assert!(
+            result.is_err(),
+            "corrupted hash should return Err, not Ok(false)"
+        );
+    }
+
+    #[test]
+    fn password_empty_string_hashes_and_verifies() {
+        let hash = PasswordProvider::hash_password("").expect("hash empty");
+        assert!(PasswordProvider::verify_password("", &hash).expect("verify empty"));
+        assert!(!PasswordProvider::verify_password("x", &hash).expect("verify non-empty"));
+    }
+
+    #[test]
+    fn password_unicode_roundtrip() {
+        let pw = "p\u{00e4}ssw\u{00f6}rd\u{1f512}";
+        let hash = PasswordProvider::hash_password(pw).expect("hash unicode");
+        assert!(PasswordProvider::verify_password(pw, &hash).expect("verify unicode"));
+    }
+
+    // -----------------------------------------------------------------------
+    // OAuth state HMAC
+    // -----------------------------------------------------------------------
 
     #[test]
     fn hmac_state_roundtrip() {
@@ -543,6 +603,58 @@ mod tests {
     }
 
     #[test]
+    fn hmac_state_wrong_secret_rejected() {
+        let secret1 = b"secret-one-for-signing-states-ok";
+        let secret2 = b"secret-two-different-key-entirely";
+        let state = GenericOAuth2Provider::sign_state(secret1).expect("sign");
+        assert!(
+            GenericOAuth2Provider::verify_state(&state, secret2).is_err(),
+            "state signed with secret1 must not verify with secret2"
+        );
+    }
+
+    #[test]
+    fn hmac_state_format_is_nonce_dot_signature() {
+        let secret = b"test-format-checking-secret-key!";
+        let state = GenericOAuth2Provider::sign_state(secret).expect("sign");
+        let parts: Vec<&str> = state.splitn(2, '.').collect();
+        assert_eq!(parts.len(), 2, "state must be nonce.signature");
+        // Nonce is 16 bytes hex = 32 chars.
+        assert_eq!(parts[0].len(), 32, "nonce should be 32 hex chars");
+        // Signature is HMAC-SHA256 = 32 bytes hex = 64 chars.
+        assert_eq!(parts[1].len(), 64, "signature should be 64 hex chars");
+    }
+
+    #[test]
+    fn hmac_state_nonce_swapped() {
+        let secret = b"nonce-swap-test-secret-key-here!";
+        let state1 = GenericOAuth2Provider::sign_state(secret).expect("sign1");
+        let state2 = GenericOAuth2Provider::sign_state(secret).expect("sign2");
+
+        // Swap nonces: take nonce from state1, sig from state2.
+        let nonce1 = state1.split('.').next().unwrap();
+        let sig2 = state2.split_once('.').unwrap().1;
+        let franken = format!("{nonce1}.{sig2}");
+        assert!(
+            GenericOAuth2Provider::verify_state(&franken, secret).is_err(),
+            "mismatched nonce and signature must fail verification"
+        );
+    }
+
+    #[test]
+    fn hmac_state_empty_and_malformed_rejected() {
+        let secret = b"test-malformed-state-secret-key!";
+        assert!(GenericOAuth2Provider::verify_state("", secret).is_err());
+        assert!(GenericOAuth2Provider::verify_state("no-dot-here", secret).is_err());
+        assert!(GenericOAuth2Provider::verify_state(".", secret).is_err());
+        assert!(GenericOAuth2Provider::verify_state(".invalid-hex", secret).is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // PKCE
+    // -----------------------------------------------------------------------
+
+    #[test]
     fn pkce_challenge_is_s256() {
         let (verifier, challenge) = GenericOAuth2Provider::pkce_pair();
         // Recompute challenge from verifier.
@@ -550,5 +662,25 @@ mod tests {
         let hash = sha2::Sha256::digest(verifier.as_bytes());
         let expected = data_encoding::BASE64URL_NOPAD.encode(&hash);
         assert_eq!(challenge, expected);
+    }
+
+    #[test]
+    fn pkce_pairs_are_unique() {
+        let (v1, c1) = GenericOAuth2Provider::pkce_pair();
+        let (v2, c2) = GenericOAuth2Provider::pkce_pair();
+        assert_ne!(v1, v2, "PKCE verifiers must be unique");
+        assert_ne!(c1, c2, "PKCE challenges must be unique");
+    }
+
+    #[test]
+    fn pkce_verifier_is_base64url() {
+        let (verifier, _) = GenericOAuth2Provider::pkce_pair();
+        // BASE64URL_NOPAD characters: A-Z, a-z, 0-9, -, _
+        assert!(
+            verifier
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'),
+            "verifier must be base64url: {verifier}"
+        );
     }
 }

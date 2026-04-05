@@ -101,6 +101,30 @@ impl Default for ResourceLimits {
     }
 }
 
+impl ResourceLimits {
+    /// Validate that resource limits are within acceptable ranges.
+    ///
+    /// Returns an error message if any limit is invalid.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.cpu_time_ms == 0 {
+            return Err("cpu_time_ms must be greater than 0".into());
+        }
+        if self.cpu_time_ms > 300_000 {
+            return Err("cpu_time_ms must not exceed 300000 (5 minutes)".into());
+        }
+        if self.memory_mb == 0 {
+            return Err("memory_mb must be greater than 0".into());
+        }
+        if self.memory_mb > 4096 {
+            return Err("memory_mb must not exceed 4096".into());
+        }
+        if self.max_concurrency == 0 {
+            return Err("max_concurrency must be greater than 0".into());
+        }
+        Ok(())
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Execution context passed into the subprocess
 // ---------------------------------------------------------------------------
@@ -310,34 +334,37 @@ impl RuntimeBackend for ProcessRuntime {
 
             let mut child = cmd.spawn().map_err(RuntimeError::SpawnError)?;
 
-            // Write context JSON to stdin.
+            // Write context JSON to stdin, then close it so the child sees EOF.
             if let Some(stdin) = child.stdin.take() {
                 let context_json = serde_json::to_vec(&context).map_err(|e| {
                     RuntimeError::Internal(format!("failed to serialize context: {e}"))
                 })?;
-                tokio::io::AsyncWriteExt::write_all(
-                    &mut tokio::io::BufWriter::new(stdin),
-                    &context_json,
-                )
-                .await
-                .map_err(|e| RuntimeError::Internal(format!("failed to write to stdin: {e}")))?;
+                let mut writer = tokio::io::BufWriter::new(stdin);
+                tokio::io::AsyncWriteExt::write_all(&mut writer, &context_json)
+                    .await
+                    .map_err(|e| {
+                        RuntimeError::Internal(format!("failed to write to stdin: {e}"))
+                    })?;
+                tokio::io::AsyncWriteExt::shutdown(&mut writer)
+                    .await
+                    .map_err(|e| RuntimeError::Internal(format!("failed to close stdin: {e}")))?;
             }
 
             // Wait with timeout.
             let timeout = Duration::from_millis(limits.cpu_time_ms);
-            let output = tokio::time::timeout(timeout, child.wait_with_output())
-                .await
-                .map_err(|_| {
-                    // Kill the child on timeout — best effort.
+            let output = match tokio::time::timeout(timeout, child.wait_with_output()).await {
+                Ok(result) => result.map_err(RuntimeError::SpawnError)?,
+                Err(_) => {
+                    // The child is killed on drop when the future is cancelled.
                     warn!(
                         invocation_id = %context.invocation_id,
-                        "function timed out, killing subprocess"
+                        "function timed out, subprocess will be killed on drop"
                     );
-                    RuntimeError::CpuTimeout {
+                    return Err(RuntimeError::CpuTimeout {
                         limit_ms: limits.cpu_time_ms,
-                    }
-                })?
-                .map_err(RuntimeError::SpawnError)?;
+                    });
+                }
+            };
 
             if !output.status.success() {
                 let code = output.status.code().unwrap_or(-1);
@@ -481,5 +508,288 @@ impl FunctionRuntime {
     /// Returns the name of the active backend.
     pub fn backend_name(&self) -> &str {
         self.backend.name()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    // -----------------------------------------------------------------------
+    // ResourceLimits validation
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_default_limits_are_valid() {
+        assert!(ResourceLimits::default().validate().is_ok());
+    }
+
+    #[test]
+    fn test_zero_cpu_time_rejected() {
+        let limits = ResourceLimits {
+            cpu_time_ms: 0,
+            ..Default::default()
+        };
+        let err = limits.validate().unwrap_err();
+        assert!(err.contains("cpu_time_ms"));
+    }
+
+    #[test]
+    fn test_excessive_cpu_time_rejected() {
+        let limits = ResourceLimits {
+            cpu_time_ms: 300_001,
+            ..Default::default()
+        };
+        let err = limits.validate().unwrap_err();
+        assert!(err.contains("cpu_time_ms"));
+    }
+
+    #[test]
+    fn test_zero_memory_rejected() {
+        let limits = ResourceLimits {
+            memory_mb: 0,
+            ..Default::default()
+        };
+        let err = limits.validate().unwrap_err();
+        assert!(err.contains("memory_mb"));
+    }
+
+    #[test]
+    fn test_excessive_memory_rejected() {
+        let limits = ResourceLimits {
+            memory_mb: 4097,
+            ..Default::default()
+        };
+        let err = limits.validate().unwrap_err();
+        assert!(err.contains("memory_mb"));
+    }
+
+    #[test]
+    fn test_zero_concurrency_rejected() {
+        let limits = ResourceLimits {
+            max_concurrency: 0,
+            ..Default::default()
+        };
+        let err = limits.validate().unwrap_err();
+        assert!(err.contains("max_concurrency"));
+    }
+
+    #[test]
+    fn test_boundary_limits_valid() {
+        let limits = ResourceLimits {
+            cpu_time_ms: 1,
+            memory_mb: 1,
+            max_concurrency: 1,
+        };
+        assert!(limits.validate().is_ok());
+
+        let limits = ResourceLimits {
+            cpu_time_ms: 300_000,
+            memory_mb: 4096,
+            max_concurrency: 1024,
+        };
+        assert!(limits.validate().is_ok());
+    }
+
+    // -----------------------------------------------------------------------
+    // ProcessKind
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_process_kind_binary_names() {
+        assert_eq!(ProcessKind::Deno.binary_name(), "deno");
+        assert_eq!(ProcessKind::Node.binary_name(), "node");
+    }
+
+    // -----------------------------------------------------------------------
+    // ProcessRuntime build_command
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_build_command_deno() {
+        let runtime = ProcessRuntime::new(
+            ProcessKind::Deno,
+            PathBuf::from("/harness.ts"),
+            PathBuf::from("/functions"),
+            4,
+        );
+
+        let func_def = FunctionDef {
+            name: "test:hello".into(),
+            file_path: PathBuf::from("test.ts"),
+            export_name: "hello".into(),
+            kind: super::super::registry::FunctionKind::Query,
+            args_schema: None,
+            description: None,
+            last_modified: None,
+        };
+
+        let limits = ResourceLimits::default();
+        let cmd = runtime.build_command(&func_def, &limits);
+        let prog = cmd.as_std().get_program().to_string_lossy().to_string();
+        assert_eq!(prog, "deno");
+
+        let args: Vec<String> = cmd
+            .as_std()
+            .get_args()
+            .map(|a| a.to_string_lossy().to_string())
+            .collect();
+        assert!(args.contains(&"run".to_string()));
+        assert!(args.contains(&"--allow-net".to_string()));
+        assert!(args.iter().any(|a| a.contains("max-old-space-size=128")));
+        assert!(args.iter().any(|a| a.contains("/harness.ts")));
+        assert!(args.iter().any(|a| a.contains("test.ts")));
+        assert!(args.contains(&"hello".to_string()));
+    }
+
+    #[test]
+    fn test_build_command_node() {
+        let runtime = ProcessRuntime::new(
+            ProcessKind::Node,
+            PathBuf::from("/harness.js"),
+            PathBuf::from("/functions"),
+            4,
+        );
+
+        let func_def = FunctionDef {
+            name: "test:greet".into(),
+            file_path: PathBuf::from("test.js"),
+            export_name: "greet".into(),
+            kind: super::super::registry::FunctionKind::Mutation,
+            args_schema: None,
+            description: None,
+            last_modified: None,
+        };
+
+        let limits = ResourceLimits {
+            memory_mb: 256,
+            ..Default::default()
+        };
+        let cmd = runtime.build_command(&func_def, &limits);
+        let prog = cmd.as_std().get_program().to_string_lossy().to_string();
+        assert_eq!(prog, "node");
+
+        let args: Vec<String> = cmd
+            .as_std()
+            .get_args()
+            .map(|a| a.to_string_lossy().to_string())
+            .collect();
+        assert!(args.iter().any(|a| a.contains("--max-old-space-size=256")));
+    }
+
+    // -----------------------------------------------------------------------
+    // RuntimeBackend name
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_backend_name() {
+        let deno = ProcessRuntime::new(
+            ProcessKind::Deno,
+            PathBuf::from("/h.ts"),
+            PathBuf::from("/f"),
+            1,
+        );
+        assert_eq!(deno.name(), "deno-subprocess");
+
+        let node = ProcessRuntime::new(
+            ProcessKind::Node,
+            PathBuf::from("/h.js"),
+            PathBuf::from("/f"),
+            1,
+        );
+        assert_eq!(node.name(), "node-subprocess");
+    }
+
+    // -----------------------------------------------------------------------
+    // ExecutionContext serialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_execution_context_serialize_roundtrip() {
+        let ctx = ExecutionContext {
+            invocation_id: "inv-123".into(),
+            function_name: "test:func".into(),
+            args: serde_json::json!({"key": "value"}),
+            db_url: "postgres://localhost/test".into(),
+            auth_token: Some("token-abc".into()),
+            internal_api_url: "http://localhost:3000".into(),
+        };
+
+        let json = serde_json::to_string(&ctx).unwrap();
+        let deserialized: ExecutionContext = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.invocation_id, "inv-123");
+        assert_eq!(deserialized.function_name, "test:func");
+        assert_eq!(deserialized.auth_token, Some("token-abc".into()));
+    }
+
+    #[test]
+    fn test_execution_context_without_auth() {
+        let ctx = ExecutionContext {
+            invocation_id: "inv-456".into(),
+            function_name: "test:anon".into(),
+            args: serde_json::json!({}),
+            db_url: "postgres://localhost/test".into(),
+            auth_token: None,
+            internal_api_url: "http://localhost:3000".into(),
+        };
+
+        let json = serde_json::to_string(&ctx).unwrap();
+        let deserialized: ExecutionContext = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.auth_token, None);
+    }
+
+    // -----------------------------------------------------------------------
+    // ExecutionResult serialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_execution_result_roundtrip() {
+        let result = ExecutionResult {
+            value: serde_json::json!({"status": "ok"}),
+            duration_ms: 42,
+            peak_memory_bytes: Some(1024),
+            logs: vec![LogEntry {
+                level: "info".into(),
+                message: "hello".into(),
+                timestamp_ms: 5,
+            }],
+        };
+
+        let json = serde_json::to_string(&result).unwrap();
+        let deserialized: ExecutionResult = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.duration_ms, 42);
+        assert_eq!(deserialized.peak_memory_bytes, Some(1024));
+        assert_eq!(deserialized.logs.len(), 1);
+        assert_eq!(deserialized.logs[0].level, "info");
+    }
+
+    // -----------------------------------------------------------------------
+    // RuntimeError display
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_error_display() {
+        let err = RuntimeError::CpuTimeout { limit_ms: 5000 };
+        assert!(err.to_string().contains("5000ms"));
+
+        let err = RuntimeError::MemoryExceeded { limit_mb: 128 };
+        assert!(err.to_string().contains("128MB"));
+
+        let err = RuntimeError::ProcessFailed {
+            code: 1,
+            stderr: "oom".into(),
+        };
+        assert!(err.to_string().contains("code 1"));
+        assert!(err.to_string().contains("oom"));
+
+        let err = RuntimeError::BinaryNotFound {
+            binary: "deno".into(),
+        };
+        assert!(err.to_string().contains("deno"));
     }
 }

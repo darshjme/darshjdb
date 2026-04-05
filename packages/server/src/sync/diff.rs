@@ -66,23 +66,69 @@ fn extract_entity_id(entity: &Value) -> Option<String> {
 }
 
 /// Compute a deterministic hash of a JSON value for change detection.
+///
+/// Uses canonical (sorted-key) serialization to ensure logically equal
+/// JSON objects produce identical hashes regardless of insertion order.
 pub fn hash_value(value: &Value) -> u64 {
     let mut hasher = DefaultHasher::new();
-    // Serialize to canonical form for consistent hashing.
-    // serde_json's to_string produces deterministic output for the same Value.
-    let canonical = serde_json::to_string(value).unwrap_or_default();
-    canonical.hash(&mut hasher);
+    hash_value_recursive(value, &mut hasher);
     hasher.finish()
 }
 
-/// Compute a hash over an entire result set for quick equality checks.
-pub fn hash_result_set(results: &[Value]) -> u64 {
-    let mut hasher = DefaultHasher::new();
-    for value in results {
-        let canonical = serde_json::to_string(value).unwrap_or_default();
-        canonical.hash(&mut hasher);
+/// Recursively hash a JSON value with sorted object keys for canonical ordering.
+fn hash_value_recursive(value: &Value, hasher: &mut DefaultHasher) {
+    match value {
+        Value::Null => 0u8.hash(hasher),
+        Value::Bool(b) => {
+            1u8.hash(hasher);
+            b.hash(hasher);
+        }
+        Value::Number(n) => {
+            2u8.hash(hasher);
+            // Use string representation for consistent hashing of numbers.
+            n.to_string().hash(hasher);
+        }
+        Value::String(s) => {
+            3u8.hash(hasher);
+            s.hash(hasher);
+        }
+        Value::Array(arr) => {
+            4u8.hash(hasher);
+            arr.len().hash(hasher);
+            for item in arr {
+                hash_value_recursive(item, hasher);
+            }
+        }
+        Value::Object(obj) => {
+            5u8.hash(hasher);
+            obj.len().hash(hasher);
+            // Sort keys for canonical ordering -- critical for determinism.
+            let mut keys: Vec<&String> = obj.keys().collect();
+            keys.sort();
+            for key in keys {
+                key.hash(hasher);
+                hash_value_recursive(&obj[key], hasher);
+            }
+        }
     }
-    hasher.finish()
+}
+
+/// Compute a hash over an entire result set for quick equality checks.
+///
+/// Uses XOR-combination of individual hashes so that result sets with the
+/// same entities in different order produce the same hash. This avoids
+/// spurious diffs when the query engine returns rows in non-deterministic order.
+pub fn hash_result_set(results: &[Value]) -> u64 {
+    let mut combined: u64 = 0;
+    // Mix length into the hash to distinguish [] from [x] where hash(x)==0.
+    let mut len_hasher = DefaultHasher::new();
+    results.len().hash(&mut len_hasher);
+    combined ^= len_hasher.finish();
+
+    for value in results {
+        combined ^= hash_value(value);
+    }
+    combined
 }
 
 /// Compute the diff between an old and new query result set.
@@ -284,5 +330,215 @@ mod tests {
         let diff = compute_diff(&old, &new);
         assert_eq!(diff.updated.len(), 1);
         assert_eq!(diff.updated[0].removed_fields, vec!["temp"]);
+    }
+
+    #[test]
+    fn empty_to_empty_produces_empty_diff() {
+        let diff = compute_diff(&[], &[]);
+        assert!(diff.is_empty());
+        assert_eq!(diff.change_count(), 0);
+    }
+
+    #[test]
+    fn empty_to_nonempty_all_added() {
+        let new = vec![json!({"_id": "1", "x": 1}), json!({"_id": "2", "x": 2})];
+        let diff = compute_diff(&[], &new);
+        assert_eq!(diff.added.len(), 2);
+        assert!(diff.removed.is_empty());
+        assert!(diff.updated.is_empty());
+    }
+
+    #[test]
+    fn nonempty_to_empty_all_removed() {
+        let old = vec![json!({"_id": "1", "x": 1}), json!({"_id": "2", "x": 2})];
+        let diff = compute_diff(&old, &[]);
+        assert_eq!(diff.removed.len(), 2);
+        assert!(diff.added.is_empty());
+        assert!(diff.updated.is_empty());
+    }
+
+    #[test]
+    fn nested_object_change_detected() {
+        let old = vec![json!({"_id": "1", "meta": {"level": 1, "tag": "a"}})];
+        let new = vec![json!({"_id": "1", "meta": {"level": 2, "tag": "a"}})];
+        let diff = compute_diff(&old, &new);
+        assert_eq!(diff.updated.len(), 1);
+        assert_eq!(
+            diff.updated[0].changed_fields.get("meta"),
+            Some(&json!({"level": 2, "tag": "a"}))
+        );
+    }
+
+    #[test]
+    fn array_field_change_detected() {
+        let old = vec![json!({"_id": "1", "tags": ["a", "b"]})];
+        let new = vec![json!({"_id": "1", "tags": ["a", "c"]})];
+        let diff = compute_diff(&old, &new);
+        assert_eq!(diff.updated.len(), 1);
+        assert_eq!(
+            diff.updated[0].changed_fields.get("tags"),
+            Some(&json!(["a", "c"]))
+        );
+    }
+
+    #[test]
+    fn null_value_changes() {
+        let old = vec![json!({"_id": "1", "value": null})];
+        let new = vec![json!({"_id": "1", "value": 42})];
+        let diff = compute_diff(&old, &new);
+        assert_eq!(diff.updated.len(), 1);
+        assert_eq!(
+            diff.updated[0].changed_fields.get("value"),
+            Some(&json!(42))
+        );
+    }
+
+    #[test]
+    fn value_to_null_change() {
+        let old = vec![json!({"_id": "1", "value": 42})];
+        let new = vec![json!({"_id": "1", "value": null})];
+        let diff = compute_diff(&old, &new);
+        assert_eq!(diff.updated.len(), 1);
+        assert_eq!(
+            diff.updated[0].changed_fields.get("value"),
+            Some(&json!(null))
+        );
+    }
+
+    #[test]
+    fn added_new_field() {
+        let old = vec![json!({"_id": "1", "name": "Alice"})];
+        let new = vec![json!({"_id": "1", "name": "Alice", "email": "a@b.c"})];
+        let diff = compute_diff(&old, &new);
+        assert_eq!(diff.updated.len(), 1);
+        assert_eq!(
+            diff.updated[0].changed_fields.get("email"),
+            Some(&json!("a@b.c"))
+        );
+        assert!(diff.updated[0].removed_fields.is_empty());
+    }
+
+    #[test]
+    fn simultaneous_add_remove_update() {
+        let old = vec![
+            json!({"_id": "1", "name": "Alice"}),
+            json!({"_id": "2", "name": "Bob"}),
+        ];
+        let new = vec![
+            json!({"_id": "1", "name": "Alice2"}),
+            json!({"_id": "3", "name": "Charlie"}),
+        ];
+        let diff = compute_diff(&old, &new);
+        assert_eq!(diff.added.len(), 1); // Charlie
+        assert_eq!(diff.removed, vec!["2"]); // Bob
+        assert_eq!(diff.updated.len(), 1); // Alice -> Alice2
+        assert_eq!(diff.change_count(), 3);
+    }
+
+    #[test]
+    fn entities_with_numeric_ids() {
+        let old = vec![json!({"id": 1, "val": "a"})];
+        let new = vec![json!({"id": 1, "val": "b"})];
+        let diff = compute_diff(&old, &new);
+        assert_eq!(diff.updated.len(), 1);
+        assert_eq!(diff.updated[0].entity_id, "1");
+    }
+
+    #[test]
+    fn entities_without_ids_treated_as_unkeyed() {
+        let old = vec![json!({"name": "Alice"})];
+        let new = vec![json!({"name": "Bob"})];
+        let diff = compute_diff(&old, &new);
+        // Old unkeyed entity removed, new unkeyed entity added.
+        assert_eq!(diff.added.len(), 1);
+        assert_eq!(diff.removed.len(), 1);
+        assert!(diff.removed[0].starts_with("__unkeyed:"));
+    }
+
+    #[test]
+    fn hash_value_canonical_key_order() {
+        // Two objects with same keys in different insertion order must hash the same.
+        let a = json!({"z": 1, "a": 2, "m": 3});
+        let b = {
+            let mut map = serde_json::Map::new();
+            map.insert("a".into(), json!(2));
+            map.insert("m".into(), json!(3));
+            map.insert("z".into(), json!(1));
+            Value::Object(map)
+        };
+        assert_eq!(hash_value(&a), hash_value(&b));
+    }
+
+    #[test]
+    fn hash_value_nested_canonical() {
+        let a = json!({"outer": {"z": 1, "a": 2}});
+        let b = {
+            let mut inner = serde_json::Map::new();
+            inner.insert("a".into(), json!(2));
+            inner.insert("z".into(), json!(1));
+            let mut outer = serde_json::Map::new();
+            outer.insert("outer".into(), Value::Object(inner));
+            Value::Object(outer)
+        };
+        assert_eq!(hash_value(&a), hash_value(&b));
+    }
+
+    #[test]
+    fn hash_result_set_order_independent() {
+        let a = vec![json!({"_id": "1"}), json!({"_id": "2"})];
+        let b = vec![json!({"_id": "2"}), json!({"_id": "1"})];
+        assert_eq!(hash_result_set(&a), hash_result_set(&b));
+    }
+
+    #[test]
+    fn hash_result_set_different_content() {
+        let a = vec![json!({"_id": "1"})];
+        let b = vec![json!({"_id": "2"})];
+        assert_ne!(hash_result_set(&a), hash_result_set(&b));
+    }
+
+    #[test]
+    fn hash_distinguishes_types() {
+        assert_ne!(hash_value(&json!(null)), hash_value(&json!(false)));
+        assert_ne!(hash_value(&json!(0)), hash_value(&json!("0")));
+        assert_ne!(hash_value(&json!([])), hash_value(&json!({})));
+    }
+
+    #[test]
+    fn deeply_nested_diff() {
+        let old = vec![json!({"_id": "1", "a": {"b": {"c": {"d": 1}}}})];
+        let new = vec![json!({"_id": "1", "a": {"b": {"c": {"d": 2}}}})];
+        let diff = compute_diff(&old, &new);
+        assert_eq!(diff.updated.len(), 1);
+        assert!(diff.updated[0].changed_fields.contains_key("a"));
+    }
+
+    #[test]
+    fn entity_id_extraction_priority() {
+        // _id takes priority over id.
+        let entity = json!({"_id": "preferred", "id": "fallback"});
+        assert_eq!(extract_entity_id(&entity), Some("preferred".into()));
+
+        // id used when no _id.
+        let entity = json!({"id": "used", "entity_id": "fallback"});
+        assert_eq!(extract_entity_id(&entity), Some("used".into()));
+
+        // entity_id as last resort.
+        let entity = json!({"entity_id": "last"});
+        assert_eq!(extract_entity_id(&entity), Some("last".into()));
+    }
+
+    #[test]
+    fn same_entities_different_order_no_diff() {
+        let old = vec![
+            json!({"_id": "1", "name": "Alice"}),
+            json!({"_id": "2", "name": "Bob"}),
+        ];
+        let new = vec![
+            json!({"_id": "2", "name": "Bob"}),
+            json!({"_id": "1", "name": "Alice"}),
+        ];
+        let diff = compute_diff(&old, &new);
+        assert!(diff.is_empty());
     }
 }

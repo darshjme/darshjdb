@@ -62,3 +62,43 @@ DARSHAN_MAX_CONNECTIONS=50000
 # Send buffer size per client before backpressure (default: 1MB)
 DARSHAN_WS_BUFFER_SIZE=2097152
 ```
+
+### Caching
+
+DarshanDB caches query results in an LRU cache. Cached entries are invalidated automatically when underlying data changes.
+
+```bash
+# Query cache size (default: 1000 entries)
+DARSHAN_QUERY_CACHE_SIZE=5000
+
+# Disable cache (useful for debugging)
+DARSHAN_QUERY_CACHE_ENABLED=false
+```
+
+## Benchmarking
+
+Run the built-in benchmark suite to measure your deployment's performance:
+
+```bash
+darshan bench --connections 100 --duration 30s --queries-per-sec 1000
+```
+
+This reports:
+- P50, P95, P99 latency for queries and mutations
+- Throughput (operations per second)
+- WebSocket connection capacity
+- Memory usage under load
+
+## Production Checklist
+
+- [ ] Set `DARSHAN_PG_POOL_SIZE` appropriate for your hardware (2x CPU cores is a good starting point)
+- [ ] Enable connection pooling via PgBouncer for deployments with many app servers
+- [ ] Set `DARSHAN_MAX_QUERY_DEPTH` to the minimum your app requires
+- [ ] Configure rate limits (`DARSHAN_RATE_LIMIT_AUTH`, `DARSHAN_RATE_LIMIT_ANON`)
+- [ ] Monitor `/metrics` endpoint with Prometheus + Grafana
+- [ ] Set up database backups (see [Self-Hosting](self-hosting.md))
+- [ ] Enable `RUST_LOG=warn` in production (avoid `info` or `debug` for performance)
+
+---
+
+[Previous: Security](security.md) | [Next: Migration Guide](migration.md) | [All Docs](README.md)

@@ -83,10 +83,13 @@ pub async fn auth_middleware(
 
     // Rate-limit check.
     let rate_key = if let Some(ref tok) = token {
-        // We use a hash of the token prefix as the rate key for authenticated
-        // requests. After validation we switch to user_id, but we need to
-        // rate-limit before the (potentially expensive) JWT validation.
-        RateLimitKey::Token(tok[..std::cmp::min(tok.len(), 16)].to_string())
+        // Hash the token prefix to avoid storing raw token material in
+        // the rate limiter's DashMap. A SHA-256 of the first 16 bytes
+        // provides sufficient bucketing without leaking token content.
+        use sha2::Digest;
+        let prefix = &tok[..std::cmp::min(tok.len(), 16)];
+        let hash = sha2::Sha256::digest(prefix.as_bytes());
+        RateLimitKey::Token(data_encoding::HEXLOWER.encode(&hash[..16]))
     } else {
         RateLimitKey::Ip(ip.clone())
     };
@@ -354,5 +357,100 @@ mod tests {
         // With zero idle timeout, everything is stale.
         limiter.cleanup();
         assert_eq!(limiter.bucket_count(), 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // Additional rate limiter tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn token_bucket_returns_retry_after() {
+        let mut bucket = TokenBucket::new(1.0, 1.0);
+        assert!(bucket.try_consume().is_ok());
+        let err = bucket.try_consume().unwrap_err();
+        assert!(err >= 1, "retry_after must be at least 1 second");
+    }
+
+    #[test]
+    fn token_bucket_capacity_zero_always_rejects() {
+        let mut bucket = TokenBucket::new(0.0, 1.0);
+        assert!(
+            bucket.try_consume().is_err(),
+            "zero capacity bucket must reject immediately"
+        );
+    }
+
+    #[test]
+    fn different_keys_have_independent_buckets() {
+        let limiter = RateLimiter::new();
+        let key1 = RateLimitKey::Ip("10.0.0.1".into());
+        let key2 = RateLimitKey::Ip("10.0.0.2".into());
+
+        // Exhaust key1.
+        for _ in 0..20 {
+            let _ = limiter.check(&key1, false);
+        }
+        assert!(
+            limiter.check(&key1, false).is_err(),
+            "key1 should be exhausted"
+        );
+
+        // key2 should still work.
+        assert!(
+            limiter.check(&key2, false).is_ok(),
+            "key2 should be independent"
+        );
+    }
+
+    #[test]
+    fn authenticated_gets_higher_limit_than_anonymous() {
+        let limiter = RateLimiter::new();
+        let anon_key = RateLimitKey::Ip("anon".into());
+        let auth_key = RateLimitKey::UserId(Uuid::new_v4());
+
+        // Anonymous: 20 requests.
+        for _ in 0..20 {
+            assert!(limiter.check(&anon_key, false).is_ok());
+        }
+        assert!(limiter.check(&anon_key, false).is_err());
+
+        // Authenticated: 100 requests.
+        for _ in 0..100 {
+            assert!(limiter.check(&auth_key, true).is_ok());
+        }
+        assert!(limiter.check(&auth_key, true).is_err());
+    }
+
+    #[test]
+    fn bucket_count_tracks_active_keys() {
+        let limiter = RateLimiter::new();
+        assert_eq!(limiter.bucket_count(), 0);
+
+        let _ = limiter.check(&RateLimitKey::Ip("1.1.1.1".into()), false);
+        assert_eq!(limiter.bucket_count(), 1);
+
+        let _ = limiter.check(&RateLimitKey::Ip("2.2.2.2".into()), false);
+        assert_eq!(limiter.bucket_count(), 2);
+
+        // Same key does not create a new bucket.
+        let _ = limiter.check(&RateLimitKey::Ip("1.1.1.1".into()), false);
+        assert_eq!(limiter.bucket_count(), 2);
+    }
+
+    #[test]
+    fn api_key_rate_limit_key() {
+        let limiter = RateLimiter::new();
+        let key = RateLimitKey::ApiKey("sk-test-123".into());
+        assert!(limiter.check(&key, true).is_ok());
+    }
+
+    #[test]
+    fn token_bucket_stale_detection() {
+        let bucket = TokenBucket::new(10.0, 1.0);
+        // With a very short max_idle (1ms), bucket becomes stale almost immediately.
+        std::thread::sleep(Duration::from_millis(2));
+        assert!(bucket.is_stale(Duration::from_millis(1)));
+        // With very long max_idle, bucket is not stale.
+        assert!(!bucket.is_stale(Duration::from_secs(3600)));
     }
 }

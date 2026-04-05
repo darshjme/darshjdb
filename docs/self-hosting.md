@@ -106,3 +106,11 @@ curl http://localhost:7700/metrics
 ```
 
 Grafana dashboard templates are included in the `deploy/` directory.
+
+## Upgrading
+
+See the [Migration Guide](migration.md) for instructions on upgrading between DarshanDB versions, managing database migrations, and handling breaking changes.
+
+---
+
+[Previous: Getting Started](getting-started.md) | [Next: Query Language](query-language.md) | [All Docs](README.md)

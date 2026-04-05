@@ -123,7 +123,7 @@ export function AuthUsers() {
                     {user.sessions.length > 0 && (
                       <div className="w-2 h-2 rounded-full bg-emerald-400" title="Active" />
                     )}
-                    <button className="btn-ghost p-1">
+                    <button className="btn-ghost p-1" aria-label={`More options for ${user.name}`}>
                       <MoreVertical className="w-3.5 h-3.5" />
                     </button>
                   </div>

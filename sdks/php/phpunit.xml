@@ -7,7 +7,12 @@
          failOnWarning="true">
     <testsuites>
         <testsuite name="DarshanDB PHP SDK">
-            <directory>tests</directory>
+            <directory suffix="Test.php">tests</directory>
         </testsuite>
     </testsuites>
+    <source>
+        <include>
+            <directory suffix=".php">src</directory>
+        </include>
+    </source>
 </phpunit>

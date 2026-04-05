@@ -69,22 +69,24 @@ class StorageClient:
         if not local.exists():
             raise FileNotFoundError(f"File not found: {file_path}")
 
-        files: dict[str, Any] = {
-            "file": (local.name, open(local, "rb")),
-        }
-        # Send path and options as additional form fields via data
-        data: dict[str, str] = {"path": path}
-        if content_type:
-            data["contentType"] = content_type
-        if metadata:
-            import json
-            data["metadata"] = json.dumps(metadata)
+        import json as json_mod
 
-        return self._client._request(
-            "POST",
-            "/api/storage/upload",
-            files=files,
-        )
+        with open(local, "rb") as fh:
+            files: dict[str, Any] = {
+                "file": (local.name, fh),
+            }
+            form_data: dict[str, str] = {"path": path}
+            if content_type:
+                form_data["contentType"] = content_type
+            if metadata:
+                form_data["metadata"] = json_mod.dumps(metadata)
+
+            return self._client._request(
+                "POST",
+                "/api/storage/upload",
+                data=form_data,
+                files=files,
+            )
 
     def upload_bytes(
         self,
@@ -108,13 +110,21 @@ class StorageClient:
         Returns:
             A dict with ``path``, ``url``, ``size``, and ``contentType``.
         """
+        import json as json_mod
+
         files: dict[str, Any] = {
             "file": (filename, content),
         }
+        form_data: dict[str, str] = {"path": path}
+        if content_type:
+            form_data["contentType"] = content_type
+        if metadata:
+            form_data["metadata"] = json_mod.dumps(metadata)
 
         return self._client._request(
             "POST",
             "/api/storage/upload",
+            data=form_data,
             files=files,
         )
 

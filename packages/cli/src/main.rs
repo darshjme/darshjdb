@@ -379,6 +379,7 @@ async fn cmd_deploy(tag: &str, registry: Option<&str>, yes: bool) -> Result<()> 
 
 async fn cmd_push(cfg: &config::Config, dir: &str, dry_run: bool) -> Result<()> {
     println!("\n  {} Push functions\n", ">>>".bright_cyan().bold());
+    cfg.require_token()?;
 
     let functions_dir = std::path::Path::new(dir);
     if !functions_dir.exists() {
@@ -454,6 +455,7 @@ async fn cmd_pull(cfg: &config::Config, output: &str) -> Result<()> {
         "\n  {} Pull schema & generate types\n",
         ">>>".bright_cyan().bold()
     );
+    cfg.require_token()?;
 
     let spinner = spinner("Fetching schema...");
 
@@ -517,6 +519,7 @@ async fn cmd_pull(cfg: &config::Config, output: &str) -> Result<()> {
 
 async fn cmd_seed(cfg: &config::Config, file: &str) -> Result<()> {
     println!("\n  {} Seed database\n", ">>>".bright_cyan().bold());
+    cfg.require_token()?;
 
     let path = std::path::Path::new(file);
     if !path.exists() {
@@ -577,6 +580,7 @@ async fn cmd_migrate(
 ) -> Result<()> {
     println!("\n  {} Migrations\n", ">>>".bright_cyan().bold());
 
+    cfg.require_token()?;
     let client = reqwest::Client::new();
 
     if status {
@@ -589,12 +593,9 @@ async fn cmd_migrate(
 
         let body: serde_json::Value = resp.json().await?;
         println!("  Migration status:");
-        println!(
-            "  {}",
-            serde_json::to_string_pretty(&body)
-                .unwrap_or_default()
-                .dimmed()
-        );
+        let pretty = serde_json::to_string_pretty(&body)
+            .context("Failed to format migration status as JSON")?;
+        println!("  {}", pretty.dimmed());
         return Ok(());
     }
 
@@ -675,13 +676,24 @@ async fn cmd_logs(
     follow: bool,
     level: Option<&str>,
 ) -> Result<()> {
+    cfg.require_token()?;
     let client = reqwest::Client::new();
+
+    if let Some(l) = level
+        && !config::Config::VALID_LOG_LEVELS.contains(&l)
+    {
+        anyhow::bail!(
+            "Invalid log level '{l}'. Valid levels: {}",
+            config::Config::VALID_LOG_LEVELS.join(", ")
+        );
+    }
 
     let mut url = format!("{}/api/admin/logs?lines={lines}", cfg.url);
     if follow {
         url.push_str("&follow=true");
     }
     if let Some(l) = level {
+        // level is validated above so this is safe against injection
         url.push_str(&format!("&level={l}"));
     }
 
@@ -709,6 +721,7 @@ async fn cmd_logs(
 }
 
 async fn cmd_auth(cfg: &config::Config, command: AuthCommands) -> Result<()> {
+    cfg.require_token()?;
     let client = reqwest::Client::new();
 
     match command {
@@ -763,10 +776,9 @@ async fn cmd_auth(cfg: &config::Config, command: AuthCommands) -> Result<()> {
                 .context("Failed to list users")?;
 
             let body: serde_json::Value = resp.json().await?;
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&body).unwrap_or_default()
-            );
+            let pretty = serde_json::to_string_pretty(&body)
+                .context("Failed to format user list as JSON")?;
+            println!("{pretty}");
         }
 
         AuthCommands::RevokeUser { user } => {
@@ -799,6 +811,8 @@ async fn cmd_backup(
     include_storage: bool,
 ) -> Result<()> {
     println!("\n  {} Backup\n", ">>>".bright_cyan().bold());
+
+    cfg.require_token()?;
 
     let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
     let default_output = format!("darshandb_backup_{timestamp}.tar.gz");
@@ -840,6 +854,7 @@ async fn cmd_backup(
 
 async fn cmd_restore(cfg: &config::Config, file: &str, yes: bool) -> Result<()> {
     println!("\n  {} Restore\n", ">>>".bright_cyan().bold());
+    cfg.require_token()?;
 
     if !yes {
         println!(
@@ -887,6 +902,7 @@ async fn cmd_restore(cfg: &config::Config, file: &str, yes: bool) -> Result<()> 
 
 async fn cmd_status(cfg: &config::Config) -> Result<()> {
     println!("\n  {} DarshanDB Status\n", ">>>".bright_cyan().bold());
+    cfg.require_token()?;
 
     let client = reqwest::Client::new();
     let resp = client
@@ -1038,7 +1054,7 @@ fn spinner(msg: &str) -> ProgressBar {
     let pb = ProgressBar::new_spinner();
     pb.set_style(
         ProgressStyle::with_template("  {spinner:.cyan} {msg}")
-            .unwrap()
+            .expect("hard-coded spinner template must be valid")
             .tick_chars("-\\|/"),
     );
     pb.enable_steady_tick(Duration::from_millis(80));
@@ -1050,7 +1066,7 @@ fn progress_bar(total: u64, prefix: &str) -> ProgressBar {
     let pb = ProgressBar::new(total);
     pb.set_style(
         ProgressStyle::with_template("  {prefix:.cyan} [{bar:30.cyan/dim}] {pos}/{len} {msg}")
-            .unwrap()
+            .expect("hard-coded progress bar template must be valid")
             .progress_chars("=> "),
     );
     pb.set_prefix(prefix.to_string());

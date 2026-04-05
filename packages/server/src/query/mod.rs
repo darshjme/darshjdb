@@ -252,8 +252,20 @@ pub fn plan_query(ast: &QueryAST) -> Result<QueryPlan> {
         sql.push_str(&format!(
             "  AND NOT t_search.retracted\n  AND t_search.value #>> '{{}}' ILIKE ${param_idx}\n"
         ));
-        params.push(serde_json::Value::String(format!("%{term}%")));
+        // Escape LIKE metacharacters in the user-supplied search term to prevent
+        // wildcard injection (e.g. user typing "%" or "_" to match everything).
+        let escaped = term
+            .replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_");
+        params.push(serde_json::Value::String(format!("%{escaped}%")));
         param_idx += 1;
+    }
+
+    // Semantic search is parsed but not yet wired to an embedding backend.
+    // Emit a warning so callers know the operator was acknowledged but not applied.
+    if ast.semantic.is_some() {
+        tracing::warn!("$semantic operator is not yet implemented; clause ignored");
     }
 
     sql.push_str("WHERE NOT t0.retracted\n");
@@ -285,12 +297,20 @@ pub fn plan_query(ast: &QueryAST) -> Result<QueryPlan> {
         sql.push('\n');
     }
 
-    // Pagination
+    // Pagination — parameterised to keep plan shapes reusable and to
+    // follow the same bind-everything policy as the rest of the query.
     if let Some(limit) = ast.limit {
-        sql.push_str(&format!("LIMIT {limit}\n"));
+        sql.push_str(&format!("LIMIT ${param_idx}\n"));
+        params.push(serde_json::json!(limit));
+        param_idx += 1;
     }
     if let Some(offset) = ast.offset {
-        sql.push_str(&format!("OFFSET {offset}\n"));
+        sql.push_str(&format!("OFFSET ${param_idx}\n"));
+        params.push(serde_json::json!(offset));
+        #[allow(unused_assignments)]
+        {
+            param_idx += 1;
+        }
     }
 
     // Nested plans
@@ -470,6 +490,9 @@ impl PlanCache {
         if ast.search.is_some() {
             hasher.update(b"S");
         }
+        if ast.semantic.is_some() {
+            hasher.update(b"V"); // V for vector/semantic
+        }
         for n in &ast.nested {
             hasher.update(n.via_attribute.as_bytes());
         }
@@ -527,33 +550,134 @@ pub async fn run_query(
 mod tests {
     use super::*;
 
+    // ── Helper ──────────────────────────────────────────────────────
+
+    fn bare_ast(entity_type: &str) -> QueryAST {
+        QueryAST {
+            entity_type: entity_type.into(),
+            where_clauses: vec![],
+            order: vec![],
+            limit: None,
+            offset: None,
+            search: None,
+            semantic: None,
+            nested: vec![],
+        }
+    }
+
+    // ── Parsing: every DarshanQL operator ───────────────────────────
+
     #[test]
     fn parse_minimal_query() {
-        let input = serde_json::json!({
-            "type": "User"
-        });
+        let input = serde_json::json!({ "type": "User" });
         let ast = parse_darshan_ql(&input).expect("should parse");
         assert_eq!(ast.entity_type, "User");
         assert!(ast.where_clauses.is_empty());
         assert!(ast.order.is_empty());
+        assert!(ast.limit.is_none());
+        assert!(ast.offset.is_none());
+        assert!(ast.search.is_none());
+        assert!(ast.semantic.is_none());
+        assert!(ast.nested.is_empty());
+    }
+
+    #[test]
+    fn parse_where_all_operators() {
+        for (op_str, expected) in [
+            ("Eq", WhereOp::Eq),
+            ("Neq", WhereOp::Neq),
+            ("Gt", WhereOp::Gt),
+            ("Gte", WhereOp::Gte),
+            ("Lt", WhereOp::Lt),
+            ("Lte", WhereOp::Lte),
+            ("Contains", WhereOp::Contains),
+            ("Like", WhereOp::Like),
+        ] {
+            let input = serde_json::json!({
+                "type": "Item",
+                "$where": [{ "attribute": "x", "op": op_str, "value": 1 }]
+            });
+            let ast = parse_darshan_ql(&input)
+                .unwrap_or_else(|e| panic!("failed to parse op {op_str}: {e}"));
+            assert_eq!(
+                ast.where_clauses[0].op, expected,
+                "op mismatch for {op_str}"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_order_asc_desc() {
+        let input = serde_json::json!({
+            "type": "Post",
+            "$order": [
+                { "attribute": "created_at", "direction": "Asc" },
+                { "attribute": "score", "direction": "Desc" }
+            ]
+        });
+        let ast = parse_darshan_ql(&input).expect("should parse");
+        assert_eq!(ast.order.len(), 2);
+        assert_eq!(ast.order[0].direction, SortDirection::Asc);
+        assert_eq!(ast.order[1].direction, SortDirection::Desc);
+    }
+
+    #[test]
+    fn parse_limit_offset() {
+        let input = serde_json::json!({
+            "type": "T",
+            "$limit": 100,
+            "$offset": 20
+        });
+        let ast = parse_darshan_ql(&input).expect("should parse");
+        assert_eq!(ast.limit, Some(100));
+        assert_eq!(ast.offset, Some(20));
+    }
+
+    #[test]
+    fn parse_search() {
+        let input = serde_json::json!({
+            "type": "Doc",
+            "$search": "hello world"
+        });
+        let ast = parse_darshan_ql(&input).expect("should parse");
+        assert_eq!(ast.search.as_deref(), Some("hello world"));
+    }
+
+    #[test]
+    fn parse_semantic() {
+        let input = serde_json::json!({
+            "type": "Doc",
+            "$semantic": "meaning of life"
+        });
+        let ast = parse_darshan_ql(&input).expect("should parse");
+        assert_eq!(ast.semantic.as_deref(), Some("meaning of life"));
+    }
+
+    #[test]
+    fn parse_nested() {
+        let input = serde_json::json!({
+            "type": "User",
+            "$nested": [
+                { "via_attribute": "org_id" },
+                { "via_attribute": "team_id" }
+            ]
+        });
+        let ast = parse_darshan_ql(&input).expect("should parse");
+        assert_eq!(ast.nested.len(), 2);
+        assert_eq!(ast.nested[0].via_attribute, "org_id");
+        assert_eq!(ast.nested[1].via_attribute, "team_id");
     }
 
     #[test]
     fn parse_full_query() {
         let input = serde_json::json!({
             "type": "User",
-            "$where": [
-                { "attribute": "email", "op": "Eq", "value": "a@b.com" }
-            ],
-            "$order": [
-                { "attribute": "created_at", "direction": "Desc" }
-            ],
+            "$where": [{ "attribute": "email", "op": "Eq", "value": "a@b.com" }],
+            "$order": [{ "attribute": "created_at", "direction": "Desc" }],
             "$limit": 10,
             "$offset": 5,
             "$search": "alice",
-            "$nested": [
-                { "via_attribute": "org_id" }
-            ]
+            "$nested": [{ "via_attribute": "org_id" }]
         });
         let ast = parse_darshan_ql(&input).expect("should parse");
         assert_eq!(ast.entity_type, "User");
@@ -566,60 +690,487 @@ mod tests {
         assert_eq!(ast.nested.len(), 1);
     }
 
+    // ── Parsing: nested queries with forward/backward references ────
+
+    #[test]
+    fn parse_nested_with_sub_query() {
+        // Note: sub_query is deserialized via serde, so it uses struct field
+        // names (entity_type, where_clauses) rather than the DarshanQL JSON
+        // operators ($where, $order). Only the top-level parse_darshan_ql
+        // translates the $ operators.
+        let input = serde_json::json!({
+            "type": "Order",
+            "$nested": [{
+                "via_attribute": "customer_id",
+                "sub_query": {
+                    "entity_type": "Customer",
+                    "where_clauses": [{ "attribute": "active", "op": "Eq", "value": true }],
+                    "nested": [{
+                        "via_attribute": "billing_address_id",
+                        "sub_query": {
+                            "entity_type": "Address",
+                            "limit": 1
+                        }
+                    }]
+                }
+            }]
+        });
+        let ast = parse_darshan_ql(&input).expect("should parse");
+        assert_eq!(ast.nested.len(), 1);
+
+        let sub = ast.nested[0].sub_query.as_ref().expect("sub_query");
+        assert_eq!(sub.entity_type, "Customer");
+        assert_eq!(sub.where_clauses.len(), 1);
+
+        let deep = sub.nested[0].sub_query.as_ref().expect("deep sub_query");
+        assert_eq!(deep.entity_type, "Address");
+        assert_eq!(deep.limit, Some(1));
+    }
+
+    #[test]
+    fn parse_multiple_nested_forward_and_backward() {
+        // Forward ref: Order -> Customer, backward ref: Order -> LineItems
+        let input = serde_json::json!({
+            "type": "Order",
+            "$nested": [
+                { "via_attribute": "customer_id" },
+                { "via_attribute": "line_items_ref" }
+            ]
+        });
+        let ast = parse_darshan_ql(&input).expect("should parse");
+        assert_eq!(ast.nested.len(), 2);
+        assert_eq!(ast.nested[0].via_attribute, "customer_id");
+        assert_eq!(ast.nested[1].via_attribute, "line_items_ref");
+    }
+
+    // ── Parsing: edge cases ─────────────────────────────────────────
+
+    #[test]
+    fn reject_non_object_query() {
+        let input = serde_json::json!("not an object");
+        assert!(parse_darshan_ql(&input).is_err());
+    }
+
+    #[test]
+    fn reject_array_query() {
+        let input = serde_json::json!([1, 2, 3]);
+        assert!(parse_darshan_ql(&input).is_err());
+    }
+
+    #[test]
+    fn reject_missing_type() {
+        let input = serde_json::json!({ "$limit": 10 });
+        assert!(parse_darshan_ql(&input).is_err());
+    }
+
+    #[test]
+    fn reject_null_type() {
+        let input = serde_json::json!({ "type": null });
+        assert!(parse_darshan_ql(&input).is_err());
+    }
+
+    #[test]
+    fn reject_numeric_type() {
+        let input = serde_json::json!({ "type": 42 });
+        assert!(parse_darshan_ql(&input).is_err());
+    }
+
+    #[test]
+    fn reject_invalid_where_shape() {
+        let input = serde_json::json!({
+            "type": "T",
+            "$where": "not an array"
+        });
+        assert!(parse_darshan_ql(&input).is_err());
+    }
+
+    #[test]
+    fn reject_unknown_operator_in_where() {
+        let input = serde_json::json!({
+            "type": "T",
+            "$where": [{ "attribute": "x", "op": "Regex", "value": ".*" }]
+        });
+        assert!(parse_darshan_ql(&input).is_err());
+    }
+
+    #[test]
+    fn empty_where_is_ok() {
+        let input = serde_json::json!({ "type": "T", "$where": [] });
+        let ast = parse_darshan_ql(&input).expect("should parse");
+        assert!(ast.where_clauses.is_empty());
+    }
+
+    #[test]
+    fn empty_order_is_ok() {
+        let input = serde_json::json!({ "type": "T", "$order": [] });
+        let ast = parse_darshan_ql(&input).expect("should parse");
+        assert!(ast.order.is_empty());
+    }
+
+    #[test]
+    fn empty_nested_is_ok() {
+        let input = serde_json::json!({ "type": "T", "$nested": [] });
+        let ast = parse_darshan_ql(&input).expect("should parse");
+        assert!(ast.nested.is_empty());
+    }
+
+    #[test]
+    fn deeply_nested_query() {
+        // Build 5 levels of nesting. Sub-queries use serde struct field
+        // names (entity_type, nested) because they are deserialized, not
+        // parsed via parse_darshan_ql. Only the outermost level uses the
+        // DarshanQL JSON keys (type, $nested).
+        let mut inner = serde_json::json!({ "entity_type": "Leaf" });
+        for depth in (0..5).rev() {
+            let nested_arr = serde_json::json!([{
+                "via_attribute": format!("ref_{depth}"),
+                "sub_query": inner
+            }]);
+            if depth == 0 {
+                // Top level: use DarshanQL syntax
+                inner = serde_json::json!({
+                    "type": format!("Level{depth}"),
+                    "$nested": nested_arr
+                });
+            } else {
+                // Inner levels: use serde struct field names
+                inner = serde_json::json!({
+                    "entity_type": format!("Level{depth}"),
+                    "nested": nested_arr
+                });
+            }
+        }
+        let ast = parse_darshan_ql(&inner).expect("should parse deeply nested");
+        assert_eq!(ast.entity_type, "Level0");
+
+        // Walk to the leaf
+        let mut current = &ast;
+        for depth in 0..5 {
+            assert_eq!(current.nested.len(), 1, "depth {depth}");
+            current = current.nested[0]
+                .sub_query
+                .as_ref()
+                .expect("sub_query at depth");
+        }
+        assert_eq!(current.entity_type, "Leaf");
+    }
+
+    // ── Plan generation ─────────────────────────────────────────────
+
+    #[test]
+    fn plan_basic_generates_valid_sql() {
+        let ast = bare_ast("User");
+        let plan = plan_query(&ast).expect("should plan");
+        assert!(plan.sql.contains("triples"));
+        assert!(plan.sql.contains(":db/type"));
+        assert!(!plan.sql.contains("LIMIT"));
+        assert!(!plan.sql.contains("OFFSET"));
+    }
+
+    #[test]
+    fn plan_with_where_creates_joins() {
+        let ast = QueryAST {
+            where_clauses: vec![
+                WhereClause {
+                    attribute: "a".into(),
+                    op: WhereOp::Eq,
+                    value: serde_json::json!(1),
+                },
+                WhereClause {
+                    attribute: "b".into(),
+                    op: WhereOp::Gt,
+                    value: serde_json::json!(2),
+                },
+            ],
+            ..bare_ast("T")
+        };
+        let plan = plan_query(&ast).expect("should plan");
+        assert!(plan.sql.contains("tw0"), "should have alias tw0");
+        assert!(plan.sql.contains("tw1"), "should have alias tw1");
+    }
+
+    #[test]
+    fn plan_all_operators_produce_correct_sql_op() {
+        let ops = [
+            (WhereOp::Eq, "="),
+            (WhereOp::Neq, "!="),
+            (WhereOp::Gt, ">"),
+            (WhereOp::Gte, ">="),
+            (WhereOp::Lt, "<"),
+            (WhereOp::Lte, "<="),
+            (WhereOp::Contains, "@>"),
+            (WhereOp::Like, "ILIKE"),
+        ];
+        for (op, expected_sql) in ops {
+            let ast = QueryAST {
+                where_clauses: vec![WhereClause {
+                    attribute: "x".into(),
+                    op,
+                    value: serde_json::json!("v"),
+                }],
+                ..bare_ast("T")
+            };
+            let plan = plan_query(&ast).unwrap();
+            assert!(
+                plan.sql.contains(expected_sql),
+                "op {op:?} should produce '{expected_sql}' in SQL, got:\n{}",
+                plan.sql
+            );
+        }
+    }
+
+    #[test]
+    fn plan_limit_offset_parameterised() {
+        let ast = QueryAST {
+            limit: Some(50),
+            offset: Some(10),
+            ..bare_ast("T")
+        };
+        let plan = plan_query(&ast).expect("should plan");
+        // Limit and offset should appear as $N placeholders, not literals
+        assert!(
+            plan.sql.contains("LIMIT $"),
+            "LIMIT should be parameterised"
+        );
+        assert!(
+            plan.sql.contains("OFFSET $"),
+            "OFFSET should be parameterised"
+        );
+        // Values should be in the params vec
+        assert!(plan.params.iter().any(|p| p == &serde_json::json!(50)));
+        assert!(plan.params.iter().any(|p| p == &serde_json::json!(10)));
+    }
+
+    #[test]
+    fn plan_search_escapes_wildcards() {
+        let ast = QueryAST {
+            search: Some("%_dangerous\\".into()),
+            ..bare_ast("T")
+        };
+        let plan = plan_query(&ast).expect("should plan");
+        // The escaped search param should contain backslash-escaped metacharacters
+        let search_param = plan
+            .params
+            .iter()
+            .find(|p| p.as_str().is_some_and(|s| s.contains("dangerous")))
+            .expect("search param missing");
+        let s = search_param.as_str().unwrap();
+        // User's % and _ must be escaped
+        assert!(s.contains("\\%"), "% should be escaped: {s}");
+        assert!(s.contains("\\_"), "_ should be escaped: {s}");
+        // Wrapping wildcards must be present
+        assert!(s.starts_with('%'), "should start with wildcard: {s}");
+        assert!(s.ends_with('%'), "should end with wildcard: {s}");
+    }
+
+    #[test]
+    fn plan_nested_creates_plans() {
+        let ast = QueryAST {
+            nested: vec![
+                NestedQuery {
+                    via_attribute: "org_id".into(),
+                    sub_query: None,
+                },
+                NestedQuery {
+                    via_attribute: "team_id".into(),
+                    sub_query: None,
+                },
+            ],
+            ..bare_ast("User")
+        };
+        let plan = plan_query(&ast).expect("should plan");
+        assert_eq!(plan.nested_plans.len(), 2);
+        assert_eq!(plan.nested_plans[0].via_attribute, "org_id");
+        assert_eq!(plan.nested_plans[1].via_attribute, "team_id");
+    }
+
+    #[test]
+    fn plan_order_by_generates_subqueries() {
+        let ast = QueryAST {
+            order: vec![OrderClause {
+                attribute: "score".into(),
+                direction: SortDirection::Desc,
+            }],
+            ..bare_ast("T")
+        };
+        let plan = plan_query(&ast).expect("should plan");
+        assert!(plan.sql.contains("ORDER BY"));
+        assert!(plan.sql.contains("DESC"));
+    }
+
+    // ── Plan cache ──────────────────────────────────────────────────
+
     #[test]
     fn plan_cache_hit() {
         let cache = PlanCache::new(16);
-        let ast = QueryAST {
-            entity_type: "User".into(),
-            where_clauses: vec![],
-            order: vec![],
-            limit: None,
-            offset: None,
-            search: None,
-            semantic: None,
-            nested: vec![],
-        };
+        let ast = bare_ast("User");
         let plan = plan_query(&ast).expect("should plan");
         cache.insert(&ast, plan);
         assert!(cache.get(&ast).is_some());
     }
 
     #[test]
+    fn plan_cache_miss_on_different_entity_type() {
+        let cache = PlanCache::new(16);
+        let ast1 = bare_ast("User");
+        let plan = plan_query(&ast1).expect("should plan");
+        cache.insert(&ast1, plan);
+
+        let ast2 = bare_ast("Post");
+        assert!(cache.get(&ast2).is_none());
+    }
+
+    #[test]
+    fn plan_cache_miss_on_different_operator() {
+        let cache = PlanCache::new(16);
+        let ast1 = QueryAST {
+            where_clauses: vec![WhereClause {
+                attribute: "x".into(),
+                op: WhereOp::Eq,
+                value: serde_json::json!(1),
+            }],
+            ..bare_ast("T")
+        };
+        cache.insert(&ast1, plan_query(&ast1).unwrap());
+
+        let ast2 = QueryAST {
+            where_clauses: vec![WhereClause {
+                attribute: "x".into(),
+                op: WhereOp::Gt,
+                value: serde_json::json!(1),
+            }],
+            ..bare_ast("T")
+        };
+        assert!(cache.get(&ast2).is_none(), "different op should miss");
+    }
+
+    #[test]
+    fn plan_cache_miss_on_different_attribute() {
+        let cache = PlanCache::new(16);
+        let ast1 = QueryAST {
+            where_clauses: vec![WhereClause {
+                attribute: "email".into(),
+                op: WhereOp::Eq,
+                value: serde_json::json!("a"),
+            }],
+            ..bare_ast("T")
+        };
+        cache.insert(&ast1, plan_query(&ast1).unwrap());
+
+        let ast2 = QueryAST {
+            where_clauses: vec![WhereClause {
+                attribute: "name".into(),
+                op: WhereOp::Eq,
+                value: serde_json::json!("a"),
+            }],
+            ..bare_ast("T")
+        };
+        assert!(
+            cache.get(&ast2).is_none(),
+            "different attribute should miss"
+        );
+    }
+
+    #[test]
     fn shape_key_ignores_values() {
         let ast1 = QueryAST {
-            entity_type: "User".into(),
             where_clauses: vec![WhereClause {
                 attribute: "email".into(),
                 op: WhereOp::Eq,
                 value: serde_json::json!("a@b.com"),
             }],
-            order: vec![],
-            limit: None,
-            offset: None,
-            search: None,
-            semantic: None,
-            nested: vec![],
+            ..bare_ast("User")
         };
         let ast2 = QueryAST {
-            entity_type: "User".into(),
             where_clauses: vec![WhereClause {
                 attribute: "email".into(),
                 op: WhereOp::Eq,
                 value: serde_json::json!("other@example.com"),
             }],
-            order: vec![],
-            limit: None,
-            offset: None,
-            search: None,
-            semantic: None,
-            nested: vec![],
+            ..bare_ast("User")
         };
         assert_eq!(PlanCache::shape_key(&ast1), PlanCache::shape_key(&ast2));
     }
 
     #[test]
-    fn reject_non_object_query() {
-        let input = serde_json::json!("not an object");
-        assert!(parse_darshan_ql(&input).is_err());
+    fn shape_key_ignores_limit_offset_values() {
+        let ast1 = QueryAST {
+            limit: Some(10),
+            offset: Some(0),
+            ..bare_ast("T")
+        };
+        let ast2 = QueryAST {
+            limit: Some(999),
+            offset: Some(500),
+            ..bare_ast("T")
+        };
+        assert_eq!(
+            PlanCache::shape_key(&ast1),
+            PlanCache::shape_key(&ast2),
+            "different limit/offset values should share a shape"
+        );
+    }
+
+    #[test]
+    fn shape_key_differs_with_without_limit() {
+        let with = QueryAST {
+            limit: Some(10),
+            ..bare_ast("T")
+        };
+        let without = bare_ast("T");
+        assert_ne!(
+            PlanCache::shape_key(&with),
+            PlanCache::shape_key(&without),
+            "limit presence vs absence should differ"
+        );
+    }
+
+    #[test]
+    fn shape_key_differs_with_without_search() {
+        let with = QueryAST {
+            search: Some("x".into()),
+            ..bare_ast("T")
+        };
+        let without = bare_ast("T");
+        assert_ne!(PlanCache::shape_key(&with), PlanCache::shape_key(&without),);
+    }
+
+    #[test]
+    fn shape_key_differs_with_without_semantic() {
+        let with = QueryAST {
+            semantic: Some("x".into()),
+            ..bare_ast("T")
+        };
+        let without = bare_ast("T");
+        assert_ne!(PlanCache::shape_key(&with), PlanCache::shape_key(&without),);
+    }
+
+    #[test]
+    fn plan_cache_lru_eviction() {
+        let cache = PlanCache::new(2);
+        let ast_a = bare_ast("A");
+        let ast_b = bare_ast("B");
+        let ast_c = bare_ast("C");
+
+        cache.insert(&ast_a, plan_query(&ast_a).unwrap());
+        cache.insert(&ast_b, plan_query(&ast_b).unwrap());
+
+        // Access B so it becomes most-recently-used; A is now LRU.
+        assert!(cache.get(&ast_b).is_some());
+
+        // Insert C — should evict A (the least recently used).
+        cache.insert(&ast_c, plan_query(&ast_c).unwrap());
+        assert!(cache.get(&ast_a).is_none(), "A should have been evicted");
+        assert!(cache.get(&ast_b).is_some(), "B was recently accessed");
+        assert!(cache.get(&ast_c).is_some(), "C was just inserted");
+    }
+
+    #[test]
+    fn plan_cache_zero_capacity_uses_default() {
+        // Should not panic; falls back to 256.
+        let cache = PlanCache::new(0);
+        let ast = bare_ast("T");
+        cache.insert(&ast, plan_query(&ast).unwrap());
+        assert!(cache.get(&ast).is_some());
     }
 }

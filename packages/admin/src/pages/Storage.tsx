@@ -148,7 +148,7 @@ export function Storage() {
                 )}
               >
                 <div className={cn(
-                  "aspect-[4/3] flex items-center justify-center rounded-t-lg",
+                  "aspect-[4/3] flex items-center justify-center rounded-t-lg relative",
                   isImage ? "bg-gradient-to-br from-zinc-800 to-zinc-900" : "bg-zinc-900/50",
                 )}>
                   <Icon className={cn(
@@ -156,10 +156,10 @@ export function Storage() {
                     isImage ? "text-amber-500/40" : "text-zinc-700",
                   )} />
                   <div className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity flex gap-1">
-                    <button className="p-1 rounded bg-zinc-900/90 text-zinc-400 hover:text-zinc-100">
+                    <button className="p-1 rounded bg-zinc-900/90 text-zinc-400 hover:text-zinc-100" aria-label={`Preview ${file.name}`}>
                       <Eye className="w-3 h-3" />
                     </button>
-                    <button className="p-1 rounded bg-zinc-900/90 text-zinc-400 hover:text-zinc-100">
+                    <button className="p-1 rounded bg-zinc-900/90 text-zinc-400 hover:text-zinc-100" aria-label={`Download ${file.name}`}>
                       <Download className="w-3 h-3" />
                     </button>
                   </div>
@@ -221,10 +221,10 @@ export function Storage() {
                     </td>
                     <td className="table-cell text-right">
                       <div className="flex items-center justify-end gap-1">
-                        <button className="btn-ghost p-1">
+                        <button className="btn-ghost p-1" aria-label={`Download ${file.name}`}>
                           <Download className="w-3.5 h-3.5" />
                         </button>
-                        <button className="btn-ghost p-1 text-red-400 hover:text-red-300">
+                        <button className="btn-ghost p-1 text-red-400 hover:text-red-300" aria-label={`Delete ${file.name}`}>
                           <Trash2 className="w-3.5 h-3.5" />
                         </button>
                       </div>

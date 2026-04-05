@@ -142,3 +142,65 @@ curl http://localhost:7700/api/openapi.json
 # Swagger UI
 open http://localhost:7700/api/docs
 ```
+
+## WebSocket API
+
+Connect to `ws://localhost:7700/ws` for real-time subscriptions:
+
+```javascript
+const ws = new WebSocket('ws://localhost:7700/ws');
+
+// Authenticate
+ws.send(JSON.stringify({ type: 'auth', token: 'ACCESS_TOKEN' }));
+
+// Subscribe to a query
+ws.send(JSON.stringify({
+  type: 'subscribe',
+  id: 'sub-1',
+  query: { todos: { $where: { done: false } } }
+}));
+
+// Receive initial data
+// { type: "q-init", id: "sub-1", data: { todos: [...] }, tx: 42 }
+
+// Receive live updates
+// { type: "q-diff", id: "sub-1", added: [...], updated: [...], removed: [...], tx: 43 }
+
+// Unsubscribe
+ws.send(JSON.stringify({ type: 'unsubscribe', id: 'sub-1' }));
+```
+
+## Admin Endpoints
+
+All admin endpoints require the admin token.
+
+```bash
+# Health check
+curl http://localhost:7700/api/admin/health
+
+# Server stats
+curl http://localhost:7700/api/admin/stats \
+  -H "Authorization: Bearer ADMIN_TOKEN"
+
+# List all entities (schema introspection)
+curl http://localhost:7700/api/admin/schema \
+  -H "Authorization: Bearer ADMIN_TOKEN"
+```
+
+## HTTP Status Codes
+
+| Code | Meaning |
+|------|---------|
+| `200` | Success |
+| `201` | Created (new entity) |
+| `400` | Bad request (validation error) |
+| `401` | Unauthorized (missing or invalid token) |
+| `403` | Forbidden (permission denied) |
+| `404` | Not found |
+| `409` | Conflict (duplicate key, concurrent edit) |
+| `429` | Rate limited |
+| `500` | Internal server error |
+
+---
+
+[Previous: Permissions](permissions.md) | [Next: Security](security.md) | [All Docs](README.md)

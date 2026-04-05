@@ -179,3 +179,148 @@ impl Default for SessionManager {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+    #[test]
+    fn session_creation_defaults() {
+        let id = SessionId::new_v4();
+        let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 8080);
+        let session = SyncSession::new(id, Some(addr));
+
+        assert_eq!(session.id, id);
+        assert!(session.user_id.is_none());
+        assert!(session.subscriptions.is_empty());
+        assert_eq!(session.last_tx, 0);
+        assert_eq!(session.peer_addr, Some(addr));
+        assert!(!session.is_authenticated());
+    }
+
+    #[test]
+    fn session_authentication() {
+        let mut session = SyncSession::new(SessionId::new_v4(), None);
+        assert!(!session.is_authenticated());
+
+        session.authenticate("user-42".into());
+        assert!(session.is_authenticated());
+        assert_eq!(session.user_id.as_deref(), Some("user-42"));
+    }
+
+    #[test]
+    fn add_and_remove_subscription() {
+        let mut session = SyncSession::new(SessionId::new_v4(), None);
+        let sub_id = session.add_subscription(123, json!({"select": "*"}));
+
+        assert_eq!(session.subscriptions.len(), 1);
+        let sub = &session.subscriptions[&sub_id];
+        assert_eq!(sub.query_hash, 123);
+        assert_eq!(sub.last_result_hash, 0);
+        assert_eq!(sub.last_tx, 0);
+
+        let removed = session.remove_subscription(&sub_id);
+        assert!(removed.is_some());
+        assert!(session.subscriptions.is_empty());
+    }
+
+    #[test]
+    fn remove_nonexistent_subscription_returns_none() {
+        let mut session = SyncSession::new(SessionId::new_v4(), None);
+        let fake_id = SubId::new_v4();
+        assert!(session.remove_subscription(&fake_id).is_none());
+    }
+
+    #[test]
+    fn update_subscription_cursor() {
+        let mut session = SyncSession::new(SessionId::new_v4(), None);
+        let sub_id = session.add_subscription(100, json!({}));
+
+        assert!(session.update_subscription_cursor(&sub_id, 999, 42));
+        let sub = &session.subscriptions[&sub_id];
+        assert_eq!(sub.last_result_hash, 999);
+        assert_eq!(sub.last_tx, 42);
+    }
+
+    #[test]
+    fn update_cursor_nonexistent_returns_false() {
+        let mut session = SyncSession::new(SessionId::new_v4(), None);
+        let fake_id = SubId::new_v4();
+        assert!(!session.update_subscription_cursor(&fake_id, 1, 1));
+    }
+
+    #[test]
+    fn session_manager_create_and_remove() {
+        let mgr = SessionManager::new();
+        assert_eq!(mgr.session_count(), 0);
+
+        let id = mgr.create_session(None);
+        assert_eq!(mgr.session_count(), 1);
+
+        let removed = mgr.remove_session(&id);
+        assert!(removed.is_some());
+        assert_eq!(mgr.session_count(), 0);
+    }
+
+    #[test]
+    fn session_manager_remove_nonexistent() {
+        let mgr = SessionManager::new();
+        let fake = SessionId::new_v4();
+        assert!(mgr.remove_session(&fake).is_none());
+    }
+
+    #[test]
+    fn session_manager_with_session() {
+        let mgr = SessionManager::new();
+        let id = mgr.create_session(None);
+
+        let result = mgr.with_session(&id, |s| s.id);
+        assert_eq!(result, Some(id));
+
+        let fake = SessionId::new_v4();
+        let result = mgr.with_session(&fake, |s| s.id);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn session_manager_with_session_mut() {
+        let mgr = SessionManager::new();
+        let id = mgr.create_session(None);
+
+        mgr.with_session_mut(&id, |s| {
+            s.authenticate("alice".into());
+        });
+
+        let is_auth = mgr.with_session(&id, |s| s.is_authenticated());
+        assert_eq!(is_auth, Some(true));
+    }
+
+    #[test]
+    fn session_manager_session_ids() {
+        let mgr = SessionManager::new();
+        let id1 = mgr.create_session(None);
+        let id2 = mgr.create_session(None);
+
+        let ids = mgr.session_ids();
+        assert_eq!(ids.len(), 2);
+        assert!(ids.contains(&id1));
+        assert!(ids.contains(&id2));
+    }
+
+    #[test]
+    fn multiple_subscriptions_per_session() {
+        let mut session = SyncSession::new(SessionId::new_v4(), None);
+        let sub1 = session.add_subscription(100, json!({"a": 1}));
+        let sub2 = session.add_subscription(200, json!({"b": 2}));
+        let sub3 = session.add_subscription(100, json!({"a": 1})); // same hash, different sub
+
+        assert_eq!(session.subscriptions.len(), 3);
+        assert_ne!(sub1, sub2);
+        assert_ne!(sub1, sub3);
+
+        session.remove_subscription(&sub1);
+        assert_eq!(session.subscriptions.len(), 2);
+    }
+}

@@ -1,23 +1,55 @@
+# Rust build artifacts
 target/
+
+# Node dependencies (rebuilt in container)
 node_modules/
+
+# Built frontend (rebuilt in container)
 dist/
+
+# Version control
 .git/
 .github/
+
+# IDE
 .vscode/
 .idea/
+
+# Documentation (not needed in image)
 *.md
 !README.md
-.env
-.env.*
-*.db
-data/
-coverage/
-.nyc_output/
-deploy/
 docs/
 examples/
+
+# Environment and secrets
+.env
+.env.*
+*.pem
+*.key
+
+# Data files
+*.db
+data/
+
+# Test/coverage
+coverage/
+.nyc_output/
+
+# Deploy configs (not needed in image)
+deploy/
+
+# Archive files
 *.tar.gz
 *.zip
+
+# Docker meta files (avoid recursive copy)
 docker-compose*.yml
 Dockerfile
 .dockerignore
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# SDKs not needed in server image
+sdks/

@@ -83,24 +83,42 @@ impl TotpManager {
     /// Verify a TOTP code against a shared secret.
     ///
     /// Checks the current time step and +/-1 neighbors to allow for
-    /// minor clock drift. Returns `true` if any window matches.
+    /// minor clock drift. Uses constant-time comparison across all
+    /// window steps to prevent timing side-channels. Returns `true`
+    /// if any window matches.
     pub fn verify(secret: &[u8], code: &str) -> Result<bool, AuthError> {
-        let now = Utc::now().timestamp() as u64;
-        let current_step = now / Self::PERIOD;
+        Self::verify_at(secret, code, Utc::now().timestamp() as u64)
+    }
+
+    /// Verify a TOTP code at a specific Unix timestamp.
+    ///
+    /// This is the inner implementation exposed for testing. Production
+    /// callers should use [`verify`] which uses the current wall clock.
+    ///
+    /// Constant-time: always evaluates all window steps regardless of
+    /// whether a match is found early, preventing timing oracles.
+    pub fn verify_at(secret: &[u8], code: &str, unix_seconds: u64) -> Result<bool, AuthError> {
+        let current_step = unix_seconds / Self::PERIOD;
 
         let code_num: u32 = code
             .parse()
             .map_err(|_| AuthError::MfaFailed("TOTP code must be numeric".into()))?;
 
+        // Constant-time: evaluate ALL steps and accumulate result.
+        // Do not short-circuit on first match.
+        let mut matched = 0u32;
         for offset in -Self::WINDOW..=Self::WINDOW {
             let step = (current_step as i64 + offset) as u64;
             let expected = Self::generate_code(secret, step)?;
-            if expected == code_num {
-                return Ok(true);
-            }
+            // Constant-time equality: XOR produces 0 on match, then
+            // bitwise OR accumulates non-matches.
+            let diff = expected ^ code_num;
+            // If diff == 0, this step matched. Use wrapping arithmetic
+            // to avoid branches.
+            matched |= (diff == 0) as u32;
         }
 
-        Ok(false)
+        Ok(matched != 0)
     }
 
     /// Generate the TOTP code for a specific time step.
@@ -393,6 +411,10 @@ fn urlencoding(s: &str) -> String {
 mod tests {
     use super::*;
 
+    // -----------------------------------------------------------------------
+    // TOTP code generation
+    // -----------------------------------------------------------------------
+
     #[test]
     fn totp_generate_and_verify() {
         let secret = b"12345678901234567890"; // RFC 6238 test vector key
@@ -403,11 +425,186 @@ mod tests {
     }
 
     #[test]
+    fn totp_code_is_deterministic() {
+        let secret = b"12345678901234567890";
+        let step = 42;
+        let c1 = TotpManager::generate_code(secret, step).expect("g1");
+        let c2 = TotpManager::generate_code(secret, step).expect("g2");
+        assert_eq!(c1, c2, "same secret + step must produce same code");
+    }
+
+    #[test]
+    fn totp_different_steps_produce_different_codes() {
+        let secret = b"12345678901234567890";
+        // While collisions are theoretically possible, in practice
+        // adjacent steps almost never collide for a 6-digit code.
+        let codes: Vec<u32> = (0..10)
+            .map(|s| TotpManager::generate_code(secret, s).expect("gen"))
+            .collect();
+        // At least 8 out of 10 should be distinct (overwhelmingly likely).
+        let mut unique = codes.clone();
+        unique.sort();
+        unique.dedup();
+        assert!(
+            unique.len() >= 8,
+            "expected mostly unique codes across 10 steps, got {}/{}: {:?}",
+            unique.len(),
+            codes.len(),
+            codes
+        );
+    }
+
+    #[test]
+    fn totp_different_secrets_produce_different_codes() {
+        let step = 100;
+        let c1 = TotpManager::generate_code(b"secret-one-abcdef1234", step).expect("g1");
+        let c2 = TotpManager::generate_code(b"secret-two-xyz0987654", step).expect("g2");
+        // Overwhelmingly unlikely to collide.
+        assert_ne!(c1, c2, "different secrets should produce different codes");
+    }
+
+    // -----------------------------------------------------------------------
+    // TOTP verification with window
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn totp_verify_current_step_accepted() {
+        let secret = b"test-totp-secret-key";
+        let now = 1_700_000_000u64; // fixed timestamp
+        let step = now / TotpManager::PERIOD;
+        let code = TotpManager::generate_code(secret, step).expect("gen");
+        let code_str = format!("{:06}", code);
+
+        assert!(
+            TotpManager::verify_at(secret, &code_str, now).expect("verify"),
+            "code for current step must be accepted"
+        );
+    }
+
+    #[test]
+    fn totp_verify_previous_step_accepted() {
+        let secret = b"test-totp-secret-key";
+        let now = 1_700_000_000u64;
+        let step = now / TotpManager::PERIOD;
+        let code = TotpManager::generate_code(secret, step - 1).expect("gen");
+        let code_str = format!("{:06}", code);
+
+        assert!(
+            TotpManager::verify_at(secret, &code_str, now).expect("verify"),
+            "code for previous step (clock skew) must be accepted"
+        );
+    }
+
+    #[test]
+    fn totp_verify_next_step_accepted() {
+        let secret = b"test-totp-secret-key";
+        let now = 1_700_000_000u64;
+        let step = now / TotpManager::PERIOD;
+        let code = TotpManager::generate_code(secret, step + 1).expect("gen");
+        let code_str = format!("{:06}", code);
+
+        assert!(
+            TotpManager::verify_at(secret, &code_str, now).expect("verify"),
+            "code for next step (clock skew) must be accepted"
+        );
+    }
+
+    #[test]
+    fn totp_verify_outside_window_rejected() {
+        let secret = b"test-totp-secret-key";
+        let now = 1_700_000_000u64;
+        let step = now / TotpManager::PERIOD;
+        // Code from 2 steps ago (outside +/-1 window).
+        let code = TotpManager::generate_code(secret, step - 2).expect("gen");
+        let code_str = format!("{:06}", code);
+
+        assert!(
+            !TotpManager::verify_at(secret, &code_str, now).expect("verify"),
+            "code from 2 steps ago must be rejected"
+        );
+    }
+
+    #[test]
+    fn totp_verify_wrong_code_rejected() {
+        let secret = b"test-totp-secret-key";
+        let now = 1_700_000_000u64;
+        assert!(
+            !TotpManager::verify_at(secret, "000000", now).expect("verify"),
+            "wrong code must be rejected"
+        );
+    }
+
+    #[test]
+    fn totp_verify_non_numeric_rejected() {
+        let secret = b"test-totp-secret-key";
+        let result = TotpManager::verify_at(secret, "abcdef", 1_700_000_000);
+        assert!(result.is_err(), "non-numeric code must return Err");
+    }
+
+    #[test]
+    fn totp_verify_empty_string_rejected() {
+        let secret = b"test-totp-secret-key";
+        let result = TotpManager::verify_at(secret, "", 1_700_000_000);
+        assert!(result.is_err(), "empty code must return Err");
+    }
+
+    // -----------------------------------------------------------------------
+    // TOTP enrollment
+    // -----------------------------------------------------------------------
+
+    #[test]
     fn totp_enrollment_produces_valid_uri() {
         let enrollment = TotpManager::enroll("DarshanDB", "user@example.com");
         assert!(enrollment.provisioning_uri.starts_with("otpauth://totp/"));
         assert!(enrollment.provisioning_uri.contains("DarshanDB"));
         assert!(!enrollment.secret_base32.is_empty());
         assert_eq!(enrollment.secret_raw.len(), 20);
+    }
+
+    #[test]
+    fn totp_enrollment_secret_is_160_bits() {
+        let enrollment = TotpManager::enroll("Test", "test@test.com");
+        assert_eq!(
+            enrollment.secret_raw.len(),
+            20,
+            "TOTP secret must be 160 bits (20 bytes)"
+        );
+    }
+
+    #[test]
+    fn totp_enrollment_uri_contains_required_params() {
+        let enrollment = TotpManager::enroll("MyApp", "alice@example.com");
+        let uri = &enrollment.provisioning_uri;
+        assert!(
+            uri.contains("algorithm=SHA1"),
+            "URI must specify SHA1 algorithm"
+        );
+        assert!(uri.contains("digits=6"), "URI must specify 6 digits");
+        assert!(uri.contains("period=30"), "URI must specify 30s period");
+        assert!(
+            uri.contains(&enrollment.secret_base32),
+            "URI must contain the base32 secret"
+        );
+    }
+
+    #[test]
+    fn totp_enrollment_secrets_are_unique() {
+        let e1 = TotpManager::enroll("Test", "user1@test.com");
+        let e2 = TotpManager::enroll("Test", "user2@test.com");
+        assert_ne!(
+            e1.secret_raw, e2.secret_raw,
+            "enrollment secrets must be unique"
+        );
+    }
+
+    #[test]
+    fn totp_enrolled_secret_verifies() {
+        // Enroll, then generate a code at a fixed time and verify it.
+        let enrollment = TotpManager::enroll("Test", "user@test.com");
+        let now = 1_700_000_000u64;
+        let step = now / TotpManager::PERIOD;
+        let code = TotpManager::generate_code(&enrollment.secret_raw, step).expect("gen");
+        let code_str = format!("{:06}", code);
+        assert!(TotpManager::verify_at(&enrollment.secret_raw, &code_str, now).expect("verify"));
     }
 }

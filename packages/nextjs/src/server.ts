@@ -178,8 +178,11 @@ export async function queryServer<T = unknown>(
   const q: DarshanQuery =
     typeof query === 'string' ? { collection: query } : query;
 
-  // Build the collection query chain
+  // Build the collection query chain.
+  // The chain methods return the same builder type but the client typings
+  // are not generic enough to express this — we use a typed record instead.
   const collection = db.collection(q.collection);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- chain builder API returns varying shapes
   let chain: any = collection;
 
   if (q.where) {

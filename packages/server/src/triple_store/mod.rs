@@ -55,6 +55,34 @@ pub struct TripleInput {
     pub value_type: i16,
 }
 
+impl TripleInput {
+    /// Validate this input, returning a descriptive error if anything is wrong.
+    ///
+    /// Checks:
+    /// - `attribute` is non-empty and does not exceed 512 bytes
+    /// - `value_type` is a known [`ValueType`] discriminator
+    pub fn validate(&self) -> Result<()> {
+        if self.attribute.is_empty() {
+            return Err(DarshanError::InvalidAttribute(
+                "attribute name must not be empty".into(),
+            ));
+        }
+        if self.attribute.len() > 512 {
+            return Err(DarshanError::InvalidAttribute(format!(
+                "attribute name exceeds 512 bytes: {} bytes",
+                self.attribute.len()
+            )));
+        }
+        if ValueType::from_i16(self.value_type).is_none() {
+            return Err(DarshanError::TypeMismatch {
+                expected: format!("value_type 0..={}", ValueType::max_discriminator()),
+                actual: format!("{}", self.value_type),
+            });
+        }
+        Ok(())
+    }
+}
+
 // ── Trait ────────────────────────────────────────────────────────────
 
 /// Async interface over the triple store, allowing alternative backends
@@ -226,6 +254,11 @@ impl TripleStore for PgTripleStore {
             return Err(DarshanError::InvalidQuery(
                 "cannot write an empty triple batch".into(),
             ));
+        }
+
+        // Validate every input before touching the database.
+        for t in triples {
+            t.validate()?;
         }
 
         let tx_id = self.next_tx_id().await?;
@@ -455,5 +488,265 @@ impl EntityTypeBuilder {
             references,
             entity_count,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use uuid::Uuid;
+
+    // ── Triple serialization ────────────────────────────────────────
+
+    #[test]
+    fn triple_json_roundtrip() {
+        let t = Triple {
+            id: 1,
+            entity_id: Uuid::nil(),
+            attribute: "user/name".into(),
+            value: json!("Alice"),
+            value_type: ValueType::String as i16,
+            tx_id: 42,
+            created_at: chrono::Utc::now(),
+            retracted: false,
+        };
+
+        let serialized = serde_json::to_string(&t).unwrap();
+        let deserialized: Triple = serde_json::from_str(&serialized).unwrap();
+
+        assert_eq!(deserialized.id, t.id);
+        assert_eq!(deserialized.entity_id, t.entity_id);
+        assert_eq!(deserialized.attribute, t.attribute);
+        assert_eq!(deserialized.value, t.value);
+        assert_eq!(deserialized.value_type, t.value_type);
+        assert_eq!(deserialized.tx_id, t.tx_id);
+        assert_eq!(deserialized.retracted, t.retracted);
+    }
+
+    #[test]
+    fn triple_clone_is_independent() {
+        let t = Triple {
+            id: 1,
+            entity_id: Uuid::new_v4(),
+            attribute: "x".into(),
+            value: json!(123),
+            value_type: 1,
+            tx_id: 1,
+            created_at: chrono::Utc::now(),
+            retracted: false,
+        };
+        let mut cloned = t.clone();
+        cloned.retracted = true;
+        assert!(!t.retracted);
+        assert!(cloned.retracted);
+    }
+
+    // ── TripleInput validation ──────────────────────────────────────
+
+    #[test]
+    fn triple_input_valid() {
+        let input = TripleInput {
+            entity_id: Uuid::new_v4(),
+            attribute: "user/email".into(),
+            value: json!("a@b.com"),
+            value_type: ValueType::String as i16,
+        };
+        assert!(input.validate().is_ok());
+    }
+
+    #[test]
+    fn triple_input_empty_attribute_rejected() {
+        let input = TripleInput {
+            entity_id: Uuid::new_v4(),
+            attribute: "".into(),
+            value: json!("x"),
+            value_type: 0,
+        };
+        let err = input.validate().unwrap_err();
+        assert!(
+            matches!(err, DarshanError::InvalidAttribute(ref msg) if msg.contains("empty")),
+            "expected InvalidAttribute(empty), got: {err}"
+        );
+    }
+
+    #[test]
+    fn triple_input_overlong_attribute_rejected() {
+        let input = TripleInput {
+            entity_id: Uuid::new_v4(),
+            attribute: "a".repeat(513),
+            value: json!("x"),
+            value_type: 0,
+        };
+        let err = input.validate().unwrap_err();
+        assert!(
+            matches!(err, DarshanError::InvalidAttribute(ref msg) if msg.contains("512")),
+            "expected InvalidAttribute(512), got: {err}"
+        );
+    }
+
+    #[test]
+    fn triple_input_invalid_value_type_rejected() {
+        let input = TripleInput {
+            entity_id: Uuid::new_v4(),
+            attribute: "valid".into(),
+            value: json!(null),
+            value_type: 99,
+        };
+        let err = input.validate().unwrap_err();
+        assert!(
+            matches!(err, DarshanError::TypeMismatch { .. }),
+            "expected TypeMismatch, got: {err}"
+        );
+    }
+
+    #[test]
+    fn triple_input_negative_value_type_rejected() {
+        let input = TripleInput {
+            entity_id: Uuid::new_v4(),
+            attribute: "valid".into(),
+            value: json!(true),
+            value_type: -1,
+        };
+        assert!(input.validate().is_err());
+    }
+
+    #[test]
+    fn triple_input_all_valid_types_accepted() {
+        for vt in 0..=ValueType::max_discriminator() {
+            let input = TripleInput {
+                entity_id: Uuid::new_v4(),
+                attribute: "a".into(),
+                value: json!(null),
+                value_type: vt,
+            };
+            assert!(input.validate().is_ok(), "value_type {vt} should be valid");
+        }
+    }
+
+    #[test]
+    fn triple_input_boundary_attribute_length() {
+        // Exactly 512 bytes should be accepted
+        let input = TripleInput {
+            entity_id: Uuid::new_v4(),
+            attribute: "a".repeat(512),
+            value: json!(null),
+            value_type: 0,
+        };
+        assert!(input.validate().is_ok());
+    }
+
+    // ── EntityTypeBuilder ───────────────────────────────────────────
+
+    #[test]
+    fn builder_single_entity_single_attr() {
+        let mut b = EntityTypeBuilder::new("User".into());
+        let eid = Uuid::new_v4();
+        b.observe(eid, "name", ValueType::String as i16);
+
+        let et = b.build();
+        assert_eq!(et.name, "User");
+        assert_eq!(et.entity_count, 1);
+        assert_eq!(et.attributes.len(), 1);
+        let attr = &et.attributes["name"];
+        assert_eq!(attr.value_types, vec![ValueType::String]);
+        assert!(attr.required); // 1 entity, 1 observation => required
+    }
+
+    #[test]
+    fn builder_required_detection() {
+        let mut b = EntityTypeBuilder::new("User".into());
+        let e1 = Uuid::new_v4();
+        let e2 = Uuid::new_v4();
+        // Both entities have "name"
+        b.observe(e1, "name", ValueType::String as i16);
+        b.observe(e2, "name", ValueType::String as i16);
+        // Only e1 has "bio"
+        b.observe(e1, "bio", ValueType::String as i16);
+
+        let et = b.build();
+        assert!(et.attributes["name"].required, "name seen on all entities");
+        assert!(
+            !et.attributes["bio"].required,
+            "bio not seen on all entities"
+        );
+    }
+
+    #[test]
+    fn builder_polymorphic_value_types() {
+        let mut b = EntityTypeBuilder::new("Doc".into());
+        let eid = Uuid::new_v4();
+        b.observe(eid, "data", ValueType::String as i16);
+        b.observe(eid, "data", ValueType::Json as i16);
+
+        let et = b.build();
+        let vts = &et.attributes["data"].value_types;
+        assert!(vts.contains(&ValueType::String));
+        assert!(vts.contains(&ValueType::Json));
+    }
+
+    #[test]
+    fn builder_unknown_value_type_filtered() {
+        let mut b = EntityTypeBuilder::new("X".into());
+        let eid = Uuid::new_v4();
+        b.observe(eid, "weird", 99); // unknown discriminator
+
+        let et = b.build();
+        let vts = &et.attributes["weird"].value_types;
+        assert!(vts.is_empty(), "unknown value_type should be filtered out");
+    }
+
+    #[test]
+    fn builder_reference_detection() {
+        let mut b = EntityTypeBuilder::new("Post".into());
+        let eid = Uuid::new_v4();
+        b.observe(eid, "author_id", ValueType::Reference as i16);
+
+        let et = b.build();
+        assert_eq!(et.references.len(), 1);
+        assert_eq!(et.references[0].attribute, "author_id");
+        assert_eq!(et.references[0].target_type, "_unknown");
+    }
+
+    #[test]
+    fn builder_no_entities_no_required() {
+        let b = EntityTypeBuilder::new("Empty".into());
+        let et = b.build();
+        assert_eq!(et.entity_count, 0);
+        assert!(et.attributes.is_empty());
+    }
+
+    #[test]
+    fn builder_deduplicates_value_types() {
+        let mut b = EntityTypeBuilder::new("T".into());
+        let eid = Uuid::new_v4();
+        // Same entity, same attr, same type observed 3 times
+        b.observe(eid, "x", ValueType::Integer as i16);
+        b.observe(eid, "x", ValueType::Integer as i16);
+        b.observe(eid, "x", ValueType::Integer as i16);
+
+        let et = b.build();
+        assert_eq!(
+            et.attributes["x"].value_types.len(),
+            1,
+            "duplicate value_types should be deduped"
+        );
+    }
+
+    #[test]
+    fn builder_cardinality_counts_distinct_entities() {
+        let mut b = EntityTypeBuilder::new("T".into());
+        let e1 = Uuid::new_v4();
+        let e2 = Uuid::new_v4();
+        // e1 observed twice on same attr
+        b.observe(e1, "x", 0);
+        b.observe(e1, "x", 0);
+        b.observe(e2, "x", 0);
+
+        let et = b.build();
+        assert_eq!(
+            et.attributes["x"].cardinality, 2,
+            "cardinality should count distinct entities"
+        );
     }
 }

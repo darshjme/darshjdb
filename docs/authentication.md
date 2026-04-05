@@ -102,3 +102,42 @@ function AuthButton() {
   return <button onClick={() => signIn({ email, password })}>Sign In</button>;
 }
 ```
+
+## Custom Claims
+
+Attach custom data to the user's JWT token:
+
+```typescript
+// In a server function
+import { mutation } from '@darshan/server';
+
+export const setUserRole = mutation({
+  args: { userId: v.id(), role: v.string() },
+  handler: async (ctx, { userId, role }) => {
+    await ctx.auth.setClaims(userId, { role, plan: 'pro' });
+    // Claims are included in the next access token refresh
+  },
+});
+```
+
+Custom claims are available in permission rules via `ctx.auth`:
+
+```typescript
+// darshan/permissions.ts
+delete: (ctx) => ctx.auth.role === 'admin'
+```
+
+## Configuration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DARSHAN_JWT_SECRET` | auto-generated | RS256 signing key |
+| `DARSHAN_ACCESS_TOKEN_EXPIRY` | `900` | Access token lifetime in seconds (15 min) |
+| `DARSHAN_REFRESH_TOKEN_EXPIRY` | `2592000` | Refresh token lifetime in seconds (30 days) |
+| `DARSHAN_MFA_ISSUER` | `DarshanDB` | TOTP issuer name shown in authenticator apps |
+| `DARSHAN_LOCKOUT_ATTEMPTS` | `5` | Failed login attempts before lockout |
+| `DARSHAN_LOCKOUT_DURATION` | `1800` | Lockout duration in seconds (30 min) |
+
+---
+
+[Previous: Server Functions](server-functions.md) | [Next: Permissions](permissions.md) | [All Docs](README.md)

@@ -87,3 +87,33 @@ const asUser = adminDb.asUser('user@example.com');
 const data = await asUser.query({ todos: {} });
 // Returns only what that user would see
 ```
+
+## Default Permissions
+
+When no permissions are defined for an entity, DarshanDB denies all access. You must explicitly allow operations:
+
+```typescript
+// Minimum viable permissions for a new entity
+export default {
+  notes: {
+    read: (ctx) => !!ctx.auth,
+    create: (ctx) => !!ctx.auth,
+    update: (ctx) => ({ userId: ctx.auth.userId }),
+    delete: (ctx) => ({ userId: ctx.auth.userId }),
+  },
+};
+```
+
+## Debugging Permissions
+
+Enable permission debug logging to see which rules are evaluated:
+
+```bash
+RUST_LOG=darshandb_server::permissions=debug darshan dev
+```
+
+This logs every permission check with the rule that was matched, the resulting SQL WHERE clause, and whether access was granted or denied.
+
+---
+
+[Previous: Authentication](authentication.md) | [Next: Presence](presence.md) | [All Docs](README.md)

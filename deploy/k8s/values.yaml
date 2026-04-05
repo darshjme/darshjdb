@@ -36,11 +36,13 @@ autoscaling:
   minReplicas: 1
   maxReplicas: 5
   targetCPUUtilizationPercentage: 80
+  # targetMemoryUtilizationPercentage: 80
 
 postgresql:
   enabled: true
   auth:
     username: darshan
+    # Override in production: --set postgresql.auth.password=<secure-value>
     password: darshan
     database: darshandb
   primary:
@@ -50,8 +52,10 @@ postgresql:
 env:
   RUST_LOG: info
   DARSHAN_PORT: "7700"
+  DARSHAN_ADMIN_DIR: /usr/share/darshan/admin
 
 secrets:
+  # Override in production: --set secrets.jwtSecret=<secure-value>
   jwtSecret: change-me-in-production
 
 nodeSelector: {}

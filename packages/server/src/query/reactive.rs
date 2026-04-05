@@ -162,6 +162,19 @@ impl DependencyTracker {
                 }
             }
 
+            // Wildcard dependencies (from `$search` queries) match any attribute.
+            let star_dep = Dependency {
+                attribute: "*".to_string(),
+                value_constraint: None,
+            };
+            if let Some(ids) = index.get(&star_dep) {
+                for &id in ids {
+                    if matches_entity_type(&queries, id, change) {
+                        affected.insert(id);
+                    }
+                }
+            }
+
             // Changes to `:db/type` affect queries watching that entity type.
             if change.attribute == ":db/type" {
                 // Any query whose entity_type matches the value
@@ -237,9 +250,9 @@ fn extract_dependencies(ast: &QueryAST) -> Vec<Dependency> {
     }
 
     // Full-text search: any attribute change could match.
+    // We use the sentinel attribute `"*"` which is matched specially
+    // inside `get_affected_queries` to trigger on every attribute.
     if ast.search.is_some() {
-        // Wildcard — but we scope it by registering a broad dependency
-        // that will be matched via the `:db/type` check.
         deps.push(Dependency {
             attribute: "*".to_string(),
             value_constraint: None,
@@ -279,58 +292,117 @@ fn dependency_from_where(wc: &WhereClause) -> Dependency {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::query::{OrderClause, QueryAST, SortDirection, WhereClause, WhereOp};
+    use crate::query::{NestedQuery, OrderClause, QueryAST, SortDirection, WhereClause, WhereOp};
 
     fn make_tracker() -> Arc<DependencyTracker> {
         DependencyTracker::new()
     }
 
-    #[test]
-    fn register_and_deregister() {
-        let tracker = make_tracker();
-        let ast = QueryAST {
-            entity_type: "User".into(),
-            where_clauses: vec![WhereClause {
-                attribute: "email".into(),
-                op: WhereOp::Eq,
-                value: serde_json::json!("a@b.com"),
-            }],
+    fn bare_ast(entity_type: &str) -> QueryAST {
+        QueryAST {
+            entity_type: entity_type.into(),
+            where_clauses: vec![],
             order: vec![],
             limit: None,
             offset: None,
             search: None,
             semantic: None,
             nested: vec![],
+        }
+    }
+
+    // ── Registration / deregistration ───────────────────────────────
+
+    #[test]
+    fn register_and_deregister() {
+        let tracker = make_tracker();
+        let ast = QueryAST {
+            where_clauses: vec![WhereClause {
+                attribute: "email".into(),
+                op: WhereOp::Eq,
+                value: serde_json::json!("a@b.com"),
+            }],
+            ..bare_ast("User")
         };
 
         let id = tracker.register(&ast);
         assert_eq!(tracker.query_count(), 1);
+        assert!(tracker.dependency_count() > 0);
 
         tracker.deregister(id);
         assert_eq!(tracker.query_count(), 0);
+        // All dependency edges for this query should be cleaned up.
+        assert_eq!(tracker.dependency_count(), 0);
     }
+
+    #[test]
+    fn register_assigns_unique_ids() {
+        let tracker = make_tracker();
+        let ast = bare_ast("User");
+        let id1 = tracker.register(&ast);
+        let id2 = tracker.register(&ast);
+        assert_ne!(id1, id2);
+        assert_eq!(tracker.query_count(), 2);
+    }
+
+    #[test]
+    fn deregister_nonexistent_is_noop() {
+        let tracker = make_tracker();
+        tracker.deregister(9999); // Should not panic
+        assert_eq!(tracker.query_count(), 0);
+    }
+
+    #[test]
+    fn deregister_preserves_other_queries_deps() {
+        let tracker = make_tracker();
+        let ast1 = QueryAST {
+            where_clauses: vec![WhereClause {
+                attribute: "email".into(),
+                op: WhereOp::Eq,
+                value: serde_json::json!("a@b.com"),
+            }],
+            ..bare_ast("User")
+        };
+        let ast2 = QueryAST {
+            where_clauses: vec![WhereClause {
+                attribute: "email".into(),
+                op: WhereOp::Eq,
+                value: serde_json::json!("b@b.com"),
+            }],
+            ..bare_ast("User")
+        };
+        let id1 = tracker.register(&ast1);
+        let id2 = tracker.register(&ast2);
+
+        tracker.deregister(id1);
+        assert_eq!(tracker.query_count(), 1);
+
+        // id2 should still be matchable
+        let changes = vec![TripleChange {
+            attribute: "email".into(),
+            value: serde_json::json!("b@b.com"),
+            entity_type: Some("User".into()),
+        }];
+        let affected = tracker.get_affected_queries(&changes);
+        assert!(affected.contains(&id2));
+    }
+
+    // ── Exact match (Eq operator) ───────────────────────────────────
 
     #[test]
     fn exact_match_triggers_affected() {
         let tracker = make_tracker();
         let ast = QueryAST {
-            entity_type: "User".into(),
             where_clauses: vec![WhereClause {
                 attribute: "email".into(),
                 op: WhereOp::Eq,
                 value: serde_json::json!("a@b.com"),
             }],
-            order: vec![],
-            limit: None,
-            offset: None,
-            search: None,
-            semantic: None,
-            nested: vec![],
+            ..bare_ast("User")
         };
 
         let id = tracker.register(&ast);
 
-        // Change to email = "a@b.com" on a User entity should match.
         let changes = vec![TripleChange {
             attribute: "email".into(),
             value: serde_json::json!("a@b.com"),
@@ -345,23 +417,16 @@ mod tests {
     fn different_value_no_match() {
         let tracker = make_tracker();
         let ast = QueryAST {
-            entity_type: "User".into(),
             where_clauses: vec![WhereClause {
                 attribute: "email".into(),
                 op: WhereOp::Eq,
                 value: serde_json::json!("a@b.com"),
             }],
-            order: vec![],
-            limit: None,
-            offset: None,
-            search: None,
-            semantic: None,
-            nested: vec![],
+            ..bare_ast("User")
         };
 
         let id = tracker.register(&ast);
 
-        // Different value should NOT match the exact dependency.
         let changes = vec![TripleChange {
             attribute: "email".into(),
             value: serde_json::json!("other@b.com"),
@@ -372,26 +437,21 @@ mod tests {
         assert!(!affected.contains(&id));
     }
 
+    // ── Wildcard dependencies (non-Eq operators) ────────────────────
+
     #[test]
     fn order_by_creates_wildcard_dep() {
         let tracker = make_tracker();
         let ast = QueryAST {
-            entity_type: "User".into(),
-            where_clauses: vec![],
             order: vec![OrderClause {
                 attribute: "created_at".into(),
                 direction: SortDirection::Desc,
             }],
-            limit: None,
-            offset: None,
-            search: None,
-            semantic: None,
-            nested: vec![],
+            ..bare_ast("User")
         };
 
         let id = tracker.register(&ast);
 
-        // Any change to created_at should trigger.
         let changes = vec![TripleChange {
             attribute: "created_at".into(),
             value: serde_json::json!("2026-01-01T00:00:00Z"),
@@ -403,26 +463,58 @@ mod tests {
     }
 
     #[test]
+    fn range_operator_creates_wildcard_dep() {
+        let tracker = make_tracker();
+        // Gt, Gte, Lt, Lte, Neq, Contains, Like all produce wildcard deps
+        for op in [
+            WhereOp::Gt,
+            WhereOp::Gte,
+            WhereOp::Lt,
+            WhereOp::Lte,
+            WhereOp::Neq,
+            WhereOp::Contains,
+            WhereOp::Like,
+        ] {
+            let ast = QueryAST {
+                where_clauses: vec![WhereClause {
+                    attribute: "score".into(),
+                    op,
+                    value: serde_json::json!(50),
+                }],
+                ..bare_ast("T")
+            };
+            let id = tracker.register(&ast);
+
+            // ANY value change to "score" should trigger (wildcard)
+            let changes = vec![TripleChange {
+                attribute: "score".into(),
+                value: serde_json::json!(999),
+                entity_type: Some("T".into()),
+            }];
+            let affected = tracker.get_affected_queries(&changes);
+            assert!(
+                affected.contains(&id),
+                "op {op:?} should create wildcard dep"
+            );
+        }
+    }
+
+    // ── Entity type filtering ───────────────────────────────────────
+
+    #[test]
     fn wrong_entity_type_no_match() {
         let tracker = make_tracker();
         let ast = QueryAST {
-            entity_type: "User".into(),
             where_clauses: vec![WhereClause {
                 attribute: "name".into(),
                 op: WhereOp::Eq,
                 value: serde_json::json!("Alice"),
             }],
-            order: vec![],
-            limit: None,
-            offset: None,
-            search: None,
-            semantic: None,
-            nested: vec![],
+            ..bare_ast("User")
         };
 
         let id = tracker.register(&ast);
 
-        // Change on a "Post" entity should NOT match a "User" query.
         let changes = vec![TripleChange {
             attribute: "name".into(),
             value: serde_json::json!("Alice"),
@@ -431,5 +523,285 @@ mod tests {
 
         let affected = tracker.get_affected_queries(&changes);
         assert!(!affected.contains(&id));
+    }
+
+    #[test]
+    fn unknown_entity_type_conservatively_matches() {
+        let tracker = make_tracker();
+        let ast = QueryAST {
+            order: vec![OrderClause {
+                attribute: "score".into(),
+                direction: SortDirection::Asc,
+            }],
+            ..bare_ast("User")
+        };
+
+        let id = tracker.register(&ast);
+
+        // entity_type = None means "unknown" — should conservatively match
+        let changes = vec![TripleChange {
+            attribute: "score".into(),
+            value: serde_json::json!(42),
+            entity_type: None,
+        }];
+
+        let affected = tracker.get_affected_queries(&changes);
+        assert!(
+            affected.contains(&id),
+            "unknown entity type should conservatively match"
+        );
+    }
+
+    // ── :db/type changes ────────────────────────────────────────────
+
+    #[test]
+    fn db_type_change_triggers_matching_queries() {
+        let tracker = make_tracker();
+        let ast = bare_ast("User");
+        let id = tracker.register(&ast);
+
+        // A new entity gets :db/type = "User"
+        let changes = vec![TripleChange {
+            attribute: ":db/type".into(),
+            value: serde_json::json!("User"),
+            entity_type: None,
+        }];
+
+        let affected = tracker.get_affected_queries(&changes);
+        assert!(affected.contains(&id));
+    }
+
+    #[test]
+    fn db_type_change_different_type_no_match() {
+        let tracker = make_tracker();
+        let ast = bare_ast("User");
+        let id = tracker.register(&ast);
+
+        let changes = vec![TripleChange {
+            attribute: ":db/type".into(),
+            value: serde_json::json!("Post"),
+            entity_type: None,
+        }];
+
+        let affected = tracker.get_affected_queries(&changes);
+        assert!(!affected.contains(&id));
+    }
+
+    // ── Search (wildcard *) dependency ──────────────────────────────
+
+    #[test]
+    fn search_query_affected_by_any_attribute_change() {
+        let tracker = make_tracker();
+        let ast = QueryAST {
+            search: Some("alice".into()),
+            ..bare_ast("User")
+        };
+
+        let id = tracker.register(&ast);
+
+        // Any attribute change on a User entity should trigger
+        let changes = vec![TripleChange {
+            attribute: "bio".into(),
+            value: serde_json::json!("something about alice"),
+            entity_type: Some("User".into()),
+        }];
+
+        let affected = tracker.get_affected_queries(&changes);
+        assert!(
+            affected.contains(&id),
+            "search query should match any attribute change"
+        );
+    }
+
+    #[test]
+    fn search_query_not_affected_by_wrong_entity_type() {
+        let tracker = make_tracker();
+        let ast = QueryAST {
+            search: Some("alice".into()),
+            ..bare_ast("User")
+        };
+
+        let id = tracker.register(&ast);
+
+        let changes = vec![TripleChange {
+            attribute: "title".into(),
+            value: serde_json::json!("alice's post"),
+            entity_type: Some("Post".into()),
+        }];
+
+        let affected = tracker.get_affected_queries(&changes);
+        assert!(
+            !affected.contains(&id),
+            "wrong entity type should not match"
+        );
+    }
+
+    // ── Nested reference dependencies ───────────────────────────────
+
+    #[test]
+    fn nested_ref_change_triggers_query() {
+        let tracker = make_tracker();
+        let ast = QueryAST {
+            nested: vec![NestedQuery {
+                via_attribute: "org_id".into(),
+                sub_query: None,
+            }],
+            ..bare_ast("User")
+        };
+
+        let id = tracker.register(&ast);
+
+        let changes = vec![TripleChange {
+            attribute: "org_id".into(),
+            value: serde_json::json!("some-uuid"),
+            entity_type: Some("User".into()),
+        }];
+
+        let affected = tracker.get_affected_queries(&changes);
+        assert!(affected.contains(&id));
+    }
+
+    // ── Multiple queries, batch changes ─────────────────────────────
+
+    #[test]
+    fn batch_changes_match_multiple_queries() {
+        let tracker = make_tracker();
+
+        let ast1 = QueryAST {
+            where_clauses: vec![WhereClause {
+                attribute: "email".into(),
+                op: WhereOp::Eq,
+                value: serde_json::json!("a@b.com"),
+            }],
+            ..bare_ast("User")
+        };
+        let ast2 = QueryAST {
+            order: vec![OrderClause {
+                attribute: "score".into(),
+                direction: SortDirection::Desc,
+            }],
+            ..bare_ast("User")
+        };
+
+        let id1 = tracker.register(&ast1);
+        let id2 = tracker.register(&ast2);
+
+        let changes = vec![
+            TripleChange {
+                attribute: "email".into(),
+                value: serde_json::json!("a@b.com"),
+                entity_type: Some("User".into()),
+            },
+            TripleChange {
+                attribute: "score".into(),
+                value: serde_json::json!(100),
+                entity_type: Some("User".into()),
+            },
+        ];
+
+        let affected = tracker.get_affected_queries(&changes);
+        assert!(affected.contains(&id1));
+        assert!(affected.contains(&id2));
+    }
+
+    #[test]
+    fn empty_changes_returns_empty() {
+        let tracker = make_tracker();
+        let ast = bare_ast("User");
+        tracker.register(&ast);
+
+        let affected = tracker.get_affected_queries(&[]);
+        assert!(affected.is_empty());
+    }
+
+    // ── Dependency extraction correctness ───────────────────────────
+
+    #[test]
+    fn extract_dependencies_includes_db_type() {
+        let ast = bare_ast("User");
+        let deps = extract_dependencies(&ast);
+        assert!(
+            deps.iter().any(|d| d.attribute == ":db/type"
+                && d.value_constraint == Some(serde_json::json!("User")))
+        );
+    }
+
+    #[test]
+    fn extract_dependencies_eq_produces_exact_constraint() {
+        let ast = QueryAST {
+            where_clauses: vec![WhereClause {
+                attribute: "status".into(),
+                op: WhereOp::Eq,
+                value: serde_json::json!("active"),
+            }],
+            ..bare_ast("T")
+        };
+        let deps = extract_dependencies(&ast);
+        assert!(
+            deps.iter().any(|d| d.attribute == "status"
+                && d.value_constraint == Some(serde_json::json!("active")))
+        );
+    }
+
+    #[test]
+    fn extract_dependencies_gt_produces_wildcard() {
+        let ast = QueryAST {
+            where_clauses: vec![WhereClause {
+                attribute: "age".into(),
+                op: WhereOp::Gt,
+                value: serde_json::json!(18),
+            }],
+            ..bare_ast("T")
+        };
+        let deps = extract_dependencies(&ast);
+        assert!(
+            deps.iter()
+                .any(|d| d.attribute == "age" && d.value_constraint.is_none())
+        );
+    }
+
+    #[test]
+    fn extract_dependencies_order_produces_wildcard() {
+        let ast = QueryAST {
+            order: vec![OrderClause {
+                attribute: "ts".into(),
+                direction: SortDirection::Asc,
+            }],
+            ..bare_ast("T")
+        };
+        let deps = extract_dependencies(&ast);
+        assert!(
+            deps.iter()
+                .any(|d| d.attribute == "ts" && d.value_constraint.is_none())
+        );
+    }
+
+    #[test]
+    fn extract_dependencies_search_produces_star() {
+        let ast = QueryAST {
+            search: Some("x".into()),
+            ..bare_ast("T")
+        };
+        let deps = extract_dependencies(&ast);
+        assert!(
+            deps.iter()
+                .any(|d| d.attribute == "*" && d.value_constraint.is_none())
+        );
+    }
+
+    #[test]
+    fn extract_dependencies_nested_produces_wildcard() {
+        let ast = QueryAST {
+            nested: vec![NestedQuery {
+                via_attribute: "ref".into(),
+                sub_query: None,
+            }],
+            ..bare_ast("T")
+        };
+        let deps = extract_dependencies(&ast);
+        assert!(
+            deps.iter()
+                .any(|d| d.attribute == "ref" && d.value_constraint.is_none())
+        );
     }
 }

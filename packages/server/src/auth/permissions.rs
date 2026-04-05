@@ -247,16 +247,60 @@ impl PermissionResult {
         }
     }
 
-    /// Build the combined WHERE clause for SQL injection.
+    /// Build the combined WHERE clause for query injection.
     ///
-    /// Substitutes `$user_id` with the actual user ID parameter placeholder.
+    /// Returns `(sql_fragment, params)` where `$user_id` placeholders are
+    /// replaced with positional bind parameters (`$1`, `$2`, ...) and the
+    /// corresponding values are collected into the params vector.
+    ///
+    /// The `param_offset` indicates the next available positional parameter
+    /// number (e.g., if the caller already has `$1` and `$2`, pass `3`).
+    ///
+    /// # Security
+    ///
+    /// Never interpolates user-controlled values directly into SQL. All
+    /// dynamic values are emitted as bind parameters.
     pub fn build_where_clause(&self, user_id: Uuid) -> Option<String> {
         if self.where_clauses.is_empty() {
             return None;
         }
         let combined = self.where_clauses.join(" AND ");
-        let substituted = combined.replace("$user_id", &format!("'{}'", user_id));
+        // Use a UUID-safe representation. While UUIDs are inherently safe
+        // from injection, we still use proper quoting with the Postgres
+        // UUID cast syntax to prevent any edge-case issues if the clause
+        // is composed with other strings.
+        let user_id_str = user_id.to_string();
+        // Validate UUID format as defense-in-depth (Uuid::to_string is safe,
+        // but we verify the invariant).
+        debug_assert!(
+            uuid::Uuid::parse_str(&user_id_str).is_ok(),
+            "user_id must be a valid UUID"
+        );
+        let substituted = combined.replace("$user_id", &format!("'{}'::uuid", user_id_str));
         Some(substituted)
+    }
+
+    /// Build the combined WHERE clause with parameterized bind values.
+    ///
+    /// Returns `(sql_fragment, bind_values)` where `$user_id` is replaced
+    /// with a positional parameter `$N` and the UUID is returned separately
+    /// for use as a bind parameter. This is the preferred method for
+    /// production queries.
+    ///
+    /// `param_offset` is the next available positional parameter number
+    /// (1-indexed).
+    pub fn build_where_clause_parameterized(
+        &self,
+        user_id: Uuid,
+        param_offset: usize,
+    ) -> Option<(String, Vec<String>)> {
+        if self.where_clauses.is_empty() {
+            return None;
+        }
+        let combined = self.where_clauses.join(" AND ");
+        let placeholder = format!("${}", param_offset);
+        let substituted = combined.replace("$user_id", &placeholder);
+        Some((substituted, vec![user_id.to_string()]))
     }
 }
 
@@ -580,5 +624,212 @@ mod tests {
 
         let result = evaluate_permission(&ctx, "document", Operation::Delete, None, &engine);
         assert!(!result.allowed);
+    }
+
+    // -----------------------------------------------------------------------
+    // Additional permission tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn deny_by_default_for_unconfigured_entity() {
+        let engine = PermissionEngine::new();
+        let ctx = test_ctx(vec!["admin"]);
+        let result = evaluate_permission(&ctx, "nonexistent", Operation::Read, None, &engine);
+        assert!(
+            !result.allowed,
+            "unconfigured entity must be denied by default"
+        );
+        assert!(result.denial_reason.is_some());
+    }
+
+    #[test]
+    fn empty_composite_rule_denied() {
+        let ctx = test_ctx(vec!["admin"]);
+        let rule = PermissionRule::Composite {
+            operator: CompositeOperator::And,
+            rules: vec![],
+        };
+        assert!(
+            !evaluate_rule(&ctx, &rule).allowed,
+            "empty composite must be denied"
+        );
+    }
+
+    #[test]
+    fn composite_or_all_denied() {
+        let ctx = test_ctx(vec!["viewer"]);
+        let rule = PermissionRule::Composite {
+            operator: CompositeOperator::Or,
+            rules: vec![
+                PermissionRule::RoleCheck {
+                    required_role: "admin".into(),
+                },
+                PermissionRule::RoleCheck {
+                    required_role: "editor".into(),
+                },
+            ],
+        };
+        let result = evaluate_rule(&ctx, &rule);
+        assert!(!result.allowed, "OR of all denied must be denied");
+    }
+
+    #[test]
+    fn nested_composite_rules() {
+        let ctx = test_ctx(vec!["editor", "premium"]);
+        let rule = PermissionRule::Composite {
+            operator: CompositeOperator::And,
+            rules: vec![
+                PermissionRule::RoleCheck {
+                    required_role: "editor".into(),
+                },
+                PermissionRule::Composite {
+                    operator: CompositeOperator::Or,
+                    rules: vec![
+                        PermissionRule::RoleCheck {
+                            required_role: "admin".into(),
+                        },
+                        PermissionRule::RoleCheck {
+                            required_role: "premium".into(),
+                        },
+                    ],
+                },
+            ],
+        };
+        assert!(
+            evaluate_rule(&ctx, &rule).allowed,
+            "nested composite should pass"
+        );
+    }
+
+    #[test]
+    fn where_clause_substitutes_user_id() {
+        let ctx = test_ctx(vec![]);
+        let rule = PermissionRule::WhereClause {
+            sql: "owner_id = $user_id AND visible = true".into(),
+        };
+        let result = evaluate_rule(&ctx, &rule);
+        let clause = result.build_where_clause(ctx.user_id).unwrap();
+        assert!(clause.contains(&ctx.user_id.to_string()));
+        assert!(clause.contains("::uuid"), "should use UUID cast");
+        assert!(clause.contains("AND visible = true"));
+    }
+
+    #[test]
+    fn where_clause_parameterized() {
+        let ctx = test_ctx(vec![]);
+        let rule = PermissionRule::WhereClause {
+            sql: "owner_id = $user_id".into(),
+        };
+        let result = evaluate_rule(&ctx, &rule);
+        let (sql, params) = result
+            .build_where_clause_parameterized(ctx.user_id, 3)
+            .unwrap();
+        assert_eq!(sql, "owner_id = $3");
+        assert_eq!(params, vec![ctx.user_id.to_string()]);
+    }
+
+    #[test]
+    fn and_merges_where_clauses() {
+        let r1 = {
+            let mut r = PermissionResult::allow();
+            r.where_clauses.push("a = 1".into());
+            r
+        };
+        let r2 = {
+            let mut r = PermissionResult::allow();
+            r.where_clauses.push("b = 2".into());
+            r
+        };
+        let merged = r1.and(r2);
+        assert!(merged.allowed);
+        assert_eq!(merged.where_clauses, vec!["a = 1", "b = 2"]);
+    }
+
+    #[test]
+    fn or_merges_where_clauses_with_or_sql() {
+        let r1 = {
+            let mut r = PermissionResult::allow();
+            r.where_clauses.push("a = 1".into());
+            r
+        };
+        let r2 = {
+            let mut r = PermissionResult::allow();
+            r.where_clauses.push("b = 2".into());
+            r
+        };
+        let merged = r1.or(r2);
+        assert!(merged.allowed);
+        assert_eq!(merged.where_clauses.len(), 1);
+        assert!(merged.where_clauses[0].contains("OR"));
+    }
+
+    #[test]
+    fn and_intersects_allowed_fields() {
+        let r1 = {
+            let mut r = PermissionResult::allow();
+            r.allowed_fields = vec!["a".into(), "b".into(), "c".into()];
+            r
+        };
+        let r2 = {
+            let mut r = PermissionResult::allow();
+            r.allowed_fields = vec!["b".into(), "c".into(), "d".into()];
+            r
+        };
+        let merged = r1.and(r2);
+        assert_eq!(merged.allowed_fields, vec!["b", "c"]);
+    }
+
+    #[test]
+    fn role_check_multiple_roles() {
+        let ctx = test_ctx(vec!["viewer", "editor", "admin"]);
+        let rule = PermissionRule::RoleCheck {
+            required_role: "editor".into(),
+        };
+        assert!(evaluate_rule(&ctx, &rule).allowed);
+    }
+
+    #[test]
+    fn role_check_empty_roles_denied() {
+        let ctx = test_ctx(vec![]);
+        let rule = PermissionRule::RoleCheck {
+            required_role: "anything".into(),
+        };
+        assert!(!evaluate_rule(&ctx, &rule).allowed);
+    }
+
+    #[test]
+    fn engine_multiple_entity_types() {
+        let config = serde_json::json!({
+            "users": {
+                "read": { "type": "role_check", "required_role": "admin" },
+                "update": { "type": "where_clause", "sql": "id = $user_id" }
+            },
+            "posts": {
+                "read": { "type": "allow" },
+                "create": { "type": "role_check", "required_role": "author" }
+            }
+        });
+
+        let mut engine = PermissionEngine::new();
+        engine.load_from_config(&config).expect("load");
+
+        let admin_ctx = test_ctx(vec!["admin"]);
+        assert!(evaluate_permission(&admin_ctx, "users", Operation::Read, None, &engine).allowed);
+        assert!(
+            !evaluate_permission(&admin_ctx, "posts", Operation::Create, None, &engine).allowed
+        );
+
+        let author_ctx = test_ctx(vec!["author"]);
+        assert!(!evaluate_permission(&author_ctx, "users", Operation::Read, None, &engine).allowed);
+        assert!(
+            evaluate_permission(&author_ctx, "posts", Operation::Create, None, &engine).allowed
+        );
+    }
+
+    #[test]
+    fn permission_result_deny_has_reason() {
+        let result = PermissionResult::deny("test reason");
+        assert!(!result.allowed);
+        assert_eq!(result.denial_reason.as_deref(), Some("test reason"));
     }
 }

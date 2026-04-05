@@ -54,7 +54,7 @@ pub enum ErrorCode {
 
 impl ErrorCode {
     /// Map this code to its canonical HTTP status.
-    fn status(self) -> StatusCode {
+    pub(crate) fn status(self) -> StatusCode {
         match self {
             Self::BadRequest | Self::InvalidQuery | Self::TypeMismatch => StatusCode::BAD_REQUEST,
             Self::Unauthenticated => StatusCode::UNAUTHORIZED,
@@ -222,5 +222,126 @@ impl From<DarshanError> for ApiError {
 impl From<serde_json::Error> for ApiError {
     fn from(err: serde_json::Error) -> Self {
         Self::bad_request(format!("JSON parse error: {err}"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::response::IntoResponse;
+
+    #[test]
+    fn error_envelope_json_structure() {
+        // Verify the ErrorEnvelope serializes to the documented format.
+        let body = ErrorEnvelope {
+            error: ErrorBody {
+                code: ErrorCode::PermissionDenied,
+                message: "You do not have access.".into(),
+                status: 403,
+                retry_after_secs: None,
+            },
+        };
+        let json = serde_json::to_value(&body).unwrap();
+        assert!(json["error"].is_object());
+        assert_eq!(json["error"]["code"], "PERMISSION_DENIED");
+        assert_eq!(json["error"]["message"], "You do not have access.");
+        assert_eq!(json["error"]["status"], 403);
+        // retry_after_secs should be absent when None.
+        assert!(json["error"].get("retry_after_secs").is_none());
+    }
+
+    #[test]
+    fn error_envelope_with_retry_after() {
+        let body = ErrorEnvelope {
+            error: ErrorBody {
+                code: ErrorCode::RateLimited,
+                message: "Slow down.".into(),
+                status: 429,
+                retry_after_secs: Some(30),
+            },
+        };
+        let json = serde_json::to_value(&body).unwrap();
+        assert_eq!(json["error"]["retry_after_secs"], 30);
+    }
+
+    #[test]
+    fn error_code_serializes_screaming_snake() {
+        let codes_and_expected = [
+            (ErrorCode::BadRequest, "BAD_REQUEST"),
+            (ErrorCode::Unauthenticated, "UNAUTHENTICATED"),
+            (ErrorCode::PermissionDenied, "PERMISSION_DENIED"),
+            (ErrorCode::NotFound, "NOT_FOUND"),
+            (ErrorCode::Conflict, "CONFLICT"),
+            (ErrorCode::PayloadTooLarge, "PAYLOAD_TOO_LARGE"),
+            (ErrorCode::RateLimited, "RATE_LIMITED"),
+            (ErrorCode::InvalidQuery, "INVALID_QUERY"),
+            (ErrorCode::TypeMismatch, "TYPE_MISMATCH"),
+            (ErrorCode::SchemaConflict, "SCHEMA_CONFLICT"),
+            (ErrorCode::Internal, "INTERNAL"),
+        ];
+
+        for (code, expected_str) in codes_and_expected {
+            let json = serde_json::to_value(code).unwrap();
+            assert_eq!(json, expected_str, "ErrorCode::{code:?} serialized wrong");
+        }
+    }
+
+    #[test]
+    fn api_error_display_trait() {
+        let err = ApiError::bad_request("test msg");
+        let display = format!("{err}");
+        assert!(display.contains("BadRequest"));
+        assert!(display.contains("test msg"));
+    }
+
+    #[test]
+    fn api_error_into_response_status_codes() {
+        let cases: Vec<(ApiError, StatusCode)> = vec![
+            (ApiError::bad_request("x"), StatusCode::BAD_REQUEST),
+            (ApiError::unauthenticated("x"), StatusCode::UNAUTHORIZED),
+            (ApiError::permission_denied("x"), StatusCode::FORBIDDEN),
+            (ApiError::not_found("x"), StatusCode::NOT_FOUND),
+            (ApiError::rate_limited(10), StatusCode::TOO_MANY_REQUESTS),
+            (ApiError::internal("x"), StatusCode::INTERNAL_SERVER_ERROR),
+            (
+                ApiError::new(ErrorCode::PayloadTooLarge, "x"),
+                StatusCode::PAYLOAD_TOO_LARGE,
+            ),
+            (
+                ApiError::new(ErrorCode::Conflict, "x"),
+                StatusCode::CONFLICT,
+            ),
+        ];
+
+        for (err, expected_status) in cases {
+            let resp = err.into_response();
+            assert_eq!(resp.status(), expected_status, "wrong status for error");
+        }
+    }
+
+    #[test]
+    fn rate_limited_response_has_retry_after_header() {
+        let err = ApiError::rate_limited(60);
+        let resp = err.into_response();
+        let header = resp
+            .headers()
+            .get("Retry-After")
+            .expect("missing Retry-After");
+        assert_eq!(header.to_str().unwrap(), "60");
+    }
+
+    #[test]
+    fn non_rate_limited_has_no_retry_after_header() {
+        let err = ApiError::bad_request("nope");
+        let resp = err.into_response();
+        assert!(resp.headers().get("Retry-After").is_none());
+    }
+
+    #[test]
+    fn serde_json_error_converts_to_bad_request() {
+        let json_err = serde_json::from_str::<serde_json::Value>("{{bad json").unwrap_err();
+        let api_err: ApiError = json_err.into();
+        assert!(matches!(api_err.code, ErrorCode::BadRequest));
+        assert!(api_err.message.contains("JSON parse error"));
     }
 }

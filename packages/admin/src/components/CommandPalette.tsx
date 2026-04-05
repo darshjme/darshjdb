@@ -97,8 +97,8 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
   let flatIndex = 0;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center pt-[20vh]">
-      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
+    <div className="fixed inset-0 z-50 flex items-start justify-center pt-[20vh]" role="dialog" aria-modal="true" aria-label="Command palette">
+      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} aria-hidden="true" />
       <div className="relative w-full max-w-lg bg-zinc-900 border border-zinc-800 rounded-xl shadow-2xl animate-fade-in overflow-hidden">
         <div className="flex items-center gap-3 px-4 border-b border-zinc-800">
           <Search className="w-4 h-4 text-zinc-500 flex-shrink-0" />
@@ -108,6 +108,7 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Type a command or search..."
             className="flex-1 bg-transparent py-3.5 text-sm text-zinc-100 placeholder-zinc-500 focus:outline-none"
+            aria-label="Search commands"
           />
         </div>
 

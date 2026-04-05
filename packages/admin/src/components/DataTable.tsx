@@ -132,6 +132,7 @@ export function DataTable<T extends Record<string, unknown>>({
               onClick={() => setPage(Math.max(0, page - 1))}
               disabled={page === 0}
               className="btn-ghost disabled:opacity-30"
+              aria-label="Previous page"
             >
               <ChevronLeft className="w-4 h-4" />
             </button>
@@ -156,6 +157,7 @@ export function DataTable<T extends Record<string, unknown>>({
               onClick={() => setPage(Math.min(totalPages - 1, page + 1))}
               disabled={page === totalPages - 1}
               className="btn-ghost disabled:opacity-30"
+              aria-label="Next page"
             >
               <ChevronRight className="w-4 h-4" />
             </button>

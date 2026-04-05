@@ -47,6 +47,9 @@ pub struct AccessClaims {
     pub exp: i64,
     /// Issuer.
     pub iss: String,
+    /// Audience (prevents cross-service token confusion).
+    #[serde(default)]
+    pub aud: Option<String>,
 }
 
 /// Claims embedded in refresh tokens (for the rare case they are JWTs;
@@ -86,6 +89,8 @@ pub struct KeyManager {
     /// Key ID for the previous key (retained for JWKS endpoint publishing).
     #[allow(dead_code)]
     previous_kid: Option<String>,
+    /// Algorithm used for signing/verification.
+    algorithm: Algorithm,
 }
 
 impl KeyManager {
@@ -120,12 +125,38 @@ impl KeyManager {
             previous_decoding,
             current_kid,
             previous_kid,
+            algorithm: Algorithm::RS256,
         })
+    }
+
+    /// Create an HMAC-based key manager from a shared secret (HS256).
+    ///
+    /// Suitable for single-node deployments or development. For production
+    /// with key rotation, use [`KeyManager::new`] with RSA PEM keys.
+    pub fn from_secret(secret: &[u8]) -> Self {
+        Self {
+            current_encoding: EncodingKey::from_secret(secret),
+            current_decoding: DecodingKey::from_secret(secret),
+            previous_decoding: None,
+            current_kid: "hmac-1".to_string(),
+            previous_kid: None,
+            algorithm: Algorithm::HS256,
+        }
+    }
+
+    /// Generate an ephemeral HMAC key manager for development.
+    ///
+    /// A random 64-byte secret is generated in-memory. Tokens will not
+    /// survive a server restart.
+    pub fn generate() -> Self {
+        let mut secret = [0u8; 64];
+        rand::thread_rng().fill_bytes(&mut secret);
+        Self::from_secret(&secret)
     }
 
     /// Sign an access token with the current key.
     pub fn sign_access_token(&self, claims: &AccessClaims) -> Result<String, AuthError> {
-        let mut header = Header::new(Algorithm::RS256);
+        let mut header = Header::new(self.algorithm);
         header.kid = Some(self.current_kid.clone());
         encode(&header, claims, &self.current_encoding)
             .map_err(|e| AuthError::Crypto(format!("jwt sign: {e}")))
@@ -134,10 +165,12 @@ impl KeyManager {
     /// Validate an access token against current or previous key.
     ///
     /// The `kid` header field determines which key to use. If neither
-    /// matches, validation fails.
+    /// matches, validation fails. Both issuer and audience are verified
+    /// to prevent cross-service token confusion.
     pub fn validate_access_token(&self, token: &str) -> Result<AccessClaims, AuthError> {
-        let mut validation = Validation::new(Algorithm::RS256);
+        let mut validation = Validation::new(self.algorithm);
         validation.set_issuer(&["darshandb"]);
+        validation.set_audience(&["darshandb"]);
         validation.validate_exp = true;
 
         // Try current key first.
@@ -277,6 +310,7 @@ impl SessionManager {
             iat: now.timestamp(),
             exp: access_exp.timestamp(),
             iss: "darshandb".into(),
+            aud: Some("darshandb".into()),
         };
 
         let access_token = self.keys.sign_access_token(&claims)?;
@@ -366,6 +400,7 @@ impl SessionManager {
             iat: now.timestamp(),
             exp: access_exp.timestamp(),
             iss: "darshandb".into(),
+            aud: Some("darshandb".into()),
         };
 
         let access_token = self.keys.sign_access_token(&claims)?;
@@ -445,4 +480,257 @@ impl SessionManager {
 fn hex_sha256(input: &[u8]) -> String {
     let digest = sha2::Sha256::digest(input);
     data_encoding::HEXLOWER.encode(&digest)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Generate a fresh RSA key pair and return (private_pem, public_pem).
+    fn generate_rsa_keypair() -> (Vec<u8>, Vec<u8>) {
+        // Use pre-generated test RSA PEM keys to avoid the heavy
+        // rsa crate dependency at runtime.
+        //
+        // For tests, we use pre-generated PEM keys to avoid the heavy
+        // rsa crate dependency.
+        let private_pem = include_bytes!("../../tests/fixtures/test_rsa_private.pem");
+        let public_pem = include_bytes!("../../tests/fixtures/test_rsa_public.pem");
+        (private_pem.to_vec(), public_pem.to_vec())
+    }
+
+    fn make_key_manager() -> KeyManager {
+        let (priv_pem, pub_pem) = generate_rsa_keypair();
+        KeyManager::new(&priv_pem, &pub_pem, "kid-test".into(), None, None).expect("key manager")
+    }
+
+    fn make_claims(exp_offset_secs: i64) -> AccessClaims {
+        let now = Utc::now();
+        AccessClaims {
+            sub: Uuid::new_v4().to_string(),
+            sid: Uuid::new_v4().to_string(),
+            roles: vec!["user".into()],
+            iat: now.timestamp(),
+            exp: (now + Duration::seconds(exp_offset_secs)).timestamp(),
+            iss: "darshandb".into(),
+            aud: Some("darshandb".into()),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // JWT creation and validation
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn jwt_sign_and_validate_roundtrip() {
+        let km = make_key_manager();
+        let claims = make_claims(300);
+        let token = km.sign_access_token(&claims).expect("sign");
+        let decoded = km.validate_access_token(&token).expect("validate");
+        assert_eq!(decoded.sub, claims.sub);
+        assert_eq!(decoded.sid, claims.sid);
+        assert_eq!(decoded.roles, claims.roles);
+        assert_eq!(decoded.iss, "darshandb");
+    }
+
+    #[test]
+    fn jwt_expired_token_rejected() {
+        let km = make_key_manager();
+        let claims = make_claims(-120); // expired 120s ago (well past leeway)
+        let token = km.sign_access_token(&claims).expect("sign");
+        let result = km.validate_access_token(&token);
+        assert!(result.is_err(), "expired token must be rejected");
+    }
+
+    #[test]
+    fn jwt_tampered_payload_rejected() {
+        let km = make_key_manager();
+        let claims = make_claims(300);
+        let token = km.sign_access_token(&claims).expect("sign");
+        let parts: Vec<&str> = token.splitn(3, '.').collect();
+        assert_eq!(parts.len(), 3);
+        let mut payload = parts[1].to_string();
+        let c = if payload.ends_with('A') { 'B' } else { 'A' };
+        payload.pop();
+        payload.push(c);
+        let tampered = format!("{}.{}.{}", parts[0], payload, parts[2]);
+        assert!(
+            km.validate_access_token(&tampered).is_err(),
+            "tampered JWT must fail"
+        );
+    }
+
+    #[test]
+    fn jwt_wrong_issuer_rejected() {
+        let km = make_key_manager();
+        let now = Utc::now();
+        let claims = AccessClaims {
+            sub: Uuid::new_v4().to_string(),
+            sid: Uuid::new_v4().to_string(),
+            roles: vec![],
+            iat: now.timestamp(),
+            exp: (now + Duration::seconds(300)).timestamp(),
+            iss: "wrong-issuer".into(),
+            aud: Some("darshandb".into()),
+        };
+        let token = km.sign_access_token(&claims).expect("sign");
+        assert!(
+            km.validate_access_token(&token).is_err(),
+            "wrong issuer must be rejected"
+        );
+    }
+
+    #[test]
+    fn jwt_wrong_audience_rejected() {
+        let km = make_key_manager();
+        let now = Utc::now();
+        let claims = AccessClaims {
+            sub: Uuid::new_v4().to_string(),
+            sid: Uuid::new_v4().to_string(),
+            roles: vec![],
+            iat: now.timestamp(),
+            exp: (now + Duration::seconds(300)).timestamp(),
+            iss: "darshandb".into(),
+            aud: Some("wrong-audience".into()),
+        };
+        let token = km.sign_access_token(&claims).expect("sign");
+        assert!(
+            km.validate_access_token(&token).is_err(),
+            "wrong audience must be rejected"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Key rotation
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn jwt_key_rotation_old_token_still_valid() {
+        let (priv_pem, pub_pem) = generate_rsa_keypair();
+        let old_km =
+            KeyManager::new(&priv_pem, &pub_pem, "kid-1".into(), None, None).expect("old km");
+
+        // New key manager with old key as previous.
+        let new_km = KeyManager::new(
+            &priv_pem,
+            &pub_pem,
+            "kid-2".into(),
+            Some(&pub_pem),
+            Some("kid-1".into()),
+        )
+        .expect("new km");
+
+        let claims = make_claims(300);
+        let token = old_km.sign_access_token(&claims).expect("sign with old");
+        let decoded = new_km
+            .validate_access_token(&token)
+            .expect("validate with new");
+        assert_eq!(decoded.sub, claims.sub);
+    }
+
+    // -----------------------------------------------------------------------
+    // Utility
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn hex_sha256_deterministic() {
+        let h1 = hex_sha256(b"hello world");
+        let h2 = hex_sha256(b"hello world");
+        assert_eq!(h1, h2);
+        assert_eq!(
+            h1,
+            "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"
+        );
+    }
+
+    #[test]
+    fn hex_sha256_empty() {
+        let h = hex_sha256(b"");
+        assert_eq!(
+            h,
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+    }
+
+    #[test]
+    fn jwt_claims_preserve_roles() {
+        let km = make_key_manager();
+        let now = Utc::now();
+        let claims = AccessClaims {
+            sub: Uuid::new_v4().to_string(),
+            sid: Uuid::new_v4().to_string(),
+            roles: vec!["admin".into(), "editor".into(), "viewer".into()],
+            iat: now.timestamp(),
+            exp: (now + Duration::seconds(300)).timestamp(),
+            iss: "darshandb".into(),
+            aud: Some("darshandb".into()),
+        };
+        let token = km.sign_access_token(&claims).expect("sign");
+        let decoded = km.validate_access_token(&token).expect("validate");
+        assert_eq!(decoded.roles, vec!["admin", "editor", "viewer"]);
+    }
+
+    // -----------------------------------------------------------------------
+    // HMAC (HS256) key manager
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn hmac_key_manager_sign_and_validate() {
+        let km = KeyManager::from_secret(b"test-secret-at-least-32-bytes-long-for-hs256");
+        let claims = make_claims(300);
+        let token = km.sign_access_token(&claims).expect("sign");
+        let decoded = km.validate_access_token(&token).expect("validate");
+        assert_eq!(decoded.sub, claims.sub);
+    }
+
+    #[test]
+    fn hmac_key_manager_wrong_secret_rejected() {
+        let km1 = KeyManager::from_secret(b"secret-one-for-signing-tokens!!");
+        let km2 = KeyManager::from_secret(b"secret-two-different-entirely!!");
+        let claims = make_claims(300);
+        let token = km1.sign_access_token(&claims).expect("sign");
+        assert!(
+            km2.validate_access_token(&token).is_err(),
+            "different secret must reject"
+        );
+    }
+
+    #[test]
+    fn hmac_key_manager_expired_rejected() {
+        let km = KeyManager::from_secret(b"test-secret-for-expiry-testing!");
+        let claims = make_claims(-120); // well past leeway
+        let token = km.sign_access_token(&claims).expect("sign");
+        assert!(
+            km.validate_access_token(&token).is_err(),
+            "expired HMAC token must be rejected"
+        );
+    }
+
+    #[test]
+    fn generated_key_manager_works() {
+        let km = KeyManager::generate();
+        let claims = make_claims(300);
+        let token = km.sign_access_token(&claims).expect("sign");
+        let decoded = km.validate_access_token(&token).expect("validate");
+        assert_eq!(decoded.sub, claims.sub);
+    }
+
+    #[test]
+    fn rsa_and_hmac_tokens_not_interchangeable() {
+        let rsa_km = make_key_manager();
+        let hmac_km = KeyManager::from_secret(b"hmac-secret-key-for-testing-now");
+        let claims = make_claims(300);
+
+        let rsa_token = rsa_km.sign_access_token(&claims).expect("rsa sign");
+        let hmac_token = hmac_km.sign_access_token(&claims).expect("hmac sign");
+
+        // RSA token must not validate with HMAC manager and vice versa.
+        assert!(
+            hmac_km.validate_access_token(&rsa_token).is_err(),
+            "RSA token rejected by HMAC km"
+        );
+        assert!(
+            rsa_km.validate_access_token(&hmac_token).is_err(),
+            "HMAC token rejected by RSA km"
+        );
+    }
 }

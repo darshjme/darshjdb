@@ -6,7 +6,6 @@ import {
   Clock,
   AlertTriangle,
   Play,
-  Filter,
 } from "lucide-react";
 import {
   AreaChart,

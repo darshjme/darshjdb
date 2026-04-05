@@ -418,7 +418,10 @@ async fn execute_job_with_lock(
 
             if last_error.is_some() {
                 job.consecutive_failures += 1;
-                if job.consecutive_failures > max_retries {
+                // Disable after max_retries consecutive failures. The retry
+                // loop already attempted max_retries+1 times (initial +
+                // retries), so we disable when failures reach that threshold.
+                if job.consecutive_failures >= max_retries {
                     job.status = JobStatus::Disabled;
                     error!(
                         job_id,
@@ -525,5 +528,162 @@ mod tests {
         };
         assert_eq!(job.status, JobStatus::Idle);
         assert_eq!(job.consecutive_failures, 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // Cron parsing edge cases
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_parse_cron_every_second() {
+        assert!(parse_cron("* * * * * *").is_ok());
+    }
+
+    #[test]
+    fn test_parse_cron_complex() {
+        // Every weekday at 2:30 AM
+        assert!(parse_cron("0 30 2 * * 1-5").is_ok());
+    }
+
+    #[test]
+    fn test_parse_cron_with_lists() {
+        assert!(parse_cron("0 0,15,30,45 * * * *").is_ok());
+    }
+
+    #[test]
+    fn test_parse_cron_empty_string() {
+        let err = parse_cron("").unwrap_err();
+        assert!(matches!(err, SchedulerError::InvalidCron { .. }));
+    }
+
+    #[test]
+    fn test_parse_cron_too_few_fields() {
+        let err = parse_cron("* * *").unwrap_err();
+        assert!(matches!(err, SchedulerError::InvalidCron { .. }));
+    }
+
+    #[test]
+    fn test_parse_cron_invalid_range() {
+        let err = parse_cron("0 99 * * * *").unwrap_err();
+        assert!(matches!(err, SchedulerError::InvalidCron { .. }));
+    }
+
+    #[test]
+    fn test_parse_cron_preserves_expr_in_error() {
+        let bad = "not-a-cron";
+        let err = parse_cron(bad).unwrap_err();
+        match err {
+            SchedulerError::InvalidCron { expr, .. } => assert_eq!(expr, bad),
+            _ => panic!("expected InvalidCron"),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Advisory lock key
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_advisory_lock_key_empty_string() {
+        // Should not panic, just return the FNV offset basis.
+        let key = advisory_lock_key("");
+        assert_ne!(key, 0);
+    }
+
+    #[test]
+    fn test_advisory_lock_key_similar_strings() {
+        // Close strings should produce different keys.
+        let k1 = advisory_lock_key("crons:cleanupA");
+        let k2 = advisory_lock_key("crons:cleanupB");
+        assert_ne!(k1, k2);
+    }
+
+    #[test]
+    fn test_advisory_lock_key_long_string() {
+        let long = "a".repeat(10_000);
+        let key = advisory_lock_key(&long);
+        // Just verify it completes and is deterministic.
+        assert_eq!(key, advisory_lock_key(&long));
+    }
+
+    // -----------------------------------------------------------------------
+    // JobStatus serialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_job_status_serde_roundtrip() {
+        for status in [
+            JobStatus::Idle,
+            JobStatus::Running,
+            JobStatus::Retrying,
+            JobStatus::Disabled,
+        ] {
+            let json = serde_json::to_string(&status).unwrap();
+            let deserialized: JobStatus = serde_json::from_str(&json).unwrap();
+            assert_eq!(deserialized, status);
+        }
+    }
+
+    #[test]
+    fn test_job_status_camel_case() {
+        assert_eq!(serde_json::to_string(&JobStatus::Idle).unwrap(), "\"idle\"");
+        assert_eq!(
+            serde_json::to_string(&JobStatus::Running).unwrap(),
+            "\"running\""
+        );
+        assert_eq!(
+            serde_json::to_string(&JobStatus::Retrying).unwrap(),
+            "\"retrying\""
+        );
+        assert_eq!(
+            serde_json::to_string(&JobStatus::Disabled).unwrap(),
+            "\"disabled\""
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // ScheduledJob serialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_scheduled_job_serde_roundtrip() {
+        let job = ScheduledJob {
+            id: "crons:cleanup".to_string(),
+            function_name: "crons:cleanup".to_string(),
+            cron_expr: "0 */15 * * * *".to_string(),
+            next_run_at: Some(Utc::now()),
+            last_run_at: None,
+            status: JobStatus::Idle,
+            consecutive_failures: 0,
+            max_retries: 3,
+        };
+
+        let json = serde_json::to_string(&job).unwrap();
+        let deserialized: ScheduledJob = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.id, job.id);
+        assert_eq!(deserialized.cron_expr, job.cron_expr);
+        assert_eq!(deserialized.max_retries, 3);
+    }
+
+    // -----------------------------------------------------------------------
+    // SchedulerError
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_scheduler_error_display() {
+        let err = SchedulerError::InvalidCron {
+            expr: "bad".into(),
+            reason: "nope".into(),
+        };
+        assert!(err.to_string().contains("bad"));
+        assert!(err.to_string().contains("nope"));
+
+        let err = SchedulerError::DuplicateJob("test:job".into());
+        assert!(err.to_string().contains("test:job"));
+
+        let err = SchedulerError::JobNotFound("missing:job".into());
+        assert!(err.to_string().contains("missing:job"));
+
+        let err = SchedulerError::AlreadyRunning;
+        assert!(err.to_string().contains("already running"));
     }
 }

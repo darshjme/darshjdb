@@ -9,10 +9,14 @@ dist/
 .turbo/
 *.tsbuildinfo
 
-# Environment
+# Environment and secrets
 .env
 .env.local
 .env.*.local
+*.pem
+*.key
+*.p12
+*.pfx
 
 # IDE
 .vscode/
@@ -20,7 +24,11 @@ dist/
 *.swp
 *.swo
 *~
+
+# OS
 .DS_Store
+Thumbs.db
+Desktop.ini
 
 # DarshanDB data
 *.db
@@ -44,3 +52,11 @@ lcov.info
 logs/
 *.log
 npm-debug.log*
+
+# Python SDK artifacts
+sdks/python/__pycache__/
+sdks/python/*.egg-info/
+sdks/python/.venv/
+
+# PHP SDK artifacts
+sdks/php/vendor/

@@ -309,6 +309,7 @@ class DarshanDB:
         json: dict[str, Any] | None = None,
         params: dict[str, Any] | None = None,
         content: bytes | None = None,
+        data: dict[str, str] | None = None,
         files: dict[str, Any] | None = None,
         extra_headers: dict[str, str] | None = None,
     ) -> dict[str, Any]:
@@ -334,6 +335,7 @@ class DarshanDB:
                 json=json if not files else None,
                 params=params,
                 content=content,
+                data=data if files else None,
                 files=files,
             )
         except httpx.HTTPError as exc:

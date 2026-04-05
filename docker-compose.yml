@@ -13,6 +13,12 @@ services:
       postgres:
         condition: service_healthy
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 128M
     networks:
       - darshandb
 
@@ -22,8 +28,8 @@ services:
       POSTGRES_USER: darshan
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-darshan}
       POSTGRES_DB: darshandb
-    ports:
-      - "5432:5432"
+    # Do not expose postgres port externally in production;
+    # override in docker-compose.dev.yml when local access is needed.
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -32,6 +38,12 @@ services:
       timeout: 5s
       retries: 5
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+        reservations:
+          memory: 256M
     networks:
       - darshandb
 

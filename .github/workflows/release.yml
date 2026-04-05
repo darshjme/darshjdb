@@ -13,6 +13,7 @@ jobs:
     name: Build ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
         include:
           - target: x86_64-unknown-linux-gnu
@@ -36,20 +37,29 @@ jobs:
         with:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
       - name: Install cross-compilation tools
         if: matrix.target == 'aarch64-unknown-linux-gnu'
         run: |
           sudo apt-get update
           sudo apt-get install -y gcc-aarch64-linux-gnu
-      - run: cargo build --release --workspace --target ${{ matrix.target }}
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+      - name: Build
+        run: cargo build --release --workspace --target ${{ matrix.target }}
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: ${{ matrix.target == 'aarch64-unknown-linux-gnu' && 'aarch64-linux-gnu-gcc' || '' }}
       - name: Package binaries
         shell: bash
         run: |
           mkdir -p staging
-          cp target/${{ matrix.target }}/release/darshandb-server* staging/ 2>/dev/null || true
-          cp target/${{ matrix.target }}/release/darshan* staging/ 2>/dev/null || true
-          # Remove debug symbols on Linux/macOS
-          if [[ "${{ matrix.os }}" != "windows-latest" ]]; then
+          if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
+            cp target/${{ matrix.target }}/release/darshandb-server.exe staging/ 2>/dev/null || true
+            cp target/${{ matrix.target }}/release/darshan.exe staging/ 2>/dev/null || true
+          else
+            cp target/${{ matrix.target }}/release/darshandb-server staging/ 2>/dev/null || true
+            cp target/${{ matrix.target }}/release/darshan staging/ 2>/dev/null || true
             strip staging/* 2>/dev/null || true
           fi
       - name: Upload artifact

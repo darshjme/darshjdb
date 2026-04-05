@@ -50,9 +50,9 @@ export function TopBar({ title, onOpenCommandPalette }: TopBarProps) {
           </kbd>
         </button>
 
-        <button className="btn-ghost relative">
+        <button className="btn-ghost relative" aria-label="Notifications">
           <Bell className="w-4 h-4" />
-          <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-amber-500" />
+          <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-amber-500" aria-hidden="true" />
         </button>
 
         <div className={cn("flex items-center gap-1.5 text-xs", statusInfo.color)}>
@@ -62,7 +62,7 @@ export function TopBar({ title, onOpenCommandPalette }: TopBarProps) {
 
         <div className="w-px h-6 bg-zinc-800" />
 
-        <button className="flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-zinc-800/60 transition-colors">
+        <button className="flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-zinc-800/60 transition-colors" aria-label="User menu">
           <div className="w-7 h-7 rounded-full bg-gradient-to-br from-amber-400 to-orange-500 flex items-center justify-center">
             <span className="text-xs font-semibold text-zinc-950">A</span>
           </div>

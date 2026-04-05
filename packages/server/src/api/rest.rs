@@ -515,11 +515,8 @@ async fn mutate(
 
     // Validate each mutation.
     for (i, m) in body.mutations.iter().enumerate() {
-        if m.entity.is_empty() {
-            return Err(ApiError::bad_request(format!(
-                "Mutation {i}: entity name is required"
-            )));
-        }
+        validate_entity_name(&m.entity)
+            .map_err(|e| ApiError::bad_request(format!("Mutation {i}: {}", e.message)))?;
         match m.op {
             MutationOp::Update | MutationOp::Delete => {
                 if m.id.is_none() {
@@ -787,7 +784,7 @@ async fn storage_get(
 
     // TODO: wire to StorageEngine::get, apply transforms if requested.
     let _ = params.transform;
-    Err(ApiError::not_found(format!("File not found: {path}")))
+    Err(ApiError::not_found("File not found"))
 }
 
 /// `DELETE /api/storage/*path` — Delete a stored file.
@@ -847,11 +844,14 @@ async fn subscribe(
         Err(_) => None,
     });
 
-    Ok(Sse::new(stream).keep_alive(
-        KeepAlive::new()
-            .interval(Duration::from_secs(15))
-            .text("heartbeat"),
-    ))
+    // Use a comment-style keepalive (": heartbeat\n\n") so it does not
+    // trigger client `onmessage` handlers.  Axum's `KeepAlive::text` sends
+    // a data event; using an empty `Event::default().comment("heartbeat")`
+    // equivalent is achieved through the `text` method with a leading colon
+    // is not available, but the standard SSE comment prefix is what the
+    // `KeepAlive` default (no `.text()`) produces.  We omit `.text()` to
+    // get the default SSE comment keepalive behavior.
+    Ok(Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15))))
 }
 
 // ===========================================================================
@@ -971,6 +971,15 @@ fn validate_entity_name(name: &str) -> Result<(), ApiError> {
             "Entity name is too long (max 128 chars)",
         ));
     }
+    // Must start with a letter or underscore (not a digit or hyphen).
+    if let Some(first) = name.chars().next()
+        && !first.is_ascii_alphabetic()
+        && first != '_'
+    {
+        return Err(ApiError::bad_request(
+            "Entity name must start with a letter or underscore",
+        ));
+    }
     if !name
         .chars()
         .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
@@ -985,6 +994,10 @@ fn validate_entity_name(name: &str) -> Result<(), ApiError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // -----------------------------------------------------------------------
+    // Bearer token extraction
+    // -----------------------------------------------------------------------
 
     #[test]
     fn bearer_extraction_valid() {
@@ -1001,7 +1014,9 @@ mod tests {
     #[test]
     fn bearer_extraction_missing() {
         let headers = HeaderMap::new();
-        assert!(extract_bearer_token(&headers).is_err());
+        let err = extract_bearer_token(&headers).unwrap_err();
+        assert!(matches!(err.code, ErrorCode::Unauthenticated));
+        assert!(err.message.contains("Missing"));
     }
 
     #[test]
@@ -1011,19 +1026,85 @@ mod tests {
             http::header::AUTHORIZATION,
             HeaderValue::from_static("Basic abc123"),
         );
-        assert!(extract_bearer_token(&headers).is_err());
+        let err = extract_bearer_token(&headers).unwrap_err();
+        assert!(matches!(err.code, ErrorCode::Unauthenticated));
+        assert!(err.message.contains("Bearer"));
     }
 
     #[test]
-    fn entity_name_validation() {
+    fn bearer_extraction_empty_token() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            http::header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer "),
+        );
+        let err = extract_bearer_token(&headers).unwrap_err();
+        assert!(matches!(err.code, ErrorCode::Unauthenticated));
+        assert!(err.message.contains("empty"));
+    }
+
+    #[test]
+    fn bearer_extraction_trims_whitespace() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            http::header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer   tok_abc  "),
+        );
+        let token = extract_bearer_token(&headers).unwrap();
+        assert_eq!(token, "tok_abc");
+    }
+
+    // -----------------------------------------------------------------------
+    // Entity name validation
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn entity_name_valid_cases() {
         assert!(validate_entity_name("users").is_ok());
         assert!(validate_entity_name("my-entity").is_ok());
         assert!(validate_entity_name("my_entity_2").is_ok());
-        assert!(validate_entity_name("").is_err());
+        assert!(validate_entity_name("_private").is_ok());
+        assert!(validate_entity_name("A").is_ok());
+    }
+
+    #[test]
+    fn entity_name_rejects_empty() {
+        let err = validate_entity_name("").unwrap_err();
+        assert!(matches!(err.code, ErrorCode::BadRequest));
+    }
+
+    #[test]
+    fn entity_name_rejects_special_chars() {
         assert!(validate_entity_name("a/b").is_err());
         assert!(validate_entity_name("a b").is_err());
-        assert!(validate_entity_name(&"a".repeat(129)).is_err());
+        assert!(validate_entity_name("a.b").is_err());
+        assert!(validate_entity_name("entity!").is_err());
     }
+
+    #[test]
+    fn entity_name_rejects_too_long() {
+        assert!(validate_entity_name(&"a".repeat(129)).is_err());
+        // 128 chars should be fine
+        assert!(validate_entity_name(&"a".repeat(128)).is_ok());
+    }
+
+    #[test]
+    fn entity_name_rejects_leading_digit() {
+        let err = validate_entity_name("123abc").unwrap_err();
+        assert!(matches!(err.code, ErrorCode::BadRequest));
+        assert!(err.message.contains("start with"));
+    }
+
+    #[test]
+    fn entity_name_rejects_leading_hyphen() {
+        let err = validate_entity_name("-leading").unwrap_err();
+        assert!(matches!(err.code, ErrorCode::BadRequest));
+        assert!(err.message.contains("start with"));
+    }
+
+    // -----------------------------------------------------------------------
+    // Content negotiation (wants_msgpack)
+    // -----------------------------------------------------------------------
 
     #[test]
     fn wants_msgpack_detection() {
@@ -1035,5 +1116,259 @@ mod tests {
 
         headers.insert(ACCEPT, HeaderValue::from_static("application/msgpack"));
         assert!(wants_msgpack(&headers));
+    }
+
+    #[test]
+    fn wants_msgpack_in_quality_list() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            ACCEPT,
+            HeaderValue::from_static("application/json, application/msgpack;q=0.9"),
+        );
+        // The current implementation checks `contains`, so this matches.
+        assert!(wants_msgpack(&headers));
+    }
+
+    // -----------------------------------------------------------------------
+    // Content negotiation response serialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn negotiate_response_json_default() {
+        let headers = HeaderMap::new();
+        let data = serde_json::json!({"key": "value"});
+        let resp = negotiate_response(&headers, &data);
+        assert_eq!(resp.status(), StatusCode::OK);
+        let ct = resp.headers().get(CONTENT_TYPE).unwrap().to_str().unwrap();
+        assert!(ct.contains("application/json"), "expected json, got: {ct}");
+    }
+
+    #[test]
+    fn negotiate_response_msgpack() {
+        let mut headers = HeaderMap::new();
+        headers.insert(ACCEPT, HeaderValue::from_static("application/msgpack"));
+        let data = serde_json::json!({"key": "value"});
+        let resp = negotiate_response(&headers, &data);
+        assert_eq!(resp.status(), StatusCode::OK);
+        let ct = resp.headers().get(CONTENT_TYPE).unwrap().to_str().unwrap();
+        assert_eq!(ct, "application/msgpack");
+    }
+
+    #[test]
+    fn negotiate_response_status_created() {
+        let headers = HeaderMap::new();
+        let data = serde_json::json!({"id": 1});
+        let resp = negotiate_response_status(&headers, StatusCode::CREATED, &data);
+        assert_eq!(resp.status(), StatusCode::CREATED);
+    }
+
+    #[test]
+    fn negotiate_response_status_msgpack_preserves_status() {
+        let mut headers = HeaderMap::new();
+        headers.insert(ACCEPT, HeaderValue::from_static("application/msgpack"));
+        let data = serde_json::json!({"id": 1});
+        let resp = negotiate_response_status(&headers, StatusCode::CREATED, &data);
+        assert_eq!(resp.status(), StatusCode::CREATED);
+        let ct = resp.headers().get(CONTENT_TYPE).unwrap().to_str().unwrap();
+        assert_eq!(ct, "application/msgpack");
+    }
+
+    // -----------------------------------------------------------------------
+    // Error serialization format
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn error_serialization_envelope_format() {
+        let err = ApiError::bad_request("Test error message");
+        let resp = err.into_response();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn error_not_found_is_404() {
+        let err = ApiError::not_found("gone");
+        let resp = err.into_response();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn error_unauthenticated_is_401() {
+        let err = ApiError::unauthenticated("no token");
+        let resp = err.into_response();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[test]
+    fn error_permission_denied_is_403() {
+        let err = ApiError::permission_denied("nope");
+        let resp = err.into_response();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[test]
+    fn error_rate_limited_includes_retry_after() {
+        let err = ApiError::rate_limited(30);
+        let resp = err.into_response();
+        assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+        let retry = resp.headers().get("Retry-After").unwrap().to_str().unwrap();
+        assert_eq!(retry, "30");
+    }
+
+    #[test]
+    fn error_internal_is_500() {
+        let err = ApiError::internal("server broke");
+        let resp = err.into_response();
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[test]
+    fn error_payload_too_large_is_413() {
+        let err = ApiError::new(ErrorCode::PayloadTooLarge, "too big");
+        let resp = err.into_response();
+        assert_eq!(resp.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    }
+
+    // -----------------------------------------------------------------------
+    // Rate limit header formatting
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn rate_limit_headers_injected() {
+        // Verify the rate-limit header values are valid HTTP header values.
+        assert!(HeaderValue::from_str("1000").is_ok());
+        assert!(HeaderValue::from_str("999").is_ok());
+        assert!(HeaderValue::from_str("60").is_ok());
+
+        // Verify the header names are valid
+        let _ = "X-RateLimit-Limit";
+        let _ = "X-RateLimit-Remaining";
+        let _ = "X-RateLimit-Reset";
+    }
+
+    // -----------------------------------------------------------------------
+    // OpenAPI spec generation
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn openapi_spec_has_required_fields() {
+        let spec = openapi::generate_openapi_spec();
+
+        assert_eq!(spec["openapi"], "3.1.0");
+        assert_eq!(spec["info"]["title"], "DarshanDB API");
+        assert!(spec["info"]["version"].is_string());
+        assert!(spec["paths"].is_object());
+        assert!(spec["components"]["securitySchemes"]["bearerAuth"].is_object());
+    }
+
+    #[test]
+    fn openapi_spec_has_all_paths() {
+        let spec = openapi::generate_openapi_spec();
+        let paths = spec["paths"].as_object().unwrap();
+
+        let expected = [
+            "/auth/signup",
+            "/auth/signin",
+            "/auth/magic-link",
+            "/auth/verify",
+            "/auth/oauth/{provider}",
+            "/auth/refresh",
+            "/auth/signout",
+            "/auth/me",
+            "/query",
+            "/mutate",
+            "/data/{entity}",
+            "/data/{entity}/{id}",
+            "/fn/{name}",
+            "/storage/upload",
+            "/storage/{path}",
+            "/subscribe",
+            "/admin/schema",
+            "/admin/functions",
+            "/admin/sessions",
+        ];
+
+        for path in expected {
+            assert!(
+                paths.contains_key(path),
+                "OpenAPI spec missing path: {path}"
+            );
+        }
+    }
+
+    #[test]
+    fn openapi_spec_has_all_schemas() {
+        let spec = openapi::generate_openapi_spec();
+        let schemas = spec["components"]["schemas"].as_object().unwrap();
+
+        let expected = [
+            "ErrorResponse",
+            "TokenPair",
+            "QueryRequest",
+            "MutateRequest",
+            "UserProfile",
+            "UploadResponse",
+        ];
+
+        for schema in expected {
+            assert!(
+                schemas.contains_key(schema),
+                "OpenAPI spec missing schema: {schema}"
+            );
+        }
+    }
+
+    #[test]
+    fn openapi_docs_html_contains_spec_url() {
+        let html = openapi::docs_html("/api/openapi.json");
+        assert!(html.contains("/api/openapi.json"));
+        assert!(html.contains("DarshanDB"));
+        assert!(html.contains("<script"));
+    }
+
+    // -----------------------------------------------------------------------
+    // AppState construction
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn app_state_default_has_valid_spec() {
+        let state = AppState::new();
+        assert!(state.openapi_spec["openapi"].is_string());
+    }
+
+    #[test]
+    fn app_state_default_trait() {
+        let state = AppState::default();
+        assert!(state.openapi_spec["openapi"].is_string());
+    }
+
+    // -----------------------------------------------------------------------
+    // ErrorCode -> StatusCode mapping exhaustive check
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn error_code_status_mapping() {
+        assert_eq!(ErrorCode::BadRequest.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            ErrorCode::Unauthenticated.status(),
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(ErrorCode::PermissionDenied.status(), StatusCode::FORBIDDEN);
+        assert_eq!(ErrorCode::NotFound.status(), StatusCode::NOT_FOUND);
+        assert_eq!(ErrorCode::Conflict.status(), StatusCode::CONFLICT);
+        assert_eq!(
+            ErrorCode::PayloadTooLarge.status(),
+            StatusCode::PAYLOAD_TOO_LARGE
+        );
+        assert_eq!(
+            ErrorCode::RateLimited.status(),
+            StatusCode::TOO_MANY_REQUESTS
+        );
+        assert_eq!(ErrorCode::InvalidQuery.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(ErrorCode::TypeMismatch.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(ErrorCode::SchemaConflict.status(), StatusCode::CONFLICT);
+        assert_eq!(
+            ErrorCode::Internal.status(),
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
     }
 }

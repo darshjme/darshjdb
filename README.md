@@ -1,48 +1,123 @@
 <div align="center">
 
-<img src=".github/assets/logo.svg" alt="DarshanDB" width="120" />
+<img src=".github/assets/hero.svg" alt="DarshanDB — The Self-Hosted BaaS That Sees Everything" width="100%" />
 
-# DarshanDB
+<br/>
+<br/>
 
-### The Self-Hosted Backend-as-a-Service That Sees Everything Your App Needs
+[![License: MIT](https://img.shields.io/badge/License-MIT-F59E0B.svg?style=for-the-badge)](LICENSE)
+[![Built with Rust](https://img.shields.io/badge/Built_with-Rust-B7410E.svg?style=for-the-badge&logo=rust&logoColor=white)](https://www.rust-lang.org)
+[![PostgreSQL 16+](https://img.shields.io/badge/PostgreSQL-16+-336791.svg?style=for-the-badge&logo=postgresql&logoColor=white)](https://www.postgresql.org)
+[![TypeScript SDKs](https://img.shields.io/badge/SDKs-TypeScript-3178C6.svg?style=for-the-badge&logo=typescript&logoColor=white)](https://www.typescriptlang.org)
+[![PRs Welcome](https://img.shields.io/badge/PRs-Welcome-brightgreen.svg?style=for-the-badge)](CONTRIBUTING.md)
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-F59E0B.svg?style=flat-square)](LICENSE)
-[![Rust](https://img.shields.io/badge/Built_with-Rust-B7410E.svg?style=flat-square&logo=rust)](https://www.rust-lang.org)
-[![PostgreSQL](https://img.shields.io/badge/Powered_by-PostgreSQL_16-336791.svg?style=flat-square&logo=postgresql&logoColor=white)](https://www.postgresql.org)
-[![TypeScript](https://img.shields.io/badge/SDKs-TypeScript-3178C6.svg?style=flat-square&logo=typescript&logoColor=white)](https://www.typescriptlang.org)
-[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg?style=flat-square)](CONTRIBUTING.md)
+<br/>
+
+[![GitHub Stars](https://img.shields.io/github/stars/darshjme/darshandb?style=flat-square&color=F59E0B&label=Stars)](https://github.com/darshjme/darshandb)
+[![GitHub Forks](https://img.shields.io/github/forks/darshjme/darshandb?style=flat-square&color=6B7280&label=Forks)](https://github.com/darshjme/darshandb/fork)
+[![CI](https://img.shields.io/github/actions/workflow/status/darshjme/darshandb/ci.yml?style=flat-square&label=CI)](https://github.com/darshjme/darshandb/actions)
+[![npm](https://img.shields.io/npm/v/@darshan/react?style=flat-square&color=cb3837&label=@darshan/react)](https://www.npmjs.com/package/@darshan/react)
+[![Discord](https://img.shields.io/badge/Discord-Join-5865F2?style=flat-square&logo=discord&logoColor=white)](https://discord.gg/darshandb)
+
+<br/>
 
 **One binary. Every framework. Zero loopholes.**
 
-[Quickstart](#-quickstart) · [Docs](docs/) · [Architecture](#-architecture) · [SDKs](#-universal-sdk-support) · [Security](#-zero-trust-security) · [Contributing](CONTRIBUTING.md)
+[Quickstart](#-quickstart) · [Architecture](#-architecture) · [SDKs](#-universal-sdk-ecosystem) · [Security](#-zero-trust-security) · [Performance](#-why-darshandb-is-faster) · [Self-Hosting](#-self-hosting) · [Contributing](CONTRIBUTING.md)
+
+</div>
 
 ---
 
-*"Darshan" (दर्शन) means "vision" in Sanskrit — to perceive the complete picture.*
+<div align="center">
+
+*"Darshan" (darshan) means "vision" in Sanskrit — to perceive the complete picture.*
 *DarshanDB sees every change, every query, every permission, and reactively pushes exactly the right data to exactly the right clients.*
 
 </div>
 
-## Why DarshanDB Exists
+---
 
-Every backend project starts the same way: three weeks of plumbing before you write a single line of business logic. Setting up Postgres. Writing REST APIs. Building auth. Wiring WebSockets. Handling file uploads. Managing permissions.
+## The Story Behind DarshanDB
+
+Every developer project starts the same way: three weeks of plumbing before a single line of business logic. Setting up Postgres. Writing REST APIs. Building auth. Wiring WebSockets. Handling file uploads. Managing permissions. I've done this dozens of times across startups in Ahmedabad, enterprise builds at Graymatter, and production systems at KnowAI.
 
 **Firebase** almost solved it — but it's NoSQL, and the moment you need a relational query, you're writing denormalized spaghetti. **Supabase** is better, but it's a REST wrapper with real-time bolted on as an afterthought. **InstantDB** got the query language right — but it's cloud-only. **Convex** nailed server functions — but it's a proprietary black box.
 
 DarshanDB is what happens when you take the best ideas from all of them and compile them into a single Rust binary you can run on a $5 VPS.
 
-## ⚡ Quickstart
+The developer in Ahmedabad, the student in Lagos, the freelancer in Sao Paulo — they deserve the same backend infrastructure that FAANG engineers take for granted. DarshanDB makes that real.
+
+<div align="center">
+
+*Built by [Darsh Joshi](https://darshj.ai) · [darshj.me](https://darshj.me)*
+
+</div>
+
+---
+
+## How DarshanDB Compares
+
+```mermaid
+graph LR
+    subgraph Legacy["Legacy Approach"]
+        L1["Write REST APIs"] --> L2["Build Auth"]
+        L2 --> L3["Wire WebSockets"]
+        L3 --> L4["Handle Permissions"]
+        L4 --> L5["Manage Files"]
+        L5 --> L6["Weeks of Plumbing"]
+    end
+
+    subgraph DarshanDB["DarshanDB Approach"]
+        D1["darshan dev"] --> D2["Ship Features"]
+    end
+
+    style Legacy fill:#7f1d1d,stroke:#fca5a5,color:#fff
+    style DarshanDB fill:#14532d,stroke:#86efac,color:#fff
+```
+
+### Feature Matrix
+
+| Feature | DarshanDB | Firebase | Supabase | InstantDB | Convex |
+|---------|:---------:|:--------:|:--------:|:---------:|:------:|
+| **Self-hosted** | Yes | No | Partial | No | No |
+| **Relational queries** | Yes | No | Yes | Yes | Yes |
+| **Real-time (native)** | Yes | Yes | Polling* | Yes | Yes |
+| **Offline-first** | Yes | Limited | No | Yes | No |
+| **Graph traversal** | Yes | No | No | Yes | No |
+| **Server functions** | V8 Sandboxed | Cloud Functions | Edge Functions | No | Yes |
+| **Row-level security** | SQL WHERE injection | Rules DSL | Postgres RLS | Permissions | Validators |
+| **Field-level perms** | Yes | No | No | No | No |
+| **Wire protocol** | MsgPack binary | Protobuf | JSON | JSON | Custom |
+| **Delta sync** | Yes | No | No | Yes | Yes |
+| **Vector search** | pgvector native | No | Extension | No | No |
+| **Time-travel queries** | MVCC snapshots | No | No | No | No |
+| **Multi-tenancy** | Namespace isolation | Projects | Schemas | No | Deployments |
+| **MFA / WebAuthn** | Yes | Yes | Yes | No | No |
+| **Open source** | MIT | No | Apache-2.0 | Partial | No |
+| **Single binary deploy** | Yes | N/A | No (10+ services) | N/A | N/A |
+
+> *Supabase Realtime requires separate channel subscriptions and does not provide reactive queries out of the box.
+
+---
+
+## Quickstart
+
+Three commands from zero to real-time backend.
 
 ```bash
-# Install (single binary, ~30MB)
+# 1. Install (single binary, ~30MB)
 curl -fsSL https://darshandb.dev/install | sh
 
-# Start (auto-creates Postgres, seeds admin)
+# 2. Start (auto-creates Postgres, seeds admin)
 darshan dev
 
-# Dashboard → http://localhost:7700/admin
-# Your app  → ws://localhost:7700
+# 3. Open dashboard
+#    Dashboard → http://localhost:7700/admin
+#    Your app  → ws://localhost:7700
 ```
+
+Then drop this into your React app:
 
 ```typescript
 import { DarshanDB } from '@darshan/react';
@@ -69,29 +144,31 @@ function TodoApp() {
 
 **That's it.** Real-time sync, offline support, optimistic updates, type safety — all from five lines of configuration.
 
-## 🏗 Architecture
+---
+
+## Architecture
 
 ```mermaid
 graph TB
     subgraph Clients["Client Universe"]
-        React["⚛️ React"]
-        Next["▲ Next.js"]
-        Angular["🅰️ Angular"]
-        Vue["💚 Vue"]
-        Svelte["🔶 Svelte"]
-        PHP["🐘 PHP"]
-        Python["🐍 Python"]
-        HTML["📄 Vanilla JS"]
-        Curl["🔧 cURL"]
+        React["React"]
+        Next["Next.js"]
+        Angular["Angular"]
+        Vue["Vue"]
+        Svelte["Svelte"]
+        PHP["PHP"]
+        Python["Python"]
+        HTML["Vanilla JS"]
+        Curl["cURL"]
     end
 
     subgraph Protocol["Protocol Layer"]
-        WS["WebSocket + MsgPack<br/><i>fastest — persistent connection</i>"]
-        HTTP2["HTTP/2 + MsgPack<br/><i>fast — for SSR & server calls</i>"]
-        REST["REST + JSON<br/><i>universal fallback</i>"]
+        WS["WebSocket + MsgPack\nfastest — persistent connection"]
+        HTTP2["HTTP/2 + MsgPack\nfast — for SSR and server calls"]
+        REST["REST + JSON\nuniversal fallback"]
     end
 
-    subgraph Negotiator["🔒 Protocol Negotiator"]
+    subgraph Negotiator["Protocol Negotiator"]
         TLS["TLS 1.3"]
         CORS["CORS"]
         RL["Rate Limiter"]
@@ -99,13 +176,13 @@ graph TB
     end
 
     subgraph Core["DarshanDB Core"]
-        QE["Query Engine<br/><code>DarshanQL → SQL</code>"]
-        ME["Mutation Engine<br/><code>ACID transactions</code>"]
-        SE["Sync Engine<br/><code>reactive push</code>"]
-        RE["REST Handler<br/><code>universal compat</code>"]
+        QE["Query Engine\nDarshanQL to SQL"]
+        ME["Mutation Engine\nACID transactions"]
+        SE["Sync Engine\nreactive push"]
+        RE["REST Handler\nuniversal compat"]
     end
 
-    subgraph Security["🛡 Permission Engine"]
+    subgraph Security["Permission Engine"]
         RLS["Row-Level Security"]
         ABAC["Attribute-Based Access"]
         FF["Field Filtering"]
@@ -113,13 +190,13 @@ graph TB
     end
 
     subgraph Services["Service Layer"]
-        TS["Triple Store<br/><code>EAV over Postgres</code>"]
-        AE["Auth Engine<br/><code>JWT + OAuth + MFA</code>"]
-        FR["Function Runtime<br/><code>V8 Sandboxed</code>"]
-        ST["Storage Engine<br/><code>S3-compatible</code>"]
+        TS["Triple Store\nEAV over Postgres"]
+        AE["Auth Engine\nJWT + OAuth + MFA"]
+        FR["Function Runtime\nV8 Sandboxed"]
+        ST["Storage Engine\nS3-compatible"]
     end
 
-    PG[("PostgreSQL 16+<br/>with pgvector")]
+    PG[("PostgreSQL 16+\nwith pgvector")]
 
     Clients --> Protocol
     Protocol --> Negotiator
@@ -137,7 +214,9 @@ graph TB
     style PG fill:#336791,stroke:#fff,color:#fff
 ```
 
-### Data Flow: From Query to Real-Time Push
+### Data Flow: Query Subscription Lifecycle
+
+Every query in DarshanDB is a live subscription. Here's what happens from the moment a client subscribes to when it receives real-time updates.
 
 ```mermaid
 sequenceDiagram
@@ -149,7 +228,7 @@ sequenceDiagram
     participant S as Sync Engine
 
     C->>W: Subscribe { todos: { $where: { done: false } } }
-    W->>Q: Parse DarshanQL → QueryAST
+    W->>Q: Parse DarshanQL to QueryAST
     Q->>P: Inject RLS WHERE clause
     P->>T: Execute filtered SQL
     T-->>S: Register query dependencies
@@ -160,43 +239,192 @@ sequenceDiagram
 
     T->>S: TripleChange event
     S->>S: Match against query dependencies
-    S->>P: Re-evaluate with user's permissions
+    S->>P: Re-evaluate with user permissions
     P->>T: Execute filtered SQL
     T-->>S: New result set
     S->>S: Compute delta diff
     S-->>W: q-diff { added: [], updated: [...], tx: 43 }
-    W-->>C: Push diff (< 1ms)
+    W-->>C: Push diff (sub 1ms)
 ```
 
-### Why DarshanDB Is Faster Than REST
+### Real-Time Sync: Mutation to Broadcast
+
+When a client writes data, DarshanDB applies optimistic updates locally and reconciles with the server. The diff engine ensures every connected client gets only what changed.
+
+```mermaid
+graph LR
+    subgraph Client["Client Side"]
+        A["Optimistic Mutation"] --> B["Local Store Update"]
+        B --> C["UI Re-renders Instantly"]
+    end
+
+    subgraph Server["Server Side"]
+        D["Validate + Authorize"] --> E["ACID Write to Postgres"]
+        E --> F["Compute Affected Queries"]
+        F --> G["Generate Per-Client Diffs"]
+    end
+
+    subgraph Broadcast["Broadcast"]
+        G --> H["Push to Subscriber A"]
+        G --> I["Push to Subscriber B"]
+        G --> J["Push to Subscriber N"]
+    end
+
+    A -->|WebSocket| D
+    E -->|Confirm or Rollback| C
+
+    style Client fill:#14532d,stroke:#86efac,color:#fff
+    style Server fill:#1a1a2e,stroke:#F59E0B,color:#fff
+    style Broadcast fill:#0f3460,stroke:#F59E0B,color:#fff
+```
+
+### Auth Flow: Signup to Session
+
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant C as Client SDK
+    participant A as Auth Engine
+    participant DB as PostgreSQL
+
+    U->>C: signUp(email, password)
+    C->>A: POST /auth/signup
+    A->>A: Validate + Argon2id hash
+    A->>DB: INSERT user + credentials
+    A->>A: Generate RS256 JWT (15min)
+    A->>A: Generate refresh token (7d)
+    A-->>C: { accessToken, refreshToken, user }
+    C->>C: Store tokens + open WebSocket
+
+    Note over C,A: 14 minutes later...
+
+    C->>A: POST /auth/refresh { refreshToken }
+    A->>A: Verify + rotate refresh token
+    A->>A: Issue new access + refresh pair
+    A-->>C: { accessToken, refreshToken }
+    C->>C: Seamless token swap
+
+    Note over C,A: OAuth flow
+
+    U->>C: signIn("google")
+    C->>A: Redirect to Google OAuth
+    A->>A: Exchange code for profile
+    A->>DB: Find or create user
+    A-->>C: { accessToken, refreshToken, user }
+```
+
+### Permission Evaluation Pipeline
+
+Every data access passes through this pipeline. There are no shortcuts — even admin dashboard queries go through the same path.
+
+```mermaid
+graph TB
+    REQ["Incoming Request"] --> AUTH["1. Authenticate\nJWT verification"]
+    AUTH --> ROLE["2. Resolve Roles\nUser roles + team roles + inherited"]
+    ROLE --> TABLE["3. Table Permission\nCan this role access this table?"]
+    TABLE --> ROW["4. Row-Level Security\nInject WHERE clauses"]
+    ROW --> FIELD["5. Field Filtering\nStrip restricted columns"]
+    FIELD --> COMPLEXITY["6. Query Complexity\nReject expensive queries"]
+    COMPLEXITY --> EXEC["7. Execute\nRun against Postgres"]
+    EXEC --> SANITIZE["8. Sanitize Response\nFinal field strip + audit log"]
+    SANITIZE --> RESPONSE["Response to Client"]
+
+    AUTH -->|"Fail"| DENY["401 Unauthorized"]
+    TABLE -->|"Fail"| DENY2["403 Forbidden"]
+    COMPLEXITY -->|"Fail"| DENY3["429 Too Complex"]
+
+    style REQ fill:#1a1a2e,stroke:#F59E0B,color:#fff
+    style RESPONSE fill:#14532d,stroke:#86efac,color:#fff
+    style DENY fill:#7f1d1d,stroke:#fca5a5,color:#fff
+    style DENY2 fill:#7f1d1d,stroke:#fca5a5,color:#fff
+    style DENY3 fill:#7f1d1d,stroke:#fca5a5,color:#fff
+    style AUTH fill:#713f12,stroke:#fde68a,color:#fff
+    style ROLE fill:#713f12,stroke:#fde68a,color:#fff
+    style TABLE fill:#365314,stroke:#bbf7d0,color:#fff
+    style ROW fill:#365314,stroke:#bbf7d0,color:#fff
+    style FIELD fill:#064e3b,stroke:#6ee7b7,color:#fff
+    style COMPLEXITY fill:#064e3b,stroke:#6ee7b7,color:#fff
+    style EXEC fill:#0c4a6e,stroke:#7dd3fc,color:#fff
+    style SANITIZE fill:#0c4a6e,stroke:#7dd3fc,color:#fff
+```
+
+### Offline-First Sync Cycle
+
+DarshanDB clients work fully offline. Mutations queue locally and reconcile on reconnect. Conflicts are resolved with last-writer-wins by default, or custom merge functions.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Online
+    Online --> Offline: Connection lost
+    Offline --> Reconnecting: Network detected
+
+    state Online {
+        [*] --> LiveSync
+        LiveSync --> Mutate: User writes
+        Mutate --> Optimistic: Apply locally
+        Optimistic --> ServerConfirm: Send to server
+        ServerConfirm --> LiveSync: ACK received
+        ServerConfirm --> Rollback: NACK / conflict
+        Rollback --> LiveSync: Revert optimistic
+    }
+
+    state Offline {
+        [*] --> LocalOps
+        LocalOps --> QueueMutation: User writes
+        QueueMutation --> IndexedDB: Persist to disk
+        IndexedDB --> LocalOps: Apply optimistic
+    }
+
+    state Reconnecting {
+        [*] --> SendQueue
+        SendQueue --> ConflictCheck: Server processes queue
+        ConflictCheck --> Merge: Resolve conflicts
+        Merge --> CatchUp: Receive missed changes
+        CatchUp --> [*]
+    }
+
+    Reconnecting --> Online: Sync complete
+```
+
+---
+
+## Why DarshanDB Is Faster
 
 ```mermaid
 graph LR
     subgraph REST["Traditional REST"]
-        R1["New TCP+TLS<br/>per request"] --> R2["JSON encoding<br/>~58 bytes/obj"]
-        R2 --> R3["Full response<br/>every poll"]
-        R3 --> R4["800B headers<br/>repeated"]
+        R1["New TCP+TLS\nper request"] --> R2["JSON encoding\n~58 bytes/obj"]
+        R2 --> R3["Full response\nevery poll"]
+        R3 --> R4["800B headers\nrepeated"]
     end
 
     subgraph Darshan["DarshanDB"]
-        D1["Single persistent<br/>connection"] --> D2["MsgPack binary<br/>~42 bytes/obj"]
-        D2 --> D3["Delta-only<br/>patches"]
-        D3 --> D4["Zero header<br/>overhead"]
+        D1["Single persistent\nconnection"] --> D2["MsgPack binary\n~42 bytes/obj"]
+        D2 --> D3["Delta-only\npatches"]
+        D3 --> D4["Zero header\noverhead"]
     end
 
     style REST fill:#dc2626,stroke:#fff,color:#fff
     style Darshan fill:#16a34a,stroke:#fff,color:#fff
 ```
 
+<div align="center">
+
+### Benchmark Results
+
 | Metric | REST (20 req/s) | DarshanDB | Improvement |
-|--------|----------------|-----------|-------------|
+|--------|:---------------:|:---------:|:-----------:|
 | **Latency** | ~248ms avg | ~1.2ms avg | **206x faster** |
 | **Bandwidth** | ~4,800 B/s overhead | ~180 B/s overhead | **26x less** |
 | **Payload size** | 58 bytes/object (JSON) | 42 bytes/object (MsgPack) | **28% smaller** |
 | **Auth overhead** | Verify every request | Verify once at connection | **Zero redundancy** |
 | **Polling** | Continuous HTTP polling | Server push on change | **Zero polling** |
 
-## 📦 Complete Feature Set
+</div>
+
+---
+
+## Complete Feature Set
 
 ### Core Database
 - **Triple-store graph engine** over Postgres — EAV with schema-on-read
@@ -226,42 +454,44 @@ graph LR
 - **Hot reload** — functions update on file save
 
 ### Authentication
-- Email/password (Argon2id) · Magic links · OAuth (Google, GitHub, Apple, Discord)
-- JWT RS256 + refresh tokens · MFA (TOTP + WebAuthn) · Session management
+- Email/password (Argon2id) -- Magic links -- OAuth (Google, GitHub, Apple, Discord)
+- JWT RS256 + refresh tokens -- MFA (TOTP + WebAuthn) -- Session management
 
 ### Permissions
-- Row-level security · Field-level permissions · Role hierarchy · TypeScript DSL
+- Row-level security -- Field-level permissions -- Role hierarchy -- TypeScript DSL
 - **Zero-trust default** — everything denied unless explicitly allowed
 
 ### Storage
-- S3-compatible (local FS, S3, R2, MinIO) · Signed URLs · Image transforms · Resumable uploads
+- S3-compatible (local FS, S3, R2, MinIO) -- Signed URLs -- Image transforms -- Resumable uploads
 
-## 🌐 Universal SDK Support
+---
+
+## Universal SDK Ecosystem
 
 ```mermaid
 graph TB
     subgraph Tier1["First-Class SDKs"]
-        React["⚛️ React<br/><code>@darshan/react</code><br/>Hooks + Suspense"]
-        Next["▲ Next.js<br/><code>@darshan/nextjs</code><br/>RSC + Server Actions"]
-        Angular["🅰️ Angular<br/><code>@darshan/angular</code><br/>Signals + RxJS + SSR"]
-        Vue["💚 Vue 3<br/><code>@darshan/vue</code><br/>Composables + Nuxt"]
-        Svelte["🔶 Svelte<br/><code>@darshan/svelte</code><br/>Stores + SvelteKit"]
+        React["React\n@darshan/react\nHooks + Suspense"]
+        Next["Next.js\n@darshan/nextjs\nRSC + Server Actions"]
+        Angular["Angular\n@darshan/angular\nSignals + RxJS + SSR"]
+        Vue["Vue 3\n@darshan/vue\nComposables + Nuxt"]
+        Svelte["Svelte\n@darshan/svelte\nStores + SvelteKit"]
     end
 
     subgraph Tier2["Server SDKs"]
-        Node["🟢 Node.js<br/><code>@darshan/admin</code><br/>Express middleware"]
-        PHP["🐘 PHP<br/><code>darshan/darshan-php</code><br/>Laravel ServiceProvider"]
-        Python["🐍 Python<br/><code>darshandb</code><br/>FastAPI + Django"]
+        Node["Node.js\n@darshan/admin\nExpress middleware"]
+        PHP["PHP\ndarshan/darshan-php\nLaravel ServiceProvider"]
+        Python["Python\ndarshandb\nFastAPI + Django"]
     end
 
     subgraph Tier3["Universal Access"]
-        Vanilla["📄 Vanilla JS<br/>CDN &lt;script&gt; tag"]
-        Native["📱 React Native<br/>AsyncStorage"]
-        RESTAPI["🔧 REST API<br/>Any HTTP client"]
-        SSE["📡 SSE<br/>EventSource fallback"]
+        Vanilla["Vanilla JS\nCDN script tag"]
+        Native["React Native\nAsyncStorage"]
+        RESTAPI["REST API\nAny HTTP client"]
+        SSE["SSE\nEventSource fallback"]
     end
 
-    Core["@darshan/client<br/><i>Framework-agnostic core</i>"]
+    Core["@darshan/client\nFramework-agnostic core"]
 
     Core --> Tier1
     Core --> Tier2
@@ -285,24 +515,26 @@ graph TB
 | **Vanilla JS** | CDN `<script>` | `window.DarshanDB`, zero build tools |
 | **REST** | Any HTTP client | Full CRUD + query + auth + storage |
 
-## 🛡 Zero-Trust Security
+---
+
+## Zero-Trust Security
 
 DarshanDB doesn't bolt security on as an afterthought. Security is the foundation — 11 layers deep.
 
 ```mermaid
 graph TB
     subgraph Stack["Defense-in-Depth: 11 Security Layers"]
-        L0["Layer 0: TLS 1.3 Mandatory<br/><i>No plaintext, no TLS 1.2 fallback</i>"]
-        L1["Layer 1: Rate Limiting<br/><i>Token bucket per IP/user/API key</i>"]
-        L2["Layer 2: Input Validation<br/><i>Schema-validated at API boundary</i>"]
-        L3["Layer 3: Authentication<br/><i>JWT RS256 + refresh + device binding</i>"]
-        L4["Layer 4: Authorization<br/><i>Permission engine on every request</i>"]
-        L5["Layer 5: Row-Level Security<br/><i>SQL WHERE injection — data invisible, not forbidden</i>"]
-        L6["Layer 6: Field Filtering<br/><i>Restricted fields stripped from response</i>"]
-        L7["Layer 7: Query Complexity<br/><i>Rejects expensive queries</i>"]
-        L8["Layer 8: V8 Sandboxing<br/><i>Functions isolated from system</i>"]
-        L9["Layer 9: Audit Logging<br/><i>Every mutation: actor + timestamp + diff</i>"]
-        L10["Layer 10: Anomaly Detection<br/><i>Unusual patterns trigger alerts</i>"]
+        L0["Layer 0: TLS 1.3 Mandatory\nNo plaintext, no TLS 1.2 fallback"]
+        L1["Layer 1: Rate Limiting\nToken bucket per IP/user/API key"]
+        L2["Layer 2: Input Validation\nSchema-validated at API boundary"]
+        L3["Layer 3: Authentication\nJWT RS256 + refresh + device binding"]
+        L4["Layer 4: Authorization\nPermission engine on every request"]
+        L5["Layer 5: Row-Level Security\nSQL WHERE injection — data invisible, not forbidden"]
+        L6["Layer 6: Field Filtering\nRestricted fields stripped from response"]
+        L7["Layer 7: Query Complexity\nRejects expensive queries"]
+        L8["Layer 8: V8 Sandboxing\nFunctions isolated from system"]
+        L9["Layer 9: Audit Logging\nEvery mutation: actor + timestamp + diff"]
+        L10["Layer 10: Anomaly Detection\nUnusual patterns trigger alerts"]
     end
 
     L0 --> L1 --> L2 --> L3 --> L4 --> L5 --> L6 --> L7 --> L8 --> L9 --> L10
@@ -321,7 +553,7 @@ graph TB
     style L10 fill:#4a044e,stroke:#d8b4fe,color:#fff
 ```
 
-### OWASP API Top 10 — Every Risk Eliminated
+### OWASP API Top 10 Coverage
 
 | OWASP Risk | How DarshanDB Handles It |
 |-----------|--------------------------|
@@ -335,29 +567,75 @@ graph TB
 | **Inventory** | Single binary, one API surface, auto-generated OpenAPI spec |
 | **Unsafe Consumption** | Responses validated against declared schemas |
 
-## 🔧 Technology Stack
+---
+
+## Deployment Topology
+
+```mermaid
+graph TB
+    subgraph Single["Single Node (Dev / Small Prod)"]
+        SN["DarshanDB Binary"]
+        SPG[("PostgreSQL")]
+        SN --> SPG
+    end
+
+    subgraph HA["High Availability Cluster"]
+        LB["Load Balancer\nNginx / Caddy / Cloud LB"]
+
+        subgraph Nodes["DarshanDB Nodes"]
+            N1["Node 1\nLeader"]
+            N2["Node 2\nFollower"]
+            N3["Node 3\nFollower"]
+        end
+
+        subgraph PGCluster["PostgreSQL Cluster"]
+            PG1[("Primary")]
+            PG2[("Replica")]
+            PG3[("Replica")]
+            PG1 -->|"Streaming\nReplication"| PG2
+            PG1 -->|"Streaming\nReplication"| PG3
+        end
+
+        LB --> N1
+        LB --> N2
+        LB --> N3
+        N1 --> PG1
+        N2 --> PG2
+        N3 --> PG3
+    end
+
+    style Single fill:#1a1a2e,stroke:#F59E0B,color:#fff
+    style HA fill:#0f3460,stroke:#F59E0B,color:#fff
+    style Nodes fill:#1a1a2e,stroke:#F59E0B,color:#fff
+    style PGCluster fill:#16213e,stroke:#336791,color:#fff
+    style LB fill:#713f12,stroke:#fde68a,color:#fff
+```
+
+---
+
+## Technology Stack
 
 ```mermaid
 graph LR
     subgraph Runtime["Runtime"]
-        Rust["🦀 Rust<br/>Axum + Tokio"]
-        V8["⚙️ Deno Core<br/>V8 Isolates"]
+        Rust["Rust\nAxum + Tokio"]
+        V8["Deno Core\nV8 Isolates"]
     end
 
     subgraph Data["Data"]
-        PG["🐘 PostgreSQL 16+<br/>pgvector"]
-        MP["📦 MessagePack<br/>Binary wire protocol"]
+        PG["PostgreSQL 16+\npgvector"]
+        MP["MessagePack\nBinary wire protocol"]
     end
 
     subgraph Client["Client"]
-        TS["📘 TypeScript<br/>Type-safe SDKs"]
-        IDB["💾 IndexedDB<br/>Offline persistence"]
+        TS["TypeScript\nType-safe SDKs"]
+        IDB["IndexedDB\nOffline persistence"]
     end
 
     subgraph Crypto["Crypto"]
-        Argon["🔐 Argon2id<br/>Password hashing"]
-        JWT["🔑 RS256/Ed25519<br/>Token signing"]
-        AES["🔒 AES-256-GCM<br/>Encryption at rest"]
+        Argon["Argon2id\nPassword hashing"]
+        JWT["RS256/Ed25519\nToken signing"]
+        AES["AES-256-GCM\nEncryption at rest"]
     end
 
     style Runtime fill:#B7410E,stroke:#fff,color:#fff
@@ -378,7 +656,9 @@ graph LR
 | JWT | RS256 + Ed25519 | Asymmetric verification |
 | Encryption | AES-256-GCM | Hardware-accelerated |
 
-## 🚀 Self-Hosting
+---
+
+## Self-Hosting
 
 ### Docker (Recommended)
 
@@ -405,7 +685,9 @@ helm install darshan darshan/darshandb \
   --set replicas=3
 ```
 
-## 🗂 Project Structure
+---
+
+## Project Structure
 
 ```
 darshandb/
@@ -429,7 +711,9 @@ darshandb/
 └── Dockerfile           # Multi-stage production build
 ```
 
-## 🤝 Contributing
+---
+
+## Contributing
 
 We welcome contributions from everyone. See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
@@ -446,7 +730,9 @@ cargo test                          # Rust
 npm test --workspace=@darshan/react # TypeScript
 ```
 
-## 📜 License
+---
+
+## License
 
 MIT License — use it for anything. See [LICENSE](LICENSE) for details.
 
@@ -454,12 +740,22 @@ MIT License — use it for anything. See [LICENSE](LICENSE) for details.
 
 <div align="center">
 
-**Built by [Darsh Joshi](https://github.com/darshjme)** — from Ahmedabad to the world.
+<img src=".github/assets/logo.svg" alt="DarshanDB" width="60" />
 
-*The developer in Ahmedabad, the student in Lagos, the freelancer in São Paulo — they deserve the same backend infrastructure that FAANG engineers take for granted.*
+<br/>
+<br/>
+
+**Built by [Darsh Joshi](https://darshj.ai)** -- Ahmedabad, India
+
+[darshj.ai](https://darshj.ai) -- [darshj.me](https://darshj.me) -- [GitHub](https://github.com/darshjme) -- [Discord](https://discord.gg/darshandb) -- [Twitter](https://twitter.com/darshandb)
 
 <br/>
 
-[Website](https://darshandb.dev) · [Docs](docs/) · [Discord](https://discord.gg/darshandb) · [Twitter](https://twitter.com/darshandb)
+*"The developer in Ahmedabad, the student in Lagos, the freelancer in Sao Paulo —*
+*they deserve the same backend infrastructure that FAANG engineers take for granted."*
+
+<br/>
+
+<sub>DarshanDB is open source under the MIT License.</sub>
 
 </div>

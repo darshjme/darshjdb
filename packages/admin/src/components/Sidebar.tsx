@@ -32,6 +32,7 @@ export function Sidebar() {
         "flex flex-col h-screen bg-zinc-950 border-r border-zinc-800 transition-all duration-200",
         collapsed ? "w-16" : "w-60",
       )}
+      aria-label="Main navigation"
     >
       <div className="flex items-center gap-3 px-4 h-14 border-b border-zinc-800">
         <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-amber-400 to-amber-600 flex items-center justify-center flex-shrink-0">
@@ -70,6 +71,7 @@ export function Sidebar() {
         <button
           onClick={() => setCollapsed(!collapsed)}
           className="sidebar-link w-full justify-center"
+          aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
         >
           {collapsed ? (
             <ChevronRight className="w-4 h-4" />
