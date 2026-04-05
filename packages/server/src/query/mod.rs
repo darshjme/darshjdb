@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 use std::num::NonZeroUsize;
-use std::sync::Mutex;
+use tokio::sync::RwLock;
 
 use crate::error::{DarshJError, Result};
 
@@ -814,7 +814,7 @@ fn bind_json_param<'q>(
 /// Thread-safe LRU cache for query plans, keyed by a SHA-256 hash
 /// of the query shape (entity type + where attributes + order + nested).
 pub struct PlanCache {
-    inner: Mutex<LruCache<[u8; 32], QueryPlan>>,
+    inner: RwLock<LruCache<[u8; 32], QueryPlan>>,
 }
 
 impl PlanCache {
@@ -822,7 +822,7 @@ impl PlanCache {
     pub fn new(capacity: usize) -> Self {
         let cap = NonZeroUsize::new(capacity).unwrap_or(NonZeroUsize::new(256).expect("256 > 0"));
         Self {
-            inner: Mutex::new(LruCache::new(cap)),
+            inner: RwLock::new(LruCache::new(cap)),
         }
     }
 
@@ -865,18 +865,20 @@ impl PlanCache {
     }
 
     /// Look up a cached plan by AST shape.
-    pub fn get(&self, ast: &QueryAST) -> Option<QueryPlan> {
+    ///
+    /// Uses `peek` under a read lock so concurrent reads do not block
+    /// each other. Trade-off: does not update LRU recency on read hits.
+    pub async fn get(&self, ast: &QueryAST) -> Option<QueryPlan> {
         let key = Self::shape_key(ast);
-        let mut guard = self.inner.lock().ok()?;
-        guard.get(&key).cloned()
+        let guard = self.inner.read().await;
+        guard.peek(&key).cloned()
     }
 
     /// Insert a plan into the cache.
-    pub fn insert(&self, ast: &QueryAST, plan: QueryPlan) {
+    pub async fn insert(&self, ast: &QueryAST, plan: QueryPlan) {
         let key = Self::shape_key(ast);
-        if let Ok(mut guard) = self.inner.lock() {
-            guard.put(key, plan);
-        }
+        let mut guard = self.inner.write().await;
+        guard.put(key, plan);
     }
 }
 
@@ -898,7 +900,7 @@ pub async fn run_query(
         plan_query
     };
 
-    let plan = match cache.get(&ast) {
+    let plan = match cache.get(&ast).await {
         Some(cached) => {
             tracing::debug!("plan cache hit for type={}", ast.entity_type);
             // Re-plan to get fresh params (cache stores the shape, not values).
@@ -909,7 +911,7 @@ pub async fn run_query(
         None => {
             tracing::debug!("plan cache miss for type={}", ast.entity_type);
             let plan = plan_fn(&ast)?;
-            cache.insert(&ast, plan.clone());
+            cache.insert(&ast, plan.clone()).await;
             plan
         }
     };
@@ -1455,28 +1457,27 @@ mod tests {
 
     // ── Plan cache ──────────────────────────────────────────────────
 
-    #[test]
-    fn plan_cache_hit() {
+    #[tokio::test]
+    async fn plan_cache_hit() {
         let cache = PlanCache::new(16);
         let ast = bare_ast("User");
         let plan = plan_query(&ast).expect("should plan");
-        cache.insert(&ast, plan);
-        assert!(cache.get(&ast).is_some());
+        cache.insert(&ast, plan).await;
+        assert!(cache.get(&ast).await.is_some());
     }
 
-    #[test]
-    fn plan_cache_miss_on_different_entity_type() {
+    #[tokio::test]
+    async fn plan_cache_miss_on_different_entity_type() {
         let cache = PlanCache::new(16);
         let ast1 = bare_ast("User");
         let plan = plan_query(&ast1).expect("should plan");
-        cache.insert(&ast1, plan);
-
+        cache.insert(&ast1, plan).await;
         let ast2 = bare_ast("Post");
-        assert!(cache.get(&ast2).is_none());
+        assert!(cache.get(&ast2).await.is_none());
     }
 
-    #[test]
-    fn plan_cache_miss_on_different_operator() {
+    #[tokio::test]
+    async fn plan_cache_miss_on_different_operator() {
         let cache = PlanCache::new(16);
         let ast1 = QueryAST {
             where_clauses: vec![WhereClause {
@@ -1486,8 +1487,7 @@ mod tests {
             }],
             ..bare_ast("T")
         };
-        cache.insert(&ast1, plan_query(&ast1).unwrap());
-
+        cache.insert(&ast1, plan_query(&ast1).unwrap()).await;
         let ast2 = QueryAST {
             where_clauses: vec![WhereClause {
                 attribute: "x".into(),
@@ -1496,11 +1496,11 @@ mod tests {
             }],
             ..bare_ast("T")
         };
-        assert!(cache.get(&ast2).is_none(), "different op should miss");
+        assert!(cache.get(&ast2).await.is_none(), "different op should miss");
     }
 
-    #[test]
-    fn plan_cache_miss_on_different_attribute() {
+    #[tokio::test]
+    async fn plan_cache_miss_on_different_attribute() {
         let cache = PlanCache::new(16);
         let ast1 = QueryAST {
             where_clauses: vec![WhereClause {
@@ -1510,8 +1510,7 @@ mod tests {
             }],
             ..bare_ast("T")
         };
-        cache.insert(&ast1, plan_query(&ast1).unwrap());
-
+        cache.insert(&ast1, plan_query(&ast1).unwrap()).await;
         let ast2 = QueryAST {
             where_clauses: vec![WhereClause {
                 attribute: "name".into(),
@@ -1521,7 +1520,7 @@ mod tests {
             ..bare_ast("T")
         };
         assert!(
-            cache.get(&ast2).is_none(),
+            cache.get(&ast2).await.is_none(),
             "different attribute should miss"
         );
     }
@@ -1620,33 +1619,35 @@ mod tests {
         assert_ne!(PlanCache::shape_key(&with), PlanCache::shape_key(&without));
     }
 
-    #[test]
-    fn plan_cache_lru_eviction() {
+    #[tokio::test]
+    async fn plan_cache_lru_eviction() {
         let cache = PlanCache::new(2);
         let ast_a = bare_ast("A");
         let ast_b = bare_ast("B");
         let ast_c = bare_ast("C");
 
-        cache.insert(&ast_a, plan_query(&ast_a).unwrap());
-        cache.insert(&ast_b, plan_query(&ast_b).unwrap());
-
+        cache.insert(&ast_a, plan_query(&ast_a).unwrap()).await;
+        cache.insert(&ast_b, plan_query(&ast_b).unwrap()).await;
         // Access B so it becomes most-recently-used; A is now LRU.
-        assert!(cache.get(&ast_b).is_some());
+        assert!(cache.get(&ast_b).await.is_some());
 
         // Insert C — should evict A (the least recently used).
-        cache.insert(&ast_c, plan_query(&ast_c).unwrap());
-        assert!(cache.get(&ast_a).is_none(), "A should have been evicted");
-        assert!(cache.get(&ast_b).is_some(), "B was recently accessed");
-        assert!(cache.get(&ast_c).is_some(), "C was just inserted");
+        cache.insert(&ast_c, plan_query(&ast_c).unwrap()).await;
+        assert!(
+            cache.get(&ast_a).await.is_none(),
+            "A should have been evicted"
+        );
+        assert!(cache.get(&ast_b).await.is_some(), "B was recently accessed");
+        assert!(cache.get(&ast_c).await.is_some(), "C was just inserted");
     }
 
-    #[test]
-    fn plan_cache_zero_capacity_uses_default() {
+    #[tokio::test]
+    async fn plan_cache_zero_capacity_uses_default() {
         // Should not panic; falls back to 256.
         let cache = PlanCache::new(0);
         let ast = bare_ast("T");
-        cache.insert(&ast, plan_query(&ast).unwrap());
-        assert!(cache.get(&ast).is_some());
+        cache.insert(&ast, plan_query(&ast).unwrap()).await;
+        assert!(cache.get(&ast).await.is_some());
     }
 
     // ── Vector helpers ─────────────────────────────────────────────
