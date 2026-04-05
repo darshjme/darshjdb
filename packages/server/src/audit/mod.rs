@@ -298,7 +298,7 @@ pub fn hex_encode(data: &[u8; 64]) -> String {
 /// Called during triple-store schema bootstrap so the audit trail
 /// is available from the first transaction.
 pub async fn ensure_audit_schema(pool: &sqlx::PgPool) -> Result<(), sqlx::Error> {
-    sqlx::query(
+    sqlx::raw_sql(
         r#"
         CREATE TABLE IF NOT EXISTS tx_merkle_roots (
             tx_id        BIGINT PRIMARY KEY,

@@ -1,5 +1,5 @@
 # ── Stage 1: Build the Rust server and CLI ───────────────────────────
-FROM rust:1.88-alpine AS builder
+FROM rust:1-alpine AS builder
 
 RUN apk add --no-cache musl-dev openssl-dev openssl-libs-static pkgconf
 
@@ -54,24 +54,24 @@ RUN apk add --no-cache ca-certificates tini && \
 
 WORKDIR /app
 
-COPY --from=builder /build/target/release/darshandb-server /usr/local/bin/darshandb-server
-COPY --from=builder /build/target/release/darshan /usr/local/bin/darshan
+COPY --from=builder /build/target/release/ddb-server /usr/local/bin/ddb-server
+COPY --from=builder /build/target/release/ddb /usr/local/bin/ddb
 COPY --from=frontend /build/packages/admin/dist /usr/share/darshan/admin
 
 # Ensure binaries are not writable by runtime user
-RUN chmod 555 /usr/local/bin/darshandb-server /usr/local/bin/ddb && \
+RUN chmod 555 /usr/local/bin/ddb-server /usr/local/bin/ddb && \
     chown -R darshan:darshan /app
 
 USER darshan
 
-ENV DARSHAN_ADMIN_DIR=/usr/share/darshan/admin
-ENV DARSHAN_PORT=7700
+ENV DDB_ADMIN_DIR=/usr/share/darshan/admin
+ENV DDB_PORT=7700
 ENV RUST_LOG=info
 
 EXPOSE 7700
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD wget --no-verbose --tries=1 --spider http://localhost:7700/api/admin/health || exit 1
+    CMD wget --no-verbose --tries=1 --spider http://localhost:7700/health || exit 1
 
 ENTRYPOINT ["tini", "--"]
-CMD ["darshandb-server"]
+CMD ["ddb-server"]
