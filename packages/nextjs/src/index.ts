@@ -1,22 +1,22 @@
 /**
- * @module @darshan/nextjs
+ * @module @darshjdb/nextjs
  *
- * Next.js SDK for DarshanDB. Provides Server Component queries, Server Actions,
+ * Next.js SDK for DarshJDB. Provides Server Component queries, Server Actions,
  * client-side providers with SSR hydration, Pages Router helpers, Edge Middleware,
  * and API route wrappers.
  *
  * **Subpath imports (recommended):**
  * ```ts
- * import { queryServer, mutateServer, adminDb } from '@darshan/nextjs/server';
- * import { DarshanProvider, dehydrate } from '@darshan/nextjs/provider';
- * import { queryServerSide, queryStaticProps } from '@darshan/nextjs/pages';
- * import { darshanMiddleware } from '@darshan/nextjs/middleware';
- * import { withDarshan, withDarshanRoute } from '@darshan/nextjs/api';
+ * import { queryServer, mutateServer, adminDb } from '@darshjdb/nextjs/server';
+ * import { DarshanProvider, dehydrate } from '@darshjdb/nextjs/provider';
+ * import { queryServerSide, queryStaticProps } from '@darshjdb/nextjs/pages';
+ * import { darshanMiddleware } from '@darshjdb/nextjs/middleware';
+ * import { withDarshan, withDarshanRoute } from '@darshjdb/nextjs/api';
  * ```
  *
  * **Barrel import (convenience):**
  * ```ts
- * import { queryServer, DarshanProvider, darshanMiddleware } from '@darshan/nextjs';
+ * import { queryServer, DarshanProvider, darshanMiddleware } from '@darshjdb/nextjs';
  * ```
  *
  * @packageDocumentation
@@ -67,7 +67,7 @@ export {
   darshanMiddleware,
   setSessionCookie,
   clearSessionCookie,
-  DARSHAN_SESSION_COOKIE,
+  DDB_SESSION_COOKIE,
   type DarshanMiddlewareConfig,
 } from './middleware';
 

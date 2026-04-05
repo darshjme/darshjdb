@@ -15,7 +15,7 @@
  * @example
  * ```typescript
  * // app.routes.ts
- * import { darshanAuthGuard } from '@darshan/angular';
+ * import { darshanAuthGuard } from '@darshjdb/angular';
  *
  * export const routes: Routes = [
  *   {
@@ -35,7 +35,7 @@ import {
   type HttpRequest,
 } from '@angular/common/http';
 
-import { DARSHAN_CLIENT, DARSHAN_CONFIG } from './tokens';
+import { DDB_CLIENT, DDB_CONFIG } from './tokens';
 
 /**
  * Angular Router guard that blocks navigation for unauthenticated users.
@@ -63,7 +63,7 @@ import { DARSHAN_CLIENT, DARSHAN_CONFIG } from './tokens';
  * ```
  */
 export const darshanAuthGuard: CanActivateFn = (route, state) => {
-  const client = inject(DARSHAN_CLIENT);
+  const client = inject(DDB_CLIENT);
   const router = inject(Router);
 
   const user = client.getUser();
@@ -109,7 +109,7 @@ export function darshanRoleGuard(
   ...requiredRoles: string[]
 ): CanActivateFn {
   return (route, state) => {
-    const client = inject(DARSHAN_CLIENT);
+    const client = inject(DDB_CLIENT);
     const router = inject(Router);
 
     const user = client.getUser();
@@ -139,7 +139,7 @@ export function darshanRoleGuard(
 }
 
 /**
- * HTTP interceptor that attaches the DarshanDB JWT to outgoing requests.
+ * HTTP interceptor that attaches the DarshJDB JWT to outgoing requests.
  *
  * Only attaches the token to requests whose URL starts with the
  * configured `serverUrl`, preventing token leakage to third-party APIs.
@@ -150,7 +150,7 @@ export function darshanRoleGuard(
  * ```typescript
  * // main.ts
  * import { provideHttpClient, withInterceptors } from '@angular/common/http';
- * import { darshanAuthInterceptor } from '@darshan/angular';
+ * import { darshanAuthInterceptor } from '@darshjdb/angular';
  *
  * bootstrapApplication(AppComponent, {
  *   providers: [
@@ -163,12 +163,12 @@ export const darshanAuthInterceptor: HttpInterceptorFn = (
   req: HttpRequest<unknown>,
   next: HttpHandlerFn,
 ) => {
-  const client = inject(DARSHAN_CLIENT);
-  const config = inject(DARSHAN_CONFIG);
+  const client = inject(DDB_CLIENT);
+  const config = inject(DDB_CONFIG);
 
   const token = client.getToken();
 
-  // Only attach the token to requests targeting the DarshanDB server.
+  // Only attach the token to requests targeting the DarshJDB server.
   if (token && req.url.startsWith(config.serverUrl)) {
     const authedReq = req.clone({
       setHeaders: {

@@ -1,9 +1,9 @@
 /**
  * @module query.observable
- * @description Observable-based reactive queries for DarshanDB.
+ * @description Observable-based reactive queries for DarshJDB.
  *
  * Provides `darshanQuery$()`, an RxJS-native query function that wraps
- * the DarshanDB WebSocket subscription as an `Observable`. Best suited
+ * the DarshJDB WebSocket subscription as an `Observable`. Best suited
  * for Angular applications that rely heavily on RxJS pipelines.
  *
  * The Observable variant uses `shareReplay(1)` by default so late
@@ -12,7 +12,7 @@
  *
  * @example
  * ```typescript
- * import { darshanQuery$ } from '@darshan/angular';
+ * import { darshanQuery$ } from '@darshjdb/angular';
  *
  * @Component({
  *   template: `
@@ -30,8 +30,8 @@
 import { inject } from '@angular/core';
 import { Observable, shareReplay, debounceTime, type OperatorFunction } from 'rxjs';
 
-import { DARSHAN_CLIENT } from './tokens';
-import type { DarshanError, QueryOptions } from './types';
+import { DDB_CLIENT } from './tokens';
+import type { DarshJError, QueryOptions } from './types';
 
 /**
  * Observable query result payload.
@@ -44,11 +44,11 @@ export interface ObservableQueryResult<T> {
   /** The current query data. */
   readonly data: T;
   /** The query error, or `null` when healthy. */
-  readonly error: DarshanError | null;
+  readonly error: DarshJError | null;
 }
 
 /**
- * Subscribe to a live DarshanDB query as an RxJS Observable.
+ * Subscribe to a live DarshJDB query as an RxJS Observable.
  *
  * Each emission contains the latest query result. The underlying
  * WebSocket subscription is reference-counted: it opens when the
@@ -80,7 +80,7 @@ export function darshanQuery$<T>(
   query: Record<string, unknown>,
   options?: QueryOptions,
 ): Observable<ObservableQueryResult<T>> {
-  const client = inject(DARSHAN_CLIENT);
+  const client = inject(DDB_CLIENT);
 
   const source$ = new Observable<ObservableQueryResult<T>>((subscriber) => {
     const unsubscribe = client.subscribe<T>(
@@ -102,7 +102,7 @@ export function darshanQuery$<T>(
       },
     );
 
-    // Teardown: unsubscribe from the DarshanDB query when the
+    // Teardown: unsubscribe from the DarshJDB query when the
     // Observable subscription is cancelled.
     return () => {
       unsubscribe();
@@ -131,7 +131,7 @@ export function darshanQuery$<T>(
 }
 
 /**
- * Execute a one-shot DarshanDB query as an Observable.
+ * Execute a one-shot DarshJDB query as an Observable.
  *
  * Unlike `darshanQuery$`, this does **not** open a live subscription.
  * It performs a single request and completes.
@@ -150,7 +150,7 @@ export function darshanQueryOnce$<T>(
   collection: string,
   query: Record<string, unknown>,
 ): Observable<T> {
-  const client = inject(DARSHAN_CLIENT);
+  const client = inject(DDB_CLIENT);
 
   return new Observable<T>((subscriber) => {
     client
@@ -166,7 +166,7 @@ export function darshanQueryOnce$<T>(
 }
 
 /**
- * Execute a DarshanDB mutation as an Observable.
+ * Execute a DarshJDB mutation as an Observable.
  *
  * Wraps `client.mutate()` in an Observable for seamless integration
  * with RxJS pipelines (`switchMap`, `mergeMap`, etc.).
@@ -187,7 +187,7 @@ export function darshanMutate$<T>(
   collection: string,
   mutation: Record<string, unknown>,
 ): Observable<T> {
-  const client = inject(DARSHAN_CLIENT);
+  const client = inject(DDB_CLIENT);
 
   return new Observable<T>((subscriber) => {
     client

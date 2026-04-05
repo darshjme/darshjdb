@@ -1,6 +1,6 @@
 /**
  * @module tokens
- * @description Angular injection tokens for DarshanDB configuration and services.
+ * @description Angular injection tokens for DarshJDB configuration and services.
  *
  * These tokens are the dependency injection backbone of the SDK. They are
  * provided either via `DarshanModule.forRoot()` or the standalone
@@ -12,21 +12,21 @@ import { InjectionToken } from '@angular/core';
 import type { DarshanConfig } from './types';
 
 /**
- * Injection token for the DarshanDB configuration object.
+ * Injection token for the DarshJDB configuration object.
  *
  * @example
  * ```typescript
  * // Reading the config in a service:
- * const config = inject(DARSHAN_CONFIG);
+ * const config = inject(DDB_CONFIG);
  * console.log(config.serverUrl);
  * ```
  */
-export const DARSHAN_CONFIG = new InjectionToken<DarshanConfig>(
-  'DARSHAN_CONFIG',
+export const DDB_CONFIG = new InjectionToken<DarshanConfig>(
+  'DDB_CONFIG',
 );
 
 /**
- * Injection token for the low-level DarshanDB client instance.
+ * Injection token for the low-level DarshJDB client instance.
  *
  * The client manages the WebSocket connection, authentication state,
  * and query subscriptions. Framework wrappers (signals, observables)
@@ -36,18 +36,18 @@ export const DARSHAN_CONFIG = new InjectionToken<DarshanConfig>(
  * Prefer the higher-level `injectDarshan()`, `injectDarshanAuth()`, or
  * query helpers over using the raw client directly.
  */
-export const DARSHAN_CLIENT = new InjectionToken<DarshanClient>(
-  'DARSHAN_CLIENT',
+export const DDB_CLIENT = new InjectionToken<DarshanClient>(
+  'DDB_CLIENT',
 );
 
 /**
- * Minimal interface for the `@darshan/client` core client.
+ * Minimal interface for the `@darshjdb/client` core client.
  *
  * This decouples the Angular SDK from the concrete client implementation,
  * enabling tree-shaking and testability via mock providers.
  */
 export interface DarshanClient {
-  /** Connect to the DarshanDB server. */
+  /** Connect to the DarshJDB server. */
   connect(): Promise<void>;
 
   /** Disconnect and clean up all subscriptions. */

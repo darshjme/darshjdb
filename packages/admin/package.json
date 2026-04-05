@@ -1,8 +1,8 @@
 {
-  "name": "@darshan/admin",
+  "name": "@darshjdb/admin",
   "version": "0.1.0",
   "private": true,
-  "description": "Admin dashboard for DarshanDB — data explorer, schema viewer, and management console",
+  "description": "Admin dashboard for DarshJDB — data explorer, schema viewer, and management console",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -44,7 +44,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/darshjme/darshandb",
+    "url": "https://github.com/darshjme/darshjdb",
     "directory": "packages/admin"
   }
 }

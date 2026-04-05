@@ -1,7 +1,7 @@
 {
-  "name": "@darshan/react",
+  "name": "@darshjdb/react",
   "version": "0.1.0",
-  "description": "React bindings for DarshanDB \u2014 hooks, provider, and real-time primitives",
+  "description": "React bindings for DarshJDB \u2014 hooks, provider, and real-time primitives",
   "type": "module",
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
@@ -30,7 +30,7 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@darshan/client": "*"
+    "@darshjdb/client": "*"
   },
   "peerDependencies": {
     "react": ">=18.0.0"
@@ -50,11 +50,11 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/darshjme/darshandb",
+    "url": "https://github.com/darshjme/darshjdb",
     "directory": "packages/react"
   },
   "keywords": [
-    "darshandb",
+    "darshjdb",
     "react",
     "hooks",
     "realtime",
@@ -63,9 +63,9 @@
     "offline"
   ],
   "author": "Darsh Joshi",
-  "homepage": "https://github.com/darshjme/darshandb/tree/main/packages/react#readme",
+  "homepage": "https://github.com/darshjme/darshjdb/tree/main/packages/react#readme",
   "bugs": {
-    "url": "https://github.com/darshjme/darshandb/issues"
+    "url": "https://github.com/darshjme/darshjdb/issues"
   },
   "publishConfig": {
     "access": "public"

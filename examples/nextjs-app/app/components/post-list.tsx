@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { useQuery, useMutation } from "@darshan/react";
+import { useQuery, useMutation } from "@darshjdb/react";
 import { createPost } from "../actions/posts";
 
 interface Post {

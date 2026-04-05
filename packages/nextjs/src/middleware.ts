@@ -1,13 +1,13 @@
 /**
- * @module @darshan/nextjs/middleware
+ * @module @darshjdb/nextjs/middleware
  *
- * Next.js Edge Middleware for DarshanDB session-based authentication.
+ * Next.js Edge Middleware for DarshJDB session-based authentication.
  * Intercepts requests to protected routes and validates session cookies.
  *
  * @example
  * ```ts
  * // middleware.ts (project root)
- * import { darshanMiddleware } from '@darshan/nextjs/middleware';
+ * import { darshanMiddleware } from '@darshjdb/nextjs/middleware';
  *
  * export default darshanMiddleware({
  *   protectedRoutes: ['/dashboard', '/api/private'],
@@ -26,10 +26,10 @@ import { NextResponse, type NextRequest } from 'next/server';
 // Types
 // ---------------------------------------------------------------------------
 
-/** Name of the cookie storing the DarshanDB session token. */
-export const DARSHAN_SESSION_COOKIE = 'darshan_session';
+/** Name of the cookie storing the DarshJDB session token. */
+export const DDB_SESSION_COOKIE = 'darshan_session';
 
-/** Configuration for the DarshanDB middleware. */
+/** Configuration for the DarshJDB middleware. */
 export interface DarshanMiddlewareConfig {
   /**
    * Route prefixes that require authentication.
@@ -57,7 +57,7 @@ export interface DarshanMiddlewareConfig {
    * @example
    * ```ts
    * validateSession: async (token) => {
-   *   const res = await fetch(`${process.env.DARSHAN_URL}/auth/validate`, {
+   *   const res = await fetch(`${process.env.DDB_URL}/auth/validate`, {
    *     headers: { Authorization: `Bearer ${token}` },
    *   });
    *   return res.ok;
@@ -111,7 +111,7 @@ function matchesRoutePrefix(pathname: string, routes: string[]): boolean {
 
 /**
  * Create a Next.js middleware function that protects routes using
- * DarshanDB cookie-based sessions.
+ * DarshJDB cookie-based sessions.
  *
  * Unauthenticated requests to protected routes are redirected to the
  * login page with a `callbackUrl` parameter for post-login redirect.
@@ -122,13 +122,13 @@ function matchesRoutePrefix(pathname: string, routes: string[]): boolean {
  * @example
  * ```ts
  * // middleware.ts
- * import { darshanMiddleware } from '@darshan/nextjs/middleware';
+ * import { darshanMiddleware } from '@darshjdb/nextjs/middleware';
  *
  * export default darshanMiddleware({
  *   protectedRoutes: ['/dashboard', '/settings'],
  *   loginRoute: '/auth/login',
  *   validateSession: async (token) => {
- *     const res = await fetch(`${process.env.DARSHAN_URL}/auth/validate`, {
+ *     const res = await fetch(`${process.env.DDB_URL}/auth/validate`, {
  *       headers: { Authorization: `Bearer ${token}` },
  *     });
  *     return res.ok;
@@ -147,7 +147,7 @@ export function darshanMiddleware(config: DarshanMiddlewareConfig) {
     validateSession,
     publicRoutes = [],
     onAuthenticated,
-    cookieName = DARSHAN_SESSION_COOKIE,
+    cookieName = DDB_SESSION_COOKIE,
   } = config;
 
   return async function middleware(request: NextRequest): Promise<NextResponse> {
@@ -184,7 +184,7 @@ export function darshanMiddleware(config: DarshanMiddlewareConfig) {
         }
       } catch (error) {
         console.error(
-          '[DarshanDB] Session validation error:',
+          '[DarshJDB] Session validation error:',
           error instanceof Error ? error.message : error,
         );
         // On validation failure, deny access
@@ -240,7 +240,7 @@ function redirectToLogin(
 // ---------------------------------------------------------------------------
 
 /**
- * Set a DarshanDB session cookie in a response.
+ * Set a DarshJDB session cookie in a response.
  *
  * @param response - The NextResponse to modify.
  * @param token - The session token value.
@@ -249,7 +249,7 @@ function redirectToLogin(
  *
  * @example
  * ```ts
- * import { setSessionCookie } from '@darshan/nextjs/middleware';
+ * import { setSessionCookie } from '@darshjdb/nextjs/middleware';
  *
  * const response = NextResponse.json({ ok: true });
  * setSessionCookie(response, 'session_token_here', { maxAge: 86400 });
@@ -274,7 +274,7 @@ export function setSessionCookie(
   const {
     maxAge = 7 * 24 * 60 * 60, // 7 days
     path = '/',
-    cookieName = DARSHAN_SESSION_COOKIE,
+    cookieName = DDB_SESSION_COOKIE,
     sameSite = 'lax',
     secure,
   } = options;
@@ -291,7 +291,7 @@ export function setSessionCookie(
 }
 
 /**
- * Clear the DarshanDB session cookie from a response.
+ * Clear the DarshJDB session cookie from a response.
  *
  * @param response - The NextResponse to modify.
  * @param cookieName - Cookie name. Default: 'darshan_session'.
@@ -299,7 +299,7 @@ export function setSessionCookie(
  */
 export function clearSessionCookie(
   response: NextResponse,
-  cookieName: string = DARSHAN_SESSION_COOKIE,
+  cookieName: string = DDB_SESSION_COOKIE,
 ): NextResponse {
   response.cookies.delete(cookieName);
   return response;

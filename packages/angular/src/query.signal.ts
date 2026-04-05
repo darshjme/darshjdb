@@ -3,7 +3,7 @@
  * @description Signal-based reactive queries for Angular 17+.
  *
  * Provides `darshanQuery()`, a function that subscribes to a live
- * DarshanDB query and exposes the result as Angular Signals. The
+ * DarshJDB query and exposes the result as Angular Signals. The
  * subscription is automatically cleaned up via `DestroyRef`.
  *
  * Designed for zoneless / `OnPush` components where fine-grained
@@ -11,7 +11,7 @@
  *
  * @example
  * ```typescript
- * import { darshanQuery } from '@darshan/angular';
+ * import { darshanQuery } from '@darshjdb/angular';
  *
  * @Component({
  *   template: `
@@ -40,8 +40,8 @@ import {
   type WritableSignal,
 } from '@angular/core';
 
-import { DARSHAN_CLIENT } from './tokens';
-import type { DarshanError, QueryOptions } from './types';
+import { DDB_CLIENT } from './tokens';
+import type { DarshJError, QueryOptions } from './types';
 
 /**
  * Signal-based query result.
@@ -55,7 +55,7 @@ export interface SignalQueryResult<T> {
   /** Whether the query is actively loading or reconnecting. */
   readonly isLoading: Signal<boolean>;
   /** The query error, or `null` when healthy. */
-  readonly error: Signal<DarshanError | null>;
+  readonly error: Signal<DarshJError | null>;
   /**
    * Manually re-execute the query, discarding cached state.
    * Useful after an optimistic mutation to force a server round-trip.
@@ -64,9 +64,9 @@ export interface SignalQueryResult<T> {
 }
 
 /**
- * Subscribe to a live DarshanDB query with Angular Signal output.
+ * Subscribe to a live DarshJDB query with Angular Signal output.
  *
- * The subscription opens a WebSocket channel to the DarshanDB server
+ * The subscription opens a WebSocket channel to the DarshJDB server
  * and receives real-time diff patches. On each update, the `data`
  * signal is set to the latest result.
  *
@@ -94,12 +94,12 @@ export function darshanQuery<T>(
   query: Record<string, unknown>,
   options?: QueryOptions,
 ): SignalQueryResult<T> {
-  const client = inject(DARSHAN_CLIENT);
+  const client = inject(DDB_CLIENT);
   const destroyRef = inject(DestroyRef);
 
   const _data: WritableSignal<T | undefined> = signal<T | undefined>(undefined);
   const _isLoading = signal(true);
-  const _error = signal<DarshanError | null>(null);
+  const _error = signal<DarshJError | null>(null);
 
   let _unsubscribe: (() => void) | null = null;
 

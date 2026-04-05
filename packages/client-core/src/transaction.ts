@@ -1,5 +1,5 @@
 /**
- * Transaction builder for DarshanDB mutations.
+ * Transaction builder for DarshJDB mutations.
  *
  * Supports set, merge, delete, link, and unlink operations with a fluent
  * proxy-based API.
@@ -8,7 +8,7 @@
  */
 
 import { v7 as uuidv7 } from 'uuid';
-import type { DarshanDB } from './client.js';
+import type { DarshJDB } from './client.js';
 import type { TxId, TxOp, TxOpKind } from './types.js';
 
 /* -------------------------------------------------------------------------- */
@@ -142,9 +142,9 @@ export class TransactionBuilder {
 /* -------------------------------------------------------------------------- */
 
 /**
- * Execute an atomic transaction against the DarshanDB server.
+ * Execute an atomic transaction against the DarshJDB server.
  *
- * @param client - The DarshanDB client instance.
+ * @param client - The DarshJDB client instance.
  * @param fn     - Builder callback that accumulates operations via the proxy.
  * @returns The transaction id assigned by the server.
  *
@@ -156,7 +156,7 @@ export class TransactionBuilder {
  * ```
  */
 export async function transact(
-  client: DarshanDB,
+  client: DarshJDB,
   fn: (tx: Record<string, EntityCollectionProxy>) => void,
 ): Promise<TxId> {
   const builder = new TransactionBuilder();
@@ -180,7 +180,7 @@ export async function transact(
 }
 
 /**
- * Generate a UUID v7 suitable for use as a DarshanDB entity id.
+ * Generate a UUID v7 suitable for use as a DarshJDB entity id.
  *
  * UUID v7 is time-ordered, which makes it ideal for database primary keys
  * as it preserves insertion order and provides good index locality.

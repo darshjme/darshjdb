@@ -1,13 +1,13 @@
 /**
- * @module @darshan/nextjs/server
+ * @module @darshjdb/nextjs/server
  *
- * Server-side utilities for DarshanDB in Next.js Server Components and Server Actions.
+ * Server-side utilities for DarshJDB in Next.js Server Components and Server Actions.
  * Uses the REST API with admin token, initialized from environment variables.
  *
  * @example
  * ```tsx
  * // app/page.tsx (Server Component)
- * import { queryServer } from '@darshan/nextjs/server';
+ * import { queryServer } from '@darshjdb/nextjs/server';
  *
  * export default async function Page() {
  *   const data = await queryServer({ todos: { $where: { done: false } } });
@@ -19,7 +19,7 @@
  * ```tsx
  * // app/actions.ts (Server Action)
  * 'use server';
- * import { mutateServer } from '@darshan/nextjs/server';
+ * import { mutateServer } from '@darshjdb/nextjs/server';
  *
  * export async function createTodo(title: string) {
  *   return mutateServer([{ entity: 'todos', op: 'set', data: { title, done: false } }]);
@@ -31,7 +31,7 @@
 // Types
 // ---------------------------------------------------------------------------
 
-/** DarshanQL query object — the same format used by client SDKs. */
+/** DarshJQL query object — the same format used by client SDKs. */
 export type DarshanQuery = Record<string, unknown>;
 
 /** Options controlling caching and revalidation behavior. */
@@ -59,15 +59,15 @@ export interface MutationOp {
 // Admin client factory (used by api.ts route helpers)
 // ---------------------------------------------------------------------------
 
-import { DarshanDB } from '@darshan/client';
+import { DarshJDB } from '@darshjdb/client';
 
 /**
- * Create an admin DarshanDB client from environment variables.
- * Reads DARSHAN_URL and DARSHAN_ADMIN_TOKEN.
+ * Create an admin DarshJDB client from environment variables.
+ * Reads DDB_URL and DDB_ADMIN_TOKEN.
  */
-export function getAdminDb(): DarshanDB {
+export function getAdminDb(): DarshJDB {
   const { url, token } = getConfig();
-  return new DarshanDB({ serverUrl: url, appId: token });
+  return new DarshJDB({ serverUrl: url, appId: token });
 }
 
 // ---------------------------------------------------------------------------
@@ -75,19 +75,19 @@ export function getAdminDb(): DarshanDB {
 // ---------------------------------------------------------------------------
 
 function getConfig(): { url: string; token: string } {
-  const url = process.env.DARSHAN_URL;
-  const token = process.env.DARSHAN_ADMIN_TOKEN;
+  const url = process.env.DDB_URL;
+  const token = process.env.DDB_ADMIN_TOKEN;
 
   if (!url) {
     throw new Error(
-      '[DarshanDB] Missing DARSHAN_URL environment variable. ' +
-        'Set it to your DarshanDB server URL (e.g. http://localhost:7700).',
+      '[DarshJDB] Missing DDB_URL environment variable. ' +
+        'Set it to your DarshJDB server URL (e.g. http://localhost:7700).',
     );
   }
 
   if (!token) {
     throw new Error(
-      '[DarshanDB] Missing DARSHAN_ADMIN_TOKEN environment variable.',
+      '[DarshJDB] Missing DDB_ADMIN_TOKEN environment variable.',
     );
   }
 
@@ -99,9 +99,9 @@ function getConfig(): { url: string; token: string } {
 // ---------------------------------------------------------------------------
 
 /**
- * Execute a DarshanQL query from a Server Component via the REST API.
+ * Execute a DarshJQL query from a Server Component via the REST API.
  *
- * @param query - DarshanQL query object.
+ * @param query - DarshJQL query object.
  * @param options - Caching / revalidation options.
  * @returns The query result.
  *
@@ -144,7 +144,7 @@ export async function queryServer<T = Record<string, unknown>>(
 
   if (!response.ok) {
     const body = await response.text();
-    throw new Error(`[DarshanDB] Query failed (${response.status}): ${body}`);
+    throw new Error(`[DarshJDB] Query failed (${response.status}): ${body}`);
   }
 
   return response.json() as Promise<T>;
@@ -155,7 +155,7 @@ export async function queryServer<T = Record<string, unknown>>(
 // ---------------------------------------------------------------------------
 
 /**
- * Execute mutations against DarshanDB from a Server Action.
+ * Execute mutations against DarshJDB from a Server Action.
  *
  * @param ops - Array of mutation operations.
  * @returns The mutation result from the server.
@@ -182,7 +182,7 @@ export async function mutateServer<T = unknown>(ops: MutationOp[]): Promise<T> {
 
   if (!response.ok) {
     const body = await response.text();
-    throw new Error(`[DarshanDB] Mutation failed (${response.status}): ${body}`);
+    throw new Error(`[DarshJDB] Mutation failed (${response.status}): ${body}`);
   }
 
   return response.json() as Promise<T>;
@@ -193,7 +193,7 @@ export async function mutateServer<T = unknown>(ops: MutationOp[]): Promise<T> {
 // ---------------------------------------------------------------------------
 
 /**
- * Call a DarshanDB server function from a Server Action.
+ * Call a DarshJDB server function from a Server Action.
  *
  * @param name - Function name.
  * @param args - Arguments to pass.
@@ -216,7 +216,7 @@ export async function callFunction<T = unknown>(
 
   if (!response.ok) {
     const body = await response.text();
-    throw new Error(`[DarshanDB] Function "${name}" failed (${response.status}): ${body}`);
+    throw new Error(`[DarshJDB] Function "${name}" failed (${response.status}): ${body}`);
   }
 
   return response.json() as Promise<T>;

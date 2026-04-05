@@ -47,7 +47,7 @@ $post = $db->data('posts')->create([
 $db->data('posts')->update($post['id'], ['title' => 'Updated Title']);
 $db->data('posts')->delete($post['id']);
 
-// Raw DarshanQL query
+// Raw DarshJQL query
 $result = $db->query([
     'collection' => 'users',
     'where'      => [['field' => 'age', 'op' => '>=', 'value' => 18]],
@@ -83,8 +83,8 @@ php artisan vendor:publish --tag=ddb-config
 Add to your `.env`:
 
 ```env
-DARSHAN_SERVER_URL=https://db.example.com
-DARSHAN_API_KEY=your-api-key
+DDB_SERVER_URL=https://db.example.com
+DDB_API_KEY=your-api-key
 ```
 
 ### Usage with Facade

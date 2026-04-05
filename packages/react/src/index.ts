@@ -1,10 +1,10 @@
 /**
- * @module @darshan/react
- * @description React bindings for DarshanDB.
+ * @module @darshjdb/react
+ * @description React bindings for DarshJDB.
  *
  * Provides a context provider and a suite of hooks for real-time queries,
  * mutations, presence, authentication, and file storage -- all backed by
- * the framework-agnostic `@darshan/client` core.
+ * the framework-agnostic `@darshjdb/client` core.
  *
  * @example
  * ```tsx
@@ -15,7 +15,7 @@
  *   usePresence,
  *   useAuth,
  *   useStorage,
- * } from '@darshan/react';
+ * } from '@darshjdb/react';
  * ```
  *
  * @packageDocumentation

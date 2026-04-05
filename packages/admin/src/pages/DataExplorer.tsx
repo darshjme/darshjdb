@@ -13,7 +13,7 @@ import {
 import { DataTable } from "../components/DataTable";
 import { Badge } from "../components/Badge";
 import { mockEntityTypes, mockRecords } from "../lib/mock-data";
-import { fetchSchema, fetchEntities, queryDarshanQL } from "../lib/api";
+import { fetchSchema, fetchEntities, queryDarshJQL } from "../lib/api";
 import { cn, formatNumber } from "../lib/utils";
 import type { EntityType, EntityRecord } from "../types";
 
@@ -88,13 +88,13 @@ export function DataExplorer() {
     setQueryText(`SELECT * FROM "${selectedEntity.name}" LIMIT 100`);
   }, [selectedEntity]);
 
-  // ── Run DarshanQL query ───────────────────────────────────────────
+  // ── Run DarshJQL query ───────────────────────────────────────────
   const runQuery = useCallback(async () => {
     setLoading(true);
     try {
-      // Parse simple SELECT-style into DarshanQL JSON object
-      // For now, just fetch entity data; real DarshanQL goes through /api/query
-      const results = await queryDarshanQL({
+      // Parse simple SELECT-style into DarshJQL JSON object
+      // For now, just fetch entity data; real DarshJQL goes through /api/query
+      const results = await queryDarshJQL({
         type: selectedEntity.name,
         $limit: 100,
       });
@@ -166,8 +166,8 @@ export function DataExplorer() {
           <div className="flex items-center gap-2 px-4 py-1.5 bg-amber-500/10 border-b border-amber-500/20 text-amber-400 text-xs">
             <AlertTriangle className="w-3.5 h-3.5" />
             <span>
-              Server unreachable -- showing mock data. Start DarshanDB on{" "}
-              <code className="font-mono text-amber-300">{import.meta.env.VITE_DARSHAN_URL || "localhost:7700"}</code>
+              Server unreachable -- showing mock data. Start DarshJDB on{" "}
+              <code className="font-mono text-amber-300">{import.meta.env.VITE_DDB_URL || "localhost:7700"}</code>
             </span>
           </div>
         )}
@@ -249,7 +249,7 @@ export function DataExplorer() {
               </div>
               <div className="flex items-center justify-between mt-2">
                 <span className="text-[10px] text-zinc-600">
-                  DarshanQL -- use Cmd+Enter to execute
+                  DarshJQL -- use Cmd+Enter to execute
                 </span>
                 <button className="btn-primary text-xs py-1.5" onClick={runQuery}>
                   <Play className="w-3 h-3" />

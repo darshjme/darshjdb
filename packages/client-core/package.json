@@ -1,7 +1,7 @@
 {
-  "name": "@darshan/client",
+  "name": "@darshjdb/client",
   "version": "0.1.0",
-  "description": "Framework-agnostic TypeScript client SDK for DarshanDB",
+  "description": "Framework-agnostic TypeScript client SDK for DarshJDB",
   "type": "module",
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
@@ -45,11 +45,11 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/darshjme/darshandb",
+    "url": "https://github.com/darshjme/darshjdb",
     "directory": "packages/client-core"
   },
   "keywords": [
-    "darshandb",
+    "darshjdb",
     "database",
     "client",
     "sdk",
@@ -58,9 +58,9 @@
     "offline"
   ],
   "author": "Darsh Joshi",
-  "homepage": "https://github.com/darshjme/darshandb/tree/main/packages/client-core#readme",
+  "homepage": "https://github.com/darshjme/darshjdb/tree/main/packages/client-core#readme",
   "bugs": {
-    "url": "https://github.com/darshjme/darshandb/issues"
+    "url": "https://github.com/darshjme/darshjdb/issues"
   },
   "publishConfig": {
     "access": "public"

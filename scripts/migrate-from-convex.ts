@@ -1,8 +1,8 @@
 #!/usr/bin/env npx tsx
 /**
- * Convex-to-DarshanDB migration script.
+ * Convex-to-DarshJDB migration script.
  *
- * Reads exported Convex data (JSON) and writes it to a DarshanDB instance
+ * Reads exported Convex data (JSON) and writes it to a DarshJDB instance
  * via the REST API, converting each document field into a triple
  * (entity_id, attribute, value).
  *
@@ -55,7 +55,7 @@ function parseArgs(): MigrateArgs {
     process.exit(1);
   }
   if (!flags['url'] && !flags['dry-run']) {
-    console.error('Error: --url is required (DarshanDB server URL, e.g. http://localhost:7700)');
+    console.error('Error: --url is required (DarshJDB server URL, e.g. http://localhost:7700)');
     process.exit(1);
   }
 
@@ -113,7 +113,7 @@ function loadConvexData(inputPath: string): TableData {
 }
 
 /* -------------------------------------------------------------------------- */
-/*  Convert Convex documents to DarshanDB mutation ops                         */
+/*  Convert Convex documents to DarshJDB mutation ops                         */
 /* -------------------------------------------------------------------------- */
 
 interface MutateOp {
@@ -124,7 +124,7 @@ interface MutateOp {
 }
 
 /**
- * Convert a Convex document into a DarshanDB set operation.
+ * Convert a Convex document into a DarshJDB set operation.
  *
  * Convex internal fields are mapped:
  *   _id           -> used as entity id
@@ -156,7 +156,7 @@ function convexDocToOp(tableName: string, doc: ConvexDocument): MutateOp {
 }
 
 /* -------------------------------------------------------------------------- */
-/*  DarshanDB REST client                                                      */
+/*  DarshJDB REST client                                                      */
 /* -------------------------------------------------------------------------- */
 
 async function sendBatch(
@@ -284,7 +284,7 @@ function progressBar(current: number, total: number, width = 30): string {
 async function main(): Promise<void> {
   const config = parseArgs();
 
-  console.log('=== Convex -> DarshanDB Migration ===\n');
+  console.log('=== Convex -> DarshJDB Migration ===\n');
   console.log(`  Input:      ${config.input}`);
   console.log(`  Server:     ${config.url}`);
   console.log(`  Batch size: ${config.batchSize}`);

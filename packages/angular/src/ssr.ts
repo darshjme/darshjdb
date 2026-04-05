@@ -11,7 +11,7 @@
  *
  * @example
  * ```typescript
- * import { darshanTransferQuery } from '@darshan/angular';
+ * import { darshanTransferQuery } from '@darshjdb/angular';
  *
  * @Component({
  *   template: `
@@ -45,9 +45,9 @@ import {
 } from '@angular/core';
 import { isPlatformServer, isPlatformBrowser } from '@angular/common';
 
-import { DARSHAN_CLIENT } from './tokens';
-import type { DarshanError, QueryOptions } from './types';
-import { DARSHAN_TRANSFER_KEY_PREFIX } from './types';
+import { DDB_CLIENT } from './tokens';
+import type { DarshJError, QueryOptions } from './types';
+import { DDB_TRANSFER_KEY_PREFIX } from './types';
 
 /**
  * Result shape for SSR-aware queries. Identical to `SignalQueryResult`
@@ -59,7 +59,7 @@ export interface TransferQueryResult<T> {
   /** Whether the query is loading. `false` immediately on client if transfer data exists. */
   readonly isLoading: Signal<boolean>;
   /** Query error, or `null`. */
-  readonly error: Signal<DarshanError | null>;
+  readonly error: Signal<DarshJError | null>;
   /** Whether the data was hydrated from TransferState (client-side only). */
   readonly hydrated: Signal<boolean>;
   /** Re-execute the query. */
@@ -77,7 +77,7 @@ function buildTransferKey(
 ): string {
   // JSON.stringify with sorted keys for deterministic output.
   const queryStr = JSON.stringify(query, Object.keys(query).sort());
-  return `${DARSHAN_TRANSFER_KEY_PREFIX}${collection}_${simpleHash(queryStr)}`;
+  return `${DDB_TRANSFER_KEY_PREFIX}${collection}_${simpleHash(queryStr)}`;
 }
 
 /**
@@ -96,7 +96,7 @@ function simpleHash(str: string): string {
 }
 
 /**
- * Execute a DarshanDB query with TransferState integration for SSR.
+ * Execute a DarshJDB query with TransferState integration for SSR.
  *
  * **Server behavior:**
  * 1. Executes a one-shot query via `client.query()`.
@@ -120,7 +120,7 @@ export function darshanTransferQuery<T>(
   query: Record<string, unknown>,
   options?: QueryOptions,
 ): TransferQueryResult<T> {
-  const client = inject(DARSHAN_CLIENT);
+  const client = inject(DDB_CLIENT);
   const transferState = inject(TransferState);
   const platformId = inject(PLATFORM_ID);
   const destroyRef = inject(DestroyRef);
@@ -129,7 +129,7 @@ export function darshanTransferQuery<T>(
 
   const _data: WritableSignal<T | undefined> = signal<T | undefined>(undefined);
   const _isLoading = signal(true);
-  const _error = signal<DarshanError | null>(null);
+  const _error = signal<DarshJError | null>(null);
   const _hydrated = signal(false);
 
   let _unsubscribe: (() => void) | null = null;

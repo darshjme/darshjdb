@@ -1,10 +1,10 @@
 /**
- * Type-safe DarshanQL query builder with deduplication and subscriptions.
+ * Type-safe DarshJQL query builder with deduplication and subscriptions.
  *
  * @module query
  */
 
-import type { DarshanDB } from './client.js';
+import type { DarshJDB } from './client.js';
 import type {
   QueryDescriptor,
   QueryResult,
@@ -34,7 +34,7 @@ function hashQuery(desc: QueryDescriptor): string {
 /* -------------------------------------------------------------------------- */
 
 /**
- * Fluent, type-safe query builder for DarshanQL.
+ * Fluent, type-safe query builder for DarshJQL.
  *
  * @typeParam T - The expected shape of each document in the result set.
  *
@@ -54,9 +54,9 @@ export class QueryBuilder<T = Record<string, unknown>> {
   private _privateLimit?: number;
   private _privateOffset?: number;
   private _privateSelect?: string[];
-  private _privateClient: DarshanDB;
+  private _privateClient: DarshJDB;
 
-  constructor(client: DarshanDB, collection: string) {
+  constructor(client: DarshJDB, collection: string) {
     this._privateClient = client;
     this._privateCollection = collection;
   }
@@ -178,12 +178,12 @@ let _privateSubCounter = 0;
  * Execute a one-shot query against the server.
  *
  * @typeParam T - Expected document shape.
- * @param client     - DarshanDB client instance.
+ * @param client     - DarshJDB client instance.
  * @param descriptor - Query descriptor.
  * @returns The query result set.
  */
 export async function queryOnce<T = Record<string, unknown>>(
-  client: DarshanDB,
+  client: DarshJDB,
   descriptor: QueryDescriptor,
 ): Promise<QueryResult<T>> {
   const resp = await client.send({
@@ -202,13 +202,13 @@ export async function queryOnce<T = Record<string, unknown>>(
  * identical query, only one server subscription is created.
  *
  * @typeParam T - Expected document shape.
- * @param client     - DarshanDB client instance.
+ * @param client     - DarshJDB client instance.
  * @param descriptor - Query descriptor.
  * @param callback   - Invoked on every result update.
  * @returns An unsubscribe function.
  */
 export function subscribe<T = Record<string, unknown>>(
-  client: DarshanDB,
+  client: DarshJDB,
   descriptor: QueryDescriptor,
   callback: SubscriptionCallback<T>,
 ): Unsubscribe {
@@ -236,7 +236,7 @@ export function subscribe<T = Record<string, unknown>>(
     client
       .send({ type: 'subscribe', payload: { subId, query: descriptor } })
       .catch((err) => {
-        console.error('[DarshanDB] Subscription error:', err);
+        console.error('[DarshJDB] Subscription error:', err);
       });
 
     client.registerSubscriptionHandler(subId, (msg: ServerMessage) => {

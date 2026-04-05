@@ -22,8 +22,8 @@ export default defineConfig({
     'next',
     'react',
     'react-dom',
-    '@darshan/client',
-    '@darshan/react',
+    '@darshjdb/client',
+    '@darshjdb/react',
   ],
   esbuildOptions(options) {
     options.jsx = 'automatic';

@@ -17,10 +17,10 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -Dwarnings
-  DATABASE_URL: postgres://darshan:darshan@localhost:5432/darshandb
-  DARSHAN_PORT: "7700"
-  DARSHAN_JWT_SECRET: ci-test-secret-do-not-use-in-production
-  DARSHAN_DEV: "1"
+  DATABASE_URL: postgres://darshan:darshan@localhost:5432/darshjdb
+  DDB_PORT: "7700"
+  DDB_JWT_SECRET: ci-test-secret-do-not-use-in-production
+  DDB_DEV: "1"
 
 jobs:
   e2e:
@@ -34,11 +34,11 @@ jobs:
         env:
           POSTGRES_USER: darshan
           POSTGRES_PASSWORD: darshan
-          POSTGRES_DB: darshandb
+          POSTGRES_DB: darshjdb
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U darshan -d darshandb"
+          --health-cmd "pg_isready -U darshan -d darshjdb"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
@@ -54,15 +54,15 @@ jobs:
 
       - name: Run database migration
         run: |
-          PGPASSWORD=darshan psql -h localhost -U darshan -d darshandb \
+          PGPASSWORD=darshan psql -h localhost -U darshan -d darshjdb \
             -f packages/server/migrations/001_initial.sql
 
       - name: Build server
-        run: cargo build --release --bin darshandb-server
+        run: cargo build --release --bin ddb-server
 
       - name: Start server
         run: |
-          ./target/release/darshandb-server &
+          ./target/release/ddb-server &
           SERVER_PID=$!
           echo "SERVER_PID=$SERVER_PID" >> $GITHUB_ENV
 
@@ -90,9 +90,9 @@ jobs:
 
       - name: Run Rust integration tests
         run: |
-          cargo test --test integration -p darshandb-server -- --test-threads=1
+          cargo test --test integration -p ddb-server -- --test-threads=1
         env:
-          DATABASE_URL: postgres://darshan:darshan@localhost:5432/darshandb
+          DATABASE_URL: postgres://darshan:darshan@localhost:5432/darshjdb
 
       - name: Stop server
         if: always()

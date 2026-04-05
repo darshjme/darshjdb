@@ -1,5 +1,5 @@
 /**
- * Comprehensive tests for @darshan/react hooks and provider.
+ * Comprehensive tests for @darshjdb/react hooks and provider.
  *
  * These tests cover:
  *  - DarshanProvider context creation

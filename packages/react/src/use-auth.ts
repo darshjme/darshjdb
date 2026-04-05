@@ -5,7 +5,7 @@
  *
  * @example
  * ```tsx
- * import { useAuth } from '@darshan/react';
+ * import { useAuth } from '@darshjdb/react';
  *
  * function AuthGate({ children }: { children: React.ReactNode }) {
  *   const { user, isLoading, signIn, signOut } = useAuth();

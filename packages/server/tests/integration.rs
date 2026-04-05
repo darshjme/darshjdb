@@ -4,14 +4,14 @@
 //! environment variable to enable them:
 //!
 //! ```sh
-//! DATABASE_URL=postgres://darshan:darshan@localhost:5432/darshandb_test cargo test --test integration
+//! DATABASE_URL=postgres://darshan:darshan@localhost:5432/darshjdb_test cargo test --test integration
 //! ```
 //!
 //! If `DATABASE_URL` is not set, every test silently passes (returns early).
 //! Each test creates its own data in isolated entity namespaces and cleans
 //! up after itself so tests can run in parallel without interference.
 //!
-//! **72 integration tests** across 9 categories:
+//! **71 integration tests** across 9 categories:
 //! - Triple store core: 11
 //! - Auth password provider: 10
 //! - Auth session manager: 7
@@ -160,20 +160,10 @@ macro_rules! ti {
     };
 }
 
-fn run_ql(
-    pool: &PgPool,
-    q: &serde_json::Value,
-) -> std::pin::Pin<
-    Box<dyn std::future::Future<Output = Vec<ddb_server::query::QueryResultRow>> + Send + '_>,
-> {
-    let q = q.clone();
-    Box::pin(async move {
-        let ast = ddb_server::query::parse_darshan_ql(&q).expect("parse");
-        let plan = ddb_server::query::plan_query(&ast).expect("plan");
-        ddb_server::query::execute_query(pool, &plan)
-            .await
-            .expect("exec")
-    })
+async fn run_ql(pool: &PgPool, q: &serde_json::Value) -> Vec<ddb_server::query::QueryResultRow> {
+    let ast = ddb_server::query::parse_darshan_ql(q).expect("parse");
+    let plan = ddb_server::query::plan_query(&ast).expect("plan");
+    ddb_server::query::execute_query(pool, &plan).await.expect("exec")
 }
 
 // ===========================================================================
@@ -470,9 +460,10 @@ async fn test_auth_duplicate_email() {
     .execute(&pool)
     .await;
     assert!(r.is_err());
+    let err_str = r.unwrap_err().to_string();
     assert!(
-        r.unwrap_err().to_string().contains("duplicate")
-            || r.as_ref().unwrap_err().to_string().contains("unique")
+        err_str.contains("duplicate") || err_str.contains("unique"),
+        "got: {err_str}"
     );
     cleanup_user(&pool, &email).await;
 }
@@ -987,7 +978,7 @@ async fn test_data_json_object() {
     };
     let store = ddb_server::triple_store::PgTripleStore::new_lazy(pool.clone());
     let eid = Uuid::new_v4();
-    let val = json!({"a": {"b": "c"}, "tags": [1, 2], "x": 3.14});
+    let val = json!({"a": {"b": "c"}, "tags": [1, 2], "x": 2.78});
     let tx = store
         .set_triples(&[ti!(eid, "u/meta", val.clone())])
         .await
@@ -1063,7 +1054,7 @@ async fn test_data_types_roundtrip() {
         .set_triples(&[
             ti!(eid, "t/bool", json!(true), 2),
             ti!(eid, "t/int", json!(42), 1),
-            ti!(eid, "t/float", json!(3.14), 1),
+            ti!(eid, "t/float", json!(2.78), 1),
             ti!(eid, "t/arr", json!([1, 2, 3])),
         ])
         .await
@@ -1397,62 +1388,57 @@ async fn test_mut_empty_batch() {
 // 7. PERMISSIONS (5)
 // ===========================================================================
 
+fn make_auth_ctx(roles: Vec<String>) -> ddb_server::auth::AuthContext {
+    ddb_server::auth::AuthContext {
+        user_id: Uuid::new_v4(),
+        session_id: Uuid::new_v4(),
+        roles,
+        ip: "127.0.0.1".into(),
+        user_agent: "test".into(),
+        device_fingerprint: "test".into(),
+    }
+}
+
 #[tokio::test]
 async fn test_perm_user_read() {
     let e = ddb_server::auth::build_default_engine();
-    assert!(
-        ddb_server::auth::evaluate_permission(
-            &["user".into()],
-            "x",
-            ddb_server::auth::Operation::Read,
-            &e
-        )
-        .allowed
-    );
+    let ctx = make_auth_ctx(vec!["user".into()]);
+    assert!(ddb_server::auth::evaluate_permission(&ctx, "x", ddb_server::auth::Operation::Read, None, &e).allowed);
 }
 
 #[tokio::test]
 async fn test_perm_user_create() {
     let e = ddb_server::auth::build_default_engine();
-    assert!(
-        ddb_server::auth::evaluate_permission(
-            &["user".into()],
-            "x",
-            ddb_server::auth::Operation::Create,
-            &e
-        )
-        .allowed
-    );
+    let ctx = make_auth_ctx(vec!["user".into()]);
+    assert!(ddb_server::auth::evaluate_permission(&ctx, "x", ddb_server::auth::Operation::Create, None, &e).allowed);
 }
 
 #[tokio::test]
 async fn test_perm_admin_all() {
     let e = ddb_server::auth::build_default_engine();
+    let ctx = make_auth_ctx(vec!["admin".into()]);
     for op in [
         ddb_server::auth::Operation::Read,
         ddb_server::auth::Operation::Create,
         ddb_server::auth::Operation::Update,
         ddb_server::auth::Operation::Delete,
     ] {
-        assert!(ddb_server::auth::evaluate_permission(&["admin".into()], "x", op, &e).allowed);
+        assert!(ddb_server::auth::evaluate_permission(&ctx, "x", op, None, &e).allowed);
     }
 }
 
 #[tokio::test]
 async fn test_perm_unknown_role() {
     let e = ddb_server::auth::build_default_engine();
-    let _ = ddb_server::auth::evaluate_permission(
-        &["xyz".into()],
-        "e",
-        ddb_server::auth::Operation::Read,
-        &e,
-    );
+    let ctx = make_auth_ctx(vec!["xyz".into()]);
+    let _ = ddb_server::auth::evaluate_permission(&ctx, "e", ddb_server::auth::Operation::Read, None, &e);
 }
 
 #[tokio::test]
 async fn test_perm_empty_roles() {
     let e = ddb_server::auth::build_default_engine();
-    let _ = ddb_server::auth::evaluate_permission(&[], "e", ddb_server::auth::Operation::Read, &e);
+    let ctx = make_auth_ctx(vec![]);
+    let _ = ddb_server::auth::evaluate_permission(&ctx, "e", ddb_server::auth::Operation::Read, None, &e);
 }
 
 // ===========================================================================

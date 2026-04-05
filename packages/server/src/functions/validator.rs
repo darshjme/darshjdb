@@ -56,7 +56,7 @@ impl fmt::Display for ValidationError {
 
 /// Describes the expected shape and constraints of a function argument.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(tag = "type", rename_all = "camelCase")]
+#[serde(tag = "type", content = "value", rename_all = "camelCase")]
 pub enum ArgSchema {
     /// A UTF-8 string with optional length bounds.
     String {

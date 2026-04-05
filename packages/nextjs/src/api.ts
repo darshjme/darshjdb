@@ -1,13 +1,13 @@
 /**
- * @module @darshan/nextjs/api
+ * @module @darshjdb/nextjs/api
  *
- * API route helpers for DarshanDB. Wraps Next.js API route handlers
- * with authenticated DarshanDB context.
+ * API route helpers for DarshJDB. Wraps Next.js API route handlers
+ * with authenticated DarshJDB context.
  *
  * @example
  * ```ts
  * // pages/api/users.ts (Pages Router)
- * import { withDarshan } from '@darshan/nextjs/api';
+ * import { withDarshan } from '@darshjdb/nextjs/api';
  *
  * export default withDarshan(async (req, res, { db, session }) => {
  *   if (req.method === 'GET') {
@@ -21,7 +21,7 @@
  * @example
  * ```ts
  * // app/api/users/route.ts (App Router)
- * import { withDarshanRoute } from '@darshan/nextjs/api';
+ * import { withDarshanRoute } from '@darshjdb/nextjs/api';
  *
  * export const GET = withDarshanRoute(async ({ db, session, request }) => {
  *   const users = await db.collection('users').find();
@@ -33,7 +33,7 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
 import type { NextRequest } from 'next/server';
 import { queryServer, mutateServer } from './server';
-import { DARSHAN_SESSION_COOKIE } from './middleware';
+import { DDB_SESSION_COOKIE } from './middleware';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -49,7 +49,7 @@ export interface DarshanSession {
 
 /** Context injected into Pages Router API handlers by `withDarshan`. */
 export interface DarshanApiContext {
-  /** Query server data using DarshanQL. */
+  /** Query server data using DarshJQL. */
   query: typeof queryServer;
   /** Mutate server data. */
   mutate: typeof mutateServer;
@@ -59,7 +59,7 @@ export interface DarshanApiContext {
 
 /** Context injected into App Router route handlers by `withDarshanRoute`. */
 export interface DarshanRouteContext {
-  /** Query server data using DarshanQL. */
+  /** Query server data using DarshJQL. */
   query: typeof queryServer;
   /** Mutate server data. */
   mutate: typeof mutateServer;
@@ -72,7 +72,7 @@ export interface DarshanRouteContext {
 }
 
 /**
- * A Pages Router API handler augmented with DarshanDB context.
+ * A Pages Router API handler augmented with DarshJDB context.
  * @see {@link withDarshan}
  */
 export type DarshanApiHandler = (
@@ -82,7 +82,7 @@ export type DarshanApiHandler = (
 ) => Promise<void> | void;
 
 /**
- * An App Router route handler augmented with DarshanDB context.
+ * An App Router route handler augmented with DarshJDB context.
  * @see {@link withDarshanRoute}
  */
 export type DarshanRouteHandler = (
@@ -153,9 +153,9 @@ function extractSessionFromRequest(
 // ---------------------------------------------------------------------------
 
 /**
- * Wrap a Pages Router API route handler with DarshanDB context.
+ * Wrap a Pages Router API route handler with DarshJDB context.
  *
- * Injects the admin `DarshanDB` and session information into the
+ * Injects the admin `DarshJDB` and session information into the
  * handler. Optionally enforces authentication and method restrictions.
  *
  * @param handler - The API route handler.
@@ -165,7 +165,7 @@ function extractSessionFromRequest(
  * @example
  * ```ts
  * // pages/api/posts.ts
- * import { withDarshan } from '@darshan/nextjs/api';
+ * import { withDarshan } from '@darshjdb/nextjs/api';
  *
  * export default withDarshan(
  *   async (req, res, { db, session }) => {
@@ -189,7 +189,7 @@ export function withDarshan(
 ): (req: NextApiRequest, res: NextApiResponse) => Promise<void> {
   const {
     requireAuth = false,
-    cookieName = DARSHAN_SESSION_COOKIE,
+    cookieName = DDB_SESSION_COOKIE,
     methods,
   } = options;
 
@@ -224,7 +224,7 @@ export function withDarshan(
     } catch (error) {
       const message =
         error instanceof Error ? error.message : 'Internal server error';
-      console.error(`[DarshanDB] API route error: ${message}`);
+      console.error(`[DarshJDB] API route error: ${message}`);
 
       if (!res.headersSent) {
         res.status(500).json({
@@ -241,7 +241,7 @@ export function withDarshan(
 // ---------------------------------------------------------------------------
 
 /**
- * Wrap an App Router route handler with DarshanDB context.
+ * Wrap an App Router route handler with DarshJDB context.
  *
  * Returns a function compatible with Next.js App Router route exports
  * (`GET`, `POST`, etc.). Injects the admin client and session.
@@ -253,7 +253,7 @@ export function withDarshan(
  * @example
  * ```ts
  * // app/api/users/route.ts
- * import { withDarshanRoute } from '@darshan/nextjs/api';
+ * import { withDarshanRoute } from '@darshjdb/nextjs/api';
  *
  * export const GET = withDarshanRoute(async ({ db }) => {
  *   const users = await db.collection('users').find();
@@ -276,7 +276,7 @@ export function withDarshanRoute(
 ): (request: NextRequest, context: { params: Record<string, string | string[]> }) => Promise<Response> {
   const {
     requireAuth = false,
-    cookieName = DARSHAN_SESSION_COOKIE,
+    cookieName = DDB_SESSION_COOKIE,
   } = options;
 
   return async (
@@ -311,7 +311,7 @@ export function withDarshanRoute(
     } catch (error) {
       const message =
         error instanceof Error ? error.message : 'Internal server error';
-      console.error(`[DarshanDB] Route handler error: ${message}`);
+      console.error(`[DarshJDB] Route handler error: ${message}`);
 
       return Response.json(
         {

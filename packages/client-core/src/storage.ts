@@ -1,5 +1,5 @@
 /**
- * File storage client for DarshanDB.
+ * File storage client for DarshJDB.
  *
  * Supports regular uploads, resumable uploads for files over 5 MB,
  * progress tracking, URL generation, and deletion.
@@ -7,7 +7,7 @@
  * @module storage
  */
 
-import type { DarshanDB } from './client.js';
+import type { DarshJDB } from './client.js';
 import type { UploadOptions, UploadResult } from './types.js';
 
 /* -------------------------------------------------------------------------- */
@@ -25,7 +25,7 @@ const CHUNK_SIZE = 2 * 1024 * 1024; // 2 MB
 /* -------------------------------------------------------------------------- */
 
 /**
- * Client for uploading, fetching, and deleting files stored in DarshanDB.
+ * Client for uploading, fetching, and deleting files stored in DarshJDB.
  *
  * @example
  * ```ts
@@ -44,16 +44,16 @@ const CHUNK_SIZE = 2 * 1024 * 1024; // 2 MB
  * ```
  */
 export class StorageClient {
-  private _privateClient: DarshanDB;
+  private _privateClient: DarshJDB;
 
-  constructor(client: DarshanDB) {
+  constructor(client: DarshJDB) {
     this._privateClient = client;
   }
 
   /* -- Upload ------------------------------------------------------------- */
 
   /**
-   * Upload a file to DarshanDB storage.
+   * Upload a file to DarshJDB storage.
    *
    * Files under 5 MB are uploaded in a single request. Larger files
    * use a resumable, chunked upload protocol.

@@ -152,8 +152,8 @@ def sign_in(email: str, password: str, db: DarshJDB = Depends(get_db)):
 
 ```python
 # settings.py
-DARSHAN_SERVER_URL = "https://db.example.com"
-DARSHAN_API_KEY = "your-key"
+DDB_SERVER_URL = "https://db.example.com"
+DDB_API_KEY = "your-key"
 
 # ddb_client.py
 from django.conf import settings
@@ -165,8 +165,8 @@ def get_ddb() -> DarshJDB:
     global _client
     if _client is None:
         _client = DarshJDB(
-            server_url=settings.DARSHAN_SERVER_URL,
-            api_key=settings.DARSHAN_API_KEY,
+            server_url=settings.DDB_SERVER_URL,
+            api_key=settings.DDB_API_KEY,
         )
     return _client
 

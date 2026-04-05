@@ -1,14 +1,14 @@
 /**
- * @module @darshan/nextjs/pages
+ * @module @darshjdb/nextjs/pages
  *
- * Pages Router helpers for DarshanDB. Provides idiomatic wrappers around
+ * Pages Router helpers for DarshJDB. Provides idiomatic wrappers around
  * `getServerSideProps` and `getStaticProps` that inject the admin
- * DarshanDB and handle serialization.
+ * DarshJDB and handle serialization.
  *
  * @example
  * ```tsx
  * // pages/users.tsx
- * import { queryServerSide } from '@darshan/nextjs/pages';
+ * import { queryServerSide } from '@darshjdb/nextjs/pages';
  *
  * export const getServerSideProps = queryServerSide(async (db, context) => {
  *   const users = await db.collection('users').find();
@@ -23,7 +23,7 @@
  * @example
  * ```tsx
  * // pages/posts/[slug].tsx
- * import { queryStaticProps } from '@darshan/nextjs/pages';
+ * import { queryStaticProps } from '@darshjdb/nextjs/pages';
  *
  * export const getStaticProps = queryStaticProps(
  *   async (db, context) => {
@@ -45,7 +45,7 @@ import type {
   GetStaticPropsContext,
   GetStaticPropsResult,
 } from 'next';
-import type { DarshanDB } from '@darshan/client';
+import type { DarshJDB } from '@darshjdb/client';
 import type { ParsedUrlQuery } from 'querystring';
 import { getAdminDb } from './server';
 
@@ -54,7 +54,7 @@ import { getAdminDb } from './server';
 // ---------------------------------------------------------------------------
 
 /**
- * Callback for `queryServerSide`. Receives the admin DarshanDB
+ * Callback for `queryServerSide`. Receives the admin DarshJDB
  * and the standard `GetServerSidePropsContext`.
  *
  * Return a plain object of props, or `null` to trigger a 404.
@@ -63,12 +63,12 @@ export type ServerSideQueryFn<
   P extends Record<string, unknown> = Record<string, unknown>,
   Q extends ParsedUrlQuery = ParsedUrlQuery,
 > = (
-  db: DarshanDB,
+  db: DarshJDB,
   context: GetServerSidePropsContext<Q>,
 ) => Promise<P | null>;
 
 /**
- * Callback for `queryStaticProps`. Receives the admin DarshanDB
+ * Callback for `queryStaticProps`. Receives the admin DarshJDB
  * and the standard `GetStaticPropsContext`.
  *
  * Return a plain object of props, or `null` to trigger a 404.
@@ -77,7 +77,7 @@ export type StaticQueryFn<
   P extends Record<string, unknown> = Record<string, unknown>,
   Q extends ParsedUrlQuery = ParsedUrlQuery,
 > = (
-  db: DarshanDB,
+  db: DarshJDB,
   context: GetStaticPropsContext<Q>,
 ) => Promise<P | null>;
 
@@ -96,7 +96,7 @@ export interface QueryStaticOptions {
 // ---------------------------------------------------------------------------
 
 /**
- * Wrap a DarshanDB query as a `getServerSideProps` function.
+ * Wrap a DarshJDB query as a `getServerSideProps` function.
  *
  * The wrapper initializes the admin client from environment variables,
  * invokes your callback, and returns the result as Next.js props.
@@ -140,7 +140,7 @@ export function queryServerSide<
     } catch (error) {
       const message =
         error instanceof Error ? error.message : 'Unknown error';
-      console.error(`[DarshanDB] getServerSideProps error: ${message}`);
+      console.error(`[DarshJDB] getServerSideProps error: ${message}`);
       throw error;
     }
   };
@@ -151,7 +151,7 @@ export function queryServerSide<
 // ---------------------------------------------------------------------------
 
 /**
- * Wrap a DarshanDB query as a `getStaticProps` function.
+ * Wrap a DarshJDB query as a `getStaticProps` function.
  *
  * Supports ISR via the `revalidate` option. If the callback returns
  * `null`, a 404 is served.
@@ -204,7 +204,7 @@ export function queryStaticProps<
     } catch (error) {
       const message =
         error instanceof Error ? error.message : 'Unknown error';
-      console.error(`[DarshanDB] getStaticProps error: ${message}`);
+      console.error(`[DarshJDB] getStaticProps error: ${message}`);
       throw error;
     }
   };

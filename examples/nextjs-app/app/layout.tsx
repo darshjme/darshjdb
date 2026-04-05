@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import { Providers } from "./components/providers";
 
 export const metadata: Metadata = {
-  title: "DarshanDB + Next.js",
-  description: "Server Components + real-time client queries with DarshanDB",
+  title: "DarshJDB + Next.js",
+  description: "Server Components + real-time client queries with DarshJDB",
 };
 
 export default function RootLayout({

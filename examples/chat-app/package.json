@@ -1,5 +1,5 @@
 {
-  "name": "darshandb-chat-example",
+  "name": "darshjdb-chat-example",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -9,8 +9,8 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@darshan/client": "workspace:*",
-    "@darshan/react": "workspace:*",
+    "@darshjdb/client": "workspace:*",
+    "@darshjdb/react": "workspace:*",
     "react": "^18.3.0",
     "react-dom": "^18.3.0"
   },

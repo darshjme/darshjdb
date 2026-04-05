@@ -1,7 +1,7 @@
 {
-  "name": "@darshan/nextjs",
+  "name": "@darshjdb/nextjs",
   "version": "0.1.0",
-  "description": "Next.js SDK for DarshanDB \u2014 Server Components, App Router, Pages Router, and Middleware",
+  "description": "Next.js SDK for DarshJDB \u2014 Server Components, App Router, Pages Router, and Middleware",
   "type": "module",
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
@@ -80,8 +80,8 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@darshan/client": "*",
-    "@darshan/react": "*"
+    "@darshjdb/client": "*",
+    "@darshjdb/react": "*"
   },
   "peerDependencies": {
     "next": ">=13.0.0",
@@ -107,11 +107,11 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/darshjme/darshandb",
+    "url": "https://github.com/darshjme/darshjdb",
     "directory": "packages/nextjs"
   },
   "keywords": [
-    "darshandb",
+    "darshjdb",
     "nextjs",
     "react",
     "server-components",
@@ -122,9 +122,9 @@
     "sync"
   ],
   "author": "Darsh Joshi",
-  "homepage": "https://github.com/darshjme/darshandb/tree/main/packages/nextjs#readme",
+  "homepage": "https://github.com/darshjme/darshjdb/tree/main/packages/nextjs#readme",
   "bugs": {
-    "url": "https://github.com/darshjme/darshandb/issues"
+    "url": "https://github.com/darshjme/darshjdb/issues"
   },
   "publishConfig": {
     "access": "public"

@@ -36,7 +36,7 @@ import {
   type Signal,
 } from '@angular/core';
 
-import { DARSHAN_CLIENT, type PresenceHandle } from './tokens';
+import { DDB_CLIENT, type PresenceHandle } from './tokens';
 import type { PresenceUser } from './types';
 
 // ── presenceUserCount ──────────────────────────────────────────────
@@ -62,7 +62,7 @@ import type { PresenceUser } from './types';
  * ```
  */
 export function presenceUserCount(roomId: string): Signal<number> {
-  const client = inject(DARSHAN_CLIENT);
+  const client = inject(DDB_CLIENT);
   const destroyRef = inject(DestroyRef);
 
   const _count = signal(0);
@@ -101,7 +101,7 @@ export interface DarshanPresenceContext<TData = Record<string, unknown>> {
 }
 
 /**
- * Structural directive that joins a DarshanDB presence room and
+ * Structural directive that joins a DarshJDB presence room and
  * exposes the state via template variables.
  *
  * Automatically leaves the room when the directive is destroyed.
@@ -139,7 +139,7 @@ export class DarshanPresenceDirective<TData = Record<string, unknown>>
 
   private readonly _templateRef = inject(TemplateRef<DarshanPresenceContext<TData>>);
   private readonly _viewContainer = inject(ViewContainerRef);
-  private readonly _client = inject(DARSHAN_CLIENT);
+  private readonly _client = inject(DDB_CLIENT);
 
   private _handle: PresenceHandle<TData> | null = null;
   private _context: DarshanPresenceContext<TData> = {

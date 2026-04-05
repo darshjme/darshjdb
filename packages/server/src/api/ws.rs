@@ -873,19 +873,20 @@ async fn handle_mutation(
         }
     }
 
-    if !all_triples.is_empty() {
-        if let Err(e) = PgTripleStore::set_triples_in_tx(&mut db_tx, &all_triples, tx_id).await {
-            let _ = send_message(
-                socket,
-                &ServerMessage::MutErr {
-                    id: req_id,
-                    error: format!("write: {e}"),
-                },
-                codec,
-            )
-            .await;
-            return;
-        }
+    if !all_triples.is_empty()
+        && let Err(e) =
+            PgTripleStore::set_triples_in_tx(&mut db_tx, &all_triples, tx_id).await
+    {
+        let _ = send_message(
+            socket,
+            &ServerMessage::MutErr {
+                id: req_id,
+                error: format!("write: {e}"),
+            },
+            codec,
+        )
+        .await;
+        return;
     }
     if let Err(e) = db_tx.commit().await {
         let _ = send_message(

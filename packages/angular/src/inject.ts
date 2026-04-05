@@ -1,14 +1,14 @@
 /**
  * @module inject
- * @description Convenience injection functions for DarshanDB services.
+ * @description Convenience injection functions for DarshJDB services.
  *
  * These functions wrap Angular's `inject()` to provide typed, discoverable
- * access to DarshanDB capabilities from components, directives, pipes,
+ * access to DarshJDB capabilities from components, directives, pipes,
  * and other injection contexts.
  *
  * @example
  * ```typescript
- * import { injectDarshan, injectDarshanAuth } from '@darshan/angular';
+ * import { injectDarshan, injectDarshanAuth } from '@darshjdb/angular';
  *
  * @Component({ ... })
  * export class DashboardComponent {
@@ -20,11 +20,11 @@
 
 import { inject, signal, computed, DestroyRef, type Signal } from '@angular/core';
 
-import { DARSHAN_CLIENT, DARSHAN_CONFIG, type DarshanClient } from './tokens';
+import { DDB_CLIENT, DDB_CONFIG, type DarshanClient } from './tokens';
 import type {
   DarshanConfig,
   DarshanUser,
-  DarshanError,
+  DarshJError,
   PresenceUser,
 } from './types';
 
@@ -37,7 +37,7 @@ import type {
  * commonly used query/mutation operations.
  */
 export interface DarshanHandle {
-  /** The underlying DarshanDB client instance. */
+  /** The underlying DarshJDB client instance. */
   readonly client: DarshanClient;
   /** The active configuration. */
   readonly config: DarshanConfig;
@@ -48,7 +48,7 @@ export interface DarshanHandle {
 }
 
 /**
- * Inject the core DarshanDB handle.
+ * Inject the core DarshJDB handle.
  *
  * Must be called in an injection context (constructor, field initializer,
  * or `runInInjectionContext`).
@@ -68,8 +68,8 @@ export interface DarshanHandle {
  * ```
  */
 export function injectDarshan(): DarshanHandle {
-  const client = inject(DARSHAN_CLIENT);
-  const config = inject(DARSHAN_CONFIG);
+  const client = inject(DDB_CLIENT);
+  const config = inject(DDB_CONFIG);
 
   return {
     client,
@@ -97,7 +97,7 @@ export interface DarshanAuthHandle {
   /** Whether a user is currently signed in (computed). */
   readonly isAuthenticated: Signal<boolean>;
   /** The last auth error, or `null`. */
-  readonly error: Signal<DarshanError | null>;
+  readonly error: Signal<DarshJError | null>;
   /** Sign in with the given credentials. */
   signIn(credentials: Record<string, unknown>): Promise<void>;
   /** Register a new user. */
@@ -109,7 +109,7 @@ export interface DarshanAuthHandle {
 /**
  * Inject reactive authentication state and actions.
  *
- * Automatically subscribes to auth state changes from the DarshanDB
+ * Automatically subscribes to auth state changes from the DarshJDB
  * client and exposes them as Angular Signals. The subscription is
  * cleaned up when the injection context is destroyed.
  *
@@ -133,12 +133,12 @@ export interface DarshanAuthHandle {
  * ```
  */
 export function injectDarshanAuth(): DarshanAuthHandle {
-  const client = inject(DARSHAN_CLIENT);
+  const client = inject(DDB_CLIENT);
   const destroyRef = inject(DestroyRef);
 
   const _user = signal<DarshanUser | null>(null);
   const _isLoading = signal(false);
-  const _error = signal<DarshanError | null>(null);
+  const _error = signal<DarshJError | null>(null);
 
   // Seed with current auth state.
   const currentUser = client.getUser();
@@ -194,7 +194,7 @@ export function injectDarshanAuth(): DarshanAuthHandle {
           tokenExpiresAt: result.expiresAt,
         });
       } catch (err) {
-        _error.set(toDarshanError(err));
+        _error.set(toDarshJError(err));
       } finally {
         _isLoading.set(false);
       }
@@ -214,7 +214,7 @@ export function injectDarshanAuth(): DarshanAuthHandle {
           tokenExpiresAt: result.expiresAt,
         });
       } catch (err) {
-        _error.set(toDarshanError(err));
+        _error.set(toDarshJError(err));
       } finally {
         _isLoading.set(false);
       }
@@ -227,7 +227,7 @@ export function injectDarshanAuth(): DarshanAuthHandle {
         await client.signOut();
         _user.set(null);
       } catch (err) {
-        _error.set(toDarshanError(err));
+        _error.set(toDarshJError(err));
       } finally {
         _isLoading.set(false);
       }
@@ -292,7 +292,7 @@ export function injectDarshanPresence<TData = Record<string, unknown>>(
   roomId: string,
   initialData: TData = {} as TData,
 ): DarshanPresenceHandle<TData> {
-  const client = inject(DARSHAN_CLIENT);
+  const client = inject(DDB_CLIENT);
   const destroyRef = inject(DestroyRef);
 
   const _users = signal<readonly PresenceUser<TData>[]>([]);
@@ -334,18 +334,18 @@ export function injectDarshanPresence<TData = Record<string, unknown>>(
 // ── Helpers ────────────────────────────────────────────────────────
 
 /**
- * Normalize an unknown thrown value into a `DarshanError`.
+ * Normalize an unknown thrown value into a `DarshJError`.
  *
  * @internal
  */
-function toDarshanError(err: unknown): DarshanError {
+function toDarshJError(err: unknown): DarshJError {
   if (
     err !== null &&
     typeof err === 'object' &&
     'code' in err &&
     'message' in err
   ) {
-    return err as DarshanError;
+    return err as DarshJError;
   }
 
   if (err instanceof Error) {

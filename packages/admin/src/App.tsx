@@ -24,7 +24,7 @@ const pageTitles: Record<string, string> = {
 export function App() {
   const [cmdPaletteOpen, setCmdPaletteOpen] = useState(false);
   const location = useLocation();
-  const title = pageTitles[location.pathname] || "DarshanDB";
+  const title = pageTitles[location.pathname] || "DarshJDB";
 
   const handleKeyDown = useCallback((e: KeyboardEvent) => {
     if ((e.metaKey || e.ctrlKey) && e.key === "k") {

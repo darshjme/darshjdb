@@ -123,7 +123,7 @@ export function Settings() {
     <div className="p-6 max-w-4xl">
       <h2 className="text-lg font-semibold text-zinc-100 mb-1">Settings</h2>
       <p className="text-sm text-zinc-500 mb-6">
-        Manage your DarshanDB deployment configuration
+        Manage your DarshJDB deployment configuration
       </p>
 
       {/* Tabs */}

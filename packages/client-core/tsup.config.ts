@@ -11,7 +11,7 @@ export default defineConfig({
   minify: true,
   target: 'es2022',
   outDir: 'dist',
-  globalName: 'DarshanDB',
+  globalName: 'DarshJDB',
   external: [],
   esbuildOptions(options) {
     options.mangleProps = /^_private/;

@@ -1,6 +1,6 @@
 /**
  * @module ddb.module
- * @description NgModule-based configuration for DarshanDB.
+ * @description NgModule-based configuration for DarshJDB.
  *
  * Use `DarshJDBModule.forRoot()` in traditional NgModule-based Angular
  * applications (Angular 14+). For standalone components (Angular 16+),
@@ -9,7 +9,7 @@
  * @example
  * ```typescript
  * // app.module.ts
- * import { DarshJDBModule } from '@darshan/angular';
+ * import { DarshJDBModule } from '@darshjdb/angular';
  *
  * @NgModule({
  *   imports: [
@@ -31,11 +31,11 @@ import {
 } from '@angular/core';
 
 import type { DarshanConfig } from './types';
-import { DARSHAN_CLIENT, DARSHAN_CONFIG, type DarshanClient } from './tokens';
+import { DDB_CLIENT, DDB_CONFIG, type DarshanClient } from './tokens';
 import { createDarshanClient } from './client.factory';
 
 /**
- * Initialize the DarshanDB WebSocket connection during app bootstrap.
+ * Initialize the DarshJDB WebSocket connection during app bootstrap.
  *
  * Returned as an `APP_INITIALIZER` factory so Angular waits for the
  * connection before rendering the root component.
@@ -47,18 +47,18 @@ function initDarshanFactory(client: DarshanClient): () => Promise<void> {
 }
 
 /**
- * Angular module that configures and provides the DarshanDB client.
+ * Angular module that configures and provides the DarshJDB client.
  *
  * Call `DarshJDBModule.forRoot(config)` **once** in your root module.
- * Child modules that need DarshanDB services should simply inject
+ * Child modules that need DarshJDB services should simply inject
  * the tokens — no additional imports required.
  */
 @NgModule()
 export class DarshJDBModule implements OnDestroy {
   /**
-   * Configure the DarshanDB client for the root injector.
+   * Configure the DarshJDB client for the root injector.
    *
-   * @param config - Connection configuration for the DarshanDB server.
+   * @param config - Connection configuration for the DarshJDB server.
    * @returns A `ModuleWithProviders` that registers all necessary providers.
    *
    * @example
@@ -74,15 +74,15 @@ export class DarshJDBModule implements OnDestroy {
     return {
       ngModule: DarshJDBModule,
       providers: [
-        { provide: DARSHAN_CONFIG, useValue: config },
+        { provide: DDB_CONFIG, useValue: config },
         {
-          provide: DARSHAN_CLIENT,
+          provide: DDB_CLIENT,
           useFactory: () => createDarshanClient(config),
         },
         {
           provide: APP_INITIALIZER,
           useFactory: initDarshanFactory,
-          deps: [DARSHAN_CLIENT],
+          deps: [DDB_CLIENT],
           multi: true,
         },
       ],

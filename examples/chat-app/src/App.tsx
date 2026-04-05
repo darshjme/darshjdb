@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from "react";
-import { useQuery, useMutation, usePresence, useAuth } from "@darshan/react";
+import { useQuery, useMutation, usePresence, useAuth } from "@darshjdb/react";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -30,7 +30,7 @@ function AuthGate({ children }: { children: React.ReactNode }) {
     return (
       <div>
         <header style={headerStyle}>
-          <h1 style={{ margin: 0, fontSize: 18 }}>DarshanDB Chat</h1>
+          <h1 style={{ margin: 0, fontSize: 18 }}>DarshJDB Chat</h1>
           <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
             <span style={{ fontSize: 14, color: "#666" }}>
               {user.displayName ?? user.email}
@@ -61,7 +61,7 @@ function AuthGate({ children }: { children: React.ReactNode }) {
 
   return (
     <div style={{ maxWidth: 360, margin: "80px auto", fontFamily: "system-ui" }}>
-      <h1 style={{ marginBottom: 24 }}>DarshanDB Chat</h1>
+      <h1 style={{ marginBottom: 24 }}>DarshJDB Chat</h1>
       <form onSubmit={handleSubmit} style={{ display: "flex", flexDirection: "column", gap: 12 }}>
         {mode === "signup" && (
           <input

@@ -1,5 +1,5 @@
 /**
- * Authentication client for DarshanDB.
+ * Authentication client for DarshJDB.
  *
  * Supports email/password sign-up and sign-in, OAuth popup flows,
  * automatic token refresh, and pluggable token storage.
@@ -7,7 +7,7 @@
  * @module auth
  */
 
-import type { DarshanDB } from './client.js';
+import type { DarshJDB } from './client.js';
 import type {
   User,
   AuthTokens,
@@ -95,14 +95,14 @@ class LocalStorageAdapter implements TokenStorage {
  * ```
  */
 export class AuthClient {
-  private _privateClient: DarshanDB;
+  private _privateClient: DarshJDB;
   private _privateStorage: TokenStorage;
   private _privateUser: User | null = null;
   private _privateTokens: AuthTokens | null = null;
   private _privateListeners = new Set<AuthStateCallback>();
   private _privateRefreshTimer: ReturnType<typeof setTimeout> | null = null;
 
-  constructor(client: DarshanDB, storage?: TokenStorage) {
+  constructor(client: DarshJDB, storage?: TokenStorage) {
     this._privateClient = client;
     this._privateStorage = storage ?? new LocalStorageAdapter();
   }
@@ -427,7 +427,7 @@ export class AuthClient {
       try {
         await this._privateRefreshTokens();
       } catch {
-        console.warn('[DarshanDB Auth] Auto-refresh failed; clearing session.');
+        console.warn('[DarshJDB Auth] Auto-refresh failed; clearing session.');
         await this._privateClearSession();
       }
     }, delay);

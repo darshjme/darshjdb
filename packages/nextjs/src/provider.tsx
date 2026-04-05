@@ -1,16 +1,16 @@
 'use client';
 
 /**
- * @module @darshan/nextjs/provider
+ * @module @darshjdb/nextjs/provider
  *
- * Client-side DarshanDB provider for Next.js App Router.
- * Wraps `@darshan/react` with automatic environment configuration
+ * Client-side DarshJDB provider for Next.js App Router.
+ * Wraps `@darshjdb/react` with automatic environment configuration
  * and SSR hydration support.
  *
  * @example
  * ```tsx
  * // app/layout.tsx
- * import { DarshanProvider } from '@darshan/nextjs/provider';
+ * import { DarshanProvider } from '@darshjdb/nextjs/provider';
  *
  * export default function RootLayout({ children }: { children: React.ReactNode }) {
  *   return (
@@ -28,9 +28,9 @@
  * @example
  * ```tsx
  * // With SSR hydration from a Server Component
- * import { DarshanProvider } from '@darshan/nextjs/provider';
- * import { dehydrate } from '@darshan/nextjs/provider';
- * import { queryServer } from '@darshan/nextjs/server';
+ * import { DarshanProvider } from '@darshjdb/nextjs/provider';
+ * import { dehydrate } from '@darshjdb/nextjs/provider';
+ * import { queryServer } from '@darshjdb/nextjs/server';
  *
  * export default async function Layout({ children }: { children: React.ReactNode }) {
  *   const users = await queryServer({ collection: 'users' });
@@ -46,7 +46,7 @@
  */
 
 import React, { type ReactNode } from 'react';
-import { DarshanProvider as DarshanReactProvider } from '@darshan/react';
+import { DarshanProvider as DarshanReactProvider } from '@darshjdb/react';
 
 // ---------------------------------------------------------------------------
 // Dehydration / Hydration types
@@ -115,18 +115,18 @@ export function dehydrate(
 // Provider Props
 // ---------------------------------------------------------------------------
 
-/** Configuration for the DarshanDB Next.js provider. */
+/** Configuration for the DarshJDB Next.js provider. */
 export interface DarshanProviderProps {
   /** Child components to render within the provider tree. */
   children: ReactNode;
 
   /**
-   * DarshanDB server URL. Defaults to `NEXT_PUBLIC_DARSHAN_URL` env var.
+   * DarshJDB server URL. Defaults to `NEXT_PUBLIC_DDB_URL` env var.
    */
   url?: string;
 
   /**
-   * Client authentication token. Defaults to `NEXT_PUBLIC_DARSHAN_TOKEN` env var.
+   * Client authentication token. Defaults to `NEXT_PUBLIC_DDB_TOKEN` env var.
    * For user-specific tokens, pass dynamically after authentication.
    */
   token?: string;
@@ -158,9 +158,9 @@ export interface DarshanProviderProps {
 // ---------------------------------------------------------------------------
 
 /**
- * Root provider for DarshanDB in Next.js applications.
+ * Root provider for DarshJDB in Next.js applications.
  *
- * Wraps `@darshan/react`'s provider with:
+ * Wraps `@darshjdb/react`'s provider with:
  * - Automatic environment variable configuration
  * - SSR hydration of server-fetched data
  * - Singleton client management across re-renders
@@ -181,15 +181,15 @@ export function DarshanProvider({
 }: DarshanProviderProps): React.JSX.Element {
   // Resolve configuration from props or environment variables
   const resolvedUrl =
-    url ?? process.env.NEXT_PUBLIC_DARSHAN_URL ?? '';
+    url ?? process.env.NEXT_PUBLIC_DDB_URL ?? '';
   const resolvedToken =
-    token ?? process.env.NEXT_PUBLIC_DARSHAN_TOKEN ?? undefined;
+    token ?? process.env.NEXT_PUBLIC_DDB_TOKEN ?? undefined;
 
   // Maintain a stable client reference across renders.
   if (!resolvedUrl) {
     throw new Error(
-      '[DarshanDB] No URL provided. Set the `url` prop or the ' +
-        'NEXT_PUBLIC_DARSHAN_URL environment variable.',
+      '[DarshJDB] No URL provided. Set the `url` prop or the ' +
+        'NEXT_PUBLIC_DDB_URL environment variable.',
     );
   }
 

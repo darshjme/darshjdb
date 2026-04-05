@@ -1,10 +1,10 @@
 /**
  * @module types
- * @description Core type definitions for the DarshanDB Angular SDK.
+ * @description Core type definitions for the DarshJDB Angular SDK.
  */
 
 /**
- * Configuration for connecting to a DarshanDB server instance.
+ * Configuration for connecting to a DarshJDB server instance.
  *
  * @example
  * ```typescript
@@ -16,10 +16,10 @@
  * ```
  */
 export interface DarshanConfig {
-  /** Base URL of the DarshanDB server (e.g., `https://db.example.com`). */
+  /** Base URL of the DarshJDB server (e.g., `https://db.example.com`). */
   readonly serverUrl: string;
 
-  /** Application identifier registered with the DarshanDB instance. */
+  /** Application identifier registered with the DarshJDB instance. */
   readonly appId: string;
 
   /**
@@ -97,7 +97,7 @@ export interface DarshanUser {
 }
 
 /**
- * JWT token pair issued by the DarshanDB auth subsystem.
+ * JWT token pair issued by the DarshJDB auth subsystem.
  */
 export interface TokenPair {
   readonly accessToken: string;
@@ -114,13 +114,13 @@ export interface QueryResult<T> {
   /** Whether the query is currently loading or reconnecting. */
   readonly isLoading: boolean;
   /** The error, if the query failed. `null` when healthy. */
-  readonly error: DarshanError | null;
+  readonly error: DarshJError | null;
 }
 
 /**
- * Structured error from the DarshanDB client layer.
+ * Structured error from the DarshJDB client layer.
  */
-export interface DarshanError {
+export interface DarshJError {
   /** Machine-readable error code. */
   readonly code: string;
   /** Human-readable description. */
@@ -166,6 +166,6 @@ export interface QueryOptions {
 }
 
 /**
- * SSR transfer state key prefix used to namespace DarshanDB cache entries.
+ * SSR transfer state key prefix used to namespace DarshJDB cache entries.
  */
-export const DARSHAN_TRANSFER_KEY_PREFIX = 'darshan_';
+export const DDB_TRANSFER_KEY_PREFIX = 'darshan_';

@@ -1,7 +1,7 @@
 /**
  * @module types
- * @description Internal type definitions for the DarshanDB React SDK.
- * These mirror the public API surface of `@darshan/client` and ensure
+ * @description Internal type definitions for the DarshJDB React SDK.
+ * These mirror the public API surface of `@darshjdb/client` and ensure
  * the React layer stays decoupled from client-core internals.
  */
 
@@ -107,7 +107,7 @@ export interface UploadResult {
 // ---------------------------------------------------------------------------
 
 /**
- * The contract that `@darshan/client` must satisfy for the React bindings
+ * The contract that `@darshjdb/client` must satisfy for the React bindings
  * to function.  The concrete class (`DarshanClient`) lives in client-core;
  * this interface is the **only** coupling point.
  */

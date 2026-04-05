@@ -1,5 +1,5 @@
 /**
- * REST/SSE transport fallback for DarshanDB.
+ * REST/SSE transport fallback for DarshJDB.
  *
  * Provides the same query/mutation/subscription API surface as the WebSocket
  * transport but uses HTTP fetch for one-shot operations and Server-Sent Events
@@ -8,7 +8,7 @@
  * @module rest
  */
 
-import type { DarshanDB } from './client.js';
+import type { DarshJDB } from './client.js';
 import type {
   QueryDescriptor,
   QueryResult,
@@ -44,11 +44,11 @@ import type {
  * ```
  */
 export class RestTransport {
-  private _privateClient: DarshanDB;
+  private _privateClient: DarshJDB;
   private _privateEventSources = new Map<string, EventSource>();
   private _privateSubCounter = 0;
 
-  constructor(client: DarshanDB) {
+  constructor(client: DarshJDB) {
     this._privateClient = client;
   }
 
@@ -138,7 +138,7 @@ export class RestTransport {
     eventSource.addEventListener('error', () => {
       // EventSource auto-reconnects by default.
       // We only log for debugging purposes.
-      console.warn(`[DarshanDB REST] SSE error on subscription ${subId}`);
+      console.warn(`[DarshJDB REST] SSE error on subscription ${subId}`);
     });
 
     let closed = false;

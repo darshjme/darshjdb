@@ -1,11 +1,11 @@
 /**
  * @module use-presence
- * @description Hook for real-time presence in a DarshanDB room.
+ * @description Hook for real-time presence in a DarshJDB room.
  * Peers automatically join on mount and leave on unmount.
  *
  * @example
  * ```tsx
- * import { usePresence } from '@darshan/react';
+ * import { usePresence } from '@darshjdb/react';
  *
  * interface CursorState {
  *   x: number;

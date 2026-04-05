@@ -1,25 +1,25 @@
 #!/usr/bin/env node
 
 /**
- * DarshanDB Node.js Connection Test
+ * DarshJDB Node.js Connection Test
  *
- * Quick script to verify the @darshan/client SDK can communicate with
- * a running DarshanDB server. Tests health, data creation, query, and auth.
+ * Quick script to verify the @darshjdb/client SDK can communicate with
+ * a running DarshJDB server. Tests health, data creation, query, and auth.
  *
  * Usage:
- *   DARSHAN_URL=http://localhost:7700 node test-connection.js
+ *   DDB_URL=http://localhost:7700 node test-connection.js
  *
  * Optional environment variables:
- *   DARSHAN_APP_ID  - Application ID (default: "node-test")
+ *   DDB_APP_ID  - Application ID (default: "node-test")
  */
 
-const DARSHAN_URL = process.env.DARSHAN_URL;
-const APP_ID = process.env.DARSHAN_APP_ID || 'node-test';
+const DDB_URL = process.env.DDB_URL;
+const APP_ID = process.env.DDB_APP_ID || 'node-test';
 
-if (!DARSHAN_URL) {
+if (!DDB_URL) {
   console.error(
-    'ERROR: DARSHAN_URL environment variable is required.\n' +
-      'Usage: DARSHAN_URL=http://localhost:7700 node test-connection.js',
+    'ERROR: DDB_URL environment variable is required.\n' +
+      'Usage: DDB_URL=http://localhost:7700 node test-connection.js',
   );
   process.exit(1);
 }
@@ -65,20 +65,20 @@ function simpleId() {
 /* -------------------------------------------------------------------------- */
 
 async function main() {
-  console.log(`\nDarshanDB Connection Test`);
-  console.log(`Server:  ${DARSHAN_URL}`);
+  console.log(`\nDarshJDB Connection Test`);
+  console.log(`Server:  ${DDB_URL}`);
   console.log(`App ID:  ${APP_ID}`);
   console.log(`---`);
 
   // ── Test 1: Health endpoint ───────────────────────────────────────────
 
   try {
-    const resp = await fetch(`${DARSHAN_URL}/health`);
+    const resp = await fetch(`${DDB_URL}/health`);
     if (!resp.ok) {
       fail('Health check', `HTTP ${resp.status}`);
     } else {
       const body = await resp.json();
-      if (body.status === 'ok' && body.service === 'darshandb') {
+      if (body.status === 'ok' && body.service === 'darshjdb') {
         pass(`Health check (version: ${body.version || 'unknown'}, triples: ${body.triples ?? '?'})`);
       } else {
         fail('Health check', `Unexpected response: ${JSON.stringify(body)}`);
@@ -93,7 +93,7 @@ async function main() {
   // ── Test 2: OpenAPI spec ──────────────────────────────────────────────
 
   try {
-    const resp = await fetch(`${DARSHAN_URL}/api/openapi.json`);
+    const resp = await fetch(`${DDB_URL}/api/openapi.json`);
     if (!resp.ok) {
       skip('OpenAPI spec', `HTTP ${resp.status}`);
     } else {
@@ -120,7 +120,7 @@ async function main() {
   };
 
   try {
-    const resp = await fetch(`${DARSHAN_URL}/api/data/node_test_entities`, {
+    const resp = await fetch(`${DDB_URL}/api/data/node_test_entities`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(testEntity),
@@ -143,7 +143,7 @@ async function main() {
   const mutateId = simpleId();
 
   try {
-    const resp = await fetch(`${DARSHAN_URL}/api/mutate`, {
+    const resp = await fetch(`${DDB_URL}/api/mutate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -174,7 +174,7 @@ async function main() {
   // ── Test 5: Query endpoint ────────────────────────────────────────────
 
   try {
-    const resp = await fetch(`${DARSHAN_URL}/api/query`, {
+    const resp = await fetch(`${DDB_URL}/api/query`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -200,8 +200,8 @@ async function main() {
   // ── Test 6: Auth signup (graceful) ────────────────────────────────────
 
   try {
-    const email = `node-test-${Date.now()}@darshandb.test`;
-    const resp = await fetch(`${DARSHAN_URL}/api/auth/signup`, {
+    const email = `node-test-${Date.now()}@darshjdb.test`;
+    const resp = await fetch(`${DDB_URL}/api/auth/signup`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -235,7 +235,7 @@ async function main() {
   // ── Test 7: Admin schema ──────────────────────────────────────────────
 
   try {
-    const resp = await fetch(`${DARSHAN_URL}/api/admin/schema`, {
+    const resp = await fetch(`${DDB_URL}/api/admin/schema`, {
       headers: { Accept: 'application/json' },
     });
 

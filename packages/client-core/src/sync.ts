@@ -6,7 +6,7 @@
  */
 
 import { openDB, type IDBPDatabase } from 'idb';
-import type { DarshanDB } from './client.js';
+import type { DarshJDB } from './client.js';
 import type {
   TxOp,
   TxId,
@@ -50,13 +50,13 @@ const MAX_REPLAY_ATTEMPTS = 5;
  * ```
  */
 export class SyncEngine {
-  private _privateClient: DarshanDB;
+  private _privateClient: DarshJDB;
   private _privateDb: IDBPDatabase | null = null;
   private _privateAppId: string;
   private _privateOptimistic = new Map<string, OptimisticUpdate>();
   private _privateIsReplaying = false;
 
-  constructor(client: DarshanDB) {
+  constructor(client: DarshJDB) {
     this._privateClient = client;
     this._privateAppId = client.appId;
   }
@@ -252,7 +252,7 @@ export class SyncEngine {
             entry.attempts++;
             if (entry.attempts >= MAX_REPLAY_ATTEMPTS) {
               console.warn(
-                `[DarshanDB Sync] Discarding queue entry ${entry.id} after ${MAX_REPLAY_ATTEMPTS} attempts`,
+                `[DarshJDB Sync] Discarding queue entry ${entry.id} after ${MAX_REPLAY_ATTEMPTS} attempts`,
               );
               await this.dequeue(entry.id);
             } else {

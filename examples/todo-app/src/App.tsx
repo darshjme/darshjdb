@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { useQuery, useMutation } from "@darshan/react";
+import { useQuery, useMutation } from "@darshjdb/react";
 
 export function App() {
   const [title, setTitle] = useState("");
@@ -32,7 +32,7 @@ export function App() {
 
   return (
     <div style={{ maxWidth: 480, margin: "40px auto", fontFamily: "system-ui" }}>
-      <h1>DarshanDB Todos</h1>
+      <h1>DarshJDB Todos</h1>
       <p style={{ color: "#666" }}>
         {todos.length} total, {done} completed
       </p>

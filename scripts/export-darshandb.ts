@@ -1,25 +1,25 @@
 #!/usr/bin/env npx tsx
 /**
- * DarshanDB data export script.
+ * DarshJDB data export script.
  *
- * Reads all data from a DarshanDB instance via the REST API and exports
+ * Reads all data from a DarshJDB instance via the REST API and exports
  * it as JSON files grouped by entity type.
  *
  * Usage:
- *   npx tsx scripts/export-darshandb.ts \
+ *   npx tsx scripts/export-darshjdb.ts \
  *     --url    http://localhost:7700    \
  *     --token  YOUR_ACCESS_TOKEN       \
  *     --output ./export                \
  *     --tables users,messages
  *
  * Options:
- *   --url      DarshanDB server URL (required)
+ *   --url      DarshJDB server URL (required)
  *   --token    Access token for authentication
- *   --output   Output directory (default: ./darshandb-export)
+ *   --output   Output directory (default: ./darshjdb-export)
  *   --tables   Comma-separated list of entity types to export (default: all)
  *   --pretty   Pretty-print JSON output (default: true)
  *
- * @module export-darshandb
+ * @module export-darshjdb
  */
 
 import * as fs from 'node:fs';
@@ -51,24 +51,24 @@ function parseArgs(): ExportArgs {
   }
 
   if (!flags['url']) {
-    console.error('Error: --url is required (DarshanDB server URL)');
+    console.error('Error: --url is required (DarshJDB server URL)');
     process.exit(1);
   }
 
   return {
     url: flags['url']!.replace(/\/+$/, ''),
     token: flags['token'] ?? '',
-    output: flags['output'] ?? './darshandb-export',
+    output: flags['output'] ?? './darshjdb-export',
     tables: flags['tables'] ? flags['tables'].split(',').map((t) => t.trim()) : null,
     pretty: flags['pretty'] !== 'false',
   };
 }
 
 /* -------------------------------------------------------------------------- */
-/*  DarshanDB REST client                                                      */
+/*  DarshJDB REST client                                                      */
 /* -------------------------------------------------------------------------- */
 
-async function queryDarshanDB(
+async function queryDarshJDB(
   url: string,
   token: string,
   query: Record<string, unknown>,
@@ -113,8 +113,8 @@ async function listEntities(
   });
 
   if (!resp.ok) {
-    // Fallback: try DarshanQL query
-    const queryResult = await queryDarshanDB(url, token, {
+    // Fallback: try DarshJQL query
+    const queryResult = await queryDarshJDB(url, token, {
       [tableName]: {},
     });
     return queryResult[tableName] ?? [];
@@ -175,7 +175,7 @@ async function discoverTables(url: string, token: string): Promise<string[]> {
 async function main(): Promise<void> {
   const config = parseArgs();
 
-  console.log('=== DarshanDB Export ===\n');
+  console.log('=== DarshJDB Export ===\n');
   console.log(`  Server:  ${config.url}`);
   console.log(`  Output:  ${config.output}`);
   console.log(`  Tables:  ${config.tables ? config.tables.join(', ') : '(auto-discover)'}\n`);

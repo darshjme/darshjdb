@@ -3,13 +3,13 @@
  * @description Standalone provider function for Angular 16+ applications.
  *
  * For applications using the standalone component API (no NgModules),
- * `provideDarshan()` is the recommended way to configure DarshanDB.
+ * `provideDarshan()` is the recommended way to configure DarshJDB.
  *
  * @example
  * ```typescript
  * // main.ts
  * import { bootstrapApplication } from '@angular/platform-browser';
- * import { provideDarshan } from '@darshan/angular';
+ * import { provideDarshan } from '@darshjdb/angular';
  * import { AppComponent } from './app.component';
  *
  * bootstrapApplication(AppComponent, {
@@ -32,17 +32,17 @@ import {
 } from '@angular/core';
 
 import type { DarshanConfig } from './types';
-import { DARSHAN_CLIENT, DARSHAN_CONFIG, type DarshanClient } from './tokens';
+import { DDB_CLIENT, DDB_CONFIG, type DarshanClient } from './tokens';
 import { createDarshanClient } from './client.factory';
 
 /**
- * Provide DarshanDB services at the environment (root) injector level.
+ * Provide DarshJDB services at the environment (root) injector level.
  *
  * This is the standalone-component equivalent of `DarshanModule.forRoot()`.
  * It registers the configuration, client factory, connection initializer,
  * and a teardown hook that disconnects on app destroy.
  *
- * @param config - Connection configuration for the DarshanDB server.
+ * @param config - Connection configuration for the DarshJDB server.
  * @returns An `EnvironmentProviders` token set for use in `bootstrapApplication`
  *          or a route's `providers` array.
  *
@@ -62,15 +62,15 @@ export function provideDarshan(
   config: DarshanConfig,
 ): EnvironmentProviders {
   return makeEnvironmentProviders([
-    { provide: DARSHAN_CONFIG, useValue: config },
+    { provide: DDB_CONFIG, useValue: config },
     {
-      provide: DARSHAN_CLIENT,
+      provide: DDB_CLIENT,
       useFactory: () => createDarshanClient(config),
     },
     {
       provide: APP_INITIALIZER,
       useFactory: (client: DarshanClient) => () => client.connect(),
-      deps: [DARSHAN_CLIENT],
+      deps: [DDB_CLIENT],
       multi: true,
     },
     {
@@ -79,7 +79,7 @@ export function provideDarshan(
         // Register disconnect on injector destroy via DestroyRef
         // (available Angular 16+). The ENVIRONMENT_INITIALIZER runs
         // once at injector creation, giving us a hook to schedule cleanup.
-        const client = inject(DARSHAN_CLIENT);
+        const client = inject(DDB_CLIENT);
         return () => {
           // The return value of ENVIRONMENT_INITIALIZER factories is
           // not used, but we capture the client reference for the

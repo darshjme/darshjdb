@@ -1,18 +1,18 @@
 /**
- * Convex compatibility layer for DarshanDB.
+ * Convex compatibility layer for DarshJDB.
  *
- * Wraps the DarshanDB client with Convex-style API aliases so teams
- * migrating from Convex can adopt DarshanDB incrementally without
+ * Wraps the DarshJDB client with Convex-style API aliases so teams
+ * migrating from Convex can adopt DarshJDB incrementally without
  * rewriting every call site at once.
  *
  * @module convex-compat
  *
  * @example
  * ```ts
- * import { DarshanDB } from '@darshan/client';
- * import { ConvexCompat } from '@darshan/client/convex-compat';
+ * import { DarshJDB } from '@darshjdb/client';
+ * import { ConvexCompat } from '@darshjdb/client/convex-compat';
  *
- * const db = new DarshanDB({ serverUrl: 'http://localhost:7700', appId: 'app' });
+ * const db = new DarshJDB({ serverUrl: 'http://localhost:7700', appId: 'app' });
  * const compat = new ConvexCompat(db);
  *
  * // Convex-style queries
@@ -28,7 +28,7 @@
  * ```
  */
 
-import type { DarshanDB } from './client.js';
+import type { DarshJDB } from './client.js';
 import { QueryBuilder } from './query.js';
 import { transact, generateId } from './transaction.js';
 import type {
@@ -88,16 +88,16 @@ const OPERATOR_MAP: Record<string, WhereOp> = {
 /* -------------------------------------------------------------------------- */
 
 /**
- * Convex compatibility wrapper around a DarshanDB client.
+ * Convex compatibility wrapper around a DarshJDB client.
  *
  * Provides `query()`, `mutation()`, `patch()`, `remove()`, and `watch()`
  * methods that mirror the Convex developer experience while delegating
- * to native DarshanDB operations.
+ * to native DarshJDB operations.
  */
 export class ConvexCompat {
-  private _client: DarshanDB;
+  private _client: DarshJDB;
 
-  constructor(client: DarshanDB) {
+  constructor(client: DarshJDB) {
     this._client = client;
   }
 

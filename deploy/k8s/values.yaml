@@ -51,8 +51,8 @@ postgresql:
 
 env:
   RUST_LOG: info
-  DARSHAN_PORT: "7700"
-  DARSHAN_ADMIN_DIR: /usr/share/darshan/admin
+  DDB_PORT: "7700"
+  DDB_ADMIN_DIR: /usr/share/darshan/admin
 
 secrets:
   # Override in production: --set secrets.jwtSecret=<secure-value>

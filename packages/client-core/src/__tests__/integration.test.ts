@@ -1,18 +1,18 @@
 /**
- * Integration tests for @darshan/client against a live DarshanDB server.
+ * Integration tests for @darshjdb/client against a live DarshJDB server.
  *
  * These tests verify the full client-server round trip over REST.
- * They require a running DarshanDB server and are SKIPPED unless the
- * environment variable DARSHAN_URL is set.
+ * They require a running DarshJDB server and are SKIPPED unless the
+ * environment variable DDB_URL is set.
  *
  * Usage:
- *   DARSHAN_URL=http://localhost:7700 npx vitest run src/__tests__/integration.test.ts
+ *   DDB_URL=http://localhost:7700 npx vitest run src/__tests__/integration.test.ts
  *
  * The server's REST API lives under /api, and the health endpoint is at /health.
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { DarshanDB } from '../client.js';
+import { DarshJDB } from '../client.js';
 import { RestTransport } from '../rest.js';
 import { AuthClient } from '../auth.js';
 import { TransactionBuilder, generateId } from '../transaction.js';
@@ -22,10 +22,10 @@ import type { TokenStorage } from '../types.js';
 /*  Skip guard                                                                */
 /* -------------------------------------------------------------------------- */
 
-const DARSHAN_URL = process.env.DARSHAN_URL;
-const APP_ID = process.env.DARSHAN_APP_ID ?? 'integration-test';
+const DDB_URL = process.env.DDB_URL;
+const APP_ID = process.env.DDB_APP_ID ?? 'integration-test';
 
-const describeIntegration = DARSHAN_URL ? describe : describe.skip;
+const describeIntegration = DDB_URL ? describe : describe.skip;
 
 /* -------------------------------------------------------------------------- */
 /*  In-memory token storage (no localStorage in Node)                         */
@@ -50,7 +50,7 @@ class MemoryTokenStorage implements TokenStorage {
 
 /** Raw fetch wrapper for endpoints outside the SDK surface. */
 async function rawGet(path: string): Promise<Response> {
-  return fetch(`${DARSHAN_URL}${path}`);
+  return fetch(`${DDB_URL}${path}`);
 }
 
 /** Convenience: fetch JSON from a raw path. */
@@ -66,13 +66,13 @@ async function rawGetJson(path: string): Promise<unknown> {
 /*  Tests                                                                     */
 /* -------------------------------------------------------------------------- */
 
-describeIntegration('DarshanDB Client Integration', () => {
-  let db: DarshanDB;
+describeIntegration('DarshJDB Client Integration', () => {
+  let db: DarshJDB;
   let rest: RestTransport;
 
   beforeAll(async () => {
-    db = new DarshanDB({
-      serverUrl: DARSHAN_URL!,
+    db = new DarshJDB({
+      serverUrl: DDB_URL!,
       appId: APP_ID,
       transport: 'rest',
     });
@@ -92,7 +92,7 @@ describeIntegration('DarshanDB Client Integration', () => {
     const health = (await rawGetJson('/health')) as Record<string, unknown>;
 
     expect(health).toHaveProperty('status', 'ok');
-    expect(health).toHaveProperty('service', 'darshandb');
+    expect(health).toHaveProperty('service', 'darshjdb');
   });
 
   /* ====================================================================== */
@@ -110,7 +110,7 @@ describeIntegration('DarshanDB Client Integration', () => {
 
   it('getRestUrl builds the correct versioned path', () => {
     const url = db.getRestUrl('/query');
-    expect(url).toBe(`${DARSHAN_URL}/v1/apps/${APP_ID}/query`);
+    expect(url).toBe(`${DDB_URL}/v1/apps/${APP_ID}/query`);
   });
 
   /* ====================================================================== */
@@ -134,11 +134,11 @@ describeIntegration('DarshanDB Client Integration', () => {
     const payload = {
       id: entityId,
       name: 'integration-test-user',
-      email: `test-${entityId.slice(0, 8)}@darshandb.test`,
+      email: `test-${entityId.slice(0, 8)}@darshjdb.test`,
       createdAt: new Date().toISOString(),
     };
 
-    const resp = await fetch(`${DARSHAN_URL}/api/data/test_entities`, {
+    const resp = await fetch(`${DDB_URL}/api/data/test_entities`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
@@ -164,7 +164,7 @@ describeIntegration('DarshanDB Client Integration', () => {
   /* ====================================================================== */
 
   it('can list entities via REST /api/data/:entity', async () => {
-    const resp = await fetch(`${DARSHAN_URL}/api/data/test_entities`, {
+    const resp = await fetch(`${DDB_URL}/api/data/test_entities`, {
       method: 'GET',
       headers: { Accept: 'application/json' },
     });
@@ -187,7 +187,7 @@ describeIntegration('DarshanDB Client Integration', () => {
   /* ====================================================================== */
 
   it('can issue a query via POST /api/query', async () => {
-    const resp = await fetch(`${DARSHAN_URL}/api/query`, {
+    const resp = await fetch(`${DDB_URL}/api/query`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -216,7 +216,7 @@ describeIntegration('DarshanDB Client Integration', () => {
   it('can submit mutations via POST /api/mutate', async () => {
     const testId = generateId();
 
-    const resp = await fetch(`${DARSHAN_URL}/api/mutate`, {
+    const resp = await fetch(`${DDB_URL}/api/mutate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -249,11 +249,11 @@ describeIntegration('DarshanDB Client Integration', () => {
   /* ====================================================================== */
 
   it('auth signup and signin round-trip works', async () => {
-    const uniqueEmail = `integ-${Date.now()}@darshandb.test`;
+    const uniqueEmail = `integ-${Date.now()}@darshjdb.test`;
     const password = 'TestPassword123!';
 
     // Attempt signup
-    const signupResp = await fetch(`${DARSHAN_URL}/api/auth/signup`, {
+    const signupResp = await fetch(`${DDB_URL}/api/auth/signup`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ email: uniqueEmail, password }),
@@ -286,7 +286,7 @@ describeIntegration('DarshanDB Client Integration', () => {
     expect(signupData.tokens!.accessToken).toBeTruthy();
 
     // Attempt signin with same credentials
-    const signinResp = await fetch(`${DARSHAN_URL}/api/auth/signin`, {
+    const signinResp = await fetch(`${DDB_URL}/api/auth/signin`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ email: uniqueEmail, password }),
@@ -316,7 +316,7 @@ describeIntegration('DarshanDB Client Integration', () => {
 
   it('AuthClient SDK signUp method works', async () => {
     const auth = new AuthClient(db, new MemoryTokenStorage());
-    const uniqueEmail = `sdk-${Date.now()}@darshandb.test`;
+    const uniqueEmail = `sdk-${Date.now()}@darshjdb.test`;
 
     try {
       const user = await auth.signUp({
@@ -354,7 +354,7 @@ describeIntegration('DarshanDB Client Integration', () => {
   /* ====================================================================== */
 
   it('admin schema endpoint responds', async () => {
-    const resp = await fetch(`${DARSHAN_URL}/api/admin/schema`, {
+    const resp = await fetch(`${DDB_URL}/api/admin/schema`, {
       method: 'GET',
       headers: { Accept: 'application/json' },
     });
@@ -406,7 +406,7 @@ describeIntegration('DarshanDB Client Integration', () => {
     );
 
     // We just check the endpoint responds (even if it's 400 for missing params)
-    const resp = await fetch(`${DARSHAN_URL}/api/subscribe?query=${query}`, {
+    const resp = await fetch(`${DDB_URL}/api/subscribe?query=${query}`, {
       method: 'GET',
       headers: { Accept: 'text/event-stream' },
       // Abort quickly since SSE is long-lived
@@ -441,7 +441,7 @@ describeIntegration('DarshanDB Client Integration', () => {
   /* ====================================================================== */
 
   it('server responds to Accept: application/msgpack', async () => {
-    const resp = await fetch(`${DARSHAN_URL}/api/query`, {
+    const resp = await fetch(`${DDB_URL}/api/query`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -475,7 +475,7 @@ describeIntegration('DarshanDB Client Integration', () => {
     };
 
     // Create via mutate
-    const createResp = await fetch(`${DARSHAN_URL}/api/mutate`, {
+    const createResp = await fetch(`${DDB_URL}/api/mutate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -500,7 +500,7 @@ describeIntegration('DarshanDB Client Integration', () => {
     expect(createResp.ok).toBe(true);
 
     // Read back via query
-    const queryResp = await fetch(`${DARSHAN_URL}/api/query`, {
+    const queryResp = await fetch(`${DDB_URL}/api/query`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({

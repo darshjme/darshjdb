@@ -260,12 +260,12 @@ impl AppState {
         let (sse_tx, _) = broadcast::channel(1024);
         let (change_tx, _) = broadcast::channel(1024);
         let (pubsub, _) = PubSubEngine::new(64);
-        let pool = PgPool::connect_lazy("postgres://localhost/darshandb_test").expect("test pool");
+        let pool = PgPool::connect_lazy("postgres://localhost/darshjdb_test").expect("test pool");
         let triple_store = Arc::new(PgTripleStore::new_lazy(pool.clone()));
         let key_manager = crate::auth::KeyManager::generate();
         let session_manager = Arc::new(SessionManager::new(pool.clone(), key_manager));
         let storage_backend = Arc::new(
-            LocalFsBackend::new("/tmp/darshandb-test-storage")
+            LocalFsBackend::new("/tmp/darshjdb-test-storage")
                 .expect("create test storage backend"),
         );
         let storage_engine = Arc::new(StorageEngine::new(

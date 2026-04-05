@@ -1,11 +1,11 @@
 /**
  * @module use-storage
- * @description Hook for uploading files to DarshanDB storage with
+ * @description Hook for uploading files to DarshJDB storage with
  * reactive progress tracking.
  *
  * @example
  * ```tsx
- * import { useStorage } from '@darshan/react';
+ * import { useStorage } from '@darshjdb/react';
  *
  * function AvatarUpload() {
  *   const { upload, isUploading, progress, error } = useStorage();
@@ -46,7 +46,7 @@ export interface UseStorageResult {
    * Upload a file or blob to the specified storage path.
    *
    * @param file - The `File` or `Blob` to upload.
-   * @param path - Destination path in DarshanDB storage (e.g. `"avatars/photo.jpg"`).
+   * @param path - Destination path in DarshJDB storage (e.g. `"avatars/photo.jpg"`).
    * @returns The upload result containing the public URL, path, size, and content type.
    * @throws Rejects with an `Error` when the upload fails.
    */
@@ -74,7 +74,7 @@ const ZERO_PROGRESS: UploadProgress = Object.freeze({
 // ---------------------------------------------------------------------------
 
 /**
- * Upload files to DarshanDB storage with reactive progress tracking.
+ * Upload files to DarshJDB storage with reactive progress tracking.
  *
  * The `upload` reference is stable across re-renders.  Progress state
  * updates are batched to avoid excessive re-renders during fast uploads.

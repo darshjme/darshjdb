@@ -1,8 +1,8 @@
 /**
- * Comprehensive tests for @darshan/client (client-core).
+ * Comprehensive tests for @darshjdb/client (client-core).
  *
  * These tests cover:
- *  - DarshanDB client initialisation & config normalisation
+ *  - DarshJDB client initialisation & config normalisation
  *  - Connection state machine transitions
  *  - QueryBuilder fluent API
  *  - TransactionBuilder proxy-based operations
@@ -14,7 +14,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
-  DarshanDB,
+  DarshJDB,
   msgpackEncode,
   msgpackDecode,
 } from '../client.js';
@@ -28,8 +28,8 @@ import type { ConnectionState, ServerMessage, TokenStorage } from '../types.js';
 /*  Helpers                                                                   */
 /* ========================================================================== */
 
-function makeClient(overrides: Partial<{ serverUrl: string; appId: string; transport: 'ws' | 'rest' | 'auto' }> = {}): DarshanDB {
-  return new DarshanDB({
+function makeClient(overrides: Partial<{ serverUrl: string; appId: string; transport: 'ws' | 'rest' | 'auto' }> = {}): DarshJDB {
+  return new DarshJDB({
     serverUrl: overrides.serverUrl ?? 'https://db.example.com',
     appId: overrides.appId ?? 'test-app',
     transport: overrides.transport,
@@ -45,10 +45,10 @@ class MemoryStorage implements TokenStorage {
 }
 
 /* ========================================================================== */
-/*  DarshanDB Client — Initialisation                                        */
+/*  DarshJDB Client — Initialisation                                        */
 /* ========================================================================== */
 
-describe('DarshanDB client initialisation', () => {
+describe('DarshJDB client initialisation', () => {
   it('strips trailing slashes from serverUrl', () => {
     const db = makeClient({ serverUrl: 'https://db.example.com///' });
     expect(db.serverUrl).toBe('https://db.example.com');
@@ -266,7 +266,7 @@ describe('msgpack encode/decode', () => {
 /* ========================================================================== */
 
 describe('QueryBuilder', () => {
-  let db: DarshanDB;
+  let db: DarshJDB;
 
   beforeEach(() => {
     db = makeClient();
@@ -513,7 +513,7 @@ describe('generateId (UUID v7)', () => {
 /* ========================================================================== */
 
 describe('AuthClient', () => {
-  let db: DarshanDB;
+  let db: DarshJDB;
   let storage: MemoryStorage;
   let auth: AuthClient;
 
@@ -665,7 +665,7 @@ describe('AuthClient', () => {
 /* ========================================================================== */
 
 describe('PresenceRoom', () => {
-  let db: DarshanDB;
+  let db: DarshJDB;
 
   beforeEach(() => {
     db = makeClient({ transport: 'rest' });
@@ -740,7 +740,7 @@ describe('PresenceRoom', () => {
 /*  send() — requires open WebSocket, throws when not connected               */
 /* ========================================================================== */
 
-describe('DarshanDB.send()', () => {
+describe('DarshJDB.send()', () => {
   it('throws when WebSocket is not open', async () => {
     const db = makeClient();
     // Not connected, so send should throw synchronously from _privateSendRaw

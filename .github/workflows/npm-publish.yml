@@ -48,25 +48,25 @@ jobs:
             echo "OK: packages/$pkg/dist exists"
           done
 
-      - name: Publish @darshan/client
+      - name: Publish @darshjdb/client
         working-directory: packages/client-core
         run: npm publish --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
-      - name: Publish @darshan/react
+      - name: Publish @darshjdb/react
         working-directory: packages/react
         run: npm publish --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
-      - name: Publish @darshan/angular
+      - name: Publish @darshjdb/angular
         working-directory: packages/angular
         run: npm publish --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
-      - name: Publish @darshan/nextjs
+      - name: Publish @darshjdb/nextjs
         working-directory: packages/nextjs
         run: npm publish --access public
         env:

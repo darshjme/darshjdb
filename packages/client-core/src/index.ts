@@ -1,13 +1,13 @@
 /**
- * @darshan/client - Framework-agnostic TypeScript client SDK for DarshanDB.
+ * @darshjdb/client - Framework-agnostic TypeScript client SDK for DarshJDB.
  *
  * @packageDocumentation
  *
  * @example
  * ```ts
- * import { DarshanDB, QueryBuilder, AuthClient, SyncEngine } from '@darshan/client';
+ * import { DarshJDB, QueryBuilder, AuthClient, SyncEngine } from '@darshjdb/client';
  *
- * const db = new DarshanDB({
+ * const db = new DarshJDB({
  *   serverUrl: 'https://db.example.com',
  *   appId: 'my-app',
  * });
@@ -27,11 +27,11 @@
  * });
  * ```
  *
- * @module @darshan/client
+ * @module @darshjdb/client
  */
 
 /* -- Client --------------------------------------------------------------- */
-export { DarshanDB, msgpackEncode, msgpackDecode } from './client.js';
+export { DarshJDB, msgpackEncode, msgpackDecode } from './client.js';
 
 /* -- Query ---------------------------------------------------------------- */
 export { QueryBuilder, queryOnce, subscribe } from './query.js';

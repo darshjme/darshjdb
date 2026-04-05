@@ -1,10 +1,10 @@
 /**
- * DarshanDB REST API client.
+ * DarshJDB REST API client.
  *
  * Talks to the live server when available, with every function returning
  * a typed result. Callers handle fallback to mock data themselves.
  *
- * The base URL is configurable via `VITE_DARSHAN_URL` (defaults to
+ * The base URL is configurable via `VITE_DDB_URL` (defaults to
  * `http://localhost:7700` for local development).
  */
 
@@ -14,7 +14,7 @@ import type { EntityType, EntityField, EntityRecord } from "../types";
 // Configuration
 // ---------------------------------------------------------------------------
 
-const API_URL = import.meta.env.VITE_DARSHAN_URL || "http://localhost:7700";
+const API_URL = import.meta.env.VITE_DDB_URL || "http://localhost:7700";
 
 /**
  * Admin bearer token. In production this would come from a real auth flow;
@@ -222,9 +222,9 @@ export async function deleteEntity(type: string, id: string): Promise<void> {
 }
 
 /**
- * `POST /api/query` -- run a DarshanQL query object.
+ * `POST /api/query` -- run a DarshJQL query object.
  */
-export async function queryDarshanQL(
+export async function queryDarshJQL(
   query: Record<string, unknown>,
 ): Promise<EntityRecord[]> {
   const res = await apiFetch<{ data: ServerQueryRow[] }>("/api/query", {

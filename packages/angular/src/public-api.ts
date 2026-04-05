@@ -1,6 +1,6 @@
 /**
- * @module @darshan/angular
- * @description Angular SDK for DarshanDB.
+ * @module @darshjdb/angular
+ * @description Angular SDK for DarshJDB.
  *
  * Provides reactive database queries, authentication, presence tracking,
  * and SSR support for Angular 16+ applications.
@@ -11,7 +11,7 @@
  *
  * ```typescript
  * import { bootstrapApplication } from '@angular/platform-browser';
- * import { provideDarshan } from '@darshan/angular';
+ * import { provideDarshan } from '@darshjdb/angular';
  *
  * bootstrapApplication(AppComponent, {
  *   providers: [
@@ -26,7 +26,7 @@
  * ### NgModule
  *
  * ```typescript
- * import { DarshJDBModule } from '@darshan/angular';
+ * import { DarshJDBModule } from '@darshjdb/angular';
  *
  * @NgModule({
  *   imports: [
@@ -63,8 +63,8 @@ export { provideDarshan } from './providers';
 // ── Injection Tokens ───────────────────────────────────────────────
 
 export {
-  DARSHAN_CONFIG,
-  DARSHAN_CLIENT,
+  DDB_CONFIG,
+  DDB_CLIENT,
   type DarshanClient,
   type AuthResult,
   type AuthUser,
@@ -135,7 +135,7 @@ export type {
   DarshanUser,
   TokenPair,
   QueryResult,
-  DarshanError,
+  DarshJError,
   PresenceUser,
   PresenceState,
   QueryOptions,

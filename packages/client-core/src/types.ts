@@ -1,5 +1,5 @@
 /**
- * Core type definitions for the DarshanDB client SDK.
+ * Core type definitions for the DarshJDB client SDK.
  * @module types
  */
 
@@ -10,11 +10,11 @@
 /** Transport layer protocol selection. */
 export type TransportMode = 'ws' | 'rest' | 'auto';
 
-/** Configuration for constructing a {@link DarshanDB} instance. */
+/** Configuration for constructing a {@link DarshJDB} instance. */
 export interface DarshanConfig {
-  /** Base URL of the DarshanDB server (e.g. `https://db.example.com`). */
+  /** Base URL of the DarshJDB server (e.g. `https://db.example.com`). */
   serverUrl: string;
-  /** Application identifier issued by the DarshanDB dashboard. */
+  /** Application identifier issued by the DarshJDB dashboard. */
   appId: string;
   /**
    * Transport protocol to use.

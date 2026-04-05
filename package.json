@@ -1,13 +1,13 @@
 {
-  "name": "darshandb",
+  "name": "darshjdb",
   "version": "0.1.0",
   "private": true,
-  "description": "DarshanDB — A reactive database with triple store, real-time sync, and server-side functions",
+  "description": "DarshJDB — A reactive database with triple store, real-time sync, and server-side functions",
   "author": "Darsh Joshi",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/darshjme/darshandb"
+    "url": "https://github.com/darshjme/darshjdb"
   },
   "workspaces": [
     "packages/client-core",

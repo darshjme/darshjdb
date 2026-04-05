@@ -175,8 +175,8 @@ impl KeyManager {
     /// to prevent cross-service token confusion.
     pub fn validate_access_token(&self, token: &str) -> Result<AccessClaims, AuthError> {
         let mut validation = Validation::new(self.algorithm);
-        validation.set_issuer(&["darshandb"]);
-        validation.set_audience(&["darshandb"]);
+        validation.set_issuer(&["darshjdb"]);
+        validation.set_audience(&["darshjdb"]);
         validation.validate_exp = true;
 
         // Try current key first.
@@ -315,8 +315,8 @@ impl SessionManager {
             roles,
             iat: now.timestamp(),
             exp: access_exp.timestamp(),
-            iss: "darshandb".into(),
-            aud: Some("darshandb".into()),
+            iss: "darshjdb".into(),
+            aud: Some("darshjdb".into()),
         };
 
         let access_token = self.keys.sign_access_token(&claims)?;
@@ -405,8 +405,8 @@ impl SessionManager {
             roles,
             iat: now.timestamp(),
             exp: access_exp.timestamp(),
-            iss: "darshandb".into(),
-            aud: Some("darshandb".into()),
+            iss: "darshjdb".into(),
+            aud: Some("darshjdb".into()),
         };
 
         let access_token = self.keys.sign_access_token(&claims)?;
@@ -517,8 +517,8 @@ mod tests {
             roles: vec!["user".into()],
             iat: now.timestamp(),
             exp: (now + Duration::seconds(exp_offset_secs)).timestamp(),
-            iss: "darshandb".into(),
-            aud: Some("darshandb".into()),
+            iss: "darshjdb".into(),
+            aud: Some("darshjdb".into()),
         }
     }
 
@@ -535,7 +535,7 @@ mod tests {
         assert_eq!(decoded.sub, claims.sub);
         assert_eq!(decoded.sid, claims.sid);
         assert_eq!(decoded.roles, claims.roles);
-        assert_eq!(decoded.iss, "darshandb");
+        assert_eq!(decoded.iss, "darshjdb");
     }
 
     #[test]
@@ -576,7 +576,7 @@ mod tests {
             iat: now.timestamp(),
             exp: (now + Duration::seconds(300)).timestamp(),
             iss: "wrong-issuer".into(),
-            aud: Some("darshandb".into()),
+            aud: Some("darshjdb".into()),
         };
         let token = km.sign_access_token(&claims).expect("sign");
         assert!(
@@ -595,7 +595,7 @@ mod tests {
             roles: vec![],
             iat: now.timestamp(),
             exp: (now + Duration::seconds(300)).timestamp(),
-            iss: "darshandb".into(),
+            iss: "darshjdb".into(),
             aud: Some("wrong-audience".into()),
         };
         let token = km.sign_access_token(&claims).expect("sign");
@@ -667,8 +667,8 @@ mod tests {
             roles: vec!["admin".into(), "editor".into(), "viewer".into()],
             iat: now.timestamp(),
             exp: (now + Duration::seconds(300)).timestamp(),
-            iss: "darshandb".into(),
-            aud: Some("darshandb".into()),
+            iss: "darshjdb".into(),
+            aud: Some("darshjdb".into()),
         };
         let token = km.sign_access_token(&claims).expect("sign");
         let decoded = km.validate_access_token(&token).expect("validate");

@@ -1,6 +1,6 @@
 "use server";
 
-import { mutateServer } from "@darshan/nextjs/server";
+import { mutateServer } from "@darshjdb/nextjs/server";
 import { revalidateTag } from "next/cache";
 
 /**

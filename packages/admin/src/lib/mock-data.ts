@@ -197,7 +197,7 @@ export const mockLogs: LogEntry[] = Array.from({ length: 50 }, (_, i) => {
 });
 
 export const mockEnvVars: EnvVariable[] = [
-  { key: "DARSHAN_DEPLOY_KEY", value: "dk_prod_a1b2c3d4e5f6", isSecret: true, updatedAt: Date.now() - 604800_000 },
+  { key: "DDB_DEPLOY_KEY", value: "dk_prod_a1b2c3d4e5f6", isSecret: true, updatedAt: Date.now() - 604800_000 },
   { key: "DDB_URL", value: "https://api.db.darshj.me", isSecret: false, updatedAt: Date.now() - 2592000_000 },
   { key: "SMTP_HOST", value: "smtp.resend.com", isSecret: false, updatedAt: Date.now() - 1296000_000 },
   { key: "SMTP_API_KEY", value: "re_abc123def456", isSecret: true, updatedAt: Date.now() - 1296000_000 },

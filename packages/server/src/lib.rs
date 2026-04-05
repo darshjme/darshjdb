@@ -1,4 +1,3 @@
-#![recursion_limit = "1024"]
 //! DarshJDB server library crate.
 //!
 //! Provides the core data layer: a Postgres-backed triple store,

@@ -1,4 +1,4 @@
-import { queryServer } from "@darshan/nextjs/server";
+import { queryServer } from "@darshjdb/nextjs/server";
 import { PostList } from "./components/post-list";
 
 /**
@@ -21,7 +21,7 @@ export default async function HomePage() {
 
   return (
     <main style={{ maxWidth: 640, margin: "40px auto", padding: "0 16px" }}>
-      <h1>DarshanDB + Next.js</h1>
+      <h1>DarshJDB + Next.js</h1>
       <p style={{ color: "#666", marginBottom: 24 }}>
         Initial data loaded on the server. Real-time updates stream to the client.
       </p>

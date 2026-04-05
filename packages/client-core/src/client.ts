@@ -1,5 +1,5 @@
 /**
- * Main DarshanDB client class.
+ * Main DarshJDB client class.
  *
  * Manages the connection lifecycle, transport selection, and MessagePack
  * encoding/decoding for all wire communication.
@@ -43,22 +43,22 @@ function nextId(): string {
 }
 
 /* -------------------------------------------------------------------------- */
-/*  DarshanDB Client                                                         */
+/*  DarshJDB Client                                                         */
 /* -------------------------------------------------------------------------- */
 
 /**
- * Core DarshanDB client.
+ * Core DarshJDB client.
  *
  * @example
  * ```ts
- * const db = new DarshanDB({
+ * const db = new DarshJDB({
  *   serverUrl: 'https://db.example.com',
  *   appId: 'my-app',
  * });
  * await db.connect();
  * ```
  */
-export class DarshanDB {
+export class DarshJDB {
   /** Server base URL (no trailing slash). */
   readonly serverUrl: string;
 
@@ -142,7 +142,7 @@ export class DarshanDB {
   /* -- Connect / Disconnect ----------------------------------------------- */
 
   /**
-   * Open a connection to the DarshanDB server.
+   * Open a connection to the DarshJDB server.
    *
    * Resolves once the connection reaches the `connected` state or rejects
    * if the initial connection fails.
@@ -344,7 +344,7 @@ export class DarshanDB {
 
     // Uncorrelated error — log as a warning in non-production.
     if (msg.type === 'error') {
-      console.warn('[DarshanDB] Server error:', msg.payload);
+      console.warn('[DarshJDB] Server error:', msg.payload);
     }
   }
 

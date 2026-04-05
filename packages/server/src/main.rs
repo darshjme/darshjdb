@@ -54,7 +54,7 @@ async fn main() -> Result<()> {
     // -- Configuration from environment ---------------------------------------
     let database_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| {
         tracing::warn!("DATABASE_URL not set, using default localhost connection");
-        "postgres://darshan:darshan@localhost:5432/darshandb".to_string()
+        "postgres://darshan:darshan@localhost:5432/darshjdb".to_string()
     });
 
     let port: u16 = std::env::var("DDB_PORT")
@@ -286,7 +286,7 @@ async fn main() -> Result<()> {
     let storage_backend = Arc::new(
         ddb_server::storage::LocalFsBackend::new(&storage_dir).unwrap_or_else(|e| {
             tracing::warn!("Failed to create storage backend at {storage_dir}: {e}, using /tmp");
-            ddb_server::storage::LocalFsBackend::new("/tmp/darshandb-storage")
+            ddb_server::storage::LocalFsBackend::new("/tmp/darshjdb-storage")
                 .expect("fallback storage backend")
         }),
     );
@@ -651,7 +651,7 @@ async fn health_check(
 
     let body = serde_json::json!({
         "status": status,
-        "service": "darshandb",
+        "service": "darshjdb",
         "version": env!("CARGO_PKG_VERSION"),
         "uptime_secs": uptime_secs,
         "pool": {

@@ -12,7 +12,7 @@ export default defineConfig([
     minify: true,
     target: 'es2022',
     outDir: 'dist',
-    external: ['react', '@darshan/client'],
+    external: ['react', '@darshjdb/client'],
     jsx: 'automatic',
   },
   {
@@ -23,7 +23,7 @@ export default defineConfig([
     clean: false,
     target: 'es2022',
     outDir: 'dist',
-    external: ['react', '@darshan/client'],
+    external: ['react', '@darshjdb/client'],
     jsx: 'automatic',
   },
 ]);

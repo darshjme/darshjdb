@@ -630,7 +630,7 @@ impl S3Backend {
             &secret_key,
             None, // session token
             None, // expiry
-            "darshandb-s3-config",
+            "darshjdb-s3-config",
         );
 
         let mut s3_config_builder = aws_sdk_s3::config::Builder::new()
@@ -1249,7 +1249,7 @@ mod tests {
     // -----------------------------------------------------------------------
 
     fn temp_dir() -> String {
-        format!("/tmp/darshandb-test-{}", Uuid::new_v4())
+        format!("/tmp/darshjdb-test-{}", Uuid::new_v4())
     }
 
     fn make_engine(dir: &str) -> StorageEngine<LocalFsBackend> {
@@ -1263,52 +1263,52 @@ mod tests {
 
     #[test]
     fn path_traversal_parent_dir() {
-        let backend = LocalFsBackend::new("/tmp/darshandb-test-pt").expect("create backend");
+        let backend = LocalFsBackend::new("/tmp/darshjdb-test-pt").expect("create backend");
         assert!(backend.resolve_path("../../../etc/passwd").is_err());
-        let _ = std::fs::remove_dir_all("/tmp/darshandb-test-pt");
+        let _ = std::fs::remove_dir_all("/tmp/darshjdb-test-pt");
     }
 
     #[test]
     fn path_traversal_nested_parent() {
-        let backend = LocalFsBackend::new("/tmp/darshandb-test-pt2").expect("create backend");
+        let backend = LocalFsBackend::new("/tmp/darshjdb-test-pt2").expect("create backend");
         assert!(
             backend
                 .resolve_path("a/b/../../../../../../etc/shadow")
                 .is_err()
         );
-        let _ = std::fs::remove_dir_all("/tmp/darshandb-test-pt2");
+        let _ = std::fs::remove_dir_all("/tmp/darshjdb-test-pt2");
     }
 
     #[test]
     fn path_traversal_absolute_path() {
-        let backend = LocalFsBackend::new("/tmp/darshandb-test-pt3").expect("create backend");
+        let backend = LocalFsBackend::new("/tmp/darshjdb-test-pt3").expect("create backend");
         assert!(backend.resolve_path("/etc/passwd").is_err());
         assert!(backend.resolve_path("/absolute/path").is_err());
-        let _ = std::fs::remove_dir_all("/tmp/darshandb-test-pt3");
+        let _ = std::fs::remove_dir_all("/tmp/darshjdb-test-pt3");
     }
 
     #[test]
     fn path_traversal_null_byte() {
-        let backend = LocalFsBackend::new("/tmp/darshandb-test-pt4").expect("create backend");
+        let backend = LocalFsBackend::new("/tmp/darshjdb-test-pt4").expect("create backend");
         assert!(backend.resolve_path("file.txt\0.jpg").is_err());
         assert!(backend.resolve_path("\0").is_err());
-        let _ = std::fs::remove_dir_all("/tmp/darshandb-test-pt4");
+        let _ = std::fs::remove_dir_all("/tmp/darshjdb-test-pt4");
     }
 
     #[test]
     fn path_traversal_empty_path() {
-        let backend = LocalFsBackend::new("/tmp/darshandb-test-pt5").expect("create backend");
+        let backend = LocalFsBackend::new("/tmp/darshjdb-test-pt5").expect("create backend");
         assert!(backend.resolve_path("").is_err());
-        let _ = std::fs::remove_dir_all("/tmp/darshandb-test-pt5");
+        let _ = std::fs::remove_dir_all("/tmp/darshjdb-test-pt5");
     }
 
     #[test]
     fn path_traversal_safe_paths_accepted() {
-        let backend = LocalFsBackend::new("/tmp/darshandb-test-pt6").expect("create backend");
+        let backend = LocalFsBackend::new("/tmp/darshjdb-test-pt6").expect("create backend");
         assert!(backend.resolve_path("safe/path/file.txt").is_ok());
         assert!(backend.resolve_path("uploads/image.png").is_ok());
         assert!(backend.resolve_path("a.txt").is_ok());
-        let _ = std::fs::remove_dir_all("/tmp/darshandb-test-pt6");
+        let _ = std::fs::remove_dir_all("/tmp/darshjdb-test-pt6");
     }
 
     // -----------------------------------------------------------------------

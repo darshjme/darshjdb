@@ -5,7 +5,7 @@
  *
  * @example
  * ```tsx
- * import { DarshanProvider } from '@darshan/react';
+ * import { DarshanProvider } from '@darshjdb/react';
  *
  * function App() {
  *   return (
@@ -30,13 +30,13 @@ import type { DarshanClientInterface, DarshanClientOptions } from './types';
 
 // ---------------------------------------------------------------------------
 // Lazy import helper -- allows tree-shaking when the React SDK is loaded
-// without `@darshan/client` being bundled at definition time.
+// without `@darshjdb/client` being bundled at definition time.
 // ---------------------------------------------------------------------------
 
 let _createClient: ((opts: DarshanClientOptions) => DarshanClientInterface) | null = null;
 
 /**
- * Resolve the `createClient` factory from `@darshan/client`.
+ * Resolve the `createClient` factory from `@darshjdb/client`.
  * Throws a clear error if the dependency is missing at runtime.
  */
 function getCreateClient(): (opts: DarshanClientOptions) => DarshanClientInterface {
@@ -44,7 +44,7 @@ function getCreateClient(): (opts: DarshanClientOptions) => DarshanClientInterfa
 
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const mod = require('@darshan/client') as {
+    const mod = require('@darshjdb/client') as {
       createClient?: (opts: DarshanClientOptions) => DarshanClientInterface;
       DarshanClient?: new (opts: DarshanClientOptions) => DarshanClientInterface;
     };
@@ -56,15 +56,15 @@ function getCreateClient(): (opts: DarshanClientOptions) => DarshanClientInterfa
       _createClient = (opts) => new Ctor(opts);
     } else {
       throw new Error(
-        '@darshan/client must export either `createClient` or `DarshanClient`.',
+        '@darshjdb/client must export either `createClient` or `DarshanClient`.',
       );
     }
 
     return _createClient;
   } catch (err) {
     throw new Error(
-      `@darshan/react requires @darshan/client as a dependency. ` +
-        `Install it with: npm install @darshan/client\n` +
+      `@darshjdb/react requires @darshjdb/client as a dependency. ` +
+        `Install it with: npm install @darshjdb/client\n` +
         `Original error: ${err instanceof Error ? err.message : String(err)}`,
     );
   }
@@ -83,7 +83,7 @@ DarshanContext.displayName = 'DarshanContext';
 
 /** Props accepted by {@link DarshanProvider}. */
 export interface DarshanProviderProps {
-  /** WebSocket / HTTP base URL of the DarshanDB server. */
+  /** WebSocket / HTTP base URL of the DarshJDB server. */
   readonly serverUrl: string;
   /** Application identifier registered on the server. */
   readonly appId: string;
@@ -97,7 +97,7 @@ export interface DarshanProviderProps {
 }
 
 /**
- * Top-level provider that creates (or accepts) a DarshanDB client and
+ * Top-level provider that creates (or accepts) a DarshJDB client and
  * exposes it to every `useQuery`, `useMutation`, `usePresence`, `useAuth`,
  * and `useStorage` hook in the tree.
  *

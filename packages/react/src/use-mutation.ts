@@ -1,7 +1,7 @@
 /**
  * @module use-mutation
  * @description Hook that returns a stable `mutate` function for performing
- * insert, update, and delete operations against DarshanDB.
+ * insert, update, and delete operations against DarshJDB.
  *
  * Optimistic updates are handled at the client-core layer -- mutations
  * applied locally appear instantly in any active `useQuery` subscription
@@ -9,7 +9,7 @@
  *
  * @example
  * ```tsx
- * import { useMutation } from '@darshan/react';
+ * import { useMutation } from '@darshjdb/react';
  *
  * function AddTodo() {
  *   const { mutate, isLoading, error } = useMutation();

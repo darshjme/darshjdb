@@ -52,7 +52,7 @@ enum Commands {
         #[arg(short, long, default_value = "latest")]
         tag: String,
 
-        /// Docker registry (e.g., ghcr.io/darshjme/darshandb)
+        /// Docker registry (e.g., ghcr.io/darshjme/darshjdb)
         #[arg(short, long)]
         registry: Option<String>,
 
@@ -244,11 +244,11 @@ async fn cmd_dev(port: u16, watch: bool) -> Result<()> {
                 "run",
                 "-d",
                 "--name",
-                "darshandb-dev-pg",
+                "darshjdb-dev-pg",
                 "-e",
                 "POSTGRES_PASSWORD=darshan",
                 "-e",
-                "POSTGRES_DB=darshandb",
+                "POSTGRES_DB=darshjdb",
                 "-p",
                 "5432:5432",
                 "pgvector/pgvector:pg16",
@@ -292,11 +292,11 @@ async fn cmd_dev(port: u16, watch: bool) -> Result<()> {
 
     // Build and run the server binary
     let mut cmd = tokio::process::Command::new("cargo");
-    cmd.args(["run", "-p", "darshandb-server", "--"])
+    cmd.args(["run", "-p", "ddb-server", "--"])
         .env("DDB_PORT", port.to_string())
         .env(
             "DATABASE_URL",
-            "postgres://postgres:darshan@localhost:5432/darshandb",
+            "postgres://postgres:darshan@localhost:5432/darshjdb",
         );
 
     if watch {
@@ -320,7 +320,7 @@ async fn cmd_deploy(tag: &str, registry: Option<&str>, yes: bool) -> Result<()> 
 
     let image = match registry {
         Some(r) => format!("{r}:{tag}"),
-        None => format!("darshandb:{tag}"),
+        None => format!("darshjdb:{tag}"),
     };
 
     if !yes {
@@ -815,7 +815,7 @@ async fn cmd_backup(
     cfg.require_token()?;
 
     let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
-    let default_output = format!("darshandb_backup_{timestamp}.tar.gz");
+    let default_output = format!("darshjdb_backup_{timestamp}.tar.gz");
     let output = output.unwrap_or(&default_output);
 
     let spinner = spinner("Creating backup...");
@@ -1002,7 +1002,7 @@ output = "darshan/generated"
     tokio::fs::write(project_dir.join("ddb.toml"), config_content).await?;
 
     // Create example function
-    let example_fn = r#"import { query, mutation } from "@darshan/server";
+    let example_fn = r#"import { query, mutation } from "@darshjdb/server";
 
 // Example query function
 export const listTodos = query(async (ctx) => {
@@ -1022,7 +1022,7 @@ export const createTodo = mutation(async (ctx, args: { title: string }) => {
     tokio::fs::write(darshan_dir.join("functions/todos.ts"), example_fn).await?;
 
     // Create example seed
-    let seed_content = r#"import { seed } from "@darshan/server";
+    let seed_content = r#"import { seed } from "@darshjdb/server";
 
 export default seed(async (ctx) => {
   await ctx.db.insert("todo", { title: "Learn DarshJDB", completed: false, createdAt: Date.now() });

@@ -1,11 +1,11 @@
 /**
  * @module use-query
- * @description Reactive data-fetching hook that subscribes to a DarshanDB
+ * @description Reactive data-fetching hook that subscribes to a DarshJDB
  * query and keeps the component in sync using `useSyncExternalStore`.
  *
  * @example
  * ```tsx
- * import { useQuery } from '@darshan/react';
+ * import { useQuery } from '@darshjdb/react';
  *
  * function TodoList() {
  *   const { data, isLoading, error } = useQuery({
@@ -116,7 +116,7 @@ function serialiseQuery<T>(q: Query<T>): string {
 // ---------------------------------------------------------------------------
 
 /**
- * Subscribe to a DarshanDB query reactively.
+ * Subscribe to a DarshJDB query reactively.
  *
  * Uses `useSyncExternalStore` under the hood so it is safe for concurrent
  * rendering (React 18+).  The returned data reference is stable across

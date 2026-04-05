@@ -1,5 +1,5 @@
 /**
- * Real-time presence system for DarshanDB.
+ * Real-time presence system for DarshJDB.
  *
  * Provides join/leave/publish/subscribe semantics with a 50ms publish
  * throttle to prevent excessive network traffic.
@@ -7,7 +7,7 @@
  * @module presence
  */
 
-import type { DarshanDB } from './client.js';
+import type { DarshJDB } from './client.js';
 import type {
   Peer,
   PresenceSnapshot,
@@ -48,7 +48,7 @@ export class PresenceRoom<T = Record<string, unknown>> {
   /** The room identifier. */
   readonly roomId: string;
 
-  private _privateClient: DarshanDB;
+  private _privateClient: DarshJDB;
   private _privateCallbacks = new Set<PresenceCallback<T>>();
   private _privateSnapshot: PresenceSnapshot<T> = {
     roomId: '',
@@ -63,7 +63,7 @@ export class PresenceRoom<T = Record<string, unknown>> {
   private _privatePendingState: T | null = null;
   private _privateThrottleTimer: ReturnType<typeof setTimeout> | null = null;
 
-  constructor(client: DarshanDB, roomId: string) {
+  constructor(client: DarshJDB, roomId: string) {
     this._privateClient = client;
     this.roomId = roomId;
     this._privateSnapshot = { roomId, peers: [], self: null };
@@ -188,7 +188,7 @@ export class PresenceRoom<T = Record<string, unknown>> {
         payload: { roomId: this.roomId, state },
       })
       .catch((err) => {
-        console.warn('[DarshanDB Presence] Publish error:', err);
+        console.warn('[DarshJDB Presence] Publish error:', err);
       });
 
     // Optimistically update self.
