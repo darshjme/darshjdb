@@ -48,12 +48,12 @@ impl SubscriptionRegistry {
 
         self.by_query
             .entry(query_hash)
-            .or_insert_with(HashSet::new)
+            .or_default()
             .insert(handle);
 
         self.by_session
             .entry(session_id)
-            .or_insert_with(HashSet::new)
+            .or_default()
             .insert(query_hash);
     }
 

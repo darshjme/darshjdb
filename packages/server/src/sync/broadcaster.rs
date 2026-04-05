@@ -167,7 +167,7 @@ impl Broadcaster {
             }
 
             // For each unique (session, sub) pair, re-execute the query and diff.
-            for (_query_hash, handles) in &handles_by_hash {
+            for handles in handles_by_hash.values() {
                 for handle in handles {
                     self.process_subscription(handle, &event, executor.as_ref())
                         .await;

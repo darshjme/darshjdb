@@ -166,10 +166,10 @@ impl DependencyTracker {
             if change.attribute == ":db/type" {
                 // Any query whose entity_type matches the value
                 for (&id, entry) in queries.iter() {
-                    if let Some(type_str) = change.value.as_str() {
-                        if entry.entity_type == type_str {
-                            affected.insert(id);
-                        }
+                    if let Some(type_str) = change.value.as_str()
+                        && entry.entity_type == type_str
+                    {
+                        affected.insert(id);
                     }
                 }
             }

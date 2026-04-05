@@ -248,9 +248,9 @@ pub fn plan_query(ast: &QueryAST) -> Result<QueryPlan> {
 
     // Full-text search clause (simple ILIKE across all values)
     if let Some(ref term) = ast.search {
-        sql.push_str(&format!(
+        sql.push_str(
             "INNER JOIN triples t_search ON t_search.entity_id = t0.entity_id\n"
-        ));
+        );
         sql.push_str(&format!(
             "  AND NOT t_search.retracted\n  AND t_search.value #>> '{{}}' ILIKE ${param_idx}\n"
         ));
@@ -301,10 +301,8 @@ pub fn plan_query(ast: &QueryAST) -> Result<QueryPlan> {
         .iter()
         .map(|n| NestedPlan {
             via_attribute: n.via_attribute.clone(),
-            sql: format!(
-                "SELECT id, entity_id, attribute, value, value_type, tx_id, created_at, retracted \
-                 FROM triples WHERE entity_id = $1 AND NOT retracted ORDER BY attribute, tx_id DESC"
-            ),
+            sql: "SELECT id, entity_id, attribute, value, value_type, tx_id, created_at, retracted \
+                 FROM triples WHERE entity_id = $1 AND NOT retracted ORDER BY attribute, tx_id DESC".to_string(),
         })
         .collect();
 
@@ -373,28 +371,27 @@ pub async fn execute_query(pool: &PgPool, plan: &QueryPlan) -> Result<Vec<QueryR
         let mut nested = serde_json::Map::new();
 
         for np in &plan.nested_plans {
-            if let Some(ref_value) = attributes.get(&np.via_attribute) {
-                if let Some(ref_str) = ref_value.as_str() {
-                    if let Ok(ref_uuid) = ref_str.parse::<uuid::Uuid>() {
-                        let nested_rows = sqlx::query_as::<_, (String, serde_json::Value)>(
-                            "SELECT attribute, value FROM triples \
-                             WHERE entity_id = $1 AND NOT retracted \
-                             ORDER BY attribute, tx_id DESC",
-                        )
-                        .bind(ref_uuid)
-                        .fetch_all(pool)
-                        .await?;
+            if let Some(ref_value) = attributes.get(&np.via_attribute)
+                && let Some(ref_str) = ref_value.as_str()
+                && let Ok(ref_uuid) = ref_str.parse::<uuid::Uuid>()
+            {
+                let nested_rows = sqlx::query_as::<_, (String, serde_json::Value)>(
+                    "SELECT attribute, value FROM triples \
+                     WHERE entity_id = $1 AND NOT retracted \
+                     ORDER BY attribute, tx_id DESC",
+                )
+                .bind(ref_uuid)
+                .fetch_all(pool)
+                .await?;
 
-                        let mut nested_attrs = serde_json::Map::new();
-                        for (attr, val) in nested_rows {
-                            nested_attrs.entry(attr).or_insert(val);
-                        }
-                        nested.insert(
-                            np.via_attribute.clone(),
-                            serde_json::Value::Object(nested_attrs),
-                        );
-                    }
+                let mut nested_attrs = serde_json::Map::new();
+                for (attr, val) in nested_rows {
+                    nested_attrs.entry(attr).or_insert(val);
                 }
+                nested.insert(
+                    np.via_attribute.clone(),
+                    serde_json::Value::Object(nested_attrs),
+                );
             }
         }
 
@@ -408,35 +405,21 @@ pub async fn execute_query(pool: &PgPool, plan: &QueryPlan) -> Result<Vec<QueryR
     Ok(results)
 }
 
+/// Row type returned by triple queries.
+type TripleRow = (
+    uuid::Uuid,
+    String,
+    serde_json::Value,
+    i16,
+    i64,
+    chrono::DateTime<chrono::Utc>,
+);
+
 /// Bind a `serde_json::Value` as the appropriate sqlx parameter type.
 fn bind_json_param<'q>(
-    query: sqlx::query::QueryAs<
-        'q,
-        sqlx::Postgres,
-        (
-            uuid::Uuid,
-            String,
-            serde_json::Value,
-            i16,
-            i64,
-            chrono::DateTime<chrono::Utc>,
-        ),
-        sqlx::postgres::PgArguments,
-    >,
+    query: sqlx::query::QueryAs<'q, sqlx::Postgres, TripleRow, sqlx::postgres::PgArguments>,
     param: &'q serde_json::Value,
-) -> sqlx::query::QueryAs<
-    'q,
-    sqlx::Postgres,
-    (
-        uuid::Uuid,
-        String,
-        serde_json::Value,
-        i16,
-        i64,
-        chrono::DateTime<chrono::Utc>,
-    ),
-    sqlx::postgres::PgArguments,
-> {
+) -> sqlx::query::QueryAs<'q, sqlx::Postgres, TripleRow, sqlx::postgres::PgArguments> {
     // For JSONB comparisons we bind as serde_json::Value;
     // for ILIKE we bind as String.
     match param {
@@ -472,11 +455,11 @@ impl PlanCache {
 
         for wc in &ast.where_clauses {
             hasher.update(wc.attribute.as_bytes());
-            hasher.update(&[wc.op as u8]);
+            hasher.update([wc.op as u8]);
         }
         for oc in &ast.order {
             hasher.update(oc.attribute.as_bytes());
-            hasher.update(&[oc.direction as u8]);
+            hasher.update([oc.direction as u8]);
         }
         if ast.limit.is_some() {
             hasher.update(b"L");

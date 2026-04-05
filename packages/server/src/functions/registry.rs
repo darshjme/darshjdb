@@ -410,27 +410,27 @@ fn parse_exports(
         let trimmed = line.trim();
 
         // Match: export const NAME = KIND({
-        if let Some(rest) = trimmed.strip_prefix("export const ") {
-            if let Some((name, after_eq)) = rest.split_once('=') {
-                let name = name.trim();
-                let after_eq = after_eq.trim();
+        if let Some(rest) = trimmed.strip_prefix("export const ")
+            && let Some((name, after_eq)) = rest.split_once('=')
+        {
+            let name = name.trim();
+            let after_eq = after_eq.trim();
 
-                // Try to match KIND( or KIND({
-                for kind in [
-                    FunctionKind::Query,
-                    FunctionKind::Mutation,
-                    FunctionKind::Action,
-                    FunctionKind::Scheduled,
-                    FunctionKind::Internal,
-                    FunctionKind::HttpEndpoint,
-                ] {
-                    let wrapper = kind.wrapper_name();
-                    if after_eq.starts_with(&format!("{wrapper}("))
-                        || after_eq.starts_with(&format!("{wrapper} ("))
-                    {
-                        results.push((name.to_string(), kind, None, None));
-                        break;
-                    }
+            // Try to match KIND( or KIND({
+            for kind in [
+                FunctionKind::Query,
+                FunctionKind::Mutation,
+                FunctionKind::Action,
+                FunctionKind::Scheduled,
+                FunctionKind::Internal,
+                FunctionKind::HttpEndpoint,
+            ] {
+                let wrapper = kind.wrapper_name();
+                if after_eq.starts_with(&format!("{wrapper}("))
+                    || after_eq.starts_with(&format!("{wrapper} ("))
+                {
+                    results.push((name.to_string(), kind, None, None));
+                    break;
                 }
             }
         }

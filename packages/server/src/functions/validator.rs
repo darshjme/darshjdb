@@ -120,30 +120,30 @@ fn validate_at(path: &str, schema: &ArgSchema, value: &Value) -> Result<(), Vali
                 message: format!("expected string, got {}", json_type_name(value)),
             })?;
 
-            if let Some(min_len) = min {
-                if s.chars().count() < *min_len {
-                    return Err(ValidationError {
-                        path: path.to_string(),
-                        message: format!(
-                            "string length {} is below minimum {}",
-                            s.chars().count(),
-                            min_len
-                        ),
-                    });
-                }
+            if let Some(min_len) = min
+                && s.chars().count() < *min_len
+            {
+                return Err(ValidationError {
+                    path: path.to_string(),
+                    message: format!(
+                        "string length {} is below minimum {}",
+                        s.chars().count(),
+                        min_len
+                    ),
+                });
             }
 
-            if let Some(max_len) = max {
-                if s.chars().count() > *max_len {
-                    return Err(ValidationError {
-                        path: path.to_string(),
-                        message: format!(
-                            "string length {} exceeds maximum {}",
-                            s.chars().count(),
-                            max_len
-                        ),
-                    });
-                }
+            if let Some(max_len) = max
+                && s.chars().count() > *max_len
+            {
+                return Err(ValidationError {
+                    path: path.to_string(),
+                    message: format!(
+                        "string length {} exceeds maximum {}",
+                        s.chars().count(),
+                        max_len
+                    ),
+                });
             }
 
             Ok(())
@@ -155,22 +155,22 @@ fn validate_at(path: &str, schema: &ArgSchema, value: &Value) -> Result<(), Vali
                 message: format!("expected number, got {}", json_type_name(value)),
             })?;
 
-            if let Some(min_val) = min {
-                if n < *min_val {
-                    return Err(ValidationError {
-                        path: path.to_string(),
-                        message: format!("value {n} is below minimum {min_val}"),
-                    });
-                }
+            if let Some(min_val) = min
+                && n < *min_val
+            {
+                return Err(ValidationError {
+                    path: path.to_string(),
+                    message: format!("value {n} is below minimum {min_val}"),
+                });
             }
 
-            if let Some(max_val) = max {
-                if n > *max_val {
-                    return Err(ValidationError {
-                        path: path.to_string(),
-                        message: format!("value {n} exceeds maximum {max_val}"),
-                    });
-                }
+            if let Some(max_val) = max
+                && n > *max_val
+            {
+                return Err(ValidationError {
+                    path: path.to_string(),
+                    message: format!("value {n} exceeds maximum {max_val}"),
+                });
             }
 
             Ok(())

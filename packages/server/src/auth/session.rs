@@ -142,7 +142,7 @@ impl KeyManager {
 
         // Try current key first.
         match decode::<AccessClaims>(token, &self.current_decoding, &validation) {
-            Ok(data) => return Ok(data.claims),
+            Ok(data) => Ok(data.claims),
             Err(e) => {
                 // If we have a previous key, try that.
                 if let Some(ref prev) = self.previous_decoding {

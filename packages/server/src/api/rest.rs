@@ -28,7 +28,7 @@ use axum::http::{HeaderMap, HeaderValue, Request, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{Html, IntoResponse, Response};
-use axum::routing::{delete, get, patch, post};
+use axum::routing::{get, post};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::broadcast;
@@ -324,7 +324,9 @@ async fn auth_magic_link(
 #[derive(Deserialize)]
 struct VerifyRequest {
     token: String,
-    mfa_code: Option<String>,
+    #[serde(rename = "mfa_code")]
+    #[allow(dead_code)] // used by client protocol
+    _mfa_code: Option<String>,
 }
 
 async fn auth_verify(
@@ -350,7 +352,9 @@ async fn auth_verify(
 #[derive(Deserialize)]
 struct OAuthRequest {
     code: Option<String>,
-    redirect_uri: Option<String>,
+    #[serde(rename = "redirect_uri")]
+    #[allow(dead_code)] // used by client protocol
+    _redirect_uri: Option<String>,
 }
 
 async fn auth_oauth(
@@ -443,7 +447,9 @@ async fn auth_me(State(_state): State<AppState>, headers: HeaderMap) -> Result<R
 #[derive(Deserialize)]
 struct QueryRequest {
     query: String,
-    args: Option<HashMap<String, Value>>,
+    #[serde(rename = "args")]
+    #[allow(dead_code)] // used by client protocol
+    _args: Option<HashMap<String, Value>>,
 }
 
 async fn query(
@@ -545,9 +551,12 @@ async fn mutate(
 #[derive(Deserialize)]
 struct DataListParams {
     limit: Option<u32>,
-    cursor: Option<String>,
+    #[serde(rename = "cursor")]
+    #[allow(dead_code)] // used by client protocol
+    _cursor: Option<String>,
     #[serde(flatten)]
-    filters: HashMap<String, String>,
+    #[allow(dead_code)] // used by client protocol
+    _filters: HashMap<String, String>,
 }
 
 /// `GET /api/data/:entity` — List entities of a type with pagination.

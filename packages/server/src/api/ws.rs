@@ -38,13 +38,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{ConnectInfo, State};
+use axum::extract::State;
 use axum::response::IntoResponse;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::mpsc;
 use tokio::time::timeout;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info};
 
 use crate::sync::broadcaster::OutboundDiff;
 use crate::sync::presence::PresenceManager;
@@ -133,6 +133,7 @@ enum ServerMessage {
         id: String,
         error: String,
     },
+    #[allow(dead_code)] // used by client protocol
     Diff {
         sub_id: String,
         tx: i64,
@@ -145,6 +146,7 @@ enum ServerMessage {
         id: String,
         tx: i64,
     },
+    #[allow(dead_code)] // used by client protocol
     MutErr {
         id: String,
         error: String,
@@ -153,6 +155,7 @@ enum ServerMessage {
         room: String,
         members: Vec<Value>,
     },
+    #[allow(dead_code)] // used by client protocol
     PresDiff {
         room: String,
         #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -682,16 +685,13 @@ fn validate_token(token: &str) -> Result<String, String> {
 
     // Attempt to decode as a JWT and extract the `sub` claim.
     let parts: Vec<&str> = token.split('.').collect();
-    if parts.len() == 3 {
-        if let Ok(decoded) =
+    if parts.len() == 3
+        && let Ok(decoded) =
             base64::Engine::decode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, parts[1])
-        {
-            if let Ok(claims) = serde_json::from_slice::<Value>(&decoded) {
-                if let Some(sub) = claims.get("sub").and_then(|v| v.as_str()) {
-                    return Ok(sub.to_string());
-                }
-            }
-        }
+        && let Ok(claims) = serde_json::from_slice::<Value>(&decoded)
+        && let Some(sub) = claims.get("sub").and_then(|v| v.as_str())
+    {
+        return Ok(sub.to_string());
     }
 
     // Fallback: treat the raw token as a user identifier (dev mode only).
