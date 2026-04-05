@@ -32,7 +32,7 @@
 
 import type { NextApiRequest, NextApiResponse } from 'next';
 import type { NextRequest } from 'next/server';
-import type { DarshanClient } from '@darshan/client';
+import type { DarshanDB } from '@darshan/client';
 import { getAdminDb } from './server';
 import { DARSHAN_SESSION_COOKIE } from './middleware';
 
@@ -50,16 +50,16 @@ export interface DarshanSession {
 
 /** Context injected into Pages Router API handlers by `withDarshan`. */
 export interface DarshanApiContext {
-  /** The admin DarshanClient instance. */
-  db: DarshanClient;
+  /** The admin DarshanDB instance. */
+  db: DarshanDB;
   /** Session information from the request cookie. */
   session: DarshanSession;
 }
 
 /** Context injected into App Router route handlers by `withDarshanRoute`. */
 export interface DarshanRouteContext {
-  /** The admin DarshanClient instance. */
-  db: DarshanClient;
+  /** The admin DarshanDB instance. */
+  db: DarshanDB;
   /** Session information from the request cookie. */
   session: DarshanSession;
   /** The original Next.js request object. */
@@ -152,7 +152,7 @@ function extractSessionFromRequest(
 /**
  * Wrap a Pages Router API route handler with DarshanDB context.
  *
- * Injects the admin `DarshanClient` and session information into the
+ * Injects the admin `DarshanDB` and session information into the
  * handler. Optionally enforces authentication and method restrictions.
  *
  * @param handler - The API route handler.
