@@ -265,8 +265,7 @@ impl AppState {
         let key_manager = crate::auth::KeyManager::generate();
         let session_manager = Arc::new(SessionManager::new(pool.clone(), key_manager));
         let storage_backend = Arc::new(
-            LocalFsBackend::new("/tmp/darshjdb-test-storage")
-                .expect("create test storage backend"),
+            LocalFsBackend::new("/tmp/darshjdb-test-storage").expect("create test storage backend"),
         );
         let storage_engine = Arc::new(StorageEngine::new(
             storage_backend,

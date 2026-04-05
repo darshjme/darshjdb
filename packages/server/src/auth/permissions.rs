@@ -415,7 +415,10 @@ pub fn evaluate_permission(
     _entity: Option<&serde_json::Value>,
     engine: &PermissionEngine,
 ) -> PermissionResult {
-    let rule = match engine.get_rule(entity_type, operation) {
+    let rule = match engine
+        .get_rule(entity_type, operation)
+        .or_else(|| engine.get_rule("*", operation))
+    {
         Some(r) => r,
         None => {
             return PermissionResult::deny(format!(

@@ -874,8 +874,7 @@ async fn handle_mutation(
     }
 
     if !all_triples.is_empty()
-        && let Err(e) =
-            PgTripleStore::set_triples_in_tx(&mut db_tx, &all_triples, tx_id).await
+        && let Err(e) = PgTripleStore::set_triples_in_tx(&mut db_tx, &all_triples, tx_id).await
     {
         let _ = send_message(
             socket,
