@@ -226,4 +226,4 @@ darshan migrate up
 
 ---
 
-[Previous: Storage](storage.md) | [Next: Getting Started](getting-started.md)
+[Previous: Storage](storage.md) | [Next: Admin Dashboard](admin-dashboard.md) | [All Docs](README.md)

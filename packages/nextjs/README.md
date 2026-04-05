@@ -1,6 +1,6 @@
 # @darshan/nextjs
 
-Next.js SDK for DarshanDB -- Server Components, App Router, Pages Router, and Middleware support.
+Next.js SDK for DarshanDB -- Server Components, App Router, Pages Router, Server Actions, and Middleware.
 
 ## Install
 
@@ -8,13 +8,28 @@ Next.js SDK for DarshanDB -- Server Components, App Router, Pages Router, and Mi
 npm install @darshan/nextjs
 ```
 
-## Usage
+Requires Next.js 13+ and React 18+ as peer dependencies.
 
-### Server Components (App Router)
+## Exports
+
+This package provides multiple entry points for different Next.js contexts:
+
+| Import | Context | Description |
+|--------|---------|-------------|
+| `@darshan/nextjs` | Client Components | Client-side hooks and DarshanDB instance |
+| `@darshan/nextjs/server` | Server Components | Server-side query functions |
+| `@darshan/nextjs/provider` | Client layout | `DarshanProvider` for client-side state |
+| `@darshan/nextjs/pages` | Pages Router | Provider and hooks for Pages Router |
+| `@darshan/nextjs/middleware` | Edge Middleware | Auth middleware for route protection |
+| `@darshan/nextjs/api` | API Routes | Server action helpers |
+
+## App Router
+
+### Server Components
 
 ```tsx
-// app/page.tsx
-import { queryServer } from '@darshan/nextjs';
+// app/page.tsx (Server Component -- no "use client")
+import { queryServer } from '@darshan/nextjs/server';
 
 export default async function Page() {
   const data = await queryServer({
@@ -34,6 +49,7 @@ export default async function Page() {
 ### Client Components
 
 ```tsx
+// app/components/TodoList.tsx
 'use client';
 import { DarshanDB } from '@darshan/nextjs';
 
@@ -49,27 +65,142 @@ export function TodoList() {
 }
 ```
 
+### Provider Setup
+
+```tsx
+// app/providers.tsx
+'use client';
+import { DarshanProvider, DarshanDB } from '@darshan/nextjs/provider';
+
+const db = DarshanDB.init({ appId: 'my-app' });
+
+export function Providers({ children }: { children: React.ReactNode }) {
+  return <DarshanProvider db={db}>{children}</DarshanProvider>;
+}
+```
+
+```tsx
+// app/layout.tsx
+import { Providers } from './providers';
+
+export default function RootLayout({ children }: { children: React.ReactNode }) {
+  return (
+    <html>
+      <body>
+        <Providers>{children}</Providers>
+      </body>
+    </html>
+  );
+}
+```
+
 ### Server Actions
 
 ```tsx
 // app/actions.ts
 'use server';
-import { mutateServer } from '@darshan/nextjs';
+import { mutateServer } from '@darshan/nextjs/server';
 
 export async function createTodo(title: string) {
   return mutateServer('createTodo', { title, listId: 'default' });
 }
+
+export async function toggleTodo(id: string, done: boolean) {
+  return mutateServer('updateTodo', { id, done });
+}
 ```
 
-### Middleware (Auth)
+```tsx
+// app/components/AddTodo.tsx
+'use client';
+import { createTodo } from '../actions';
+
+export function AddTodo() {
+  return (
+    <form action={async (formData) => {
+      await createTodo(formData.get('title') as string);
+    }}>
+      <input name="title" required />
+      <button type="submit">Add</button>
+    </form>
+  );
+}
+```
+
+### Auth Middleware
 
 ```typescript
 // middleware.ts
-import { darshanMiddleware } from '@darshan/nextjs';
+import { darshanMiddleware } from '@darshan/nextjs/middleware';
 
 export default darshanMiddleware({
-  protectedRoutes: ['/dashboard', '/settings'],
-  signInUrl: '/login',
+  publicRoutes: ['/', '/about', '/sign-in', '/sign-up'],
+  signInUrl: '/sign-in',
+});
+
+export const config = {
+  matcher: ['/((?!_next/static|_next/image|favicon.ico).*)'],
+};
+```
+
+### Server-Side Auth
+
+```tsx
+// app/dashboard/page.tsx
+import { getAuth } from '@darshan/nextjs/server';
+import { redirect } from 'next/navigation';
+
+export default async function Dashboard() {
+  const auth = await getAuth();
+  if (!auth.userId) redirect('/sign-in');
+
+  const data = await queryServer({ todos: { $where: { userId: auth.userId } } });
+  return <TodoList items={data.todos} />;
+}
+```
+
+## Pages Router
+
+```tsx
+// pages/_app.tsx
+import { DarshanProvider, DarshanDB } from '@darshan/nextjs/pages';
+
+const db = DarshanDB.init({ appId: 'my-app' });
+
+export default function App({ Component, pageProps }) {
+  return (
+    <DarshanProvider db={db}>
+      <Component {...pageProps} />
+    </DarshanProvider>
+  );
+}
+```
+
+```tsx
+// pages/index.tsx
+import { DarshanDB } from '@darshan/nextjs/pages';
+
+const db = DarshanDB.init({ appId: 'my-app' });
+
+export default function Home() {
+  const { data, isLoading } = db.useQuery({ todos: {} });
+  if (isLoading) return <p>Loading...</p>;
+  return <ul>{data.todos.map(t => <li key={t.id}>{t.title}</li>)}</ul>;
+}
+```
+
+## API Routes
+
+```typescript
+// app/api/todos/route.ts
+import { createServerAction } from '@darshan/nextjs/api';
+
+export const POST = createServerAction(async (ctx, body) => {
+  const id = ctx.db.id();
+  await ctx.db.transact(
+    ctx.db.tx.todos[id].set({ title: body.title, done: false, userId: ctx.auth.userId })
+  );
+  return { id };
 });
 ```
 
@@ -80,9 +211,20 @@ export default darshanMiddleware({
 - **Server Actions** -- Call server functions from client components
 - **Auth Middleware** -- Protect routes at the edge
 - **Streaming** -- Compatible with React Suspense and streaming SSR
+- **ISR/SSG compatible** -- Use `queryServer` in `generateStaticParams`
+
+## Building
+
+```bash
+npm run build      # Produces dist/ with ESM, CJS, and type declarations
+npm run dev        # Watch mode
+npm test           # Run tests
+npm run typecheck  # Type check
+```
 
 ## Documentation
 
 - [Getting Started](../../docs/getting-started.md)
 - [Server Functions](../../docs/server-functions.md)
 - [Authentication](../../docs/authentication.md)
+- [Query Language](../../docs/query-language.md)
