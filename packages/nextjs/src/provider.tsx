@@ -134,7 +134,7 @@ export interface DarshanProviderProps {
   /**
    * Additional client configuration passed to `createClient()`.
    */
-  clientConfig?: Partial<DarshanConfig>;
+  clientConfig?: Record<string, unknown>;
 
   /**
    * Dehydrated server state for SSR hydration.
@@ -174,10 +174,10 @@ export function DarshanProvider({
   children,
   url,
   token,
-  clientConfig,
-  dehydratedState,
-  realtime = true,
-  offline = false,
+  clientConfig: _clientConfig,
+  dehydratedState: _dehydratedState,
+  realtime: _realtime = true,
+  offline: _offline = false,
 }: DarshanProviderProps): React.JSX.Element {
   // Resolve configuration from props or environment variables
   const resolvedUrl =
