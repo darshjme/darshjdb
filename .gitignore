@@ -14,6 +14,7 @@ dist/
 .env.local
 .env.*.local
 *.pem
+!packages/server/tests/fixtures/*.pem
 *.key
 *.p12
 *.pfx
