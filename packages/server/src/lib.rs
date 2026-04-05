@@ -1,14 +1,15 @@
-//! DarshanDB server library crate.
+#![recursion_limit = "1024"]
+//! DarshJDB server library crate.
 //!
 //! Provides the core data layer: a Postgres-backed triple store,
-//! the DarshanQL query engine with plan caching, and reactive
+//! the DarshJQL query engine with plan caching, and reactive
 //! dependency tracking for live query invalidation.
 //!
 //! # Modules
 //!
-//! - [`error`] — Unified error types (`DarshanError`, `Result`).
+//! - [`error`] — Unified error types (`DarshJError`, `Result`).
 //! - [`triple_store`] — Triple storage, schema inference, migrations.
-//! - [`query`] — DarshanQL parsing, planning, execution, and caching.
+//! - [`query`] — DarshJQL parsing, planning, execution, and caching.
 
 pub mod api;
 pub mod audit;

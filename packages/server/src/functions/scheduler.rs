@@ -7,7 +7,7 @@
 //! # Usage
 //!
 //! ```rust,no_run
-//! use darshandb_server::functions::scheduler::Scheduler;
+//! use ddb_server::functions::scheduler::Scheduler;
 //!
 //! # async fn example(pool: sqlx::PgPool) -> anyhow::Result<()> {
 //! let scheduler = Scheduler::new(pool);
@@ -121,7 +121,7 @@ pub struct ScheduledJob {
 // Scheduler
 // ---------------------------------------------------------------------------
 
-/// Background cron scheduler for DarshanDB server functions.
+/// Background cron scheduler for DarshJDB server functions.
 ///
 /// Uses Postgres advisory locks for distributed safety so only one server
 /// instance executes a given job even in a multi-node deployment.

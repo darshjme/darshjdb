@@ -1,4 +1,4 @@
-//! Consistent API error formatting for DarshanDB.
+//! Consistent API error formatting for DarshJDB.
 //!
 //! All error responses follow a uniform JSON envelope:
 //!
@@ -20,7 +20,7 @@ use axum::response::{IntoResponse, Response};
 use serde::Serialize;
 
 use crate::auth::AuthError;
-use crate::error::DarshanError;
+use crate::error::DarshJError;
 
 /// Structured error code included in every API error response.
 ///
@@ -42,7 +42,7 @@ pub enum ErrorCode {
     PayloadTooLarge,
     /// Too many requests; the caller has been rate-limited.
     RateLimited,
-    /// A query or DarshanQL expression is malformed.
+    /// A query or DarshJQL expression is malformed.
     InvalidQuery,
     /// A value could not be coerced to the expected type.
     TypeMismatch,
@@ -203,16 +203,16 @@ impl From<AuthError> for ApiError {
     }
 }
 
-impl From<DarshanError> for ApiError {
-    fn from(err: DarshanError) -> Self {
+impl From<DarshJError> for ApiError {
+    fn from(err: DarshJError) -> Self {
         let code = match &err {
-            DarshanError::Database(_) | DarshanError::Internal(_) => ErrorCode::Internal,
-            DarshanError::InvalidQuery(_) => ErrorCode::InvalidQuery,
-            DarshanError::EntityNotFound(_) => ErrorCode::NotFound,
-            DarshanError::InvalidAttribute(_) => ErrorCode::BadRequest,
-            DarshanError::TypeMismatch { .. } => ErrorCode::TypeMismatch,
-            DarshanError::SchemaConflict(_) => ErrorCode::SchemaConflict,
-            DarshanError::Serialization(_) => ErrorCode::BadRequest,
+            DarshJError::Database(_) | DarshJError::Internal(_) => ErrorCode::Internal,
+            DarshJError::InvalidQuery(_) => ErrorCode::InvalidQuery,
+            DarshJError::EntityNotFound(_) => ErrorCode::NotFound,
+            DarshJError::InvalidAttribute(_) => ErrorCode::BadRequest,
+            DarshJError::TypeMismatch { .. } => ErrorCode::TypeMismatch,
+            DarshJError::SchemaConflict(_) => ErrorCode::SchemaConflict,
+            DarshJError::Serialization(_) => ErrorCode::BadRequest,
         };
 
         Self::new(code, err.to_string())

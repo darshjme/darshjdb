@@ -1,4 +1,4 @@
-//! WebSocket handler for DarshanDB real-time sync protocol.
+//! WebSocket handler for DarshJDB real-time sync protocol.
 //!
 //! Handles connection upgrade at `/ws`, automatic MessagePack/JSON codec
 //! detection, authentication with a 5-second timeout, subscription lifecycle,
@@ -669,9 +669,15 @@ async fn handle_mutation(
     let ops_array = match ops.as_array() {
         Some(a) if !a.is_empty() => a.clone(),
         _ => {
-            let _ = send_message(socket, &ServerMessage::MutErr {
-                id: req_id, error: "ops must be a non-empty array".into(),
-            }, codec).await;
+            let _ = send_message(
+                socket,
+                &ServerMessage::MutErr {
+                    id: req_id,
+                    error: "ops must be a non-empty array".into(),
+                },
+                codec,
+            )
+            .await;
             return;
         }
     };
@@ -679,18 +685,30 @@ async fn handle_mutation(
     let mut db_tx = match state.triple_store.begin_tx().await {
         Ok(t) => t,
         Err(e) => {
-            let _ = send_message(socket, &ServerMessage::MutErr {
-                id: req_id, error: format!("begin tx: {e}"),
-            }, codec).await;
+            let _ = send_message(
+                socket,
+                &ServerMessage::MutErr {
+                    id: req_id,
+                    error: format!("begin tx: {e}"),
+                },
+                codec,
+            )
+            .await;
             return;
         }
     };
     let tx_id = match PgTripleStore::next_tx_id_in_tx(&mut db_tx).await {
         Ok(i) => i,
         Err(e) => {
-            let _ = send_message(socket, &ServerMessage::MutErr {
-                id: req_id, error: format!("alloc tx_id: {e}"),
-            }, codec).await;
+            let _ = send_message(
+                socket,
+                &ServerMessage::MutErr {
+                    id: req_id,
+                    error: format!("alloc tx_id: {e}"),
+                },
+                codec,
+            )
+            .await;
             return;
         }
     };
@@ -705,76 +723,201 @@ async fn handle_mutation(
         let id_str = op_val.get("id").and_then(|v| v.as_str());
         let data = op_val.get("data");
         if entity.is_empty() {
-            let _ = send_message(socket, &ServerMessage::MutErr {
-                id: req_id, error: "each op requires 'entity'".into(),
-            }, codec).await;
+            let _ = send_message(
+                socket,
+                &ServerMessage::MutErr {
+                    id: req_id,
+                    error: "each op requires 'entity'".into(),
+                },
+                codec,
+            )
+            .await;
             return;
         }
-        if !entity_types.contains(&entity.to_string()) { entity_types.push(entity.to_string()); }
+        if !entity_types.contains(&entity.to_string()) {
+            entity_types.push(entity.to_string());
+        }
 
         match op_str {
             "insert" => {
-                let eid = id_str.and_then(|s| uuid::Uuid::parse_str(s).ok()).unwrap_or_else(uuid::Uuid::new_v4);
+                let eid = id_str
+                    .and_then(|s| uuid::Uuid::parse_str(s).ok())
+                    .unwrap_or_else(uuid::Uuid::new_v4);
                 entity_ids.push(eid.to_string());
-                all_triples.push(TripleInput { entity_id: eid, attribute: ":db/type".into(), value: Value::String(entity.into()), value_type: 0, ttl_seconds: None });
+                all_triples.push(TripleInput {
+                    entity_id: eid,
+                    attribute: ":db/type".into(),
+                    value: Value::String(entity.into()),
+                    value_type: 0,
+                    ttl_seconds: None,
+                });
                 if let Some(obj) = data.and_then(|d| d.as_object()) {
                     for (k, v) in obj {
-                        all_triples.push(TripleInput { entity_id: eid, attribute: format!("{entity}/{k}"), value: v.clone(), value_type: ws_vtype(v), ttl_seconds: None });
+                        all_triples.push(TripleInput {
+                            entity_id: eid,
+                            attribute: format!("{entity}/{k}"),
+                            value: v.clone(),
+                            value_type: ws_vtype(v),
+                            ttl_seconds: None,
+                        });
                     }
                 }
             }
             "update" => {
                 let eid = match id_str.and_then(|s| uuid::Uuid::parse_str(s).ok()) {
                     Some(i) => i,
-                    None => { let _ = send_message(socket, &ServerMessage::MutErr { id: req_id, error: "update requires 'id'".into() }, codec).await; return; }
+                    None => {
+                        let _ = send_message(
+                            socket,
+                            &ServerMessage::MutErr {
+                                id: req_id,
+                                error: "update requires 'id'".into(),
+                            },
+                            codec,
+                        )
+                        .await;
+                        return;
+                    }
                 };
                 entity_ids.push(eid.to_string());
                 if let Some(obj) = data.and_then(|d| d.as_object()) {
                     for (k, _) in obj {
-                        if let Err(e) = PgTripleStore::retract_in_tx(&mut db_tx, eid, &format!("{entity}/{k}")).await {
-                            let _ = send_message(socket, &ServerMessage::MutErr { id: req_id, error: format!("retract: {e}") }, codec).await; return;
+                        if let Err(e) =
+                            PgTripleStore::retract_in_tx(&mut db_tx, eid, &format!("{entity}/{k}"))
+                                .await
+                        {
+                            let _ = send_message(
+                                socket,
+                                &ServerMessage::MutErr {
+                                    id: req_id,
+                                    error: format!("retract: {e}"),
+                                },
+                                codec,
+                            )
+                            .await;
+                            return;
                         }
                     }
                     for (k, v) in obj {
-                        all_triples.push(TripleInput { entity_id: eid, attribute: format!("{entity}/{k}"), value: v.clone(), value_type: ws_vtype(v), ttl_seconds: None });
+                        all_triples.push(TripleInput {
+                            entity_id: eid,
+                            attribute: format!("{entity}/{k}"),
+                            value: v.clone(),
+                            value_type: ws_vtype(v),
+                            ttl_seconds: None,
+                        });
                     }
                 }
             }
             "delete" => {
                 let eid = match id_str.and_then(|s| uuid::Uuid::parse_str(s).ok()) {
                     Some(i) => i,
-                    None => { let _ = send_message(socket, &ServerMessage::MutErr { id: req_id, error: "delete requires 'id'".into() }, codec).await; return; }
+                    None => {
+                        let _ = send_message(
+                            socket,
+                            &ServerMessage::MutErr {
+                                id: req_id,
+                                error: "delete requires 'id'".into(),
+                            },
+                            codec,
+                        )
+                        .await;
+                        return;
+                    }
                 };
                 entity_ids.push(eid.to_string());
                 let existing = match PgTripleStore::get_entity_in_tx(&mut db_tx, eid).await {
                     Ok(t) => t,
-                    Err(e) => { let _ = send_message(socket, &ServerMessage::MutErr { id: req_id, error: format!("fetch: {e}") }, codec).await; return; }
+                    Err(e) => {
+                        let _ = send_message(
+                            socket,
+                            &ServerMessage::MutErr {
+                                id: req_id,
+                                error: format!("fetch: {e}"),
+                            },
+                            codec,
+                        )
+                        .await;
+                        return;
+                    }
                 };
                 for t in &existing {
-                    if let Err(e) = PgTripleStore::retract_in_tx(&mut db_tx, eid, &t.attribute).await {
-                        let _ = send_message(socket, &ServerMessage::MutErr { id: req_id, error: format!("retract: {e}") }, codec).await; return;
+                    if let Err(e) =
+                        PgTripleStore::retract_in_tx(&mut db_tx, eid, &t.attribute).await
+                    {
+                        let _ = send_message(
+                            socket,
+                            &ServerMessage::MutErr {
+                                id: req_id,
+                                error: format!("retract: {e}"),
+                            },
+                            codec,
+                        )
+                        .await;
+                        return;
                     }
                 }
             }
             _ => {
-                let _ = send_message(socket, &ServerMessage::MutErr { id: req_id, error: format!("unknown op '{op_str}'") }, codec).await; return;
+                let _ = send_message(
+                    socket,
+                    &ServerMessage::MutErr {
+                        id: req_id,
+                        error: format!("unknown op '{op_str}'"),
+                    },
+                    codec,
+                )
+                .await;
+                return;
             }
         }
     }
 
     if !all_triples.is_empty() {
         if let Err(e) = PgTripleStore::set_triples_in_tx(&mut db_tx, &all_triples, tx_id).await {
-            let _ = send_message(socket, &ServerMessage::MutErr { id: req_id, error: format!("write: {e}") }, codec).await; return;
+            let _ = send_message(
+                socket,
+                &ServerMessage::MutErr {
+                    id: req_id,
+                    error: format!("write: {e}"),
+                },
+                codec,
+            )
+            .await;
+            return;
         }
     }
     if let Err(e) = db_tx.commit().await {
-        let _ = send_message(socket, &ServerMessage::MutErr { id: req_id, error: format!("commit: {e}") }, codec).await; return;
+        let _ = send_message(
+            socket,
+            &ServerMessage::MutErr {
+                id: req_id,
+                error: format!("commit: {e}"),
+            },
+            codec,
+        )
+        .await;
+        return;
     }
 
     let attrs: Vec<String> = all_triples.iter().map(|t| t.attribute.clone()).collect();
-    let _ = state.change_tx.send(ChangeEvent { tx_id, entity_ids: entity_ids.clone(), attributes: attrs, entity_type: entity_types.into_iter().next(), actor_id: None });
+    let _ = state.change_tx.send(ChangeEvent {
+        tx_id,
+        entity_ids: entity_ids.clone(),
+        attributes: attrs,
+        entity_type: entity_types.into_iter().next(),
+        actor_id: None,
+    });
     debug!(session_id = %session_id, tx_id = tx_id, "ws mutation committed");
-    let _ = send_message(socket, &ServerMessage::MutOk { id: req_id, tx: tx_id }, codec).await;
+    let _ = send_message(
+        socket,
+        &ServerMessage::MutOk {
+            id: req_id,
+            tx: tx_id,
+        },
+        codec,
+    )
+    .await;
 }
 
 /// Infer triple value_type from JSON (WebSocket context).
@@ -1329,7 +1472,7 @@ pub enum WsError {
 ///
 /// ```rust,ignore
 /// use axum::Router;
-/// use darshandb_server::api::ws::{ws_routes, WsState};
+/// use ddb_server::api::ws::{ws_routes, WsState};
 ///
 /// let ws_state = WsState { /* ... */ };
 /// let app = Router::new()

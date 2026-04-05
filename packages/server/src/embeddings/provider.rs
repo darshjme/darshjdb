@@ -252,7 +252,7 @@ impl EmbeddingProvider for NoopProvider {
         Box<dyn std::future::Future<Output = std::result::Result<Vec<f32>, String>> + Send + '_>,
     > {
         Box::pin(async {
-            Err("embedding provider is disabled (set DARSHAN_EMBEDDING_PROVIDER)".to_string())
+            Err("embedding provider is disabled (set DDB_EMBEDDING_PROVIDER)".to_string())
         })
     }
 }

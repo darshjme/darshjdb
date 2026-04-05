@@ -1,7 +1,7 @@
-//! DarshanDB CLI — `ddb`
+//! DarshJDB CLI — `ddb`
 //!
 //! The primary command-line interface for developing with, deploying,
-//! and administrating DarshanDB instances.
+//! and administrating DarshJDB instances.
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -16,7 +16,7 @@ mod config;
 #[derive(Parser)]
 #[command(
     name = "ddb",
-    about = "DarshanDB CLI — develop, deploy, and manage your database",
+    about = "DarshJDB CLI — develop, deploy, and manage your database",
     version,
     propagate_version = true
 )]
@@ -24,12 +24,12 @@ struct Cli {
     #[command(subcommand)]
     command: Commands,
 
-    /// DarshanDB server URL (overrides config and DARSHAN_URL env)
-    #[arg(long, global = true, env = "DARSHAN_URL")]
+    /// DarshJDB server URL (overrides config and DDB_URL env)
+    #[arg(long, global = true, env = "DDB_URL")]
     url: Option<String>,
 
-    /// Authentication token (overrides config and DARSHAN_TOKEN env)
-    #[arg(long, global = true, env = "DARSHAN_TOKEN")]
+    /// Authentication token (overrides config and DDB_TOKEN env)
+    #[arg(long, global = true, env = "DDB_TOKEN")]
     token: Option<String>,
 }
 
@@ -146,7 +146,7 @@ enum Commands {
     /// Show server health and status information
     Status,
 
-    /// Initialize a new DarshanDB project
+    /// Initialize a new DarshJDB project
     Init {
         /// Project name
         #[arg(default_value = ".")]
@@ -225,7 +225,7 @@ async fn main() -> Result<()> {
 // ── Command implementations ────────────────────────────────────────
 
 async fn cmd_dev(port: u16, watch: bool) -> Result<()> {
-    println!("\n  {} DarshanDB dev server\n", ">>>".bright_cyan().bold());
+    println!("\n  {} DarshJDB dev server\n", ">>>".bright_cyan().bold());
 
     let spinner = spinner("Starting server...");
 
@@ -293,20 +293,20 @@ async fn cmd_dev(port: u16, watch: bool) -> Result<()> {
     // Build and run the server binary
     let mut cmd = tokio::process::Command::new("cargo");
     cmd.args(["run", "-p", "darshandb-server", "--"])
-        .env("DARSHAN_PORT", port.to_string())
+        .env("DDB_PORT", port.to_string())
         .env(
             "DATABASE_URL",
             "postgres://postgres:darshan@localhost:5432/darshandb",
         );
 
     if watch {
-        cmd.env("DARSHAN_WATCH", "true");
+        cmd.env("DDB_WATCH", "true");
     }
 
     let status = cmd
         .status()
         .await
-        .context("Failed to start DarshanDB server")?;
+        .context("Failed to start DarshJDB server")?;
 
     if !status.success() {
         anyhow::bail!("Server exited with status: {}", status);
@@ -316,7 +316,7 @@ async fn cmd_dev(port: u16, watch: bool) -> Result<()> {
 }
 
 async fn cmd_deploy(tag: &str, registry: Option<&str>, yes: bool) -> Result<()> {
-    println!("\n  {} DarshanDB deploy\n", ">>>".bright_cyan().bold());
+    println!("\n  {} DarshJDB deploy\n", ">>>".bright_cyan().bold());
 
     let image = match registry {
         Some(r) => format!("{r}:{tag}"),
@@ -901,7 +901,7 @@ async fn cmd_restore(cfg: &config::Config, file: &str, yes: bool) -> Result<()> 
 }
 
 async fn cmd_status(cfg: &config::Config) -> Result<()> {
-    println!("\n  {} DarshanDB Status\n", ">>>".bright_cyan().bold());
+    println!("\n  {} DarshJDB Status\n", ">>>".bright_cyan().bold());
     cfg.require_token()?;
 
     let client = reqwest::Client::new();
@@ -966,7 +966,7 @@ async fn cmd_status(cfg: &config::Config) -> Result<()> {
 
 async fn cmd_init(name: &str) -> Result<()> {
     println!(
-        "\n  {} Initialize DarshanDB project\n",
+        "\n  {} Initialize DarshJDB project\n",
         ">>>".bright_cyan().bold()
     );
 
@@ -984,7 +984,7 @@ async fn cmd_init(name: &str) -> Result<()> {
     tokio::fs::create_dir_all(darshan_dir.join("generated")).await?;
 
     // Create ddb.toml
-    let config_content = r#"# DarshanDB project configuration
+    let config_content = r#"# DarshJDB project configuration
 
 [server]
 url = "http://localhost:7700"
@@ -1025,7 +1025,7 @@ export const createTodo = mutation(async (ctx, args: { title: string }) => {
     let seed_content = r#"import { seed } from "@darshan/server";
 
 export default seed(async (ctx) => {
-  await ctx.db.insert("todo", { title: "Learn DarshanDB", completed: false, createdAt: Date.now() });
+  await ctx.db.insert("todo", { title: "Learn DarshJDB", completed: false, createdAt: Date.now() });
   await ctx.db.insert("todo", { title: "Build something great", completed: false, createdAt: Date.now() });
   console.log("Seed complete: 2 todos created");
 });

@@ -1,4 +1,4 @@
-//! Argument validation for DarshanDB server functions.
+//! Argument validation for DarshJDB server functions.
 //!
 //! Each function can declare an [`ArgSchema`] that describes the shape and
 //! constraints of its arguments. [`validate_args`] checks a JSON value
@@ -8,7 +8,7 @@
 //!
 //! ```rust
 //! use serde_json::json;
-//! use darshandb_server::functions::validator::{ArgSchema, validate_args};
+//! use ddb_server::functions::validator::{ArgSchema, validate_args};
 //! use std::collections::HashMap;
 //!
 //! let schema = ArgSchema::Object({
@@ -81,7 +81,7 @@ pub enum ArgSchema {
     /// A boolean value.
     Bool,
 
-    /// A DarshanDB document ID (validated as a non-empty string starting with an
+    /// A DarshJDB document ID (validated as a non-empty string starting with an
     /// optional table prefix followed by a UUID-like suffix).
     Id,
 

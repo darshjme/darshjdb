@@ -1,9 +1,9 @@
 [package]
-name = "darshandb-server"
+name = "ddb-server"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "DarshanDB server — triple store, DarshanQL query engine, and reactive tracking"
+description = "DarshJDB server — triple store, DarshJQL query engine, and reactive tracking"
 
 [dependencies]
 tokio.workspace = true

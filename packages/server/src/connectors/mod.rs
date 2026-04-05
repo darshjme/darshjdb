@@ -1,4 +1,4 @@
-//! Connector plugin system for DarshanDB.
+//! Connector plugin system for DarshJDB.
 //!
 //! Connectors receive entity-level change events from the triple store's
 //! broadcast channel and synchronise external systems: search indices,

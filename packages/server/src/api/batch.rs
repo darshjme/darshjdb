@@ -1,4 +1,4 @@
-//! Redis-style command pipelining and batch operations for DarshanDB.
+//! Redis-style command pipelining and batch operations for DarshJDB.
 //!
 //! Provides `POST /api/batch` for executing multiple operations (queries,
 //! mutations, function calls) in a single HTTP round-trip. All mutations
@@ -54,7 +54,7 @@ pub struct BatchRequest {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum BatchOp {
-    /// Execute a DarshanQL query.
+    /// Execute a DarshJQL query.
     Query { id: String, body: Value },
     /// Execute one or more mutations (insert/update/delete/upsert).
     Mutate { id: String, body: Value },
@@ -251,7 +251,7 @@ pub async fn batch_handler(
 async fn execute_batch_query(id: &str, query_body: &Value, state: &AppState) -> BatchOpResult {
     let start = Instant::now();
 
-    // Parse the DarshanQL JSON into an AST.
+    // Parse the DarshJQL JSON into an AST.
     let ast = match query::parse_darshan_ql(query_body) {
         Ok(ast) => ast,
         Err(e) => {

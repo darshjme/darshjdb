@@ -1,4 +1,4 @@
-//! Multi-factor authentication for DarshanDB.
+//! Multi-factor authentication for DarshJDB.
 //!
 //! Supports three MFA mechanisms:
 //!
@@ -554,9 +554,9 @@ mod tests {
 
     #[test]
     fn totp_enrollment_produces_valid_uri() {
-        let enrollment = TotpManager::enroll("DarshanDB", "user@example.com");
+        let enrollment = TotpManager::enroll("DarshJDB", "user@example.com");
         assert!(enrollment.provisioning_uri.starts_with("otpauth://totp/"));
-        assert!(enrollment.provisioning_uri.contains("DarshanDB"));
+        assert!(enrollment.provisioning_uri.contains("DarshJDB"));
         assert!(!enrollment.secret_base32.is_empty());
         assert_eq!(enrollment.secret_raw.len(), 20);
     }

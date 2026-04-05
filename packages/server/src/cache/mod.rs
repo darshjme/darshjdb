@@ -1,6 +1,6 @@
-//! Redis-inspired in-memory hot cache for DarshanDB query results.
+//! Redis-inspired in-memory hot cache for DarshJDB query results.
 //!
-//! Provides sub-millisecond reads by serving repeated DarshanQL queries
+//! Provides sub-millisecond reads by serving repeated DarshJQL queries
 //! from memory, bypassing Postgres entirely on cache hits. The cache is
 //! invalidated reactively via the [`ChangeEvent`] broadcast channel
 //! whenever mutations touch relevant entity types.
@@ -10,7 +10,7 @@
 //! - **DashMap** for lock-free concurrent reads (no global mutex).
 //! - **TTL + LRU eviction** to bound memory usage.
 //! - **Entity-type keyed invalidation** so writes only flush affected queries.
-//! - **Configurable** via `DARSHAN_CACHE_*` environment variables.
+//! - **Configurable** via `DDB_CACHE_*` environment variables.
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -116,25 +116,25 @@ impl QueryCache {
         }
     }
 
-    /// Build a cache from `DARSHAN_CACHE_*` environment variables.
+    /// Build a cache from `DDB_CACHE_*` environment variables.
     ///
     /// | Variable                | Default | Description              |
     /// |-------------------------|---------|--------------------------|
-    /// | `DARSHAN_CACHE_SIZE`    | 1000    | Max cached entries       |
-    /// | `DARSHAN_CACHE_TTL`     | 60      | TTL in seconds           |
-    /// | `DARSHAN_CACHE_ENABLED` | true    | Master on/off switch     |
+    /// | `DDB_CACHE_SIZE`    | 1000    | Max cached entries       |
+    /// | `DDB_CACHE_TTL`     | 60      | TTL in seconds           |
+    /// | `DDB_CACHE_ENABLED` | true    | Master on/off switch     |
     pub fn from_env() -> Self {
-        let max_entries: usize = std::env::var("DARSHAN_CACHE_SIZE")
+        let max_entries: usize = std::env::var("DDB_CACHE_SIZE")
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(1000);
 
-        let ttl_secs: u64 = std::env::var("DARSHAN_CACHE_TTL")
+        let ttl_secs: u64 = std::env::var("DDB_CACHE_TTL")
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(60);
 
-        let enabled: bool = std::env::var("DARSHAN_CACHE_ENABLED")
+        let enabled: bool = std::env::var("DDB_CACHE_ENABLED")
             .map(|v| v != "0" && v != "false")
             .unwrap_or(true);
 

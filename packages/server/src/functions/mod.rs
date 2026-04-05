@@ -1,4 +1,4 @@
-//! Server-side function execution runtime for DarshanDB.
+//! Server-side function execution runtime for DarshJDB.
 //!
 //! This module provides the infrastructure for running user-defined functions
 //! (queries, mutations, actions, scheduled jobs, and HTTP endpoints) in an

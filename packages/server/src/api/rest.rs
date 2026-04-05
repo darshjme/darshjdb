@@ -1,4 +1,4 @@
-//! Full REST API router for DarshanDB.
+//! Full REST API router for DarshJDB.
 //!
 //! Assembles all route groups (auth, data, functions, storage, SSE,
 //! admin, docs) into a single [`axum::Router`] and provides the
@@ -82,7 +82,7 @@ pub struct AppState {
     pub change_tx: broadcast::Sender<ChangeEvent>,
     /// Server boot instant for uptime reporting.
     pub started_at: Instant,
-    /// Whether dev mode is active (DARSHAN_DEV=1).
+    /// Whether dev mode is active (DDB_DEV=1).
     pub dev_mode: bool,
     /// Permission engine for row-level security and access control.
     pub permissions: Arc<PermissionEngine>,
@@ -112,20 +112,20 @@ pub struct AppState {
 
 /// Load OAuth2 provider configurations from environment variables.
 ///
-/// Reads `DARSHAN_OAUTH_{PROVIDER}_CLIENT_ID` and
-/// `DARSHAN_OAUTH_{PROVIDER}_CLIENT_SECRET` for each supported provider.
+/// Reads `DDB_OAUTH_{PROVIDER}_CLIENT_ID` and
+/// `DDB_OAUTH_{PROVIDER}_CLIENT_SECRET` for each supported provider.
 /// Providers without both env vars are silently skipped.
 fn load_oauth_providers_from_env() -> HashMap<OAuthProviderKind, GenericOAuth2Provider> {
     let base_url =
-        std::env::var("DARSHAN_BASE_URL").unwrap_or_else(|_| "http://localhost:4000".to_string());
+        std::env::var("DDB_BASE_URL").unwrap_or_else(|_| "http://localhost:4000".to_string());
     let mut providers = HashMap::new();
 
     // Google
     if let (Ok(id), Ok(secret)) = (
-        std::env::var("DARSHAN_OAUTH_GOOGLE_CLIENT_ID"),
-        std::env::var("DARSHAN_OAUTH_GOOGLE_CLIENT_SECRET"),
+        std::env::var("DDB_OAUTH_GOOGLE_CLIENT_ID"),
+        std::env::var("DDB_OAUTH_GOOGLE_CLIENT_SECRET"),
     ) {
-        let redirect = std::env::var("DARSHAN_OAUTH_GOOGLE_REDIRECT_URI")
+        let redirect = std::env::var("DDB_OAUTH_GOOGLE_REDIRECT_URI")
             .unwrap_or_else(|_| format!("{base_url}/api/auth/oauth/google/callback"));
         providers.insert(
             OAuthProviderKind::Google,
@@ -135,10 +135,10 @@ fn load_oauth_providers_from_env() -> HashMap<OAuthProviderKind, GenericOAuth2Pr
 
     // GitHub
     if let (Ok(id), Ok(secret)) = (
-        std::env::var("DARSHAN_OAUTH_GITHUB_CLIENT_ID"),
-        std::env::var("DARSHAN_OAUTH_GITHUB_CLIENT_SECRET"),
+        std::env::var("DDB_OAUTH_GITHUB_CLIENT_ID"),
+        std::env::var("DDB_OAUTH_GITHUB_CLIENT_SECRET"),
     ) {
-        let redirect = std::env::var("DARSHAN_OAUTH_GITHUB_REDIRECT_URI")
+        let redirect = std::env::var("DDB_OAUTH_GITHUB_REDIRECT_URI")
             .unwrap_or_else(|_| format!("{base_url}/api/auth/oauth/github/callback"));
         providers.insert(
             OAuthProviderKind::GitHub,
@@ -148,10 +148,10 @@ fn load_oauth_providers_from_env() -> HashMap<OAuthProviderKind, GenericOAuth2Pr
 
     // Apple
     if let (Ok(id), Ok(secret)) = (
-        std::env::var("DARSHAN_OAUTH_APPLE_CLIENT_ID"),
-        std::env::var("DARSHAN_OAUTH_APPLE_CLIENT_SECRET"),
+        std::env::var("DDB_OAUTH_APPLE_CLIENT_ID"),
+        std::env::var("DDB_OAUTH_APPLE_CLIENT_SECRET"),
     ) {
-        let redirect = std::env::var("DARSHAN_OAUTH_APPLE_REDIRECT_URI")
+        let redirect = std::env::var("DDB_OAUTH_APPLE_REDIRECT_URI")
             .unwrap_or_else(|_| format!("{base_url}/api/auth/oauth/apple/callback"));
         providers.insert(
             OAuthProviderKind::Apple,
@@ -161,10 +161,10 @@ fn load_oauth_providers_from_env() -> HashMap<OAuthProviderKind, GenericOAuth2Pr
 
     // Discord
     if let (Ok(id), Ok(secret)) = (
-        std::env::var("DARSHAN_OAUTH_DISCORD_CLIENT_ID"),
-        std::env::var("DARSHAN_OAUTH_DISCORD_CLIENT_SECRET"),
+        std::env::var("DDB_OAUTH_DISCORD_CLIENT_ID"),
+        std::env::var("DDB_OAUTH_DISCORD_CLIENT_SECRET"),
     ) {
-        let redirect = std::env::var("DARSHAN_OAUTH_DISCORD_REDIRECT_URI")
+        let redirect = std::env::var("DDB_OAUTH_DISCORD_REDIRECT_URI")
             .unwrap_or_else(|_| format!("{base_url}/api/auth/oauth/discord/callback"));
         providers.insert(
             OAuthProviderKind::Discord,
@@ -177,13 +177,13 @@ fn load_oauth_providers_from_env() -> HashMap<OAuthProviderKind, GenericOAuth2Pr
 
 /// Load or generate the HMAC secret for OAuth2 state parameters.
 fn load_oauth_state_secret() -> Vec<u8> {
-    match std::env::var("DARSHAN_OAUTH_STATE_SECRET") {
+    match std::env::var("DDB_OAUTH_STATE_SECRET") {
         Ok(s) if s.len() >= 32 => s.into_bytes(),
         _ => {
             use rand::RngCore;
             let mut buf = vec![0u8; 32];
             rand::rngs::OsRng.fill_bytes(&mut buf);
-            tracing::warn!("DARSHAN_OAUTH_STATE_SECRET not set; generated ephemeral secret");
+            tracing::warn!("DDB_OAUTH_STATE_SECRET not set; generated ephemeral secret");
             buf
         }
     }
@@ -199,7 +199,7 @@ impl AppState {
         rate_limiter: Arc<RateLimiter>,
         storage_engine: Arc<StorageEngine<LocalFsBackend>>,
     ) -> Self {
-        let dev_mode = std::env::var("DARSHAN_DEV")
+        let dev_mode = std::env::var("DDB_DEV")
             .map(|v| v == "1" || v == "true")
             .unwrap_or(false);
         let (sse_tx, _) = broadcast::channel(1024);
@@ -462,12 +462,12 @@ async fn rate_limit_middleware(
 // Router builder
 // ---------------------------------------------------------------------------
 
-/// Build the complete DarshanDB REST API router.
+/// Build the complete DarshJDB REST API router.
 ///
 /// Mount this under `/api` in your top-level Axum application:
 ///
 /// ```rust,ignore
-/// use darshandb_server::api::rest::{build_router, AppState};
+/// use ddb_server::api::rest::{build_router, AppState};
 ///
 /// let state = AppState::with_pool(pool, triple_store);
 /// let app = axum::Router::new()
@@ -1361,7 +1361,7 @@ async fn auth_me(State(state): State<AppState>, headers: HeaderMap) -> Result<Re
 // Data handlers
 // ===========================================================================
 
-/// `POST /api/query` — Execute a DarshanQL query over HTTP.
+/// `POST /api/query` — Execute a DarshJQL query over HTTP.
 #[derive(Deserialize)]
 struct QueryRequest {
     query: Value,
@@ -1379,7 +1379,7 @@ async fn query(
 
     let start = Instant::now();
 
-    // Parse the DarshanQL JSON into an AST.
+    // Parse the DarshJQL JSON into an AST.
     let mut ast = query::parse_darshan_ql(&body.query)
         .map_err(|e| ApiError::bad_request(format!("Invalid query: {e}")))?;
 
@@ -2473,7 +2473,7 @@ fn storage_err_to_api(err: StorageError) -> ApiError {
 /// Query parameters for the SSE subscription endpoint.
 #[derive(Deserialize)]
 struct SubscribeParams {
-    /// DarshanQL query to subscribe to.
+    /// DarshJQL query to subscribe to.
     q: String,
 }
 
@@ -2760,7 +2760,7 @@ struct BulkLoadEntity {
 ///
 /// Reports current size, hit/miss rates, eviction and invalidation
 /// counts. Useful for monitoring cache effectiveness and tuning
-/// `DARSHAN_CACHE_SIZE` / `DARSHAN_CACHE_TTL`.
+/// `DDB_CACHE_SIZE` / `DDB_CACHE_TTL`.
 async fn admin_cache(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -2893,21 +2893,36 @@ fn extract_bearer_token(headers: &HeaderMap) -> Result<String, ApiError> {
     Ok(token)
 }
 
-/// Stub admin-role check. In production this decodes the JWT and checks roles.
+/// Verify the authenticated user holds the "admin" role by decoding JWT claims.
 fn require_admin_role(headers: &HeaderMap) -> Result<(), ApiError> {
-    // TODO: decode JWT from bearer token, verify "admin" in roles.
-    // For now, accept any authenticated request so the route compiles.
-    let _ = headers;
-    Ok(())
+    let ctx = decode_jwt_claims(headers)?;
+    if ctx.roles.iter().any(|r| r == "admin") {
+        Ok(())
+    } else {
+        Err(ApiError::permission_denied(
+            "Admin role required for this endpoint",
+        ))
+    }
 }
 
 /// Extract an [`AuthContext`] by validating the JWT via the [`SessionManager`].
 fn extract_auth_context(headers: &HeaderMap, state: &AppState) -> Result<AuthContext, ApiError> {
     let token = extract_bearer_token(headers)?;
-    let ip = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok()).unwrap_or("unknown");
-    let ua = headers.get(http::header::USER_AGENT).and_then(|v| v.to_str().ok()).unwrap_or("unknown");
-    let dfp = headers.get("x-device-fingerprint").and_then(|v| v.to_str().ok()).unwrap_or("");
-    state.session_manager.validate_token(&token, ip, ua, dfp)
+    let ip = headers
+        .get("x-forwarded-for")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("unknown");
+    let ua = headers
+        .get(http::header::USER_AGENT)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("unknown");
+    let dfp = headers
+        .get("x-device-fingerprint")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    state
+        .session_manager
+        .validate_token(&token, ip, ua, dfp)
         .map_err(|e| ApiError::unauthenticated(format!("Invalid token: {e}")))
 }
 
@@ -2915,11 +2930,19 @@ fn extract_auth_context(headers: &HeaderMap, state: &AppState) -> Result<AuthCon
 fn decode_jwt_claims(headers: &HeaderMap) -> Result<AuthContext, ApiError> {
     let token = extract_bearer_token(headers)?;
     let parts: Vec<&str> = token.split('.').collect();
-    if parts.len() != 3 { return Err(ApiError::unauthenticated("Malformed JWT")); }
-    let payload_bytes = data_encoding::BASE64URL_NOPAD.decode(parts[1].as_bytes())
+    if parts.len() != 3 {
+        return Err(ApiError::unauthenticated("Malformed JWT"));
+    }
+    let payload_bytes = data_encoding::BASE64URL_NOPAD
+        .decode(parts[1].as_bytes())
         .map_err(|_| ApiError::unauthenticated("Invalid JWT encoding"))?;
     #[derive(Deserialize)]
-    struct Claims { sub: String, sid: String, #[serde(default)] roles: Vec<String> }
+    struct Claims {
+        sub: String,
+        sid: String,
+        #[serde(default)]
+        roles: Vec<String>,
+    }
     let claims: Claims = serde_json::from_slice(&payload_bytes)
         .map_err(|_| ApiError::unauthenticated("Invalid JWT claims"))?;
     let user_id = Uuid::parse_str(&claims.sub)
@@ -2930,9 +2953,21 @@ fn decode_jwt_claims(headers: &HeaderMap) -> Result<AuthContext, ApiError> {
         user_id,
         session_id,
         roles: claims.roles,
-        ip: headers.get("x-forwarded-for").and_then(|v| v.to_str().ok()).unwrap_or("unknown").to_string(),
-        user_agent: headers.get(http::header::USER_AGENT).and_then(|v| v.to_str().ok()).unwrap_or("unknown").to_string(),
-        device_fingerprint: headers.get("x-device-fingerprint").and_then(|v| v.to_str().ok()).unwrap_or("").to_string(),
+        ip: headers
+            .get("x-forwarded-for")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("unknown")
+            .to_string(),
+        user_agent: headers
+            .get(http::header::USER_AGENT)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("unknown")
+            .to_string(),
+        device_fingerprint: headers
+            .get("x-device-fingerprint")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_string(),
     })
 }
 
@@ -3548,7 +3583,7 @@ mod tests {
         let spec = openapi::generate_openapi_spec();
 
         assert_eq!(spec["openapi"], "3.1.0");
-        assert_eq!(spec["info"]["title"], "DarshanDB API");
+        assert_eq!(spec["info"]["title"], "DarshJDB API");
         assert!(spec["info"]["version"].is_string());
         assert!(spec["paths"].is_object());
         assert!(spec["components"]["securitySchemes"]["bearerAuth"].is_object());
@@ -3617,7 +3652,7 @@ mod tests {
     fn openapi_docs_html_contains_spec_url() {
         let html = openapi::docs_html("/api/openapi.json");
         assert!(html.contains("/api/openapi.json"));
-        assert!(html.contains("DarshanDB"));
+        assert!(html.contains("DarshJDB"));
         assert!(html.contains("<script"));
     }
 

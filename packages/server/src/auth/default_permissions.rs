@@ -1,4 +1,4 @@
-//! Default permission configuration for DarshanDB.
+//! Default permission configuration for DarshJDB.
 //!
 //! Provides sensible defaults that enforce:
 //! - All operations require authentication.
@@ -8,7 +8,7 @@
 
 use super::permissions::{CompositeOperator, Operation, PermissionEngine, PermissionRule};
 
-/// Build a [`PermissionEngine`] with the default DarshanDB permission rules.
+/// Build a [`PermissionEngine`] with the default DarshJDB permission rules.
 ///
 /// # Default rules
 ///

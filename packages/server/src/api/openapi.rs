@@ -1,4 +1,4 @@
-//! OpenAPI 3.1 specification auto-generation for DarshanDB.
+//! OpenAPI 3.1 specification auto-generation for DarshJDB.
 //!
 //! Builds the complete API spec at startup and serves it as JSON at
 //! `GET /api/openapi.json`. The companion docs endpoint (`GET /api/docs`)
@@ -6,14 +6,14 @@
 
 use serde_json::{Value, json};
 
-/// Generate the full OpenAPI 3.1 specification for DarshanDB.
+/// Generate the full OpenAPI 3.1 specification for DarshJDB.
 ///
 /// This is computed once at server startup and cached in application state.
 pub fn generate_openapi_spec() -> Value {
     json!({
         "openapi": "3.1.0",
         "info": {
-            "title": "DarshanDB API",
+            "title": "DarshJDB API",
             "description": "Triple-store database with real-time subscriptions, auth, and server-side functions.",
             "version": "0.1.0",
             "license": {
@@ -76,7 +76,7 @@ pub fn docs_html(spec_url: &str) -> String {
         r#"<!DOCTYPE html>
 <html>
 <head>
-  <title>DarshanDB API Docs</title>
+  <title>DarshJDB API Docs</title>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
 </head>
@@ -128,7 +128,7 @@ fn query_request_schema() -> Value {
         "type": "object",
         "required": ["query"],
         "properties": {
-            "query": { "type": "string", "description": "DarshanQL query expression" },
+            "query": { "type": "string", "description": "DarshJQL query expression" },
             "args": { "type": "object", "additionalProperties": true, "description": "Named query arguments" }
         }
     })
@@ -432,7 +432,7 @@ fn query_path() -> Value {
     json!({
         "post": {
             "tags": ["Data"],
-            "summary": "Execute a DarshanQL query",
+            "summary": "Execute a DarshJQL query",
             "operationId": "query",
             "security": [{ "bearerAuth": [] }],
             "requestBody": json_body("QueryRequest"),
@@ -693,7 +693,7 @@ fn subscribe_path() -> Value {
                     "in": "query",
                     "required": true,
                     "schema": { "type": "string" },
-                    "description": "DarshanQL query to subscribe to"
+                    "description": "DarshJQL query to subscribe to"
                 }
             ],
             "responses": {

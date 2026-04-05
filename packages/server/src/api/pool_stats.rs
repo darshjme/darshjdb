@@ -1,4 +1,4 @@
-//! Lock-free connection pool latency histogram for DarshanDB.
+//! Lock-free connection pool latency histogram for DarshJDB.
 //!
 //! Provides a `PoolStats` struct that tracks query latencies using atomic
 //! counters in fixed-width histogram buckets. Designed for concurrent access
