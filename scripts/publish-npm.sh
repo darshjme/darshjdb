@@ -3,10 +3,10 @@ set -euo pipefail
 
 # DarshanDB npm publish script
 # Builds and publishes all packages in dependency order:
-#   1. @darshan/client   (client-core, no internal deps)
-#   2. @darshan/react    (depends on @darshan/client)
-#   3. @darshan/angular  (depends on @darshan/client)
-#   4. @darshan/nextjs   (depends on @darshan/client + @darshan/react)
+#   1. @darshjdb/client   (client-core, no internal deps)
+#   2. @darshjdb/react    (depends on @darshjdb/client)
+#   3. @darshjdb/angular  (depends on @darshjdb/client)
+#   4. @darshjdb/nextjs   (depends on @darshjdb/client + @darshjdb/react)
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 
@@ -36,10 +36,10 @@ PACKAGES=(
 )
 
 PACKAGE_NAMES=(
-  "@darshan/client"
-  "@darshan/react"
-  "@darshan/angular"
-  "@darshan/nextjs"
+  "@darshjdb/client"
+  "@darshjdb/react"
+  "@darshjdb/angular"
+  "@darshjdb/nextjs"
 )
 
 echo "==> Installing dependencies..."

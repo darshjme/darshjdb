@@ -13,8 +13,10 @@ ddb --version
 ### Update the Binary
 
 ```bash
-# Update to latest
-curl -fsSL https://db.darshj.me/install | sh
+# Update to latest from source
+cd darshjdb
+git pull origin main
+cargo build --release
 
 # Or with Docker
 docker pull ghcr.io/darshjme/darshjdb:latest

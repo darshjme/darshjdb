@@ -56,7 +56,8 @@ graph TB
 ## Docker (Recommended)
 
 ```bash
-curl -fsSL https://db.darshj.me/docker -o docker-compose.yml
+git clone https://github.com/darshjme/darshjdb.git
+cd darshjdb
 docker compose up -d
 ```
 
@@ -88,7 +89,10 @@ The default `docker-compose.yml` includes DarshJDB and PostgreSQL 16 with pgvect
 ### Install
 
 ```bash
-curl -fsSL https://db.darshj.me/install | sh
+git clone https://github.com/darshjme/darshjdb.git
+cd darshjdb
+cargo build --release
+# Binary at ./target/release/ddb-server
 ```
 
 ### Configure
