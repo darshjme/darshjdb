@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect, useCallback } from "react";
 import {
   Search,
   Zap,
@@ -6,6 +6,9 @@ import {
   Clock,
   AlertTriangle,
   Play,
+  Loader2,
+  AlertCircle,
+  RefreshCw,
 } from "lucide-react";
 import {
   AreaChart,
@@ -15,12 +18,11 @@ import {
   CartesianGrid,
   Tooltip,
   ResponsiveContainer,
-  BarChart,
-  Bar,
 } from "recharts";
 import { Badge } from "../components/Badge";
-import { DataTable } from "../components/DataTable";
 import { mockFunctions, mockExecutions, mockExecutionHistory } from "../lib/mock-data";
+import { fetchFunctions, ApiError } from "../lib/api";
+import type { ServerFunctionInfo } from "../lib/api";
 import { cn, formatRelativeTime } from "../lib/utils";
 import type { FunctionDef } from "../types";
 
@@ -31,12 +33,65 @@ const typeBadgeVariant: Record<FunctionDef["type"], "amber" | "emerald" | "purpl
   cron: "emerald",
 };
 
+/** Convert a server function info into the UI's FunctionDef shape. */
+function serverToFunctionDef(fn: ServerFunctionInfo): FunctionDef {
+  return {
+    name: fn.name,
+    type: (["query", "mutation", "action", "cron"].includes(fn.type ?? "")
+      ? (fn.type as FunctionDef["type"])
+      : "query"),
+    module: fn.module ?? fn.name.split(":")[0] ?? "default",
+    args: fn.args ?? {},
+    returns: fn.returns ?? "unknown",
+    avgDuration: undefined,
+    errorRate: undefined,
+  };
+}
+
 export function Functions() {
   const [search, setSearch] = useState("");
   const [typeFilter, setTypeFilter] = useState<string>("all");
   const [selectedFn, setSelectedFn] = useState<FunctionDef | null>(null);
 
-  const filtered = mockFunctions.filter((fn) => {
+  // Live data state
+  const [functions, setFunctions] = useState<FunctionDef[]>(mockFunctions);
+  const [loading, setLoading] = useState(true);
+  const [isLive, setIsLive] = useState(false);
+  const [apiMessage, setApiMessage] = useState<string | null>(null);
+
+  const loadFunctions = useCallback(async () => {
+    setLoading(true);
+    setApiMessage(null);
+    try {
+      const res = await fetchFunctions();
+      if (res.functions.length === 0) {
+        // Server endpoint exists but returns empty (TODO on server side)
+        setFunctions(mockFunctions);
+        setIsLive(false);
+        setApiMessage(
+          "Functions endpoint connected but no functions registered on server yet. Showing demo data.",
+        );
+      } else {
+        setFunctions(res.functions.map(serverToFunctionDef));
+        setIsLive(true);
+      }
+    } catch (err) {
+      console.warn("[Functions] API unavailable, using mock data:", err);
+      setFunctions(mockFunctions);
+      setIsLive(false);
+      if (err instanceof ApiError) {
+        setApiMessage(`API ${err.status}: ${err.body} -- showing demo data`);
+      }
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadFunctions();
+  }, [loadFunctions]);
+
+  const filtered = functions.filter((fn) => {
     if (typeFilter !== "all" && fn.type !== typeFilter) return false;
     if (search && !fn.name.toLowerCase().includes(search.toLowerCase())) return false;
     return true;
@@ -50,25 +105,56 @@ export function Functions() {
           <div className="flex items-center justify-between mb-4">
             <div>
               <h2 className="text-lg font-semibold text-zinc-100">Functions</h2>
-              <p className="text-sm text-zinc-500 mt-0.5">
-                {mockFunctions.length} registered functions
+              <p className="text-sm text-zinc-500 mt-0.5 flex items-center gap-2">
+                {loading ? (
+                  <span className="flex items-center gap-1.5">
+                    <Loader2 className="w-3 h-3 animate-spin" />
+                    Loading...
+                  </span>
+                ) : (
+                  <>
+                    {functions.length} registered functions
+                    {isLive ? (
+                      <Badge variant="emerald" className="text-[9px]">live</Badge>
+                    ) : (
+                      <Badge variant="zinc" className="text-[9px]">demo</Badge>
+                    )}
+                  </>
+                )}
               </p>
             </div>
-            <div className="flex items-center gap-4 text-xs text-zinc-500">
-              <div className="flex items-center gap-1.5">
-                <div className="w-2.5 h-2.5 rounded-full bg-sky-500" />
-                Queries
-              </div>
-              <div className="flex items-center gap-1.5">
-                <div className="w-2.5 h-2.5 rounded-full bg-amber-500" />
-                Mutations
-              </div>
-              <div className="flex items-center gap-1.5">
-                <div className="w-2.5 h-2.5 rounded-full bg-red-500" />
-                Errors
+            <div className="flex items-center gap-3">
+              <button
+                onClick={loadFunctions}
+                className="btn-ghost text-xs"
+                title="Refresh"
+              >
+                <RefreshCw className={cn("w-3.5 h-3.5", loading && "animate-spin")} />
+              </button>
+              <div className="flex items-center gap-4 text-xs text-zinc-500">
+                <div className="flex items-center gap-1.5">
+                  <div className="w-2.5 h-2.5 rounded-full bg-sky-500" />
+                  Queries
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <div className="w-2.5 h-2.5 rounded-full bg-amber-500" />
+                  Mutations
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <div className="w-2.5 h-2.5 rounded-full bg-red-500" />
+                  Errors
+                </div>
               </div>
             </div>
           </div>
+
+          {apiMessage && (
+            <div className="glass-panel p-3 mb-4 border-amber-500/30 flex items-center gap-2 text-xs text-amber-400">
+              <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" />
+              <span>{apiMessage}</span>
+            </div>
+          )}
+
           <div className="h-48 glass-panel p-4">
             <ResponsiveContainer width="100%" height="100%">
               <AreaChart data={mockExecutionHistory}>
@@ -155,10 +241,12 @@ export function Functions() {
                     </Badge>
                   </div>
                   <div className="flex items-center gap-4 text-xs text-zinc-500">
-                    <span className="flex items-center gap-1">
-                      <Clock className="w-3 h-3" />
-                      {fn.avgDuration}ms
-                    </span>
+                    {fn.avgDuration !== undefined && (
+                      <span className="flex items-center gap-1">
+                        <Clock className="w-3 h-3" />
+                        {fn.avgDuration}ms
+                      </span>
+                    )}
                     {fn.errorRate !== undefined && fn.errorRate > 0 && (
                       <span className={cn(
                         "flex items-center gap-1",

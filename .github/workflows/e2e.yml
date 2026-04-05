@@ -88,6 +88,12 @@ jobs:
           chmod +x scripts/e2e-test.sh
           SKIP_POSTGRES=1 SKIP_BUILD=1 ./scripts/e2e-test.sh
 
+      - name: Run Rust integration tests
+        run: |
+          cargo test --test integration -p darshandb-server -- --test-threads=1
+        env:
+          DATABASE_URL: postgres://darshan:darshan@localhost:5432/darshandb
+
       - name: Stop server
         if: always()
         run: |
