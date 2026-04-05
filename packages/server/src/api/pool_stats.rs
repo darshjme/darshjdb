@@ -206,9 +206,9 @@ mod tests {
 
         // p50 should be in the 100us bucket (50th of 100 = bucket 0).
         assert_eq!(stats.percentile(0.50), 100);
-        // p95 should be in the 1000us bucket (95th = bucket 1).
-        assert_eq!(stats.percentile(0.95), 1_000);
-        // p99 should be in the 10000us bucket (99th = bucket 2+).
+        // p95: target=95, cumulative at bucket[2](<=1000)=90, next hit is bucket[4](<=10000)=100.
+        assert_eq!(stats.percentile(0.95), 10_000);
+        // p99: target=99, same bucket[4](<=10000) reaches 100.
         assert_eq!(stats.percentile(0.99), 10_000);
     }
 

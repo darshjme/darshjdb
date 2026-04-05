@@ -680,7 +680,7 @@ mod tests {
         assert!(channel_names.contains(&"entity:users:id-1"));
         assert!(channel_names.contains(&"entity:users:id-2"));
         assert!(channel_names.contains(&"entity:users"));
-        assert!(channel_names.contains(&"mutation"));
+        assert!(channel_names.contains(&"mutation:updated"));
     }
 
     #[test]
@@ -695,6 +695,6 @@ mod tests {
 
         let channels = PubSubEngine::change_event_to_channels(&event);
         assert_eq!(channels.len(), 1);
-        assert_eq!(channels[0].0, "mutation");
+        assert!(channels[0].0.starts_with("mutation:"));
     }
 }
