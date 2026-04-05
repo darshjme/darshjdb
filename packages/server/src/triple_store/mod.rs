@@ -625,7 +625,7 @@ impl TripleStore for PgTripleStore {
                 WHERE attribute = ':db/type' AND NOT retracted
             )
             SELECT t.entity_id, t.attribute, t.value_type,
-                   te.entity_type::jsonb AS entity_type
+                   to_jsonb(te.entity_type) AS entity_type
             FROM triples t
             LEFT JOIN typed_entities te ON te.entity_id = t.entity_id
             WHERE NOT t.retracted

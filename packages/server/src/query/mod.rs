@@ -292,9 +292,11 @@ pub fn plan_query(ast: &QueryAST) -> Result<QueryPlan> {
     let mut params: Vec<serde_json::Value> = Vec::new();
     let mut param_idx = 1u32;
 
-    // Base: find entity_ids that have :db/type = entity_type
+    // Base: find entity_ids that have :db/type = entity_type.
+    // No DISTINCT here: the Rust grouping (HashMap by entity_id) deduplicates,
+    // and DISTINCT conflicts with ORDER BY on expressions not in the select list.
     sql.push_str(
-        "SELECT DISTINCT t0.entity_id, t0.attribute, t0.value, t0.value_type, t0.tx_id, t0.created_at\n",
+        "SELECT t0.entity_id, t0.attribute, t0.value, t0.value_type, t0.tx_id, t0.created_at\n",
     );
     sql.push_str("FROM triples t0\n");
 
@@ -426,22 +428,15 @@ pub fn plan_query(ast: &QueryAST) -> Result<QueryPlan> {
         sql.push('\n');
     }
 
-    // Pagination — parameterised to keep plan shapes reusable and to
-    // follow the same bind-everything policy as the rest of the query.
+    // Pagination — inlined as integer literals (safe: values come from
+    // parsed usize/u64, not user-provided strings).
     // For semantic queries, use the semantic limit if no explicit $limit.
     let effective_limit = ast.limit.or_else(|| ast.semantic.as_ref().map(|s| s.limit));
     if let Some(limit) = effective_limit {
-        sql.push_str(&format!("LIMIT ${param_idx}\n"));
-        params.push(serde_json::json!(limit));
-        param_idx += 1;
+        sql.push_str(&format!("LIMIT {limit}\n"));
     }
     if let Some(offset) = ast.offset {
-        sql.push_str(&format!("OFFSET ${param_idx}\n"));
-        params.push(serde_json::json!(offset));
-        #[allow(unused_assignments)]
-        {
-            param_idx += 1;
-        }
+        sql.push_str(&format!("OFFSET {offset}\n"));
     }
 
     // Nested plans (with recursive sub-nesting up to MAX_NESTING_DEPTH)
@@ -519,7 +514,7 @@ pub fn plan_hybrid_query(ast: &QueryAST) -> Result<QueryPlan> {
     SELECT DISTINCT entity_id
     FROM triples
     WHERE attribute = ':db/type'
-      AND value = $1::jsonb
+      AND value = to_jsonb($1::text)
       AND NOT retracted
 ),
 text_ranked AS (

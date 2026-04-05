@@ -33,7 +33,6 @@
 
 pub mod batch;
 pub mod error;
-pub mod graphql;
 pub mod openapi;
 pub mod pool_stats;
 pub mod rest;
