@@ -67,7 +67,7 @@ import { DarshanDB } from '@darshan/client';
  */
 export function getAdminDb(): DarshanDB {
   const { url, token } = getConfig();
-  return new DarshanDB({ serverUrl: url, adminToken: token });
+  return new DarshanDB({ serverUrl: url, appId: token });
 }
 
 // ---------------------------------------------------------------------------
