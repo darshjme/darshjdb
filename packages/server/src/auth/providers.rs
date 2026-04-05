@@ -7,8 +7,9 @@
 //! - **Magic Link**: 32-byte random token with hashed storage, 15-minute
 //!   expiry, and one-time use semantics.
 //! - **OAuth2**: Trait-based provider abstraction with concrete implementations
-//!   for Google, GitHub, Apple, and Discord. PKCE is mandatory; the state
-//!   parameter is HMAC-signed to prevent CSRF.
+//!   for Google, GitHub, Apple, Discord, Microsoft, Twitter/X, LinkedIn,
+//!   Slack, GitLab, Bitbucket, Facebook, and Spotify. PKCE is mandatory;
+//!   the state parameter is HMAC-signed to prevent CSRF.
 
 use argon2::{
     Algorithm, Argon2, Params, Version,
@@ -260,6 +261,22 @@ pub enum OAuthProviderKind {
     Apple,
     /// Discord.
     Discord,
+    /// Microsoft (Azure AD / Entra ID).
+    Microsoft,
+    /// Twitter / X (OAuth 2.0).
+    Twitter,
+    /// LinkedIn (OpenID Connect).
+    LinkedIn,
+    /// Slack.
+    Slack,
+    /// GitLab.
+    GitLab,
+    /// Bitbucket (Atlassian).
+    Bitbucket,
+    /// Facebook / Meta.
+    Facebook,
+    /// Spotify.
+    Spotify,
 }
 
 impl std::fmt::Display for OAuthProviderKind {
@@ -269,6 +286,14 @@ impl std::fmt::Display for OAuthProviderKind {
             Self::GitHub => write!(f, "github"),
             Self::Apple => write!(f, "apple"),
             Self::Discord => write!(f, "discord"),
+            Self::Microsoft => write!(f, "microsoft"),
+            Self::Twitter => write!(f, "twitter"),
+            Self::LinkedIn => write!(f, "linkedin"),
+            Self::Slack => write!(f, "slack"),
+            Self::GitLab => write!(f, "gitlab"),
+            Self::Bitbucket => write!(f, "bitbucket"),
+            Self::Facebook => write!(f, "facebook"),
+            Self::Spotify => write!(f, "spotify"),
         }
     }
 }
@@ -453,6 +478,125 @@ impl GenericOAuth2Provider {
             redirect_uri,
             scopes: vec!["identify".into(), "email".into()],
             userinfo_url: "https://discord.com/api/users/@me".into(),
+        })
+    }
+
+    /// Create a Microsoft (Azure AD / Entra ID) OAuth2 provider.
+    ///
+    /// Uses the "common" tenant so any Microsoft account (personal or
+    /// organizational) can authenticate. Override with a specific tenant
+    /// ID for single-org lockdown.
+    pub fn microsoft(client_id: String, client_secret: String, redirect_uri: String) -> Self {
+        Self::new(OAuthConfig {
+            kind: OAuthProviderKind::Microsoft,
+            client_id,
+            client_secret,
+            auth_url: "https://login.microsoftonline.com/common/oauth2/v2.0/authorize".into(),
+            token_url: "https://login.microsoftonline.com/common/oauth2/v2.0/token".into(),
+            redirect_uri,
+            scopes: vec!["openid".into(), "email".into(), "profile".into()],
+            userinfo_url: "https://graph.microsoft.com/oidc/userinfo".into(),
+        })
+    }
+
+    /// Create a Twitter / X OAuth 2.0 provider.
+    ///
+    /// Twitter OAuth 2.0 with PKCE (no client secret required for public
+    /// clients, but we send it for confidential server flows).
+    pub fn twitter(client_id: String, client_secret: String, redirect_uri: String) -> Self {
+        Self::new(OAuthConfig {
+            kind: OAuthProviderKind::Twitter,
+            client_id,
+            client_secret,
+            auth_url: "https://twitter.com/i/oauth2/authorize".into(),
+            token_url: "https://api.twitter.com/2/oauth2/token".into(),
+            redirect_uri,
+            scopes: vec!["users.read".into(), "tweet.read".into()],
+            userinfo_url: "https://api.twitter.com/2/users/me".into(),
+        })
+    }
+
+    /// Create a LinkedIn OAuth2 provider (OpenID Connect).
+    pub fn linkedin(client_id: String, client_secret: String, redirect_uri: String) -> Self {
+        Self::new(OAuthConfig {
+            kind: OAuthProviderKind::LinkedIn,
+            client_id,
+            client_secret,
+            auth_url: "https://www.linkedin.com/oauth/v2/authorization".into(),
+            token_url: "https://www.linkedin.com/oauth/v2/accessToken".into(),
+            redirect_uri,
+            scopes: vec!["openid".into(), "profile".into(), "email".into()],
+            userinfo_url: "https://api.linkedin.com/v2/userinfo".into(),
+        })
+    }
+
+    /// Create a Slack OAuth2 provider.
+    pub fn slack(client_id: String, client_secret: String, redirect_uri: String) -> Self {
+        Self::new(OAuthConfig {
+            kind: OAuthProviderKind::Slack,
+            client_id,
+            client_secret,
+            auth_url: "https://slack.com/openid/connect/authorize".into(),
+            token_url: "https://slack.com/api/openid.connect.token".into(),
+            redirect_uri,
+            scopes: vec!["openid".into(), "email".into(), "profile".into()],
+            userinfo_url: "https://slack.com/api/openid.connect.userInfo".into(),
+        })
+    }
+
+    /// Create a GitLab OAuth2 provider.
+    pub fn gitlab(client_id: String, client_secret: String, redirect_uri: String) -> Self {
+        Self::new(OAuthConfig {
+            kind: OAuthProviderKind::GitLab,
+            client_id,
+            client_secret,
+            auth_url: "https://gitlab.com/oauth/authorize".into(),
+            token_url: "https://gitlab.com/oauth/token".into(),
+            redirect_uri,
+            scopes: vec!["openid".into(), "read_user".into(), "email".into()],
+            userinfo_url: "https://gitlab.com/oauth/userinfo".into(),
+        })
+    }
+
+    /// Create a Bitbucket (Atlassian) OAuth2 provider.
+    pub fn bitbucket(client_id: String, client_secret: String, redirect_uri: String) -> Self {
+        Self::new(OAuthConfig {
+            kind: OAuthProviderKind::Bitbucket,
+            client_id,
+            client_secret,
+            auth_url: "https://bitbucket.org/site/oauth2/authorize".into(),
+            token_url: "https://bitbucket.org/site/oauth2/access_token".into(),
+            redirect_uri,
+            scopes: vec!["account".into(), "email".into()],
+            userinfo_url: "https://api.bitbucket.org/2.0/user".into(),
+        })
+    }
+
+    /// Create a Facebook / Meta OAuth2 provider.
+    pub fn facebook(client_id: String, client_secret: String, redirect_uri: String) -> Self {
+        Self::new(OAuthConfig {
+            kind: OAuthProviderKind::Facebook,
+            client_id,
+            client_secret,
+            auth_url: "https://www.facebook.com/v19.0/dialog/oauth".into(),
+            token_url: "https://graph.facebook.com/v19.0/oauth/access_token".into(),
+            redirect_uri,
+            scopes: vec!["email".into(), "public_profile".into()],
+            userinfo_url: "https://graph.facebook.com/v19.0/me?fields=id,name,email,picture.type(large)".into(),
+        })
+    }
+
+    /// Create a Spotify OAuth2 provider.
+    pub fn spotify(client_id: String, client_secret: String, redirect_uri: String) -> Self {
+        Self::new(OAuthConfig {
+            kind: OAuthProviderKind::Spotify,
+            client_id,
+            client_secret,
+            auth_url: "https://accounts.spotify.com/authorize".into(),
+            token_url: "https://accounts.spotify.com/api/token".into(),
+            redirect_uri,
+            scopes: vec!["user-read-email".into(), "user-read-private".into()],
+            userinfo_url: "https://api.spotify.com/v1/me".into(),
         })
     }
 }
@@ -652,6 +796,111 @@ impl OAuth2Provider for GenericOAuth2Provider {
                 // Handled above; unreachable.
                 unreachable!("Apple handled via id_token path above")
             }
+            OAuthProviderKind::Microsoft => Ok(OAuthUserInfo {
+                provider_user_id: info["sub"].as_str().unwrap_or_default().to_string(),
+                email: info["email"].as_str().map(String::from),
+                name: info["name"].as_str().map(String::from),
+                avatar_url: info["picture"].as_str().map(String::from),
+                provider: OAuthProviderKind::Microsoft,
+            }),
+            OAuthProviderKind::Twitter => {
+                // Twitter v2 wraps user data in a "data" object.
+                let data = info.get("data").unwrap_or(&info);
+                Ok(OAuthUserInfo {
+                    provider_user_id: data["id"].as_str().unwrap_or_default().to_string(),
+                    email: None, // Twitter does not expose email via users.read scope.
+                    name: data["name"].as_str().map(String::from),
+                    avatar_url: data["profile_image_url"].as_str().map(String::from),
+                    provider: OAuthProviderKind::Twitter,
+                })
+            }
+            OAuthProviderKind::LinkedIn => Ok(OAuthUserInfo {
+                provider_user_id: info["sub"].as_str().unwrap_or_default().to_string(),
+                email: info["email"].as_str().map(String::from),
+                name: info["name"].as_str().map(String::from),
+                avatar_url: info["picture"].as_str().map(String::from),
+                provider: OAuthProviderKind::LinkedIn,
+            }),
+            OAuthProviderKind::Slack => Ok(OAuthUserInfo {
+                provider_user_id: info["sub"]
+                    .as_str()
+                    .or_else(|| info["https://slack.com/user_id"].as_str())
+                    .unwrap_or_default()
+                    .to_string(),
+                email: info["email"].as_str().map(String::from),
+                name: info["name"].as_str().map(String::from),
+                avatar_url: info["picture"].as_str().map(String::from),
+                provider: OAuthProviderKind::Slack,
+            }),
+            OAuthProviderKind::GitLab => Ok(OAuthUserInfo {
+                provider_user_id: info["sub"]
+                    .as_str()
+                    .map(String::from)
+                    .or_else(|| info["sub"].as_i64().map(|id| id.to_string()))
+                    .unwrap_or_default(),
+                email: info["email"].as_str().map(String::from),
+                name: info["name"].as_str().map(String::from),
+                avatar_url: info["picture"].as_str().map(String::from),
+                provider: OAuthProviderKind::GitLab,
+            }),
+            OAuthProviderKind::Bitbucket => {
+                // Bitbucket returns display_name and UUID in the user object.
+                let user_id = info["uuid"]
+                    .as_str()
+                    .or_else(|| info["account_id"].as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                let avatar = info["links"]["avatar"]["href"].as_str().map(String::from);
+
+                // Bitbucket does not include email in /user; need /user/emails.
+                let mut email = None;
+                if let Ok(emails_resp) = http
+                    .get("https://api.bitbucket.org/2.0/user/emails")
+                    .bearer_auth(access_token)
+                    .header("Accept", "application/json")
+                    .send()
+                    .await
+                    && let Ok(emails_json) = emails_resp.json::<serde_json::Value>().await
+                {
+                    email = emails_json["values"]
+                        .as_array()
+                        .and_then(|vals| {
+                            vals.iter()
+                                .find(|e| e["is_primary"].as_bool() == Some(true))
+                                .or_else(|| {
+                                    vals.iter()
+                                        .find(|e| e["is_confirmed"].as_bool() == Some(true))
+                                })
+                        })
+                        .and_then(|e| e["email"].as_str().map(String::from));
+                }
+
+                Ok(OAuthUserInfo {
+                    provider_user_id: user_id,
+                    email,
+                    name: info["display_name"].as_str().map(String::from),
+                    avatar_url: avatar,
+                    provider: OAuthProviderKind::Bitbucket,
+                })
+            }
+            OAuthProviderKind::Facebook => Ok(OAuthUserInfo {
+                provider_user_id: info["id"].as_str().unwrap_or_default().to_string(),
+                email: info["email"].as_str().map(String::from),
+                name: info["name"].as_str().map(String::from),
+                avatar_url: info["picture"]["data"]["url"].as_str().map(String::from),
+                provider: OAuthProviderKind::Facebook,
+            }),
+            OAuthProviderKind::Spotify => Ok(OAuthUserInfo {
+                provider_user_id: info["id"].as_str().unwrap_or_default().to_string(),
+                email: info["email"].as_str().map(String::from),
+                name: info["display_name"].as_str().map(String::from),
+                avatar_url: info["images"]
+                    .as_array()
+                    .and_then(|imgs| imgs.first())
+                    .and_then(|img| img["url"].as_str())
+                    .map(String::from),
+                provider: OAuthProviderKind::Spotify,
+            }),
         }
     }
 }
@@ -665,6 +914,14 @@ impl OAuthProviderKind {
             "github" => Some(Self::GitHub),
             "apple" => Some(Self::Apple),
             "discord" => Some(Self::Discord),
+            "microsoft" | "azure" | "azuread" => Some(Self::Microsoft),
+            "twitter" | "x" => Some(Self::Twitter),
+            "linkedin" => Some(Self::LinkedIn),
+            "slack" => Some(Self::Slack),
+            "gitlab" => Some(Self::GitLab),
+            "bitbucket" => Some(Self::Bitbucket),
+            "facebook" | "meta" => Some(Self::Facebook),
+            "spotify" => Some(Self::Spotify),
             _ => None,
         }
     }
@@ -706,14 +963,11 @@ mod tests {
     #[test]
     fn password_hash_produces_argon2id_phc_string() {
         let hash = PasswordProvider::hash_password("test123").expect("hash");
-        // PHC string must start with the algorithm identifier.
         assert!(
             hash.starts_with("$argon2id$"),
             "expected argon2id PHC format, got: {hash}"
         );
-        // Must contain version 19 (0x13).
         assert!(hash.contains("v=19"), "expected version 19 in PHC string");
-        // Must contain our tuned parameters: m=65536,t=3,p=4.
         assert!(hash.contains("m=65536"), "expected 64 MiB memory cost");
         assert!(hash.contains("t=3"), "expected 3 iterations");
         assert!(hash.contains("p=4"), "expected parallelism 4");
@@ -727,7 +981,6 @@ mod tests {
             h1, h2,
             "two hashes of the same password must differ (unique salts)"
         );
-        // Both must still verify.
         assert!(PasswordProvider::verify_password("same-password", &h1).expect("v1"));
         assert!(PasswordProvider::verify_password("same-password", &h2).expect("v2"));
     }
@@ -791,9 +1044,7 @@ mod tests {
         let state = GenericOAuth2Provider::sign_state(secret).expect("sign");
         let parts: Vec<&str> = state.splitn(2, '.').collect();
         assert_eq!(parts.len(), 2, "state must be nonce.signature");
-        // Nonce is 16 bytes hex = 32 chars.
         assert_eq!(parts[0].len(), 32, "nonce should be 32 hex chars");
-        // Signature is HMAC-SHA256 = 32 bytes hex = 64 chars.
         assert_eq!(parts[1].len(), 64, "signature should be 64 hex chars");
     }
 
@@ -803,7 +1054,6 @@ mod tests {
         let state1 = GenericOAuth2Provider::sign_state(secret).expect("sign1");
         let state2 = GenericOAuth2Provider::sign_state(secret).expect("sign2");
 
-        // Swap nonces: take nonce from state1, sig from state2.
         let nonce1 = state1.split('.').next().unwrap();
         let sig2 = state2.split_once('.').unwrap().1;
         let franken = format!("{nonce1}.{sig2}");
@@ -829,7 +1079,6 @@ mod tests {
     #[test]
     fn pkce_challenge_is_s256() {
         let (verifier, challenge) = GenericOAuth2Provider::pkce_pair();
-        // Recompute challenge from verifier.
         use sha2::Digest;
         let hash = sha2::Sha256::digest(verifier.as_bytes());
         let expected = data_encoding::BASE64URL_NOPAD.encode(&hash);
@@ -847,12 +1096,143 @@ mod tests {
     #[test]
     fn pkce_verifier_is_base64url() {
         let (verifier, _) = GenericOAuth2Provider::pkce_pair();
-        // BASE64URL_NOPAD characters: A-Z, a-z, 0-9, -, _
         assert!(
             verifier
                 .chars()
                 .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'),
             "verifier must be base64url: {verifier}"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // OAuthProviderKind
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn provider_kind_from_name_all_variants() {
+        let cases = vec![
+            ("google", Some(OAuthProviderKind::Google)),
+            ("github", Some(OAuthProviderKind::GitHub)),
+            ("apple", Some(OAuthProviderKind::Apple)),
+            ("discord", Some(OAuthProviderKind::Discord)),
+            ("microsoft", Some(OAuthProviderKind::Microsoft)),
+            ("azure", Some(OAuthProviderKind::Microsoft)),
+            ("azuread", Some(OAuthProviderKind::Microsoft)),
+            ("twitter", Some(OAuthProviderKind::Twitter)),
+            ("x", Some(OAuthProviderKind::Twitter)),
+            ("linkedin", Some(OAuthProviderKind::LinkedIn)),
+            ("slack", Some(OAuthProviderKind::Slack)),
+            ("gitlab", Some(OAuthProviderKind::GitLab)),
+            ("bitbucket", Some(OAuthProviderKind::Bitbucket)),
+            ("facebook", Some(OAuthProviderKind::Facebook)),
+            ("meta", Some(OAuthProviderKind::Facebook)),
+            ("spotify", Some(OAuthProviderKind::Spotify)),
+            ("GOOGLE", Some(OAuthProviderKind::Google)),
+            ("GitHub", Some(OAuthProviderKind::GitHub)),
+            ("MICROSOFT", Some(OAuthProviderKind::Microsoft)),
+            ("unknown", None),
+            ("", None),
+        ];
+
+        for (input, expected) in cases {
+            assert_eq!(
+                OAuthProviderKind::from_name(input),
+                expected,
+                "from_name({input:?}) mismatch"
+            );
+        }
+    }
+
+    #[test]
+    fn provider_kind_display_roundtrip() {
+        let kinds = [
+            OAuthProviderKind::Google,
+            OAuthProviderKind::GitHub,
+            OAuthProviderKind::Apple,
+            OAuthProviderKind::Discord,
+            OAuthProviderKind::Microsoft,
+            OAuthProviderKind::Twitter,
+            OAuthProviderKind::LinkedIn,
+            OAuthProviderKind::Slack,
+            OAuthProviderKind::GitLab,
+            OAuthProviderKind::Bitbucket,
+            OAuthProviderKind::Facebook,
+            OAuthProviderKind::Spotify,
+        ];
+
+        for kind in kinds {
+            let name = kind.to_string();
+            let parsed = OAuthProviderKind::from_name(&name);
+            assert_eq!(
+                parsed,
+                Some(kind),
+                "Display -> from_name roundtrip failed for {kind:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn all_provider_factories_produce_correct_kind() {
+        let redirect = "https://example.com/callback".to_string();
+        let id = "test-id".to_string();
+        let secret = "test-secret".to_string();
+
+        let factories: Vec<(OAuthProviderKind, GenericOAuth2Provider)> = vec![
+            (OAuthProviderKind::Google, GenericOAuth2Provider::google(id.clone(), secret.clone(), redirect.clone())),
+            (OAuthProviderKind::GitHub, GenericOAuth2Provider::github(id.clone(), secret.clone(), redirect.clone())),
+            (OAuthProviderKind::Apple, GenericOAuth2Provider::apple(id.clone(), secret.clone(), redirect.clone())),
+            (OAuthProviderKind::Discord, GenericOAuth2Provider::discord(id.clone(), secret.clone(), redirect.clone())),
+            (OAuthProviderKind::Microsoft, GenericOAuth2Provider::microsoft(id.clone(), secret.clone(), redirect.clone())),
+            (OAuthProviderKind::Twitter, GenericOAuth2Provider::twitter(id.clone(), secret.clone(), redirect.clone())),
+            (OAuthProviderKind::LinkedIn, GenericOAuth2Provider::linkedin(id.clone(), secret.clone(), redirect.clone())),
+            (OAuthProviderKind::Slack, GenericOAuth2Provider::slack(id.clone(), secret.clone(), redirect.clone())),
+            (OAuthProviderKind::GitLab, GenericOAuth2Provider::gitlab(id.clone(), secret.clone(), redirect.clone())),
+            (OAuthProviderKind::Bitbucket, GenericOAuth2Provider::bitbucket(id.clone(), secret.clone(), redirect.clone())),
+            (OAuthProviderKind::Facebook, GenericOAuth2Provider::facebook(id.clone(), secret.clone(), redirect.clone())),
+            (OAuthProviderKind::Spotify, GenericOAuth2Provider::spotify(id.clone(), secret.clone(), redirect.clone())),
+        ];
+
+        for (expected_kind, provider) in &factories {
+            assert_eq!(
+                provider.config.kind, *expected_kind,
+                "factory for {expected_kind:?} produced wrong kind"
+            );
+            assert!(!provider.config.auth_url.is_empty(), "{expected_kind:?} auth_url empty");
+            assert!(!provider.config.token_url.is_empty(), "{expected_kind:?} token_url empty");
+            assert!(!provider.config.scopes.is_empty(), "{expected_kind:?} scopes empty");
+        }
+    }
+
+    #[test]
+    fn all_providers_generate_valid_authorization_url() {
+        let secret = b"test-secret-for-all-providers-ok";
+        let redirect = "https://example.com/callback".to_string();
+        let id = "test-id".to_string();
+        let sec = "test-secret".to_string();
+
+        let providers = vec![
+            GenericOAuth2Provider::google(id.clone(), sec.clone(), redirect.clone()),
+            GenericOAuth2Provider::github(id.clone(), sec.clone(), redirect.clone()),
+            GenericOAuth2Provider::discord(id.clone(), sec.clone(), redirect.clone()),
+            GenericOAuth2Provider::microsoft(id.clone(), sec.clone(), redirect.clone()),
+            GenericOAuth2Provider::twitter(id.clone(), sec.clone(), redirect.clone()),
+            GenericOAuth2Provider::linkedin(id.clone(), sec.clone(), redirect.clone()),
+            GenericOAuth2Provider::slack(id.clone(), sec.clone(), redirect.clone()),
+            GenericOAuth2Provider::gitlab(id.clone(), sec.clone(), redirect.clone()),
+            GenericOAuth2Provider::bitbucket(id.clone(), sec.clone(), redirect.clone()),
+            GenericOAuth2Provider::facebook(id.clone(), sec.clone(), redirect.clone()),
+            GenericOAuth2Provider::spotify(id.clone(), sec.clone(), redirect.clone()),
+        ];
+
+        for provider in &providers {
+            let (url, state, verifier) = provider
+                .authorization_url(secret)
+                .unwrap_or_else(|_| panic!("auth_url for {:?}", provider.config.kind));
+            assert!(url.starts_with("https://"), "URL must be HTTPS for {:?}", provider.config.kind);
+            assert!(url.contains("response_type=code"), "missing response_type for {:?}", provider.config.kind);
+            assert!(url.contains("code_challenge_method=S256"), "missing PKCE for {:?}", provider.config.kind);
+            assert!(!state.is_empty(), "empty state for {:?}", provider.config.kind);
+            assert!(!verifier.is_empty(), "empty verifier for {:?}", provider.config.kind);
+        }
     }
 }
