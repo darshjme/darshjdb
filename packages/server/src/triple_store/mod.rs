@@ -209,9 +209,9 @@ impl PgTripleStore {
                 ON triples (entity_id, attribute)
                 WHERE NOT retracted;
 
-            -- GIN index for value-based queries (contains, equality on JSONB).
-            CREATE INDEX IF NOT EXISTS idx_triples_attr_value
-                ON triples USING gin (attribute, value)
+            -- GIN index for JSONB value queries (contains, equality).
+            CREATE INDEX IF NOT EXISTS idx_triples_value_gin
+                ON triples USING gin (value)
                 WHERE NOT retracted;
 
             -- Transaction ordering.
