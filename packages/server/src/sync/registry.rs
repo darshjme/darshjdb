@@ -43,16 +43,8 @@ impl SubscriptionRegistry {
     /// Register a subscription. Deduplication happens at the query level:
     /// multiple sessions subscribing to the same query_hash share one entry
     /// in `by_query`, but each gets their own handle for targeted delivery.
-    pub fn register(
-        &self,
-        query_hash: u64,
-        session_id: SessionId,
-        sub_id: SubId,
-    ) {
-        let handle = SubscriptionHandle {
-            session_id,
-            sub_id,
-        };
+    pub fn register(&self, query_hash: u64, session_id: SessionId, sub_id: SubId) {
+        let handle = SubscriptionHandle { session_id, sub_id };
 
         self.by_query
             .entry(query_hash)
@@ -66,16 +58,8 @@ impl SubscriptionRegistry {
     }
 
     /// Unregister a single subscription.
-    pub fn unregister(
-        &self,
-        query_hash: u64,
-        session_id: SessionId,
-        sub_id: SubId,
-    ) {
-        let handle = SubscriptionHandle {
-            session_id,
-            sub_id,
-        };
+    pub fn unregister(&self, query_hash: u64, session_id: SessionId, sub_id: SubId) {
+        let handle = SubscriptionHandle { session_id, sub_id };
 
         if let Some(mut entry) = self.by_query.get_mut(&query_hash) {
             entry.remove(&handle);

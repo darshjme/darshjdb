@@ -24,18 +24,16 @@
 //! - **Permissions**: Rule-based access control with query-level injection.
 //! - **Middleware**: Axum layers for token extraction, rate limiting, and context building.
 
-pub mod middleware;
 pub mod mfa;
+pub mod middleware;
 pub mod permissions;
 pub mod providers;
 pub mod session;
 
-pub use middleware::{auth_middleware, AuthLayer, RateLimiter};
 pub use mfa::{RecoveryCodeManager, TotpManager, WebAuthnStub};
-pub use permissions::{evaluate_permission, PermissionEngine, PermissionResult, PermissionRule};
-pub use providers::{
-    MagicLinkProvider, OAuth2Provider, OAuthProviderKind, PasswordProvider,
-};
+pub use middleware::{AuthLayer, RateLimiter, auth_middleware};
+pub use permissions::{PermissionEngine, PermissionResult, PermissionRule, evaluate_permission};
+pub use providers::{MagicLinkProvider, OAuth2Provider, OAuthProviderKind, PasswordProvider};
 pub use session::{KeyManager, SessionManager, SessionRecord, TokenPair};
 
 use serde::{Deserialize, Serialize};

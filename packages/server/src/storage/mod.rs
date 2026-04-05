@@ -377,14 +377,8 @@ impl StorageBackend for LocalFsBackend {
             .await
             .map_err(|e| StorageError::Io(e.to_string()))?;
 
-        let created_at = fs_meta
-            .created()
-            .unwrap_or(SystemTime::UNIX_EPOCH)
-            .into();
-        let modified_at = fs_meta
-            .modified()
-            .unwrap_or(SystemTime::UNIX_EPOCH)
-            .into();
+        let created_at = fs_meta.created().unwrap_or(SystemTime::UNIX_EPOCH).into();
+        let modified_at = fs_meta.modified().unwrap_or(SystemTime::UNIX_EPOCH).into();
 
         // Try to read sidecar metadata.
         let meta_path = full_path.with_extension(
@@ -452,26 +446,19 @@ impl StorageBackend for LocalFsBackend {
     async fn head_object(&self, path: &str) -> Result<ObjectMeta, StorageError> {
         let full_path = self.resolve_path(path)?;
 
-        let fs_meta =
-            tokio::fs::metadata(&full_path)
-                .await
-                .map_err(|e| match e.kind() {
-                    std::io::ErrorKind::NotFound => StorageError::NotFound(path.to_string()),
-                    _ => StorageError::Io(e.to_string()),
-                })?;
+        let fs_meta = tokio::fs::metadata(&full_path)
+            .await
+            .map_err(|e| match e.kind() {
+                std::io::ErrorKind::NotFound => StorageError::NotFound(path.to_string()),
+                _ => StorageError::Io(e.to_string()),
+            })?;
 
         let data = tokio::fs::read(&full_path)
             .await
             .map_err(|e| StorageError::Io(e.to_string()))?;
 
-        let created_at = fs_meta
-            .created()
-            .unwrap_or(SystemTime::UNIX_EPOCH)
-            .into();
-        let modified_at = fs_meta
-            .modified()
-            .unwrap_or(SystemTime::UNIX_EPOCH)
-            .into();
+        let created_at = fs_meta.created().unwrap_or(SystemTime::UNIX_EPOCH).into();
+        let modified_at = fs_meta.modified().unwrap_or(SystemTime::UNIX_EPOCH).into();
 
         let etag = Self::compute_etag(&data);
 
@@ -531,14 +518,8 @@ impl StorageBackend for LocalFsBackend {
                     file_name
                 );
 
-                let created_at = fs_meta
-                    .created()
-                    .unwrap_or(SystemTime::UNIX_EPOCH)
-                    .into();
-                let modified_at = fs_meta
-                    .modified()
-                    .unwrap_or(SystemTime::UNIX_EPOCH)
-                    .into();
+                let created_at = fs_meta.created().unwrap_or(SystemTime::UNIX_EPOCH).into();
+                let modified_at = fs_meta.modified().unwrap_or(SystemTime::UNIX_EPOCH).into();
 
                 entries.push(ObjectMeta {
                     path: obj_path,
@@ -974,9 +955,8 @@ mod tests {
 
     #[test]
     fn signed_url_roundtrip() {
-        let backend: Arc<LocalFsBackend> = Arc::new(
-            LocalFsBackend::new("/tmp/darshandb-test-sign").expect("create backend"),
-        );
+        let backend: Arc<LocalFsBackend> =
+            Arc::new(LocalFsBackend::new("/tmp/darshandb-test-sign").expect("create backend"));
         let engine = StorageEngine::new(backend, b"test-secret-key".to_vec());
 
         let signed = engine
@@ -989,23 +969,26 @@ mod tests {
         let expires: i64 = params["expires"].parse().expect("parse expires");
         let sig = params["sig"].as_ref();
 
-        assert!(engine
-            .verify_signed_url("uploads/test.png", expires, sig)
-            .is_ok());
+        assert!(
+            engine
+                .verify_signed_url("uploads/test.png", expires, sig)
+                .is_ok()
+        );
 
         // Wrong path should fail.
-        assert!(engine
-            .verify_signed_url("uploads/wrong.png", expires, sig)
-            .is_err());
+        assert!(
+            engine
+                .verify_signed_url("uploads/wrong.png", expires, sig)
+                .is_err()
+        );
 
         let _ = std::fs::remove_dir_all("/tmp/darshandb-test-sign");
     }
 
     #[test]
     fn resumable_upload_lifecycle() {
-        let backend: Arc<LocalFsBackend> = Arc::new(
-            LocalFsBackend::new("/tmp/darshandb-test-resumable").expect("create backend"),
-        );
+        let backend: Arc<LocalFsBackend> =
+            Arc::new(LocalFsBackend::new("/tmp/darshandb-test-resumable").expect("create backend"));
         let engine = StorageEngine::new(backend, b"key".to_vec());
 
         let id = engine.create_resumable_upload("file.bin", "application/octet-stream", Some(100));

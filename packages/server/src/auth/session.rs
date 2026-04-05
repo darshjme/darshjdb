@@ -19,9 +19,7 @@
 //! visibility and remote revocation.
 
 use chrono::{DateTime, Duration, Utc};
-use jsonwebtoken::{
-    decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation,
-};
+use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Header, Validation, decode, encode};
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use sha2::Digest;
@@ -313,9 +311,8 @@ impl SessionManager {
         .fetch_optional(&self.pool)
         .await?;
 
-        let session = session.ok_or_else(|| {
-            AuthError::TokenInvalid("refresh token not found".into())
-        })?;
+        let session =
+            session.ok_or_else(|| AuthError::TokenInvalid("refresh token not found".into()))?;
 
         if session.revoked {
             return Err(AuthError::SessionRevoked);
@@ -352,13 +349,12 @@ impl SessionManager {
         .await?;
 
         // Fetch current roles.
-        let roles: Vec<String> =
-            sqlx::query_scalar("SELECT roles FROM users WHERE id = $1")
-                .bind(session.user_id)
-                .fetch_optional(&self.pool)
-                .await?
-                .and_then(|v: serde_json::Value| serde_json::from_value(v).ok())
-                .unwrap_or_default();
+        let roles: Vec<String> = sqlx::query_scalar("SELECT roles FROM users WHERE id = $1")
+            .bind(session.user_id)
+            .fetch_optional(&self.pool)
+            .await?
+            .and_then(|v: serde_json::Value| serde_json::from_value(v).ok())
+            .unwrap_or_default();
 
         // Issue new access token.
         let now = Utc::now();
@@ -393,11 +389,12 @@ impl SessionManager {
 
     /// Revoke all sessions for a user (password change, security event).
     pub async fn revoke_all_sessions(&self, user_id: Uuid) -> Result<u64, AuthError> {
-        let result =
-            sqlx::query("UPDATE sessions SET revoked = true WHERE user_id = $1 AND revoked = false")
-                .bind(user_id)
-                .execute(&self.pool)
-                .await?;
+        let result = sqlx::query(
+            "UPDATE sessions SET revoked = true WHERE user_id = $1 AND revoked = false",
+        )
+        .bind(user_id)
+        .execute(&self.pool)
+        .await?;
         Ok(result.rows_affected())
     }
 

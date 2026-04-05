@@ -13,7 +13,7 @@ use serde_json::Value;
 use tokio::sync::{broadcast, mpsc};
 use tracing::{debug, error, warn};
 
-use super::diff::{compute_diff, hash_result_set, QueryDiff};
+use super::diff::{QueryDiff, compute_diff, hash_result_set};
 use super::registry::{SubscriptionHandle, SubscriptionRegistry};
 use super::session::{SessionId, SessionManager, SubId};
 
@@ -58,9 +58,7 @@ pub trait QueryExecutor: Send + Sync + 'static {
         &self,
         query_ast: &Value,
         user_id: Option<&str>,
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = Result<Vec<Value>, String>> + Send + '_>,
-    >;
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<Value>, String>> + Send + '_>>;
 }
 
 /// Trait for tracking which query hashes are affected by a given change.
@@ -109,12 +107,7 @@ impl Broadcaster {
     }
 
     /// Seed the result cache for a subscription (called on initial subscribe).
-    pub fn cache_initial_result(
-        &self,
-        session_id: SessionId,
-        sub_id: SubId,
-        results: Vec<Value>,
-    ) {
+    pub fn cache_initial_result(&self, session_id: SessionId, sub_id: SubId, results: Vec<Value>) {
         self.result_cache.insert((session_id, sub_id), results);
     }
 
@@ -125,8 +118,7 @@ impl Broadcaster {
 
     /// Remove all cached results for a session (called on disconnect).
     pub fn evict_session_cache(&self, session_id: &SessionId) {
-        self.result_cache
-            .retain(|(sid, _), _| sid != session_id);
+        self.result_cache.retain(|(sid, _), _| sid != session_id);
     }
 
     /// Run the broadcast loop. This is the main event loop that should be
@@ -177,12 +169,8 @@ impl Broadcaster {
             // For each unique (session, sub) pair, re-execute the query and diff.
             for (_query_hash, handles) in &handles_by_hash {
                 for handle in handles {
-                    self.process_subscription(
-                        handle,
-                        &event,
-                        executor.as_ref(),
-                    )
-                    .await;
+                    self.process_subscription(handle, &event, executor.as_ref())
+                        .await;
                 }
             }
         }
@@ -212,10 +200,7 @@ impl Broadcaster {
         };
 
         // Re-execute the query with the user's permission context.
-        let new_results = match executor
-            .execute(&query_ast, user_id.as_deref())
-            .await
-        {
+        let new_results = match executor.execute(&query_ast, user_id.as_deref()).await {
             Ok(results) => results,
             Err(e) => {
                 error!(

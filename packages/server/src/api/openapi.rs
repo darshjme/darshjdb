@@ -4,7 +4,7 @@
 //! `GET /api/openapi.json`. The companion docs endpoint (`GET /api/docs`)
 //! renders an interactive Scalar viewer.
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 /// Generate the full OpenAPI 3.1 specification for DarshanDB.
 ///

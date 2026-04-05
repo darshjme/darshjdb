@@ -168,9 +168,7 @@ impl MigrationGenerator {
         // Detect added entity types.
         for (name, new_et) in &new.entity_types {
             if !old.entity_types.contains_key(name) {
-                actions.push(MigrationAction::AddEntityType {
-                    name: name.clone(),
-                });
+                actions.push(MigrationAction::AddEntityType { name: name.clone() });
                 // All attributes on a new type are implicitly "added",
                 // but we still emit them for consumers that track per-attribute.
                 for (attr, info) in &new_et.attributes {
@@ -186,9 +184,7 @@ impl MigrationGenerator {
         // Detect removed entity types.
         for name in old.entity_types.keys() {
             if !new.entity_types.contains_key(name) {
-                actions.push(MigrationAction::RemoveEntityType {
-                    name: name.clone(),
-                });
+                actions.push(MigrationAction::RemoveEntityType { name: name.clone() });
             }
         }
 
@@ -263,9 +259,11 @@ mod tests {
 
         let actions = MigrationGenerator::diff(&old, &new);
         assert!(actions.len() >= 2); // AddEntityType + AddAttribute
-        assert!(actions
-            .iter()
-            .any(|a| matches!(a, MigrationAction::AddEntityType { name } if name == "User")));
+        assert!(
+            actions
+                .iter()
+                .any(|a| matches!(a, MigrationAction::AddEntityType { name } if name == "User"))
+        );
     }
 
     #[test]

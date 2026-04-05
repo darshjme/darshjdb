@@ -14,9 +14,7 @@ use std::collections::HashMap;
 use uuid::Uuid;
 
 use crate::error::{DarshanError, Result};
-use schema::{
-    AttributeInfo, EntityType, ReferenceInfo, Schema, ValueType,
-};
+use schema::{AttributeInfo, EntityType, ReferenceInfo, Schema, ValueType};
 
 // ── Triple ──────────────────────────────────────────────────────────
 
@@ -66,16 +64,30 @@ pub struct TripleInput {
 /// so the trait can be used behind `Arc<dyn TripleStore>`.
 pub trait TripleStore: Send + Sync {
     /// Retrieve all active (non-retracted) triples for an entity.
-    fn get_entity(&self, entity_id: Uuid) -> impl std::future::Future<Output = Result<Vec<Triple>>> + Send;
+    fn get_entity(
+        &self,
+        entity_id: Uuid,
+    ) -> impl std::future::Future<Output = Result<Vec<Triple>>> + Send;
 
     /// Retrieve all active triples for an entity with a specific attribute.
-    fn get_attribute(&self, entity_id: Uuid, attribute: &str) -> impl std::future::Future<Output = Result<Vec<Triple>>> + Send;
+    fn get_attribute(
+        &self,
+        entity_id: Uuid,
+        attribute: &str,
+    ) -> impl std::future::Future<Output = Result<Vec<Triple>>> + Send;
 
     /// Atomically write a batch of triples under a single transaction id.
-    fn set_triples(&self, triples: &[TripleInput]) -> impl std::future::Future<Output = Result<i64>> + Send;
+    fn set_triples(
+        &self,
+        triples: &[TripleInput],
+    ) -> impl std::future::Future<Output = Result<i64>> + Send;
 
     /// Retract (soft-delete) all active triples matching the entity + attribute.
-    fn retract(&self, entity_id: Uuid, attribute: &str) -> impl std::future::Future<Output = Result<()>> + Send;
+    fn retract(
+        &self,
+        entity_id: Uuid,
+        attribute: &str,
+    ) -> impl std::future::Future<Output = Result<()>> + Send;
 
     /// Find triples by attribute name, optionally filtering on value.
     fn query_by_attribute(
@@ -88,7 +100,11 @@ pub trait TripleStore: Send + Sync {
     fn get_schema(&self) -> impl std::future::Future<Output = Result<Schema>> + Send;
 
     /// Point-in-time read: return the entity's triples as they were at `tx_id`.
-    fn get_entity_at(&self, entity_id: Uuid, tx_id: i64) -> impl std::future::Future<Output = Result<Vec<Triple>>> + Send;
+    fn get_entity_at(
+        &self,
+        entity_id: Uuid,
+        tx_id: i64,
+    ) -> impl std::future::Future<Output = Result<Vec<Triple>>> + Send;
 }
 
 // ── Postgres implementation ─────────────────────────────────────────
@@ -326,9 +342,9 @@ impl TripleStore for PgTripleStore {
                 .unwrap_or("_untyped")
                 .to_string();
 
-            let builder = types_map.entry(type_name.clone()).or_insert_with(|| {
-                EntityTypeBuilder::new(type_name)
-            });
+            let builder = types_map
+                .entry(type_name.clone())
+                .or_insert_with(|| EntityTypeBuilder::new(type_name));
             builder.observe(*entity_id, attribute, *value_type);
         }
 

@@ -10,8 +10,8 @@
 //!   integration.
 
 use argon2::{
-    password_hash::{rand_core::OsRng, PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
     Algorithm, Argon2, Params, Version,
+    password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString, rand_core::OsRng},
 };
 use chrono::Utc;
 use hmac::{Hmac, Mac};
@@ -227,11 +227,7 @@ impl RecoveryCodeManager {
     ///
     /// On success the code is marked as used and cannot be reused.
     /// Returns `true` if the code matched an unused entry.
-    pub async fn verify(
-        pool: &PgPool,
-        user_id: Uuid,
-        code: &str,
-    ) -> Result<bool, AuthError> {
+    pub async fn verify(pool: &PgPool, user_id: Uuid, code: &str) -> Result<bool, AuthError> {
         let rows: Vec<(i64, String)> = sqlx::query_as(
             "SELECT id, code_hash FROM recovery_codes WHERE user_id = $1 AND used = false",
         )
@@ -245,10 +241,7 @@ impl RecoveryCodeManager {
             let parsed = PasswordHash::new(&stored_hash)
                 .map_err(|e| AuthError::Crypto(format!("parse hash: {e}")))?;
 
-            if hasher
-                .verify_password(code.as_bytes(), &parsed)
-                .is_ok()
-            {
+            if hasher.verify_password(code.as_bytes(), &parsed).is_ok() {
                 // Mark consumed.
                 sqlx::query("UPDATE recovery_codes SET used = true WHERE id = $1")
                     .bind(row_id)
@@ -361,12 +354,11 @@ impl WebAuthnStub {
         let challenge = data_encoding::BASE64URL_NOPAD.encode(&challenge_bytes);
 
         // Fetch stored credential IDs for this user.
-        let cred_ids: Vec<String> = sqlx::query_scalar(
-            "SELECT credential_id FROM webauthn_credentials WHERE user_id = $1",
-        )
-        .bind(user_id)
-        .fetch_all(pool)
-        .await?;
+        let cred_ids: Vec<String> =
+            sqlx::query_scalar("SELECT credential_id FROM webauthn_credentials WHERE user_id = $1")
+                .bind(user_id)
+                .fetch_all(pool)
+                .await?;
 
         Ok(WebAuthnAssertionChallenge {
             challenge,

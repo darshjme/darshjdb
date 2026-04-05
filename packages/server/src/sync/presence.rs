@@ -216,7 +216,8 @@ impl PresenceManager {
             if room.active_count() == 0 {
                 drop(room);
                 // Re-check under remove lock to avoid races.
-                self.rooms.remove_if(room_id, |_, room| room.active_count() == 0);
+                self.rooms
+                    .remove_if(room_id, |_, room| room.active_count() == 0);
             }
         }
     }
@@ -253,7 +254,8 @@ impl PresenceManager {
 
         // Clean up empty rooms.
         for room_id in empty_rooms {
-            self.rooms.remove_if(&room_id, |_, room| room.active_count() == 0);
+            self.rooms
+                .remove_if(&room_id, |_, room| room.active_count() == 0);
         }
 
         total

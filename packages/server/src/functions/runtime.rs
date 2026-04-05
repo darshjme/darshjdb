@@ -246,11 +246,7 @@ impl ProcessRuntime {
     }
 
     /// Build the subprocess command with appropriate flags.
-    fn build_command(
-        &self,
-        function_def: &FunctionDef,
-        limits: &ResourceLimits,
-    ) -> Command {
+    fn build_command(&self, function_def: &FunctionDef, limits: &ResourceLimits) -> Command {
         let mut cmd = Command::new(self.kind.binary_name());
 
         match &self.kind {
@@ -266,11 +262,8 @@ impl ProcessRuntime {
                     .arg(self.harness_path.as_os_str());
             }
             ProcessKind::Node => {
-                cmd.arg(format!(
-                    "--max-old-space-size={}",
-                    limits.memory_mb
-                ))
-                .arg(self.harness_path.as_os_str());
+                cmd.arg(format!("--max-old-space-size={}", limits.memory_mb))
+                    .arg(self.harness_path.as_os_str());
             }
         }
 
@@ -319,11 +312,15 @@ impl RuntimeBackend for ProcessRuntime {
 
             // Write context JSON to stdin.
             if let Some(stdin) = child.stdin.take() {
-                let context_json = serde_json::to_vec(&context)
-                    .map_err(|e| RuntimeError::Internal(format!("failed to serialize context: {e}")))?;
-                tokio::io::AsyncWriteExt::write_all(&mut tokio::io::BufWriter::new(stdin), &context_json)
-                    .await
-                    .map_err(|e| RuntimeError::Internal(format!("failed to write to stdin: {e}")))?;
+                let context_json = serde_json::to_vec(&context).map_err(|e| {
+                    RuntimeError::Internal(format!("failed to serialize context: {e}"))
+                })?;
+                tokio::io::AsyncWriteExt::write_all(
+                    &mut tokio::io::BufWriter::new(stdin),
+                    &context_json,
+                )
+                .await
+                .map_err(|e| RuntimeError::Internal(format!("failed to write to stdin: {e}")))?;
             }
 
             // Wait with timeout.
