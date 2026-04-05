@@ -172,10 +172,7 @@ enum ServerMessage {
 ///
 /// Accepts the upgrade, extracts the peer address, and spawns the
 /// connection handler as a background task.
-pub async fn ws_handler(
-    ws: WebSocketUpgrade,
-    State(state): State<WsState>,
-) -> impl IntoResponse {
+pub async fn ws_handler(ws: WebSocketUpgrade, State(state): State<WsState>) -> impl IntoResponse {
     ws.max_message_size(MAX_MESSAGE_SIZE)
         .on_upgrade(move |socket| handle_connection(socket, state, None))
 }
@@ -290,44 +287,38 @@ async fn authenticate(
                 (parsed, Codec::MessagePack)
             }
             Message::Close(_) => {
-                return Err(WsError::Transport(
-                    "connection closed during auth".into(),
-                ));
+                return Err(WsError::Transport("connection closed during auth".into()));
             }
             Message::Ping(_) | Message::Pong(_) => continue,
         };
 
         match parsed {
-            ClientMessage::Auth { token } => {
-                match validate_token(&token) {
-                    Ok(user_id) => {
-                        state.sessions.with_session_mut(&session_id, |s| {
-                            s.authenticate(user_id.clone());
-                        });
+            ClientMessage::Auth { token } => match validate_token(&token) {
+                Ok(user_id) => {
+                    state.sessions.with_session_mut(&session_id, |s| {
+                        s.authenticate(user_id.clone());
+                    });
 
-                        let ok_msg = ServerMessage::AuthOk {
-                            session_id: session_id.to_string(),
-                        };
-                        send_message(socket, &ok_msg, codec).await?;
+                    let ok_msg = ServerMessage::AuthOk {
+                        session_id: session_id.to_string(),
+                    };
+                    send_message(socket, &ok_msg, codec).await?;
 
-                        info!(
-                            session_id = %session_id,
-                            user_id = %user_id,
-                            codec = ?codec,
-                            "WebSocket authenticated"
-                        );
+                    info!(
+                        session_id = %session_id,
+                        user_id = %user_id,
+                        codec = ?codec,
+                        "WebSocket authenticated"
+                    );
 
-                        return Ok(codec);
-                    }
-                    Err(reason) => {
-                        return Err(WsError::AuthFailed(reason));
-                    }
+                    return Ok(codec);
                 }
-            }
+                Err(reason) => {
+                    return Err(WsError::AuthFailed(reason));
+                }
+            },
             _ => {
-                return Err(WsError::Protocol(
-                    "first message must be auth".into(),
-                ));
+                return Err(WsError::Protocol("first message must be auth".into()));
             }
         }
     }
@@ -533,12 +524,7 @@ async fn handle_unsubscribe(
         state.registry.unregister(hash, session_id, sub_id);
     }
 
-    let _ = send_message(
-        socket,
-        &ServerMessage::UnsubOk { id: req_id },
-        codec,
-    )
-    .await;
+    let _ = send_message(socket, &ServerMessage::UnsubOk { id: req_id }, codec).await;
 
     debug!(session_id = %session_id, sub_id = %sub_id, "subscription removed");
 }
@@ -562,15 +548,7 @@ async fn handle_mutation(
     );
 
     // Acknowledge with tx_id 0 until wired to the storage engine.
-    let _ = send_message(
-        socket,
-        &ServerMessage::MutOk {
-            id: req_id,
-            tx: 0,
-        },
-        codec,
-    )
-    .await;
+    let _ = send_message(socket, &ServerMessage::MutOk { id: req_id, tx: 0 }, codec).await;
 }
 
 /// Handle a presence join request.
@@ -624,32 +602,18 @@ async fn handle_presence_join(
         })
         .collect();
 
-    let _ = send_message(
-        socket,
-        &ServerMessage::PresSnap { room, members },
-        codec,
-    )
-    .await;
+    let _ = send_message(socket, &ServerMessage::PresSnap { room, members }, codec).await;
 }
 
 /// Handle a presence state update.
-fn handle_presence_state(
-    room: String,
-    pres_state: Value,
-    state: &WsState,
-    session_id: SessionId,
-) {
+fn handle_presence_state(room: String, pres_state: Value, state: &WsState, session_id: SessionId) {
     if let Some(user_id) = get_user_id(state, session_id) {
         state.presence.update_state(&room, &user_id, pres_state);
     }
 }
 
 /// Handle a presence leave.
-fn handle_presence_leave(
-    room: String,
-    state: &WsState,
-    session_id: SessionId,
-) {
+fn handle_presence_leave(room: String, state: &WsState, session_id: SessionId) {
     if let Some(user_id) = get_user_id(state, session_id) {
         state.presence.leave(&room, &user_id);
     }
@@ -690,13 +654,11 @@ async fn send_message(
 ) -> Result<(), WsError> {
     let ws_msg = match codec {
         Codec::Json => {
-            let payload = serde_json::to_string(msg)
-                .map_err(|e| WsError::Codec(e.to_string()))?;
+            let payload = serde_json::to_string(msg).map_err(|e| WsError::Codec(e.to_string()))?;
             Message::Text(payload.into())
         }
         Codec::MessagePack => {
-            let payload = rmp_serde::to_vec(msg)
-                .map_err(|e| WsError::Codec(e.to_string()))?;
+            let payload = rmp_serde::to_vec(msg).map_err(|e| WsError::Codec(e.to_string()))?;
             Message::Binary(payload.into())
         }
     };
@@ -721,10 +683,9 @@ fn validate_token(token: &str) -> Result<String, String> {
     // Attempt to decode as a JWT and extract the `sub` claim.
     let parts: Vec<&str> = token.split('.').collect();
     if parts.len() == 3 {
-        if let Ok(decoded) = base64::Engine::decode(
-            &base64::engine::general_purpose::URL_SAFE_NO_PAD,
-            parts[1],
-        ) {
+        if let Ok(decoded) =
+            base64::Engine::decode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, parts[1])
+        {
             if let Ok(claims) = serde_json::from_slice::<Value>(&decoded) {
                 if let Some(sub) = claims.get("sub").and_then(|v| v.as_str()) {
                     return Ok(sub.to_string());

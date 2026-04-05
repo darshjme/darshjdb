@@ -279,9 +279,7 @@ impl FunctionRegistry {
     }
 
     /// Scan the functions directory and build a function map.
-    async fn scan_directory(
-        dir: &Path,
-    ) -> RegistryResult<HashMap<String, FunctionDef>> {
+    async fn scan_directory(dir: &Path) -> RegistryResult<HashMap<String, FunctionDef>> {
         let mut functions = HashMap::new();
 
         let entries = Self::collect_function_files(dir).await?;
@@ -292,12 +290,12 @@ impl FunctionRegistry {
                 .unwrap_or(&entry_path)
                 .to_path_buf();
 
-            let content = tokio::fs::read_to_string(&entry_path)
-                .await
-                .map_err(|e| RegistryError::FileReadError {
+            let content = tokio::fs::read_to_string(&entry_path).await.map_err(|e| {
+                RegistryError::FileReadError {
                     path: entry_path.clone(),
                     source: e,
-                })?;
+                }
+            })?;
 
             let last_modified = tokio::fs::metadata(&entry_path)
                 .await
@@ -345,28 +343,32 @@ impl FunctionRegistry {
         let mut stack = vec![dir.to_path_buf()];
 
         while let Some(current) = stack.pop() {
-            let mut read_dir = tokio::fs::read_dir(&current)
-                .await
-                .map_err(|e| RegistryError::FileReadError {
-                    path: current.clone(),
-                    source: e,
-                })?;
+            let mut read_dir =
+                tokio::fs::read_dir(&current)
+                    .await
+                    .map_err(|e| RegistryError::FileReadError {
+                        path: current.clone(),
+                        source: e,
+                    })?;
 
-            while let Some(entry) = read_dir
-                .next_entry()
-                .await
-                .map_err(|e| RegistryError::FileReadError {
-                    path: current.clone(),
-                    source: e,
-                })?
+            while let Some(entry) =
+                read_dir
+                    .next_entry()
+                    .await
+                    .map_err(|e| RegistryError::FileReadError {
+                        path: current.clone(),
+                        source: e,
+                    })?
             {
                 let path = entry.path();
-                let file_type = entry.file_type().await.map_err(|e| {
-                    RegistryError::FileReadError {
-                        path: path.clone(),
-                        source: e,
-                    }
-                })?;
+                let file_type =
+                    entry
+                        .file_type()
+                        .await
+                        .map_err(|e| RegistryError::FileReadError {
+                            path: path.clone(),
+                            source: e,
+                        })?;
 
                 if file_type.is_dir() {
                     // Skip node_modules and hidden directories.
@@ -471,10 +473,7 @@ fn is_function_file(path: &Path) -> bool {
     match path.extension().and_then(|e| e.to_str()) {
         Some("ts" | "js" | "mts" | "mjs") => {
             // Exclude declaration and test files.
-            let name = path
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("");
+            let name = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
             !name.ends_with(".d")
                 && !name.ends_with(".test")
                 && !name.ends_with(".spec")
@@ -489,9 +488,7 @@ fn is_function_file(path: &Path) -> bool {
 /// `users/queries.ts` -> `"users/queries"`
 /// `tasks.ts` -> `"tasks"`
 fn module_name_from_path(path: &Path) -> String {
-    path.with_extension("")
-        .to_string_lossy()
-        .replace('\\', "/")
+    path.with_extension("").to_string_lossy().replace('\\', "/")
 }
 
 // ---------------------------------------------------------------------------

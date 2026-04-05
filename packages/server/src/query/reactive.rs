@@ -180,18 +180,12 @@ impl DependencyTracker {
 
     /// Return the number of currently tracked queries.
     pub fn query_count(&self) -> usize {
-        self.queries
-            .read()
-            .expect("queries lock poisoned")
-            .len()
+        self.queries.read().expect("queries lock poisoned").len()
     }
 
     /// Return the number of distinct dependency edges in the index.
     pub fn dependency_count(&self) -> usize {
-        self.index
-            .read()
-            .expect("index lock poisoned")
-            .len()
+        self.index.read().expect("index lock poisoned").len()
     }
 }
 

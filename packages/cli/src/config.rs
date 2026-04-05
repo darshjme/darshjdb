@@ -33,23 +33,13 @@ impl Config {
         let url = cli_url
             .map(String::from)
             .or_else(|| std::env::var("DARSHAN_URL").ok())
-            .or_else(|| {
-                file_cfg
-                    .server
-                    .as_ref()
-                    .and_then(|s| s.url.clone())
-            })
+            .or_else(|| file_cfg.server.as_ref().and_then(|s| s.url.clone()))
             .unwrap_or_else(|| "http://localhost:4820".to_string());
 
         let token = cli_token
             .map(String::from)
             .or_else(|| std::env::var("DARSHAN_TOKEN").ok())
-            .or_else(|| {
-                file_cfg
-                    .server
-                    .as_ref()
-                    .and_then(|s| s.token.clone())
-            })
+            .or_else(|| file_cfg.server.as_ref().and_then(|s| s.token.clone()))
             .unwrap_or_default();
 
         Ok(Self { url, token })

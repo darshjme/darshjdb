@@ -142,7 +142,10 @@ pub fn parse_darshan_ql(input: &serde_json::Value) -> Result<QueryAST> {
     };
 
     let limit = obj.get("$limit").and_then(|v| v.as_u64()).map(|v| v as u32);
-    let offset = obj.get("$offset").and_then(|v| v.as_u64()).map(|v| v as u32);
+    let offset = obj
+        .get("$offset")
+        .and_then(|v| v.as_u64())
+        .map(|v| v as u32);
     let search = obj
         .get("$search")
         .and_then(|v| v.as_str())
@@ -332,9 +335,17 @@ pub struct QueryResultRow {
 /// and nested entities resolved inline.
 pub async fn execute_query(pool: &PgPool, plan: &QueryPlan) -> Result<Vec<QueryResultRow>> {
     // Build the query with dynamic binds.
-    let mut query = sqlx::query_as::<_, (uuid::Uuid, String, serde_json::Value, i16, i64, chrono::DateTime<chrono::Utc>)>(
-        &plan.sql,
-    );
+    let mut query = sqlx::query_as::<
+        _,
+        (
+            uuid::Uuid,
+            String,
+            serde_json::Value,
+            i16,
+            i64,
+            chrono::DateTime<chrono::Utc>,
+        ),
+    >(&plan.sql);
 
     for p in &plan.params {
         query = bind_json_param(query, p);
@@ -343,13 +354,17 @@ pub async fn execute_query(pool: &PgPool, plan: &QueryPlan) -> Result<Vec<QueryR
     let rows = query.fetch_all(pool).await?;
 
     // Group by entity_id.
-    let mut entities: std::collections::HashMap<uuid::Uuid, serde_json::Map<String, serde_json::Value>> =
-        std::collections::HashMap::new();
+    let mut entities: std::collections::HashMap<
+        uuid::Uuid,
+        serde_json::Map<String, serde_json::Value>,
+    > = std::collections::HashMap::new();
 
     for (entity_id, attribute, value, _value_type, _tx_id, _created_at) in &rows {
         let entry = entities.entry(*entity_id).or_default();
         // Latest tx wins (rows are ordered by tx_id DESC within grouping).
-        entry.entry(attribute.clone()).or_insert_with(|| value.clone());
+        entry
+            .entry(attribute.clone())
+            .or_insert_with(|| value.clone());
     }
 
     // Resolve nested references.
@@ -398,14 +413,28 @@ fn bind_json_param<'q>(
     query: sqlx::query::QueryAs<
         'q,
         sqlx::Postgres,
-        (uuid::Uuid, String, serde_json::Value, i16, i64, chrono::DateTime<chrono::Utc>),
+        (
+            uuid::Uuid,
+            String,
+            serde_json::Value,
+            i16,
+            i64,
+            chrono::DateTime<chrono::Utc>,
+        ),
         sqlx::postgres::PgArguments,
     >,
     param: &'q serde_json::Value,
 ) -> sqlx::query::QueryAs<
     'q,
     sqlx::Postgres,
-    (uuid::Uuid, String, serde_json::Value, i16, i64, chrono::DateTime<chrono::Utc>),
+    (
+        uuid::Uuid,
+        String,
+        serde_json::Value,
+        i16,
+        i64,
+        chrono::DateTime<chrono::Utc>,
+    ),
     sqlx::postgres::PgArguments,
 > {
     // For JSONB comparisons we bind as serde_json::Value;

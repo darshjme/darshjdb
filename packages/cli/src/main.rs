@@ -201,16 +201,21 @@ async fn main() -> Result<()> {
         Commands::Push { dir, dry_run } => cmd_push(&cfg, &dir, dry_run).await,
         Commands::Pull { output } => cmd_pull(&cfg, &output).await,
         Commands::Seed { file } => cmd_seed(&cfg, &file).await,
-        Commands::Migrate { dir, rollback, status } => {
-            cmd_migrate(&cfg, &dir, rollback, status).await
-        }
-        Commands::Logs { lines, follow, level } => {
-            cmd_logs(&cfg, lines, follow, level.as_deref()).await
-        }
+        Commands::Migrate {
+            dir,
+            rollback,
+            status,
+        } => cmd_migrate(&cfg, &dir, rollback, status).await,
+        Commands::Logs {
+            lines,
+            follow,
+            level,
+        } => cmd_logs(&cfg, lines, follow, level.as_deref()).await,
         Commands::Auth { command } => cmd_auth(&cfg, command).await,
-        Commands::Backup { output, include_storage } => {
-            cmd_backup(&cfg, output.as_deref(), include_storage).await
-        }
+        Commands::Backup {
+            output,
+            include_storage,
+        } => cmd_backup(&cfg, output.as_deref(), include_storage).await,
         Commands::Restore { file, yes } => cmd_restore(&cfg, &file, yes).await,
         Commands::Status => cmd_status(&cfg).await,
         Commands::Init { name } => cmd_init(&name).await,
@@ -220,10 +225,7 @@ async fn main() -> Result<()> {
 // ── Command implementations ────────────────────────────────────────
 
 async fn cmd_dev(port: u16, watch: bool) -> Result<()> {
-    println!(
-        "\n  {} DarshanDB dev server\n",
-        ">>>".bright_cyan().bold()
-    );
+    println!("\n  {} DarshanDB dev server\n", ">>>".bright_cyan().bold());
 
     let spinner = spinner("Starting server...");
 
@@ -239,11 +241,16 @@ async fn cmd_dev(port: u16, watch: bool) -> Result<()> {
         spinner.set_message("Starting Postgres via Docker...");
         let pg_status = tokio::process::Command::new("docker")
             .args([
-                "run", "-d",
-                "--name", "darshandb-dev-pg",
-                "-e", "POSTGRES_PASSWORD=darshan",
-                "-e", "POSTGRES_DB=darshandb",
-                "-p", "5432:5432",
+                "run",
+                "-d",
+                "--name",
+                "darshandb-dev-pg",
+                "-e",
+                "POSTGRES_PASSWORD=darshan",
+                "-e",
+                "POSTGRES_DB=darshandb",
+                "-p",
+                "5432:5432",
                 "pgvector/pgvector:pg16",
             ])
             .output()
@@ -296,7 +303,10 @@ async fn cmd_dev(port: u16, watch: bool) -> Result<()> {
         cmd.env("DARSHAN_WATCH", "true");
     }
 
-    let status = cmd.status().await.context("Failed to start DarshanDB server")?;
+    let status = cmd
+        .status()
+        .await
+        .context("Failed to start DarshanDB server")?;
 
     if !status.success() {
         anyhow::bail!("Server exited with status: {}", status);
@@ -306,10 +316,7 @@ async fn cmd_dev(port: u16, watch: bool) -> Result<()> {
 }
 
 async fn cmd_deploy(tag: &str, registry: Option<&str>, yes: bool) -> Result<()> {
-    println!(
-        "\n  {} DarshanDB deploy\n",
-        ">>>".bright_cyan().bold()
-    );
+    println!("\n  {} DarshanDB deploy\n", ">>>".bright_cyan().bold());
 
     let image = match registry {
         Some(r) => format!("{r}:{tag}"),
@@ -371,10 +378,7 @@ async fn cmd_deploy(tag: &str, registry: Option<&str>, yes: bool) -> Result<()> 
 }
 
 async fn cmd_push(cfg: &config::Config, dir: &str, dry_run: bool) -> Result<()> {
-    println!(
-        "\n  {} Push functions\n",
-        ">>>".bright_cyan().bold()
-    );
+    println!("\n  {} Push functions\n", ">>>".bright_cyan().bold());
 
     let functions_dir = std::path::Path::new(dir);
     if !functions_dir.exists() {
@@ -411,7 +415,11 @@ async fn cmd_push(cfg: &config::Config, dir: &str, dry_run: bool) -> Result<()> 
     let pb = progress_bar(files.len() as u64, "Pushing");
 
     for file in &files {
-        let name = file.file_stem().unwrap_or_default().to_string_lossy().to_string();
+        let name = file
+            .file_stem()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
         pb.set_message(format!("Pushing {name}..."));
 
         let content = tokio::fs::read_to_string(file).await?;
@@ -508,10 +516,7 @@ async fn cmd_pull(cfg: &config::Config, output: &str) -> Result<()> {
 }
 
 async fn cmd_seed(cfg: &config::Config, file: &str) -> Result<()> {
-    println!(
-        "\n  {} Seed database\n",
-        ">>>".bright_cyan().bold()
-    );
+    println!("\n  {} Seed database\n", ">>>".bright_cyan().bold());
 
     let path = std::path::Path::new(file);
     if !path.exists() {
@@ -570,10 +575,7 @@ async fn cmd_migrate(
     rollback: Option<u32>,
     status: bool,
 ) -> Result<()> {
-    println!(
-        "\n  {} Migrations\n",
-        ">>>".bright_cyan().bold()
-    );
+    println!("\n  {} Migrations\n", ">>>".bright_cyan().bold());
 
     let client = reqwest::Client::new();
 
@@ -796,10 +798,7 @@ async fn cmd_backup(
     output: Option<&str>,
     include_storage: bool,
 ) -> Result<()> {
-    println!(
-        "\n  {} Backup\n",
-        ">>>".bright_cyan().bold()
-    );
+    println!("\n  {} Backup\n", ">>>".bright_cyan().bold());
 
     let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
     let default_output = format!("darshandb_backup_{timestamp}.tar.gz");
@@ -840,10 +839,7 @@ async fn cmd_backup(
 }
 
 async fn cmd_restore(cfg: &config::Config, file: &str, yes: bool) -> Result<()> {
-    println!(
-        "\n  {} Restore\n",
-        ">>>".bright_cyan().bold()
-    );
+    println!("\n  {} Restore\n", ">>>".bright_cyan().bold());
 
     if !yes {
         println!(
@@ -863,7 +859,9 @@ async fn cmd_restore(cfg: &config::Config, file: &str, yes: bool) -> Result<()> 
 
     let spinner = spinner("Restoring from backup...");
 
-    let data = tokio::fs::read(file).await.context("Failed to read backup file")?;
+    let data = tokio::fs::read(file)
+        .await
+        .context("Failed to read backup file")?;
 
     let client = reqwest::Client::new();
     let resp = client
@@ -888,10 +886,7 @@ async fn cmd_restore(cfg: &config::Config, file: &str, yes: bool) -> Result<()> 
 }
 
 async fn cmd_status(cfg: &config::Config) -> Result<()> {
-    println!(
-        "\n  {} DarshanDB Status\n",
-        ">>>".bright_cyan().bold()
-    );
+    println!("\n  {} DarshanDB Status\n", ">>>".bright_cyan().bold());
 
     let client = reqwest::Client::new();
     let resp = client
@@ -917,12 +912,7 @@ async fn cmd_status(cfg: &config::Config) -> Result<()> {
             if let Some(uptime) = body.get("uptime_seconds").and_then(|v| v.as_u64()) {
                 let hours = uptime / 3600;
                 let mins = (uptime % 3600) / 60;
-                println!(
-                    "  {} Uptime: {}h {}m",
-                    "-->".bright_green(),
-                    hours,
-                    mins
-                );
+                println!("  {} Uptime: {}h {}m", "-->".bright_green(), hours, mins);
             }
             if let Some(db) = body.get("database").and_then(|v| v.as_str()) {
                 println!("  {} Database: {}", "-->".bright_green(), db);
@@ -950,11 +940,7 @@ async fn cmd_status(cfg: &config::Config) -> Result<()> {
                 "-->".bright_red(),
                 e.to_string().dimmed()
             );
-            println!(
-                "  {} URL: {}",
-                "   ".normal(),
-                cfg.url.bright_yellow()
-            );
+            println!("  {} URL: {}", "   ".normal(), cfg.url.bright_yellow());
         }
     }
 
@@ -1063,11 +1049,9 @@ fn spinner(msg: &str) -> ProgressBar {
 fn progress_bar(total: u64, prefix: &str) -> ProgressBar {
     let pb = ProgressBar::new(total);
     pb.set_style(
-        ProgressStyle::with_template(
-            "  {prefix:.cyan} [{bar:30.cyan/dim}] {pos}/{len} {msg}",
-        )
-        .unwrap()
-        .progress_chars("=> "),
+        ProgressStyle::with_template("  {prefix:.cyan} [{bar:30.cyan/dim}] {pos}/{len} {msg}")
+            .unwrap()
+            .progress_chars("=> "),
     );
     pb.set_prefix(prefix.to_string());
     pb
@@ -1087,23 +1071,19 @@ fn to_pascal_case(s: &str) -> String {
 }
 
 fn map_value_type_to_ts(attr_def: &serde_json::Value) -> &str {
-    let types = attr_def
-        .get("value_types")
-        .and_then(|v| v.as_array());
+    let types = attr_def.get("value_types").and_then(|v| v.as_array());
 
     match types {
-        Some(arr) if arr.len() == 1 => {
-            match arr[0].as_str().unwrap_or("") {
-                "String" => "string",
-                "Int" | "Float" | "Number" => "number",
-                "Boolean" => "boolean",
-                "Reference" => "string",
-                "Json" => "Record<string, unknown>",
-                "DateTime" => "string",
-                "Bytes" => "Uint8Array",
-                _ => "unknown",
-            }
-        }
+        Some(arr) if arr.len() == 1 => match arr[0].as_str().unwrap_or("") {
+            "String" => "string",
+            "Int" | "Float" | "Number" => "number",
+            "Boolean" => "boolean",
+            "Reference" => "string",
+            "Json" => "Record<string, unknown>",
+            "DateTime" => "string",
+            "Bytes" => "Uint8Array",
+            _ => "unknown",
+        },
         _ => "unknown",
     }
 }

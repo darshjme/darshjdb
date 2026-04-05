@@ -28,7 +28,7 @@ pub mod registry;
 pub mod session;
 
 pub use broadcaster::{Broadcaster, ChangeEvent};
-pub use diff::{compute_diff, EntityPatch, QueryDiff};
+pub use diff::{EntityPatch, QueryDiff, compute_diff};
 pub use presence::{PresenceManager, PresenceRoom};
 pub use registry::SubscriptionRegistry;
 pub use session::{ActiveSubscription, SessionManager, SyncSession};

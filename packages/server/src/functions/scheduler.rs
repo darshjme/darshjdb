@@ -194,11 +194,7 @@ impl Scheduler {
     /// Register a new scheduled job.
     ///
     /// Parses the cron expression and computes the first `next_run_at`.
-    pub fn register_job(
-        &self,
-        function_name: &str,
-        cron_expr: &str,
-    ) -> SchedulerResult<()> {
+    pub fn register_job(&self, function_name: &str, cron_expr: &str) -> SchedulerResult<()> {
         let schedule = parse_cron(cron_expr)?;
         let next_run = schedule.upcoming(Utc).next();
 
@@ -317,10 +313,7 @@ async fn tick_once(
         let lock = jobs.read().await;
         due_jobs = lock
             .values()
-            .filter(|j| {
-                j.status != JobStatus::Disabled
-                    && j.next_run_at.is_some_and(|t| t <= now)
-            })
+            .filter(|j| j.status != JobStatus::Disabled && j.next_run_at.is_some_and(|t| t <= now))
             .map(|j| j.id.clone())
             .collect();
     }
@@ -361,7 +354,10 @@ async fn execute_job_with_lock(
         .await?;
 
     if !acquired {
-        debug!(job_id, "advisory lock not acquired, skipping (another instance is running)");
+        debug!(
+            job_id,
+            "advisory lock not acquired, skipping (another instance is running)"
+        );
         return Ok(());
     }
 
@@ -462,10 +458,11 @@ async fn execute_job_with_lock(
 /// Expects a 6-field expression (seconds, minutes, hours, day-of-month, month,
 /// day-of-week) or a 7-field expression (with year).
 fn parse_cron(expr: &str) -> SchedulerResult<Schedule> {
-    expr.parse::<Schedule>().map_err(|e| SchedulerError::InvalidCron {
-        expr: expr.to_string(),
-        reason: e.to_string(),
-    })
+    expr.parse::<Schedule>()
+        .map_err(|e| SchedulerError::InvalidCron {
+            expr: expr.to_string(),
+            reason: e.to_string(),
+        })
 }
 
 /// Derive a stable i64 advisory lock key from a job ID string.

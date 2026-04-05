@@ -80,11 +80,7 @@ impl SyncSession {
     }
 
     /// Add a subscription. Returns the assigned [`SubId`].
-    pub fn add_subscription(
-        &mut self,
-        query_hash: u64,
-        query_ast: Value,
-    ) -> SubId {
+    pub fn add_subscription(&mut self, query_hash: u64, query_ast: Value) -> SubId {
         let sub_id = SubId::new_v4();
         self.subscriptions.insert(
             sub_id,

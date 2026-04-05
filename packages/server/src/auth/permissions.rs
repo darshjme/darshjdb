@@ -174,8 +174,10 @@ impl PermissionResult {
         restricted_fields.dedup();
 
         // For allowed_fields, take the intersection if both specify.
-        let allowed_fields = match (self.allowed_fields.is_empty(), other.allowed_fields.is_empty())
-        {
+        let allowed_fields = match (
+            self.allowed_fields.is_empty(),
+            other.allowed_fields.is_empty(),
+        ) {
             (true, true) => Vec::new(),
             (true, false) => other.allowed_fields,
             (false, true) => self.allowed_fields,
@@ -309,18 +311,14 @@ impl PermissionEngine {
             })?;
 
             for (op_str, rule_value) in ops_obj {
-                let operation: Operation = serde_json::from_value(
-                    serde_json::Value::String(op_str.clone()),
-                )
-                .map_err(|e| {
-                    AuthError::Internal(format!("invalid operation '{op_str}': {e}"))
-                })?;
+                let operation: Operation = serde_json::from_value(serde_json::Value::String(
+                    op_str.clone(),
+                ))
+                .map_err(|e| AuthError::Internal(format!("invalid operation '{op_str}': {e}")))?;
 
-                let rule: PermissionRule = serde_json::from_value(rule_value.clone())
-                    .map_err(|e| {
-                        AuthError::Internal(format!(
-                            "invalid rule for {entity_type}.{op_str}: {e}"
-                        ))
+                let rule: PermissionRule =
+                    serde_json::from_value(rule_value.clone()).map_err(|e| {
+                        AuthError::Internal(format!("invalid rule for {entity_type}.{op_str}: {e}"))
                     })?;
 
                 self.add_rule(entity_type.clone(), operation, rule);
@@ -334,11 +332,7 @@ impl PermissionEngine {
     ///
     /// Returns `None` if no rule is configured, which the caller should
     /// treat as deny-by-default.
-    pub fn get_rule(
-        &self,
-        entity_type: &str,
-        operation: Operation,
-    ) -> Option<&PermissionRule> {
+    pub fn get_rule(&self, entity_type: &str, operation: Operation) -> Option<&PermissionRule> {
         self.rules.get(&(entity_type.to_string(), operation))
     }
 }
@@ -498,7 +492,11 @@ mod tests {
 
         let clause = result.build_where_clause(ctx.user_id);
         assert!(clause.is_some());
-        assert!(clause.as_ref().is_some_and(|c| c.contains(&ctx.user_id.to_string())));
+        assert!(
+            clause
+                .as_ref()
+                .is_some_and(|c| c.contains(&ctx.user_id.to_string()))
+        );
     }
 
     #[test]

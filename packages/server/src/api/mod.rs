@@ -38,4 +38,4 @@ pub mod ws;
 
 pub use error::ApiError;
 pub use rest::build_router;
-pub use ws::{ws_routes, WsState};
+pub use ws::{WsState, ws_routes};

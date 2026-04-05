@@ -20,6 +20,7 @@ use std::convert::Infallible;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use axum::Router;
 use axum::body::Body;
 use axum::extract::{Path, Query, State};
 use axum::http::header::{ACCEPT, CONTENT_TYPE};
@@ -28,12 +29,11 @@ use axum::middleware::{self, Next};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{delete, get, patch, post};
-use axum::Router;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::broadcast;
-use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::StreamExt;
+use tokio_stream::wrappers::BroadcastStream;
 use uuid::Uuid;
 
 use super::error::{ApiError, ErrorCode};
@@ -211,10 +211,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/fn/{name}", post(fn_invoke))
         // -- Storage -------------------------------------------------------
         .route("/storage/upload", post(storage_upload))
-        .route(
-            "/storage/{*path}",
-            get(storage_get).delete(storage_delete),
-        )
+        .route("/storage/{*path}", get(storage_get).delete(storage_delete))
         // -- SSE -----------------------------------------------------------
         .route("/subscribe", get(subscribe))
         // -- Admin ---------------------------------------------------------
@@ -314,9 +311,13 @@ async fn auth_magic_link(
 
     // Always return 200 to prevent email enumeration.
     // TODO: wire to MagicLinkProvider.
-    Ok((StatusCode::OK, axum::Json(serde_json::json!({
-        "message": "If an account exists, a magic link has been sent."
-    }))).into_response())
+    Ok((
+        StatusCode::OK,
+        axum::Json(serde_json::json!({
+            "message": "If an account exists, a magic link has been sent."
+        })),
+    )
+        .into_response())
 }
 
 /// `POST /api/auth/verify` — Verify a magic-link token or MFA code.
@@ -420,10 +421,7 @@ async fn auth_signout(
 }
 
 /// `GET /api/auth/me` — Return the authenticated user's profile.
-async fn auth_me(
-    State(_state): State<AppState>,
-    headers: HeaderMap,
-) -> Result<Response, ApiError> {
+async fn auth_me(State(_state): State<AppState>, headers: HeaderMap) -> Result<Response, ApiError> {
     let _token = extract_bearer_token(&headers)?;
 
     // TODO: decode JWT and look up user record.
@@ -506,9 +504,7 @@ async fn mutate(
     let _token = extract_bearer_token(&headers)?;
 
     if body.mutations.is_empty() {
-        return Err(ApiError::bad_request(
-            "At least one mutation is required",
-        ));
+        return Err(ApiError::bad_request("At least one mutation is required"));
     }
 
     // Validate each mutation.
@@ -962,7 +958,9 @@ fn validate_entity_name(name: &str) -> Result<(), ApiError> {
         return Err(ApiError::bad_request("Entity name is required"));
     }
     if name.len() > 128 {
-        return Err(ApiError::bad_request("Entity name is too long (max 128 chars)"));
+        return Err(ApiError::bad_request(
+            "Entity name is too long (max 128 chars)",
+        ));
     }
     if !name
         .chars()

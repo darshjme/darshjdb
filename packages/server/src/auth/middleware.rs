@@ -252,11 +252,7 @@ impl RateLimiter {
     /// Check whether a request is within rate limits.
     ///
     /// Returns `Ok(())` if allowed, or `Err(retry_after_secs)` if throttled.
-    pub fn check(
-        &self,
-        key: &RateLimitKey,
-        is_authenticated: bool,
-    ) -> Result<(), u64> {
+    pub fn check(&self, key: &RateLimitKey, is_authenticated: bool) -> Result<(), u64> {
         let (capacity, refill) = if is_authenticated {
             (Self::AUTH_CAPACITY, Self::AUTH_REFILL)
         } else {
@@ -287,10 +283,7 @@ impl RateLimiter {
     /// Spawn a background cleanup task that runs every `interval`.
     ///
     /// Returns a [`tokio::task::JoinHandle`] that can be aborted on shutdown.
-    pub fn spawn_cleanup_task(
-        self: &Arc<Self>,
-        interval: Duration,
-    ) -> tokio::task::JoinHandle<()> {
+    pub fn spawn_cleanup_task(self: &Arc<Self>, interval: Duration) -> tokio::task::JoinHandle<()> {
         let limiter = Arc::clone(self);
         tokio::spawn(async move {
             let mut tick = tokio::time::interval(interval);

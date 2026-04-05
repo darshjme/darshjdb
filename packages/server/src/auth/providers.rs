@@ -11,8 +11,8 @@
 //!   parameter is HMAC-signed to prevent CSRF.
 
 use argon2::{
-    password_hash::{rand_core::OsRng, PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
     Algorithm, Argon2, Params, Version,
+    password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString, rand_core::OsRng},
 };
 use chrono::{DateTime, Duration, Utc};
 use hmac::{Hmac, Mac};
@@ -97,7 +97,10 @@ impl PasswordProvider {
             Some(r) => r,
             None => {
                 // Constant-time dummy to prevent timing oracle.
-                let _ = Self::verify_password(password, "$argon2id$v=19$m=65536,t=3,p=4$c29tZXNhbHQ$RdescudvJCsgt3ub+b+daw");
+                let _ = Self::verify_password(
+                    password,
+                    "$argon2id$v=19$m=65536,t=3,p=4$c29tZXNhbHQ$RdescudvJCsgt3ub+b+daw",
+                );
                 return Ok(AuthOutcome::Failed {
                     reason: "invalid email or password".into(),
                 });
@@ -299,10 +302,8 @@ pub trait OAuth2Provider: Send + Sync {
     /// Build the authorization redirect URL.
     ///
     /// Returns `(redirect_url, csrf_state, pkce_verifier)`.
-    fn authorization_url(
-        &self,
-        state_secret: &[u8],
-    ) -> Result<(String, String, String), AuthError>;
+    fn authorization_url(&self, state_secret: &[u8])
+    -> Result<(String, String, String), AuthError>;
 
     /// Exchange an authorization code for user profile information.
     ///
