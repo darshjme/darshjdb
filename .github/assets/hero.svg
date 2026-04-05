@@ -100,13 +100,13 @@
   <circle cx="596" cy="181" r="3" fill="#F59E0B" opacity="0.5"/>
 
   <!-- DarshanDB text -->
-  <text x="600" y="275" text-anchor="middle" font-family="'SF Pro Display', 'Inter', system-ui, -apple-system, sans-serif" font-size="52" font-weight="800" fill="white" letter-spacing="4" filter="url(#softGlow)">DarshanDB</text>
+  <text x="600" y="275" text-anchor="middle" font-family="'SF Pro Display', 'Inter', system-ui, -apple-system, sans-serif" font-size="52" font-weight="800" fill="white" letter-spacing="4" filter="url(#softGlow)">DarshJDB</text>
 
   <!-- Amber underline -->
-  <rect x="480" y="286" width="240" height="2" rx="1" fill="url(#amberGlow)" opacity="0.6"/>
+  <rect x="470" y="286" width="260" height="2" rx="1" fill="url(#amberGlow)" opacity="0.6"/>
 
   <!-- Tagline -->
-  <text x="600" y="318" text-anchor="middle" font-family="'SF Pro Display', 'Inter', system-ui, -apple-system, sans-serif" font-size="16" font-weight="400" fill="#9CA3AF" letter-spacing="3">THE SELF-HOSTED BaaS THAT SEES EVERYTHING</text>
+  <text x="600" y="318" text-anchor="middle" font-family="'SF Pro Display', 'Inter', system-ui, -apple-system, sans-serif" font-size="16" font-weight="400" fill="#9CA3AF" letter-spacing="3">SELF-HOSTED BaaS &middot; ONE BINARY &middot; YOUR DATA</text>
 
   <!-- Tech badges at bottom -->
   <g font-family="'SF Mono', 'Fira Code', monospace" font-size="11" fill="#6B7280" letter-spacing="1">
