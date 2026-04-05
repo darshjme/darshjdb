@@ -266,6 +266,10 @@ pub struct QueryPlan {
     pub params: Vec<serde_json::Value>,
     /// Nested plans to execute after the root results are fetched.
     pub nested_plans: Vec<NestedPlan>,
+    /// Entity-level limit (applied after grouping rows by entity_id).
+    pub limit: Option<u32>,
+    /// Entity-level offset (applied after grouping rows by entity_id).
+    pub offset: Option<u32>,
 }
 
 /// Plan for resolving a nested reference.
@@ -428,16 +432,10 @@ pub fn plan_query(ast: &QueryAST) -> Result<QueryPlan> {
         sql.push('\n');
     }
 
-    // Pagination — inlined as integer literals (safe: values come from
-    // parsed usize/u64, not user-provided strings).
-    // For semantic queries, use the semantic limit if no explicit $limit.
+    // Pagination is applied in Rust after grouping rows by entity_id,
+    // because SQL LIMIT counts rows (not entities) and without DISTINCT
+    // multiple rows per entity cause undercounting.
     let effective_limit = ast.limit.or_else(|| ast.semantic.as_ref().map(|s| s.limit));
-    if let Some(limit) = effective_limit {
-        sql.push_str(&format!("LIMIT {limit}\n"));
-    }
-    if let Some(offset) = ast.offset {
-        sql.push_str(&format!("OFFSET {offset}\n"));
-    }
 
     // Nested plans (with recursive sub-nesting up to MAX_NESTING_DEPTH)
     let nested_plans = build_nested_plans(&ast.nested, 1);
@@ -446,6 +444,8 @@ pub fn plan_query(ast: &QueryAST) -> Result<QueryPlan> {
         sql,
         params,
         nested_plans,
+        limit: effective_limit,
+        offset: ast.offset,
     })
 }
 
@@ -574,6 +574,8 @@ ORDER BY rm.rrf_score DESC
         sql,
         params,
         nested_plans,
+        limit: ast.limit,
+        offset: ast.offset,
     })
 }
 
@@ -636,8 +638,23 @@ pub async fn execute_query(pool: &PgPool, plan: &QueryPlan) -> Result<Vec<QueryR
     // plans (typically 1-3), regardless of how many parent entities exist.
     let nested_maps = batch_resolve_nested(pool, &entities, &plan.nested_plans).await?;
 
-    let mut results: Vec<QueryResultRow> = Vec::with_capacity(entities.len());
-    for (entity_id, attributes) in &entities {
+    // Collect entity keys, apply offset and limit at the entity level.
+    let mut entity_keys: Vec<uuid::Uuid> = entities.keys().copied().collect();
+    if let Some(offset) = plan.offset {
+        let off = offset as usize;
+        if off < entity_keys.len() {
+            entity_keys = entity_keys.split_off(off);
+        } else {
+            entity_keys.clear();
+        }
+    }
+    if let Some(limit) = plan.limit {
+        entity_keys.truncate(limit as usize);
+    }
+
+    let mut results: Vec<QueryResultRow> = Vec::with_capacity(entity_keys.len());
+    for entity_id in &entity_keys {
+        let attributes = &entities[entity_id];
         let mut nested = serde_json::Map::new();
 
         for (np_idx, np) in plan.nested_plans.iter().enumerate() {
@@ -1327,17 +1344,13 @@ mod tests {
             ..bare_ast("T")
         };
         let plan = plan_query(&ast).expect("should plan");
-        // Limit and offset are inlined as integer literals (safe: parsed usize values).
-        assert!(
-            plan.sql.contains("LIMIT 50"),
-            "LIMIT should be inlined: {}",
-            plan.sql
-        );
-        assert!(
-            plan.sql.contains("OFFSET 10"),
-            "OFFSET should be inlined: {}",
-            plan.sql
-        );
+        // Limit and offset are stored on the plan for Rust-level application
+        // after grouping (SQL LIMIT counts rows, not entities).
+        assert_eq!(plan.limit, Some(50u32));
+        assert_eq!(plan.offset, Some(10u32));
+        // Should NOT appear in SQL — applied post-grouping.
+        assert!(!plan.sql.contains("LIMIT"), "LIMIT should not be in SQL");
+        assert!(!plan.sql.contains("OFFSET"), "OFFSET should not be in SQL");
     }
 
     #[test]
@@ -1682,9 +1695,8 @@ mod tests {
             plan.sql
         );
         assert!(
-            plan.sql.contains("LIMIT"),
-            "should apply semantic limit: {}",
-            plan.sql
+            plan.limit.is_some(),
+            "should apply semantic limit via plan.limit"
         );
     }
 

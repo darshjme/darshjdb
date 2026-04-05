@@ -582,7 +582,9 @@ impl GenericOAuth2Provider {
             token_url: "https://graph.facebook.com/v19.0/oauth/access_token".into(),
             redirect_uri,
             scopes: vec!["email".into(), "public_profile".into()],
-            userinfo_url: "https://graph.facebook.com/v19.0/me?fields=id,name,email,picture.type(large)".into(),
+            userinfo_url:
+                "https://graph.facebook.com/v19.0/me?fields=id,name,email,picture.type(large)"
+                    .into(),
         })
     }
 
@@ -1178,18 +1180,54 @@ mod tests {
         let secret = "test-secret".to_string();
 
         let factories: Vec<(OAuthProviderKind, GenericOAuth2Provider)> = vec![
-            (OAuthProviderKind::Google, GenericOAuth2Provider::google(id.clone(), secret.clone(), redirect.clone())),
-            (OAuthProviderKind::GitHub, GenericOAuth2Provider::github(id.clone(), secret.clone(), redirect.clone())),
-            (OAuthProviderKind::Apple, GenericOAuth2Provider::apple(id.clone(), secret.clone(), redirect.clone())),
-            (OAuthProviderKind::Discord, GenericOAuth2Provider::discord(id.clone(), secret.clone(), redirect.clone())),
-            (OAuthProviderKind::Microsoft, GenericOAuth2Provider::microsoft(id.clone(), secret.clone(), redirect.clone())),
-            (OAuthProviderKind::Twitter, GenericOAuth2Provider::twitter(id.clone(), secret.clone(), redirect.clone())),
-            (OAuthProviderKind::LinkedIn, GenericOAuth2Provider::linkedin(id.clone(), secret.clone(), redirect.clone())),
-            (OAuthProviderKind::Slack, GenericOAuth2Provider::slack(id.clone(), secret.clone(), redirect.clone())),
-            (OAuthProviderKind::GitLab, GenericOAuth2Provider::gitlab(id.clone(), secret.clone(), redirect.clone())),
-            (OAuthProviderKind::Bitbucket, GenericOAuth2Provider::bitbucket(id.clone(), secret.clone(), redirect.clone())),
-            (OAuthProviderKind::Facebook, GenericOAuth2Provider::facebook(id.clone(), secret.clone(), redirect.clone())),
-            (OAuthProviderKind::Spotify, GenericOAuth2Provider::spotify(id.clone(), secret.clone(), redirect.clone())),
+            (
+                OAuthProviderKind::Google,
+                GenericOAuth2Provider::google(id.clone(), secret.clone(), redirect.clone()),
+            ),
+            (
+                OAuthProviderKind::GitHub,
+                GenericOAuth2Provider::github(id.clone(), secret.clone(), redirect.clone()),
+            ),
+            (
+                OAuthProviderKind::Apple,
+                GenericOAuth2Provider::apple(id.clone(), secret.clone(), redirect.clone()),
+            ),
+            (
+                OAuthProviderKind::Discord,
+                GenericOAuth2Provider::discord(id.clone(), secret.clone(), redirect.clone()),
+            ),
+            (
+                OAuthProviderKind::Microsoft,
+                GenericOAuth2Provider::microsoft(id.clone(), secret.clone(), redirect.clone()),
+            ),
+            (
+                OAuthProviderKind::Twitter,
+                GenericOAuth2Provider::twitter(id.clone(), secret.clone(), redirect.clone()),
+            ),
+            (
+                OAuthProviderKind::LinkedIn,
+                GenericOAuth2Provider::linkedin(id.clone(), secret.clone(), redirect.clone()),
+            ),
+            (
+                OAuthProviderKind::Slack,
+                GenericOAuth2Provider::slack(id.clone(), secret.clone(), redirect.clone()),
+            ),
+            (
+                OAuthProviderKind::GitLab,
+                GenericOAuth2Provider::gitlab(id.clone(), secret.clone(), redirect.clone()),
+            ),
+            (
+                OAuthProviderKind::Bitbucket,
+                GenericOAuth2Provider::bitbucket(id.clone(), secret.clone(), redirect.clone()),
+            ),
+            (
+                OAuthProviderKind::Facebook,
+                GenericOAuth2Provider::facebook(id.clone(), secret.clone(), redirect.clone()),
+            ),
+            (
+                OAuthProviderKind::Spotify,
+                GenericOAuth2Provider::spotify(id.clone(), secret.clone(), redirect.clone()),
+            ),
         ];
 
         for (expected_kind, provider) in &factories {
@@ -1197,9 +1235,18 @@ mod tests {
                 provider.config.kind, *expected_kind,
                 "factory for {expected_kind:?} produced wrong kind"
             );
-            assert!(!provider.config.auth_url.is_empty(), "{expected_kind:?} auth_url empty");
-            assert!(!provider.config.token_url.is_empty(), "{expected_kind:?} token_url empty");
-            assert!(!provider.config.scopes.is_empty(), "{expected_kind:?} scopes empty");
+            assert!(
+                !provider.config.auth_url.is_empty(),
+                "{expected_kind:?} auth_url empty"
+            );
+            assert!(
+                !provider.config.token_url.is_empty(),
+                "{expected_kind:?} token_url empty"
+            );
+            assert!(
+                !provider.config.scopes.is_empty(),
+                "{expected_kind:?} scopes empty"
+            );
         }
     }
 
@@ -1228,11 +1275,31 @@ mod tests {
             let (url, state, verifier) = provider
                 .authorization_url(secret)
                 .unwrap_or_else(|_| panic!("auth_url for {:?}", provider.config.kind));
-            assert!(url.starts_with("https://"), "URL must be HTTPS for {:?}", provider.config.kind);
-            assert!(url.contains("response_type=code"), "missing response_type for {:?}", provider.config.kind);
-            assert!(url.contains("code_challenge_method=S256"), "missing PKCE for {:?}", provider.config.kind);
-            assert!(!state.is_empty(), "empty state for {:?}", provider.config.kind);
-            assert!(!verifier.is_empty(), "empty verifier for {:?}", provider.config.kind);
+            assert!(
+                url.starts_with("https://"),
+                "URL must be HTTPS for {:?}",
+                provider.config.kind
+            );
+            assert!(
+                url.contains("response_type=code"),
+                "missing response_type for {:?}",
+                provider.config.kind
+            );
+            assert!(
+                url.contains("code_challenge_method=S256"),
+                "missing PKCE for {:?}",
+                provider.config.kind
+            );
+            assert!(
+                !state.is_empty(),
+                "empty state for {:?}",
+                provider.config.kind
+            );
+            assert!(
+                !verifier.is_empty(),
+                "empty verifier for {:?}",
+                provider.config.kind
+            );
         }
     }
 }
