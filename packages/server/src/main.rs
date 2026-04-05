@@ -273,6 +273,63 @@ async fn main() -> Result<()> {
         tracing::info!("pool utilization monitor started (10s interval, warn >80%)");
     }
 
+    // -- Postgres LISTEN/NOTIFY for multi-process sync -------------------------
+    // A background task LISTENs on the `ddb_changes` channel. When another
+    // process mutates via set_triples, the NOTIFY fires and this task parses
+    // the payload (`{tx_id}:{entity_type}`) into ChangeEvents, feeding the
+    // existing broadcast channel so WebSocket subscribers get updates.
+    {
+        let listen_change_tx = change_tx.clone();
+        let listen_db_url = database_url.clone();
+        tokio::spawn(async move {
+            // Use a dedicated connection (not from the pool) for LISTEN.
+            let mut listener = match sqlx::postgres::PgListener::connect(&listen_db_url).await {
+                Ok(l) => l,
+                Err(e) => {
+                    tracing::error!(error = %e, "failed to create PgListener for ddb_changes");
+                    return;
+                }
+            };
+            if let Err(e) = listener.listen("ddb_changes").await {
+                tracing::error!(error = %e, "failed to LISTEN on ddb_changes channel");
+                return;
+            }
+            tracing::info!("LISTEN/NOTIFY: subscribed to ddb_changes channel");
+
+            loop {
+                match listener.recv().await {
+                    Ok(notification) => {
+                        let payload = notification.payload();
+                        // Parse "{tx_id}:{entity_type}"
+                        let (tx_id, entity_type) = match payload.split_once(':') {
+                            Some((tid, etype)) => {
+                                let tid: i64 = tid.parse().unwrap_or(0);
+                                (tid, Some(etype.to_string()))
+                            }
+                            None => {
+                                let tid: i64 = payload.parse().unwrap_or(0);
+                                (tid, None)
+                            }
+                        };
+                        tracing::debug!(tx_id, entity_type = ?entity_type, "received ddb_changes notification");
+                        let _ = listen_change_tx.send(ddb_server::sync::ChangeEvent {
+                            tx_id,
+                            entity_ids: vec![],
+                            attributes: vec![],
+                            entity_type,
+                            actor_id: None,
+                        });
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "PgListener recv error, reconnecting in 1s");
+                        tokio::time::sleep(Duration::from_secs(1)).await;
+                    }
+                }
+            }
+        });
+        tracing::info!("LISTEN/NOTIFY background task started for multi-process sync");
+    }
+
     // Pub/sub engine for keyspace notifications (shared between WS and REST).
     let (pubsub_engine, _pubsub_rx) = ddb_server::sync::pubsub::PubSubEngine::new(4096);
 
