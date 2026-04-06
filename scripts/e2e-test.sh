@@ -266,7 +266,11 @@ assert_status "POST /api/auth/signup returns 201" "201" "$SIGNUP_STATUS" "$SIGNU
 assert_json_field "Signup returns access_token" "$SIGNUP_BODY" ".access_token"
 
 TOKEN=$(echo "$SIGNUP_BODY" | jq -r '.access_token')
+AUTH_USER_ID=$(echo "$SIGNUP_BODY" | jq -r '.user_id // empty')
 log "Got token: ${TOKEN:0:20}..."
+if [ -n "$AUTH_USER_ID" ]; then
+    log "Auth user ID: $AUTH_USER_ID"
+fi
 
 AUTH_HEADER="Authorization: Bearer $TOKEN"
 
@@ -345,7 +349,7 @@ CREATE_TODO_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "$API_URL/data/todos"
         \"title\": \"Wire triple store end-to-end\",
         \"done\": false,
         \"priority\": 1,
-        \"owner_id\": \"$USER_ID\"
+        \"owner_id\": \"${AUTH_USER_ID:-$USER_ID}\"
     }")
 
 CREATE_TODO_BODY=$(echo "$CREATE_TODO_RESPONSE" | head -n -1)
@@ -365,7 +369,7 @@ CREATE_TODO2_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "$API_URL/data/todos
         \"title\": \"Write documentation\",
         \"done\": true,
         \"priority\": 2,
-        \"owner_id\": \"$USER_ID\"
+        \"owner_id\": \"${AUTH_USER_ID:-$USER_ID}\"
     }")
 
 CREATE_TODO2_BODY=$(echo "$CREATE_TODO2_RESPONSE" | head -n -1)
