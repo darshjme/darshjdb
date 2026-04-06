@@ -15,7 +15,8 @@ CREATE TABLE IF NOT EXISTS triples (
     value_type  SMALLINT    NOT NULL DEFAULT 0,
     tx_id       BIGINT      NOT NULL,
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-    retracted   BOOLEAN     NOT NULL DEFAULT false
+    retracted   BOOLEAN     NOT NULL DEFAULT false,
+    expires_at  TIMESTAMPTZ
 );
 
 -- ── Indexes ────────────────────────────────────────────────────────

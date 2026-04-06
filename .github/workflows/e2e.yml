@@ -55,6 +55,7 @@ jobs:
       - name: Run database migration
         run: |
           PGPASSWORD=darshan psql -h localhost -U darshan -d darshjdb \
+            -v ON_ERROR_STOP=1 \
             -f packages/server/migrations/001_initial.sql
 
       - name: Build server

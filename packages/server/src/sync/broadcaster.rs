@@ -195,12 +195,11 @@ impl Broadcaster {
                     };
 
                     // Skip if the event's entity_type doesn't match the query target.
-                    if let Some(ref event_et) = event.entity_type {
-                        if let Some(query_et) = query_ast.get("from").and_then(|v| v.as_str()) {
-                            if query_et != event_et {
-                                continue;
-                            }
-                        }
+                    if let Some(ref event_et) = event.entity_type
+                        && let Some(query_et) = query_ast.get("from").and_then(|v| v.as_str())
+                        && query_et != event_et
+                    {
+                        continue;
                     }
 
                     // Execute the query ONCE for this (hash, user_id) group.
