@@ -192,54 +192,59 @@ fi
 
 step "Starting DarshanDB server"
 
-# Find the server binary — prefer release, fall back to debug
-SERVER_BIN=""
-for candidate in \
-    ./target/release/ddb-server \
-    ./target/debug/ddb-server; do
-    if [ -x "$candidate" ]; then
-        SERVER_BIN="$candidate"
-        break
-    fi
-done
-
-if [ -z "$SERVER_BIN" ]; then
-    log "No pre-built binary found, using cargo run"
-    DATABASE_URL="$DB_URL" \
-    DDB_PORT="$SERVER_PORT" \
-    DDB_DEV=1 \
-    DDB_JWT_SECRET="e2e-test-secret-do-not-use-in-production" \
-    RUST_LOG="info" \
-        cargo run --bin ddb-server &
-    SERVER_PID=$!
+# If the server is already running (e.g. started by CI workflow), skip startup.
+if curl -sf "$BASE_URL/health" >/dev/null 2>&1; then
+    log "Server already running at $BASE_URL, skipping startup"
 else
-    log "Using binary: $SERVER_BIN"
-    DATABASE_URL="$DB_URL" \
-    DDB_PORT="$SERVER_PORT" \
-    DDB_DEV=1 \
-    DDB_JWT_SECRET="e2e-test-secret-do-not-use-in-production" \
-    RUST_LOG="info" \
-        "$SERVER_BIN" &
-    SERVER_PID=$!
+    # Find the server binary — prefer release, fall back to debug
+    SERVER_BIN=""
+    for candidate in \
+        ./target/release/ddb-server \
+        ./target/debug/ddb-server; do
+        if [ -x "$candidate" ]; then
+            SERVER_BIN="$candidate"
+            break
+        fi
+    done
+
+    if [ -z "$SERVER_BIN" ]; then
+        log "No pre-built binary found, using cargo run"
+        DATABASE_URL="$DB_URL" \
+        DDB_PORT="$SERVER_PORT" \
+        DDB_DEV=1 \
+        DDB_JWT_SECRET="e2e-test-secret-do-not-use-in-production" \
+        RUST_LOG="info" \
+            cargo run --bin ddb-server &
+        SERVER_PID=$!
+    else
+        log "Using binary: $SERVER_BIN"
+        DATABASE_URL="$DB_URL" \
+        DDB_PORT="$SERVER_PORT" \
+        DDB_DEV=1 \
+        DDB_JWT_SECRET="e2e-test-secret-do-not-use-in-production" \
+        RUST_LOG="info" \
+            "$SERVER_BIN" &
+        SERVER_PID=$!
+    fi
+
+    log "Server starting (PID $SERVER_PID), waiting for /health..."
+
+    for i in $(seq 1 30); do
+        if curl -sf "$BASE_URL/health" >/dev/null 2>&1; then
+            log "Server ready after ${i}s"
+            break
+        fi
+        if ! kill -0 "$SERVER_PID" 2>/dev/null; then
+            echo "ERROR: Server process exited unexpectedly"
+            exit 1
+        fi
+        if [ "$i" -eq 30 ]; then
+            echo "ERROR: Server did not respond to /health within 30s"
+            exit 1
+        fi
+        sleep 1
+    done
 fi
-
-log "Server starting (PID $SERVER_PID), waiting for /health..."
-
-for i in $(seq 1 30); do
-    if curl -sf "$BASE_URL/health" >/dev/null 2>&1; then
-        log "Server ready after ${i}s"
-        break
-    fi
-    if ! kill -0 "$SERVER_PID" 2>/dev/null; then
-        echo "ERROR: Server process exited unexpectedly"
-        exit 1
-    fi
-    if [ "$i" -eq 30 ]; then
-        echo "ERROR: Server did not respond to /health within 30s"
-        exit 1
-    fi
-    sleep 1
-done
 
 # ---------------------------------------------------------------------------
 # Step 4: Authenticate (get a token)
@@ -282,9 +287,10 @@ assert_json_field "Health check has status field" "$HEALTH_BODY" ".status"
 # Step 6: Create a user entity
 # ---------------------------------------------------------------------------
 
-step "CRUD: Create a user"
+step "CRUD: Create a profile"
 
-CREATE_USER_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "$API_URL/data/users" \
+# Use "profiles" entity (not "users") because "users" requires admin role
+CREATE_USER_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "$API_URL/data/profiles" \
     -H "$AUTH_HEADER" \
     -H "Content-Type: application/json" \
     -d '{
@@ -296,19 +302,19 @@ CREATE_USER_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "$API_URL/data/users"
 CREATE_USER_BODY=$(echo "$CREATE_USER_RESPONSE" | head -n -1)
 CREATE_USER_STATUS=$(echo "$CREATE_USER_RESPONSE" | tail -n 1)
 
-assert_status "POST /api/data/users returns 201" "201" "$CREATE_USER_STATUS" "$CREATE_USER_BODY"
-assert_json_field "Create user returns id" "$CREATE_USER_BODY" ".id"
+assert_status "POST /api/data/profiles returns 201" "201" "$CREATE_USER_STATUS" "$CREATE_USER_BODY"
+assert_json_field "Create profile returns id" "$CREATE_USER_BODY" ".id"
 
 USER_ID=$(echo "$CREATE_USER_BODY" | jq -r '.id')
-log "Created user: $USER_ID"
+log "Created profile: $USER_ID"
 
 # ---------------------------------------------------------------------------
 # Step 7: Read the user back
 # ---------------------------------------------------------------------------
 
-step "CRUD: Read user back"
+step "CRUD: Read profile back"
 
-GET_USER_RESPONSE=$(curl -s -w "\n%{http_code}" "$API_URL/data/users/$USER_ID" \
+GET_USER_RESPONSE=$(curl -s -w "\n%{http_code}" "$API_URL/data/profiles/$USER_ID" \
     -H "$AUTH_HEADER")
 
 GET_USER_BODY=$(echo "$GET_USER_RESPONSE" | head -n -1)
@@ -317,12 +323,12 @@ GET_USER_STATUS=$(echo "$GET_USER_RESPONSE" | tail -n 1)
 # NOTE: The current stub returns 404. Once wired to triple store, this should be 200.
 # We accept either 200 (wired) or 404 (stub) and document which we got.
 if [ "$GET_USER_STATUS" = "200" ]; then
-    pass "GET /api/data/users/:id returns 200 (triple store wired!)"
+    pass "GET /api/data/profiles/:id returns 200 (triple store wired!)"
 elif [ "$GET_USER_STATUS" = "404" ]; then
-    pass "GET /api/data/users/:id returns 404 (stub - triple store not yet wired)"
+    pass "GET /api/data/profiles/:id returns 404 (stub - triple store not yet wired)"
     log "${YELLOW}NOTE: This will return 200 once the triple store is integrated${NC}"
 else
-    fail "GET /api/data/users/:id unexpected status $GET_USER_STATUS"
+    fail "GET /api/data/profiles/:id unexpected status $GET_USER_STATUS"
     exit 1
 fi
 
