@@ -431,7 +431,7 @@ QUERY_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "$API_URL/query" \
     -H "$AUTH_HEADER" \
     -H "Content-Type: application/json" \
     -d '{
-        "query": "{ todos { id title done priority owner_id } }"
+        "query": { "type": "todos" }
     }')
 
 QUERY_BODY=$(echo "$QUERY_RESPONSE" | head -n -1)
@@ -522,7 +522,7 @@ step "Error Handling"
 # Missing auth token
 NOAUTH_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "$API_URL/query" \
     -H "Content-Type: application/json" \
-    -d '{ "query": "{ todos {} }" }')
+    -d '{ "query": { "type": "todos" } }')
 
 NOAUTH_STATUS=$(echo "$NOAUTH_RESPONSE" | tail -n 1)
 assert_status "POST /api/query without token returns 401" "401" "$NOAUTH_STATUS"
