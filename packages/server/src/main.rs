@@ -785,10 +785,7 @@ async fn health_check(
     let ws_connections = ws_sessions.session_count();
 
     // Check if Postgres is reachable.
-    let db_ok = sqlx::query("SELECT 1")
-        .execute(&pool)
-        .await
-        .is_ok();
+    let db_ok = sqlx::query("SELECT 1").execute(&pool).await.is_ok();
 
     let triple_count: i64 = if db_ok {
         sqlx::query_as::<_, (i64,)>("SELECT COUNT(*) FROM triples")
@@ -834,10 +831,7 @@ async fn health_check(
 
 /// `GET /health/ready` - K8s readiness probe. Returns 200 only when Postgres is connected.
 async fn readiness_check(pool: sqlx::PgPool, ws_sessions: Arc<SyncSessionManager>) -> Response {
-    match sqlx::query("SELECT 1")
-        .execute(&pool)
-        .await
-    {
+    match sqlx::query("SELECT 1").execute(&pool).await {
         Ok(_) => {
             let body = serde_json::json!({
                 "ready": true,
