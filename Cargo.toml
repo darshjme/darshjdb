@@ -62,3 +62,4 @@ comfy-table = "7"
 ctrlc = { version = "3", features = ["termination"] }
 self_update = "0.41"
 async-trait = "0.1"
+csv = "1.3"
