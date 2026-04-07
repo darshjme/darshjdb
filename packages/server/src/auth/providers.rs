@@ -1302,4 +1302,35 @@ mod tests {
             );
         }
     }
+
+    // -----------------------------------------------------------------------
+    // Magic link token hashing
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn magic_link_token_hash_is_deterministic() {
+        use sha2::Digest;
+        let token = "test-magic-link-token-abc123";
+        let digest1 = sha2::Sha256::digest(token.as_bytes());
+        let hash1 = data_encoding::HEXLOWER.encode(&digest1);
+        let digest2 = sha2::Sha256::digest(token.as_bytes());
+        let hash2 = data_encoding::HEXLOWER.encode(&digest2);
+        assert_eq!(hash1, hash2, "same token must produce same hash");
+        assert_eq!(hash1.len(), 64, "SHA-256 hex output must be 64 chars");
+    }
+
+    #[test]
+    fn magic_link_different_tokens_produce_different_hashes() {
+        use sha2::Digest;
+        let hash1 = data_encoding::HEXLOWER
+            .encode(&sha2::Sha256::digest(b"token-aaa"));
+        let hash2 = data_encoding::HEXLOWER
+            .encode(&sha2::Sha256::digest(b"token-bbb"));
+        assert_ne!(hash1, hash2);
+    }
+
+    #[test]
+    fn magic_link_expiry_is_15_minutes() {
+        assert_eq!(MagicLinkProvider::EXPIRY_MINUTES, 15);
+    }
 }

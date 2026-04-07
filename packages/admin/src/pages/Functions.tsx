@@ -33,16 +33,44 @@ const typeBadgeVariant: Record<FunctionDef["type"], "amber" | "emerald" | "purpl
   cron: "emerald",
 };
 
+/** Map server FunctionKind (e.g. "Query", "Scheduled") to UI type. */
+function kindToType(kind: string): FunctionDef["type"] {
+  const k = kind.toLowerCase();
+  if (k === "query") return "query";
+  if (k === "mutation") return "mutation";
+  if (k === "action") return "action";
+  if (k === "scheduled") return "cron";
+  return "query";
+}
+
 /** Convert a server function info into the UI's FunctionDef shape. */
 function serverToFunctionDef(fn: ServerFunctionInfo): FunctionDef {
+  const module = fn.file_path
+    ? fn.file_path.replace(/\.[^.]+$/, "")
+    : fn.name.split(":")[0] ?? "default";
+
+  // Convert args_schema into a simple name→type map for display.
+  const args: Record<string, string> = {};
+  if (fn.args_schema && typeof fn.args_schema === "object") {
+    const schema = fn.args_schema as Record<string, unknown>;
+    const props = (schema.properties ?? schema.fields ?? schema) as Record<string, unknown>;
+    if (props && typeof props === "object") {
+      for (const [key, val] of Object.entries(props)) {
+        if (typeof val === "object" && val !== null && "type" in val) {
+          args[key] = String((val as Record<string, unknown>).type);
+        } else {
+          args[key] = String(val);
+        }
+      }
+    }
+  }
+
   return {
     name: fn.name,
-    type: (["query", "mutation", "action", "cron"].includes(fn.type ?? "")
-      ? (fn.type as FunctionDef["type"])
-      : "query"),
-    module: fn.module ?? fn.name.split(":")[0] ?? "default",
-    args: fn.args ?? {},
-    returns: fn.returns ?? "unknown",
+    type: kindToType(fn.kind),
+    module,
+    args,
+    returns: fn.description ?? "unknown",
     avgDuration: undefined,
     errorRate: undefined,
   };

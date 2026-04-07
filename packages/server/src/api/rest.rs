@@ -638,6 +638,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/admin/sessions", get(admin_sessions))
         .route("/admin/bulk-load", post(admin_bulk_load))
         .route("/admin/cache", get(admin_cache))
+        .route("/admin/storage", get(admin_storage_list))
         // -- Audit (Merkle tree) ------------------------------------------
         .route(
             "/admin/audit/verify/{tx_id}",
@@ -679,15 +680,192 @@ pub fn build_router(state: AppState) -> Router {
             "/batch/metrics",
             get(super::batch::parallel_metrics_handler),
         )
+        // -- Views ------------------------------------------------------------
+        .merge(crate::views::handlers::view_routes())
+        // -- Fields -----------------------------------------------------------
+        .nest("/fields", crate::fields::handlers::field_routes())
+        // -- Import/Export ----------------------------------------------------
+        .merge(crate::import_export::handlers::import_export_routes(
+            crate::import_export::handlers::new_job_tracker(),
+        ))
+        // -- Collaboration & Sharing -----------------------------------------
+        .merge(crate::collaboration::handlers::collaboration_router())
+        // -- Comments & Activity Log -----------------------------------------
+        .route(
+            "/data/{entity}/{id}/comments",
+            get(crate::activity::handlers::comment_list)
+                .post(crate::activity::handlers::comment_create),
+        )
+        .route(
+            "/comments/{id}",
+            axum::routing::patch(crate::activity::handlers::comment_update)
+                .delete(crate::activity::handlers::comment_delete),
+        )
+        .route(
+            "/data/{entity}/{id}/activity",
+            get(crate::activity::handlers::activity_for_record),
+        )
+        .route(
+            "/activity",
+            get(crate::activity::handlers::activity_query),
+        )
+        .route(
+            "/notifications",
+            get(crate::activity::handlers::notifications_list),
+        )
+        .route(
+            "/notifications/count",
+            get(crate::activity::handlers::notification_unread_count),
+        )
+        .route(
+            "/notifications/read-all",
+            axum::routing::patch(crate::activity::handlers::notification_mark_all_read),
+        )
+        .route(
+            "/notifications/{id}/read",
+            axum::routing::patch(crate::activity::handlers::notification_mark_read),
+        )
+        // -- Relations --------------------------------------------------------
+        .merge(crate::relations::handlers::relation_routes())
+        // -- History & Snapshots ----------------------------------------------
+        .route(
+            "/data/{entity}/{id}/history",
+            get(crate::history::handlers::get_record_history),
+        )
+        .route(
+            "/data/{entity}/{id}/history/{version}",
+            get(crate::history::handlers::get_record_version),
+        )
+        .route(
+            "/data/{entity}/{id}/restore/{version}",
+            post(crate::history::handlers::restore_record_version),
+        )
+        .route(
+            "/data/{entity}/{id}/undo",
+            post(crate::history::handlers::undo_record),
+        )
+        .route(
+            "/data/{entity}/{id}/undelete",
+            post(crate::history::handlers::undelete_record),
+        )
+        .route(
+            "/snapshots",
+            get(crate::history::handlers::list_snapshots_handler)
+                .post(crate::history::handlers::create_snapshot_handler),
+        )
+        .route(
+            "/snapshots/{id}/restore",
+            post(crate::history::handlers::restore_snapshot_handler),
+        )
+        .route(
+            "/snapshots/{id}/diff",
+            get(crate::history::handlers::diff_snapshot_handler),
+        )
         .layer(middleware::from_fn_with_state(
             state.clone(),
             require_auth_middleware,
         ));
 
-    // Docs are public.
+    // Docs and SDK types are public.
     let docs_routes = Router::new()
         .route("/openapi.json", get(openapi_json))
-        .route("/docs", get(docs));
+        .route("/docs", get(docs))
+        .route("/types.ts", get(types_ts));
+
+    // Sub-routers with independent state. These carry their own state via
+    // `.with_state()`, yielding `Router<()>`. We apply the auth middleware
+    // to each individually, then merge after the main router resolves its
+    // state.
+    let table_routes: Router = Router::new()
+        .nest(
+            "/tables",
+            crate::tables::handlers::table_routes(crate::tables::handlers::TableState {
+                table_store: std::sync::Arc::new(crate::tables::PgTableStore::new(
+                    state.pool.clone(),
+                    (*state.triple_store).clone(),
+                )),
+            }),
+        )
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            require_auth_middleware,
+        ));
+
+    let aggregation_routes: Router = Router::new()
+        .nest(
+            "/aggregate",
+            crate::aggregation::handlers::aggregation_routes::<()>().with_state(
+                crate::aggregation::handlers::AggregationState {
+                    engine: crate::aggregation::engine::AggregationEngine::new(state.pool.clone()),
+                    pool: state.pool.clone(),
+                },
+            ),
+        )
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            require_auth_middleware,
+        ));
+
+    let webhook_routes: Router = Router::new()
+        .nest(
+            "/webhooks",
+            crate::webhooks::handlers::webhook_routes().with_state(
+                crate::webhooks::handlers::WebhookState {
+                    pool: state.pool.clone(),
+                    sender: std::sync::Arc::new(
+                        crate::webhooks::WebhookSender::new(state.pool.clone()),
+                    ),
+                },
+            ),
+        )
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            require_auth_middleware,
+        ));
+
+    let api_key_routes: Router = Router::new()
+        .nest(
+            "/api-keys",
+            crate::api_keys::handlers::api_key_routes().with_state(
+                crate::api_keys::handlers::ApiKeyState {
+                    pool: state.pool.clone(),
+                },
+            ),
+        )
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            require_auth_middleware,
+        ));
+
+    let plugin_routes: Router = Router::new()
+        .nest(
+            "/plugins",
+            crate::plugins::handlers::plugin_routes(
+                crate::plugins::handlers::PluginApiState {
+                    registry: std::sync::Arc::new(
+                        crate::plugins::registry::PluginRegistry::new(
+                            std::sync::Arc::new(crate::plugins::hooks::HookRegistry::new()),
+                        ),
+                    ),
+                },
+            ),
+        )
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            require_auth_middleware,
+        ));
+
+    let automation_routes: Router = Router::new()
+        .nest(
+            "/automations",
+            crate::automations::handlers::automation_routes(
+                crate::automations::handlers::AutomationState::new(),
+            ),
+        )
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            require_auth_middleware,
+        ));
 
     // Merge all route groups.
     public_routes
@@ -699,6 +877,13 @@ pub fn build_router(state: AppState) -> Router {
             rate_limit_middleware,
         ))
         .with_state(state)
+        // -- Self-stated sub-routers (merged after state resolution) ------
+        .merge(table_routes)
+        .merge(aggregation_routes)
+        .merge(webhook_routes)
+        .merge(api_key_routes)
+        .merge(plugin_routes)
+        .merge(automation_routes)
 }
 
 // ===========================================================================
@@ -3066,6 +3251,60 @@ async fn admin_cache(
     Ok(negotiate_response(&headers, &response))
 }
 
+/// `GET /api/admin/storage` — List files in storage.
+///
+/// Returns metadata for all stored objects, paginated via `?limit=` and `?cursor=`.
+async fn admin_storage_list(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(params): Query<HashMap<String, String>>,
+) -> Result<Response, ApiError> {
+    let _token = extract_bearer_token(&headers)?;
+    require_admin_role(&headers)?;
+
+    let limit: usize = params
+        .get("limit")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(200);
+    let cursor = params.get("cursor").map(|s| s.as_str());
+
+    let objects = state
+        .storage_engine
+        .list("", limit, cursor)
+        .await
+        .map_err(|e| ApiError::internal(format!("Failed to list storage objects: {e}")))?;
+
+    let files: Vec<serde_json::Value> = objects
+        .iter()
+        .map(|obj| {
+            let name = obj
+                .path
+                .rsplit('/')
+                .next()
+                .unwrap_or(&obj.path)
+                .to_string();
+            serde_json::json!({
+                "id": obj.etag,
+                "name": name,
+                "path": obj.path,
+                "size": obj.size,
+                "mimeType": obj.content_type,
+                "uploadedAt": obj.created_at.timestamp_millis(),
+                "modifiedAt": obj.modified_at.timestamp_millis(),
+                "metadata": obj.metadata,
+            })
+        })
+        .collect();
+
+    let count = files.len();
+    let response = serde_json::json!({
+        "files": files,
+        "count": count,
+    });
+
+    Ok(negotiate_response(&headers, &response))
+}
+
 /// `POST /api/admin/bulk-load` — High-throughput data import.
 ///
 /// Converts a JSON array of entities into triples and writes them using
@@ -3141,9 +3380,21 @@ async fn openapi_json(State(state): State<AppState>) -> impl IntoResponse {
     axum::Json(state.openapi_spec.as_ref().clone())
 }
 
-/// `GET /api/docs` — Interactive Scalar API documentation viewer.
+/// `GET /api/docs` — Enhanced interactive Scalar API documentation viewer.
 async fn docs(State(_state): State<AppState>) -> impl IntoResponse {
-    Html(openapi::docs_html("/api/openapi.json"))
+    Html(super::docs::enhanced_docs_html("/api/openapi.json"))
+}
+
+/// `GET /api/types.ts` — TypeScript type definitions for SDK consumers.
+async fn types_ts() -> impl IntoResponse {
+    let ts = super::sdk_types::generate_typescript_types();
+    (
+        [(
+            axum::http::header::CONTENT_TYPE,
+            HeaderValue::from_static("text/typescript; charset=utf-8"),
+        )],
+        ts,
+    )
 }
 
 // Find or create a user from OAuth identity info.
@@ -4445,5 +4696,129 @@ mod tests {
             ErrorCode::Internal.status(),
             StatusCode::INTERNAL_SERVER_ERROR
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Admin role check
+    // -----------------------------------------------------------------------
+
+    /// Helper: build a fake JWT with the given claims payload (header.payload.sig).
+    fn fake_jwt(claims: &serde_json::Value) -> String {
+        let header = data_encoding::BASE64URL_NOPAD.encode(b"{\"alg\":\"HS256\"}");
+        let payload =
+            data_encoding::BASE64URL_NOPAD.encode(serde_json::to_string(claims).unwrap().as_bytes());
+        let sig = data_encoding::BASE64URL_NOPAD.encode(b"fake-signature-bytes");
+        format!("{header}.{payload}.{sig}")
+    }
+
+    #[test]
+    fn require_admin_role_allows_admin() {
+        let user_id = uuid::Uuid::new_v4();
+        let session_id = uuid::Uuid::new_v4();
+        let claims = serde_json::json!({
+            "sub": user_id.to_string(),
+            "sid": session_id.to_string(),
+            "roles": ["admin"],
+        });
+        let token = fake_jwt(&claims);
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            http::header::AUTHORIZATION,
+            format!("Bearer {token}").parse().unwrap(),
+        );
+        assert!(require_admin_role(&headers).is_ok());
+    }
+
+    #[test]
+    fn require_admin_role_rejects_non_admin() {
+        let user_id = uuid::Uuid::new_v4();
+        let session_id = uuid::Uuid::new_v4();
+        let claims = serde_json::json!({
+            "sub": user_id.to_string(),
+            "sid": session_id.to_string(),
+            "roles": ["viewer"],
+        });
+        let token = fake_jwt(&claims);
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            http::header::AUTHORIZATION,
+            format!("Bearer {token}").parse().unwrap(),
+        );
+        let err = require_admin_role(&headers).unwrap_err();
+        assert!(matches!(err.code, ErrorCode::PermissionDenied));
+    }
+
+    #[test]
+    fn require_admin_role_rejects_empty_roles() {
+        let user_id = uuid::Uuid::new_v4();
+        let session_id = uuid::Uuid::new_v4();
+        let claims = serde_json::json!({
+            "sub": user_id.to_string(),
+            "sid": session_id.to_string(),
+            "roles": [],
+        });
+        let token = fake_jwt(&claims);
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            http::header::AUTHORIZATION,
+            format!("Bearer {token}").parse().unwrap(),
+        );
+        assert!(require_admin_role(&headers).is_err());
+    }
+
+    #[test]
+    fn require_admin_role_allows_admin_among_multiple_roles() {
+        let user_id = uuid::Uuid::new_v4();
+        let session_id = uuid::Uuid::new_v4();
+        let claims = serde_json::json!({
+            "sub": user_id.to_string(),
+            "sid": session_id.to_string(),
+            "roles": ["viewer", "developer", "admin"],
+        });
+        let token = fake_jwt(&claims);
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            http::header::AUTHORIZATION,
+            format!("Bearer {token}").parse().unwrap(),
+        );
+        assert!(require_admin_role(&headers).is_ok());
+    }
+
+    #[test]
+    fn require_admin_role_rejects_missing_token() {
+        let headers = HeaderMap::new();
+        let err = require_admin_role(&headers).unwrap_err();
+        assert!(matches!(err.code, ErrorCode::Unauthenticated));
+    }
+
+    #[test]
+    fn decode_jwt_claims_extracts_user_id() {
+        let user_id = uuid::Uuid::new_v4();
+        let session_id = uuid::Uuid::new_v4();
+        let claims = serde_json::json!({
+            "sub": user_id.to_string(),
+            "sid": session_id.to_string(),
+            "roles": ["developer"],
+        });
+        let token = fake_jwt(&claims);
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            http::header::AUTHORIZATION,
+            format!("Bearer {token}").parse().unwrap(),
+        );
+        let ctx = decode_jwt_claims(&headers).unwrap();
+        assert_eq!(ctx.user_id, user_id);
+        assert_eq!(ctx.session_id, session_id);
+        assert_eq!(ctx.roles, vec!["developer"]);
+    }
+
+    #[test]
+    fn decode_jwt_claims_rejects_malformed_jwt() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            http::header::AUTHORIZATION,
+            "Bearer not-a-jwt".parse().unwrap(),
+        );
+        assert!(decode_jwt_claims(&headers).is_err());
     }
 }

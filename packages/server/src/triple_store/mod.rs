@@ -248,6 +248,11 @@ impl PgTripleStore {
             .await
             .map_err(DarshJError::Database)?;
 
+        // Ensure the history/snapshots table exists.
+        crate::history::ensure_history_schema(&self.pool)
+            .await
+            .map_err(DarshJError::Database)?;
+
         Ok(())
     }
 

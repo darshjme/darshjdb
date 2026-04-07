@@ -7,11 +7,16 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::{broadcast, mpsc};
+use tokio::time::Instant;
 use tracing::{debug, error, warn};
+
+/// Debounce window: batch rapid mutations into a single re-query pass.
+const DEBOUNCE_WINDOW: Duration = Duration::from_millis(50);
 
 use super::diff::{QueryDiff, compute_diff, hash_result_set};
 use super::registry::{SubscriptionHandle, SubscriptionRegistry};
@@ -121,11 +126,24 @@ impl Broadcaster {
         self.result_cache.retain(|(sid, _), _| sid != session_id);
     }
 
+    /// Retrieve the cached result set for a subscription.
+    /// Returns `None` if no cached result exists.
+    pub fn get_cached_result(&self, session_id: SessionId, sub_id: SubId) -> Option<Vec<Value>> {
+        self.result_cache
+            .get(&(session_id, sub_id))
+            .map(|r| r.value().clone())
+    }
+
     /// Run the broadcast loop. This is the main event loop that should be
     /// spawned as a long-lived tokio task.
     ///
     /// Listens for [`ChangeEvent`]s on the broadcast receiver, determines
     /// affected subscriptions, re-executes queries, and pushes diffs.
+    ///
+    /// Uses a debounce window ([`DEBOUNCE_WINDOW`]) to batch rapid mutations:
+    /// after receiving the first event, it drains any additional events that
+    /// arrive within the window before processing the combined batch. This
+    /// means each affected query is re-executed at most once per window.
     pub async fn run<E, D>(
         self: Arc<Self>,
         mut change_rx: broadcast::Receiver<ChangeEvent>,
@@ -136,7 +154,8 @@ impl Broadcaster {
         D: DependencyTracker,
     {
         loop {
-            let event = match change_rx.recv().await {
+            // Wait for the first event.
+            let first_event = match change_rx.recv().await {
                 Ok(event) => event,
                 Err(broadcast::error::RecvError::Lagged(n)) => {
                     warn!(
@@ -151,15 +170,58 @@ impl Broadcaster {
                 }
             };
 
-            let affected_hashes = dep_tracker.affected_queries(&event);
+            // Debounce: collect events within the window.
+            let mut batch = vec![first_event];
+            let deadline = Instant::now() + DEBOUNCE_WINDOW;
+            loop {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    break;
+                }
+                match tokio::time::timeout(remaining, change_rx.recv()).await {
+                    Ok(Ok(event)) => batch.push(event),
+                    Ok(Err(broadcast::error::RecvError::Lagged(n))) => {
+                        warn!(skipped = n, "broadcaster lagged during debounce");
+                    }
+                    Ok(Err(broadcast::error::RecvError::Closed)) => {
+                        debug!("change broadcast closed during debounce");
+                        return;
+                    }
+                    Err(_) => break, // timeout expired
+                }
+            }
 
-            if affected_hashes.is_empty() {
+            debug!(batch_size = batch.len(), "processing debounced change batch");
+
+            // Merge all events: collect the union of affected query hashes and
+            // use the highest tx_id as the batch cursor. Entity type filtering
+            // uses the merged set -- if any event matches, we re-query.
+            let max_tx_id = batch.iter().map(|e| e.tx_id).max().unwrap_or(0);
+
+            let mut all_affected_hashes: std::collections::HashSet<u64> =
+                std::collections::HashSet::new();
+            for event in &batch {
+                for hash in dep_tracker.affected_queries(event) {
+                    all_affected_hashes.insert(hash);
+                }
+            }
+
+            if all_affected_hashes.is_empty() {
                 continue;
             }
 
+            // Build a synthetic merged event for entity-type filtering.
+            let merged_event = ChangeEvent {
+                tx_id: max_tx_id,
+                entity_ids: batch.iter().flat_map(|e| e.entity_ids.clone()).collect(),
+                attributes: batch.iter().flat_map(|e| e.attributes.clone()).collect(),
+                entity_type: batch.iter().find_map(|e| e.entity_type.clone()),
+                actor_id: batch.iter().find_map(|e| e.actor_id.clone()),
+            };
+
             // Collect all subscription handles that need updates.
             let mut handles_by_hash: HashMap<u64, Vec<SubscriptionHandle>> = HashMap::new();
-            for hash in &affected_hashes {
+            for hash in &all_affected_hashes {
                 let subscribers = self.registry.subscribers_for(*hash);
                 if !subscribers.is_empty() {
                     handles_by_hash.insert(*hash, subscribers);
@@ -194,12 +256,14 @@ impl Broadcaster {
                         None => continue,
                     };
 
-                    // Skip if the event's entity_type doesn't match the query target.
-                    if let Some(ref event_et) = event.entity_type
-                        && let Some(query_et) = query_ast.get("from").and_then(|v| v.as_str())
-                        && query_et != event_et
-                    {
-                        continue;
+                    // Skip if none of the batched events match this query's entity type.
+                    if let Some(query_et) = query_ast.get("from").and_then(|v| v.as_str()) {
+                        let any_match = batch.iter().any(|e| {
+                            e.entity_type.as_deref().is_none_or(|et| et == query_et)
+                        });
+                        if !any_match {
+                            continue;
+                        }
                     }
 
                     // Execute the query ONCE for this (hash, user_id) group.
@@ -219,7 +283,7 @@ impl Broadcaster {
 
                     // Fan out the shared result to each subscriber in this group.
                     for handle in user_handles {
-                        self.deliver_to_subscriber(handle, &new_results, new_hash, &event)
+                        self.deliver_to_subscriber(handle, &new_results, new_hash, &merged_event)
                             .await;
                     }
                 }

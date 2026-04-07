@@ -32,10 +32,12 @@
 //! and `X-RateLimit-Reset` headers.
 
 pub mod batch;
+pub mod docs;
 pub mod error;
 pub mod openapi;
 pub mod pool_stats;
 pub mod rest;
+pub mod sdk_types;
 pub mod ws;
 
 pub use error::ApiError;

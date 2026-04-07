@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import {
   Grid,
   List,
@@ -13,9 +13,12 @@ import {
   Archive,
   Video,
   Eye,
+  Loader2,
+  RefreshCw,
 } from "lucide-react";
 import { Badge } from "../components/Badge";
 import { mockStorageFiles } from "../lib/mock-data";
+import { fetchStorageFiles } from "../lib/api";
 import { cn, formatBytes, formatRelativeTime } from "../lib/utils";
 import type { StorageFile } from "../types";
 
@@ -36,12 +39,48 @@ export function Storage() {
   const [search, setSearch] = useState("");
   const [dragOver, setDragOver] = useState(false);
   const [selectedFile, setSelectedFile] = useState<StorageFile | null>(null);
+  const [files, setFiles] = useState<StorageFile[]>(mockStorageFiles);
+  const [loading, setLoading] = useState(true);
+  const [isLive, setIsLive] = useState(false);
 
-  const filtered = mockStorageFiles.filter((f) =>
+  const loadFiles = useCallback(async () => {
+    setLoading(true);
+    try {
+      const res = await fetchStorageFiles();
+      if (res.files.length > 0) {
+        setFiles(
+          res.files.map((f) => ({
+            id: f.id,
+            name: f.name,
+            size: f.size,
+            mimeType: f.mimeType,
+            url: `/api/storage/${f.path}`,
+            uploadedAt: f.uploadedAt,
+            uploadedBy: f.metadata?.["uploaded-by"] ?? "Unknown",
+          })),
+        );
+        setIsLive(true);
+      } else {
+        setFiles(mockStorageFiles);
+        setIsLive(false);
+      }
+    } catch {
+      setFiles(mockStorageFiles);
+      setIsLive(false);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadFiles();
+  }, [loadFiles]);
+
+  const filtered = files.filter((f) =>
     f.name.toLowerCase().includes(search.toLowerCase()),
   );
 
-  const totalSize = mockStorageFiles.reduce((sum, f) => sum + f.size, 0);
+  const totalSize = files.reduce((sum, f) => sum + f.size, 0);
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -64,14 +103,37 @@ export function Storage() {
       <div className="flex items-center justify-between mb-6">
         <div>
           <h2 className="text-lg font-semibold text-zinc-100">Storage</h2>
-          <p className="text-sm text-zinc-500 mt-0.5">
-            {mockStorageFiles.length} files, {formatBytes(totalSize)} total
+          <p className="text-sm text-zinc-500 mt-0.5 flex items-center gap-2">
+            {loading ? (
+              <span className="flex items-center gap-1.5">
+                <Loader2 className="w-3 h-3 animate-spin" />
+                Loading...
+              </span>
+            ) : (
+              <>
+                {files.length} files, {formatBytes(totalSize)} total
+                {isLive ? (
+                  <Badge variant="emerald" className="text-[9px]">live</Badge>
+                ) : (
+                  <Badge variant="zinc" className="text-[9px]">demo</Badge>
+                )}
+              </>
+            )}
           </p>
         </div>
-        <button className="btn-primary text-sm">
-          <Upload className="w-4 h-4" />
-          Upload Files
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={loadFiles}
+            className="btn-ghost text-xs"
+            title="Refresh"
+          >
+            <RefreshCw className={cn("w-3.5 h-3.5", loading && "animate-spin")} />
+          </button>
+          <button className="btn-primary text-sm">
+            <Upload className="w-4 h-4" />
+            Upload Files
+          </button>
+        </div>
       </div>
 
       {/* Drop zone */}
