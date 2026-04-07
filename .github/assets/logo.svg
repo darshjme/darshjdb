@@ -1,29 +1,10 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" fill="none">
-  <defs>
-    <linearGradient id="amber" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" style="stop-color:#F59E0B"/>
-      <stop offset="100%" style="stop-color:#D97706"/>
-    </linearGradient>
-    <linearGradient id="dark" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" style="stop-color:#1a1a2e"/>
-      <stop offset="100%" style="stop-color:#0f0f1a"/>
-    </linearGradient>
-  </defs>
-  <!-- Outer circle -->
-  <circle cx="60" cy="60" r="56" fill="url(#dark)" stroke="url(#amber)" stroke-width="3"/>
-  <!-- Inner eye shape (the "darshan" / vision symbol) -->
-  <ellipse cx="60" cy="60" rx="32" ry="20" fill="none" stroke="url(#amber)" stroke-width="2.5"/>
-  <!-- Pupil -->
-  <circle cx="60" cy="60" r="10" fill="url(#amber)"/>
-  <!-- Inner dot -->
-  <circle cx="60" cy="60" r="4" fill="#1a1a2e"/>
-  <!-- Data stream lines (representing the "sees everything") -->
-  <line x1="28" y1="40" x2="18" y2="30" stroke="#F59E0B" stroke-width="1.5" opacity="0.6"/>
-  <line x1="28" y1="60" x2="14" y2="60" stroke="#F59E0B" stroke-width="1.5" opacity="0.6"/>
-  <line x1="28" y1="80" x2="18" y2="90" stroke="#F59E0B" stroke-width="1.5" opacity="0.6"/>
-  <line x1="92" y1="40" x2="102" y2="30" stroke="#F59E0B" stroke-width="1.5" opacity="0.6"/>
-  <line x1="92" y1="60" x2="106" y2="60" stroke="#F59E0B" stroke-width="1.5" opacity="0.6"/>
-  <line x1="92" y1="80" x2="102" y2="90" stroke="#F59E0B" stroke-width="1.5" opacity="0.6"/>
-  <!-- DB text -->
-  <text x="60" y="105" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="700" fill="#F59E0B" letter-spacing="2">DARSHJDB</text>
+<svg xmlns="http://www.w3.org/2000/svg" width="200" height="60" viewBox="0 0 200 60">
+  <!-- Gold diamond icon -->
+  <g transform="translate(24, 30)">
+    <polygon points="0,-10 8,0 0,10 -8,0" fill="none" stroke="#d4a843" stroke-width="1.5"/>
+    <polygon points="0,-5 4,0 0,5 -4,0" fill="#d4a843" opacity="0.4"/>
+  </g>
+
+  <!-- DarshJDB text -->
+  <text x="44" y="36" font-family="system-ui, -apple-system, sans-serif" font-size="22" font-weight="700" fill="#ffffff" letter-spacing="-0.5">DarshJDB</text>
 </svg>
