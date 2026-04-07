@@ -36,6 +36,15 @@ impl QueryDiff {
     }
 }
 
+/// A single triple change within an entity patch.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TripleChange {
+    /// The attribute (triple key) that changed.
+    pub attribute: String,
+    /// The value (new value for added/updated, old value for removed).
+    pub value: Value,
+}
+
 /// A patch for a single entity describing which fields changed.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EntityPatch {
@@ -47,6 +56,18 @@ pub struct EntityPatch {
 
     /// Fields that were removed (present in old, absent in new).
     pub removed_fields: Vec<String>,
+
+    /// Triples that were added (new fields not in old).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub added_triples: Vec<TripleChange>,
+
+    /// Triples that were removed (old fields not in new).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub removed_triples: Vec<TripleChange>,
+
+    /// Triples that were updated (same key, different value).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub updated_triples: Vec<TripleChange>,
 }
 
 /// Extract the entity ID from a result row.
@@ -248,21 +269,41 @@ fn compute_entity_patch(entity_id: &str, old: &Value, new: &Value) -> Option<Ent
 
     let mut changed_fields = HashMap::new();
     let mut removed_fields = Vec::new();
+    let mut added_triples = Vec::new();
+    let mut removed_triples = Vec::new();
+    let mut updated_triples = Vec::new();
 
     // Check for changed and added fields.
     for (key, new_val) in new_obj {
         match old_obj.get(key) {
             Some(old_val) if old_val == new_val => {}
-            Some(_) | None => {
+            Some(_old_val) => {
+                // Field existed before with a different value -- this is an update.
                 changed_fields.insert(key.clone(), new_val.clone());
+                updated_triples.push(TripleChange {
+                    attribute: key.clone(),
+                    value: new_val.clone(),
+                });
+            }
+            None => {
+                // Field is new -- this is an addition.
+                changed_fields.insert(key.clone(), new_val.clone());
+                added_triples.push(TripleChange {
+                    attribute: key.clone(),
+                    value: new_val.clone(),
+                });
             }
         }
     }
 
     // Check for removed fields.
-    for key in old_obj.keys() {
+    for (key, old_val) in old_obj {
         if !new_obj.contains_key(key) {
             removed_fields.push(key.clone());
+            removed_triples.push(TripleChange {
+                attribute: key.clone(),
+                value: old_val.clone(),
+            });
         }
     }
 
@@ -274,6 +315,9 @@ fn compute_entity_patch(entity_id: &str, old: &Value, new: &Value) -> Option<Ent
         entity_id: entity_id.to_string(),
         changed_fields,
         removed_fields,
+        added_triples,
+        removed_triples,
+        updated_triples,
     })
 }
 
@@ -540,5 +584,100 @@ mod tests {
         ];
         let diff = compute_diff(&old, &new);
         assert!(diff.is_empty());
+    }
+
+    #[test]
+    fn triple_change_added_field() {
+        let old = vec![json!({"_id": "1", "name": "Alice"})];
+        let new = vec![json!({"_id": "1", "name": "Alice", "email": "a@b.c"})];
+        let diff = compute_diff(&old, &new);
+        assert_eq!(diff.updated.len(), 1);
+        let patch = &diff.updated[0];
+        assert_eq!(patch.added_triples.len(), 1);
+        assert_eq!(patch.added_triples[0].attribute, "email");
+        assert_eq!(patch.added_triples[0].value, json!("a@b.c"));
+        assert!(patch.updated_triples.is_empty());
+        assert!(patch.removed_triples.is_empty());
+    }
+
+    #[test]
+    fn triple_change_removed_field() {
+        let old = vec![json!({"_id": "1", "name": "Alice", "temp": true})];
+        let new = vec![json!({"_id": "1", "name": "Alice"})];
+        let diff = compute_diff(&old, &new);
+        assert_eq!(diff.updated.len(), 1);
+        let patch = &diff.updated[0];
+        assert_eq!(patch.removed_triples.len(), 1);
+        assert_eq!(patch.removed_triples[0].attribute, "temp");
+        assert_eq!(patch.removed_triples[0].value, json!(true));
+        assert!(patch.added_triples.is_empty());
+        assert!(patch.updated_triples.is_empty());
+    }
+
+    #[test]
+    fn triple_change_updated_field() {
+        let old = vec![json!({"_id": "1", "name": "Alice", "age": 30})];
+        let new = vec![json!({"_id": "1", "name": "Alice", "age": 31})];
+        let diff = compute_diff(&old, &new);
+        assert_eq!(diff.updated.len(), 1);
+        let patch = &diff.updated[0];
+        assert_eq!(patch.updated_triples.len(), 1);
+        assert_eq!(patch.updated_triples[0].attribute, "age");
+        assert_eq!(patch.updated_triples[0].value, json!(31));
+        assert!(patch.added_triples.is_empty());
+        assert!(patch.removed_triples.is_empty());
+    }
+
+    #[test]
+    fn triple_change_mixed_operations() {
+        let old = vec![json!({"_id": "1", "name": "Alice", "age": 30, "temp": true})];
+        let new = vec![json!({"_id": "1", "name": "Alice", "age": 31, "email": "a@b.c"})];
+        let diff = compute_diff(&old, &new);
+        assert_eq!(diff.updated.len(), 1);
+        let patch = &diff.updated[0];
+        // age changed (updated triple)
+        assert_eq!(patch.updated_triples.len(), 1);
+        assert_eq!(patch.updated_triples[0].attribute, "age");
+        // email added (added triple)
+        assert_eq!(patch.added_triples.len(), 1);
+        assert_eq!(patch.added_triples[0].attribute, "email");
+        // temp removed (removed triple)
+        assert_eq!(patch.removed_triples.len(), 1);
+        assert_eq!(patch.removed_triples[0].attribute, "temp");
+    }
+
+    #[test]
+    fn query_diff_serializes_correctly() {
+        let old = vec![json!({"_id": "1", "x": 1}), json!({"_id": "2", "y": 2})];
+        let new = vec![json!({"_id": "1", "x": 2}), json!({"_id": "3", "z": 3})];
+        let diff = compute_diff(&old, &new);
+        let json_str = serde_json::to_string(&diff).unwrap();
+        let parsed: Value = serde_json::from_str(&json_str).unwrap();
+        // Verify it has the expected top-level keys.
+        assert!(parsed.get("added").unwrap().is_array());
+        assert!(parsed.get("removed").unwrap().is_array());
+        assert!(parsed.get("updated").unwrap().is_array());
+    }
+
+    #[test]
+    fn large_result_set_diff() {
+        let old: Vec<Value> = (0..100)
+            .map(|i| json!({"_id": i.to_string(), "val": i}))
+            .collect();
+        let mut new = old.clone();
+        // Remove entity 50, add entity 100, update entity 25.
+        new.retain(|v| v.get("_id").unwrap().as_str().unwrap() != "50");
+        new.push(json!({"_id": "100", "val": 100}));
+        for v in &mut new {
+            if v.get("_id").unwrap().as_str().unwrap() == "25" {
+                v.as_object_mut().unwrap().insert("val".into(), json!(999));
+            }
+        }
+        let diff = compute_diff(&old, &new);
+        assert_eq!(diff.added.len(), 1);
+        assert_eq!(diff.removed.len(), 1);
+        assert_eq!(diff.updated.len(), 1);
+        assert_eq!(diff.removed[0], "50");
+        assert_eq!(diff.updated[0].entity_id, "25");
     }
 }

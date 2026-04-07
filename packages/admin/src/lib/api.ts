@@ -17,9 +17,9 @@ import type { EntityType, EntityField, EntityRecord } from "../types";
 const API_URL = import.meta.env.VITE_DDB_URL || "http://localhost:7700";
 
 /**
- * Admin bearer token. In production this would come from a real auth flow;
- * for now the server's `require_admin_role` is a stub that accepts any
- * non-empty token, so a dev placeholder is fine.
+ * Admin bearer token. In production this comes from a real auth flow
+ * (signup/login -> JWT). For local dev, set `VITE_DDB_TOKEN` to a valid
+ * admin JWT issued by the server's auth endpoints.
  */
 const AUTH_TOKEN =
   import.meta.env.VITE_DDB_TOKEN || "ddb-admin-dev-token";
@@ -281,19 +281,21 @@ export async function createUser(body: SignupRequest): Promise<SignupResponse> {
 
 export interface ServerFunctionInfo {
   name: string;
-  type?: string;
-  module?: string;
-  args?: Record<string, string>;
-  returns?: string;
+  export_name: string;
+  file_path: string;
+  kind: string;
+  description: string | null;
+  args_schema: Record<string, unknown> | null;
 }
 
 export interface AdminFunctionsResponse {
   functions: ServerFunctionInfo[];
+  count: number;
 }
 
 /**
  * `GET /api/admin/functions` -- list registered server-side functions.
- * The endpoint exists but currently returns an empty array (TODO on server).
+ * Wired to the function registry; returns actual registered functions.
  */
 export async function fetchFunctions(): Promise<AdminFunctionsResponse> {
   return apiFetch<AdminFunctionsResponse>("/api/admin/functions");
@@ -377,4 +379,71 @@ export interface HealthResponse {
  */
 export async function fetchHealthDetailed(): Promise<HealthResponse> {
   return publicFetch<HealthResponse>("/health");
+}
+
+// ---------------------------------------------------------------------------
+// Admin: Storage
+// ---------------------------------------------------------------------------
+
+export interface StorageFileInfo {
+  id: string;
+  name: string;
+  path: string;
+  size: number;
+  mimeType: string;
+  uploadedAt: number;
+  modifiedAt: number;
+  metadata: Record<string, string>;
+}
+
+export interface AdminStorageResponse {
+  files: StorageFileInfo[];
+  count: number;
+}
+
+/**
+ * `GET /api/admin/storage` -- list files in storage.
+ */
+export async function fetchStorageFiles(
+  limit = 200,
+): Promise<AdminStorageResponse> {
+  return apiFetch<AdminStorageResponse>(
+    `/api/admin/storage?limit=${limit}`,
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Admin: Auth Users (via data API)
+// ---------------------------------------------------------------------------
+
+export interface AuthUserRecord {
+  id: string;
+  email: string;
+  name: string;
+  role: string;
+  created_at: string;
+}
+
+/**
+ * Fetch auth users by querying the `users` entity type via the data API,
+ * then enrich with session data from the sessions admin endpoint.
+ */
+export async function fetchAuthUsers(): Promise<{
+  users: AuthUserRecord[];
+  sessions: AdminSessionsResponse;
+}> {
+  const [entityResult, sessions] = await Promise.all([
+    fetchEntities("users", 200).catch(() => ({ data: [], hasMore: false })),
+    fetchSessions().catch(() => ({ sessions: [], count: 0 })),
+  ]);
+
+  const users: AuthUserRecord[] = entityResult.data.map((rec) => ({
+    id: rec._id,
+    email: (rec.email as string) ?? "",
+    name: (rec.name as string) ?? "",
+    role: (rec.role as string) ?? "viewer",
+    created_at: (rec.created_at as string) ?? new Date(rec._creationTime).toISOString(),
+  }));
+
+  return { users, sessions };
 }
