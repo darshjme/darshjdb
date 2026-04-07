@@ -1,0 +1,44 @@
+# DarshJDB LXC Container Configuration
+# Apply with: lxc config edit <container-name> < config
+#
+# This is a reference configuration. The setup.sh script applies these
+# settings automatically. Use this file to restore or replicate containers.
+
+config:
+  # Resource limits
+  limits.cpu: "4"
+  limits.memory: 2GB
+  limits.memory.swap: "false"
+
+  # Security
+  security.nesting: "false"
+  security.privileged: "false"
+
+  # Boot
+  boot.autostart: "true"
+  boot.autostart.priority: "10"
+  boot.autostart.delay: "5"
+
+  # Raw LXC overrides (applied inside the container)
+  raw.lxc: |
+    lxc.apparmor.profile=generated
+    lxc.cap.drop=sys_admin sys_rawio sys_module
+
+description: DarshJDB BaaS server with PostgreSQL 16, Redis 7, and Qdrant
+
+devices:
+  # Forward DarshJDB port to host
+  ddb-port:
+    type: proxy
+    listen: tcp:0.0.0.0:7700
+    connect: tcp:127.0.0.1:7700
+
+  # Optional: mount host backup directory into container
+  # backups:
+  #   type: disk
+  #   source: /srv/backups/darshjdb
+  #   path: /opt/darshjdb/backups
+
+source:
+  type: image
+  alias: debian/12

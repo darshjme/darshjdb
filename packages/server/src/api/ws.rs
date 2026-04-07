@@ -7,36 +7,43 @@
 //! # Protocol Messages (Client -> Server)
 //!
 //! ```json
-//! { "type": "auth",       "token": "<jwt>" }
-//! { "type": "sub",        "id": "<req_id>", "query": { ... } }
-//! { "type": "unsub",      "id": "<req_id>", "sub_id": "<sub_id>" }
-//! { "type": "mut",        "id": "<req_id>", "ops": [ ... ] }
-//! { "type": "pres-join",  "room": "<room_id>", "state": { ... } }
-//! { "type": "pres-state", "room": "<room_id>", "state": { ... } }
-//! { "type": "pres-leave", "room": "<room_id>" }
-//! { "type": "pub-sub",    "id": "<sub_id>", "channel": "entity:users:*" }
-//! { "type": "pub-unsub",  "id": "<sub_id>" }
+//! { "type": "auth",         "token": "<jwt>" }
+//! { "type": "sub",          "id": "<req_id>", "query": { ... } }
+//! { "type": "unsub",        "id": "<req_id>", "sub_id": "<sub_id>" }
+//! { "type": "mut",          "id": "<req_id>", "ops": [ ... ] }
+//! { "type": "live-select",  "id": "<req_id>", "query": "LIVE SELECT * FROM users WHERE age > 18" }
+//! { "type": "kill",         "id": "<req_id>", "live_id": "<uuid>" }
+//! { "type": "pres-join",    "room": "<room_id>", "state": { ... } }
+//! { "type": "pres-state",   "room": "<room_id>", "state": { ... } }
+//! { "type": "pres-leave",   "room": "<room_id>" }
+//! { "type": "pub-sub",      "id": "<sub_id>", "channel": "entity:users:*" }
+//! { "type": "pub-unsub",    "id": "<sub_id>" }
 //! { "type": "ping" }
 //! ```
 //!
 //! # Protocol Messages (Server -> Client)
 //!
 //! ```json
-//! { "type": "auth-ok",    "session_id": "<uuid>" }
-//! { "type": "auth-err",   "error": "<reason>" }
-//! { "type": "sub-ok",     "id": "<req_id>", "sub_id": "<sub_id>", "initial": [ ... ] }
-//! { "type": "sub-err",    "id": "<req_id>", "error": "<reason>" }
-//! { "type": "diff",       "sub_id": "<sub_id>", "tx": N, "changes": { ... } }
-//! { "type": "unsub-ok",   "id": "<req_id>" }
-//! { "type": "mut-ok",     "id": "<req_id>", "tx": N }
-//! { "type": "mut-err",    "id": "<req_id>", "error": "<reason>" }
-//! { "type": "pres-snap",  "room": "<room_id>", "members": [ ... ] }
-//! { "type": "pres-diff",  "room": "<room_id>", "joined": [...], "left": [...], "updated": [...] }
-//! { "type": "pub-sub-ok", "id": "<sub_id>", "channel": "entity:users:*" }
-//! { "type": "pub-unsub-ok", "id": "<sub_id>" }
-//! { "type": "pub-event",  "id": "<sub_id>", "event": "updated", "entity_type": "users", "entity_id": "<uuid>", "changed": [...], "tx_id": N }
+//! { "type": "auth-ok",        "session_id": "<uuid>" }
+//! { "type": "auth-err",       "error": "<reason>" }
+//! { "type": "sub-ok",         "id": "<req_id>", "sub_id": "<sub_id>", "initial": [ ... ] }
+//! { "type": "sub-err",        "id": "<req_id>", "error": "<reason>" }
+//! { "type": "diff",           "sub_id": "<sub_id>", "tx": N, "changes": { ... } }
+//! { "type": "unsub-ok",       "id": "<req_id>" }
+//! { "type": "mut-ok",         "id": "<req_id>", "tx": N }
+//! { "type": "mut-err",        "id": "<req_id>", "error": "<reason>" }
+//! { "type": "live-select-ok", "id": "<req_id>", "live_id": "<uuid>" }
+//! { "type": "live-select-err","id": "<req_id>", "error": "<reason>" }
+//! { "type": "live-event",     "live_id": "<uuid>", "action": "CREATE|UPDATE|DELETE", "result": { ... }, "tx_id": N }
+//! { "type": "kill-ok",        "id": "<req_id>", "live_id": "<uuid>" }
+//! { "type": "kill-err",       "id": "<req_id>", "error": "<reason>" }
+//! { "type": "pres-snap",      "room": "<room_id>", "members": [ ... ] }
+//! { "type": "pres-diff",      "room": "<room_id>", "joined": [...], "left": [...], "updated": [...] }
+//! { "type": "pub-sub-ok",     "id": "<sub_id>", "channel": "entity:users:*" }
+//! { "type": "pub-unsub-ok",   "id": "<sub_id>" }
+//! { "type": "pub-event",      "id": "<sub_id>", "event": "updated", "entity_type": "users", "entity_id": "<uuid>", "changed": [...], "tx_id": N }
 //! { "type": "pong" }
-//! { "type": "error",      "error": "<reason>" }
+//! { "type": "error",          "error": "<reason>" }
 //! ```
 
 use std::sync::Arc;
@@ -53,6 +60,8 @@ use tracing::{debug, info};
 
 use crate::query;
 use crate::sync::broadcaster::{ChangeEvent, OutboundDiff};
+use crate::sync::change_feed::ChangeFeed;
+use crate::sync::live_query::{LiveAction, LiveQueryId, LiveQueryManager};
 use crate::sync::presence::PresenceManager;
 use crate::sync::pubsub::PubSubEngine;
 use crate::sync::registry::SubscriptionRegistry;
@@ -94,6 +103,10 @@ pub struct WsState {
     pub change_tx: tokio::sync::broadcast::Sender<ChangeEvent>,
     /// Pub/sub engine for keyspace notification subscriptions.
     pub pubsub: Arc<PubSubEngine>,
+    /// Live query manager for LIVE SELECT subscriptions.
+    pub live_queries: Arc<LiveQueryManager>,
+    /// Change feed for mutation logging and cursor-based replay.
+    pub change_feed: Arc<ChangeFeed>,
 }
 
 /// Inbound client message (deserialized from JSON or MessagePack).
@@ -126,6 +139,16 @@ enum ClientMessage {
     },
     PresLeave {
         room: String,
+    },
+    /// LIVE SELECT: register a live query with SQL-like syntax.
+    LiveSelect {
+        id: String,
+        query: String,
+    },
+    /// KILL: unsubscribe from a live query.
+    Kill {
+        id: String,
+        live_id: String,
     },
     PubSub {
         id: String,
@@ -194,6 +217,34 @@ enum ServerMessage {
         left: Vec<String>,
         #[serde(skip_serializing_if = "Vec::is_empty")]
         updated: Vec<Value>,
+    },
+    /// LIVE SELECT registered successfully.
+    LiveSelectOk {
+        id: String,
+        live_id: String,
+    },
+    /// LIVE SELECT registration failed.
+    LiveSelectErr {
+        id: String,
+        error: String,
+    },
+    /// A live query event pushed when a matching change occurs.
+    #[serde(rename = "live-event")]
+    LiveEventMsg {
+        live_id: String,
+        action: String,
+        result: Value,
+        tx_id: i64,
+    },
+    /// KILL acknowledged.
+    KillOk {
+        id: String,
+        live_id: String,
+    },
+    /// KILL failed.
+    KillErr {
+        id: String,
+        error: String,
     },
     PubSubOk {
         id: String,
@@ -311,6 +362,11 @@ async fn handle_connection(
             change = change_rx.recv() => {
                 match change {
                     Ok(event) => {
+                        // Process live query subscriptions for this change event.
+                        if handle_live_query_change(&event, &mut socket, &state, session_id, codec).await {
+                            debug!(session_id = %session_id, "send failed during live query event, closing");
+                            break;
+                        }
                         // Process pub/sub subscriptions for this change event.
                         if handle_pubsub_change(&event, &mut socket, &state, session_id, codec).await {
                             debug!(session_id = %session_id, "send failed during pub/sub event, closing");
@@ -502,6 +558,14 @@ async fn handle_message(
 
         ClientMessage::PresLeave { room } => {
             handle_presence_leave(room, state, session_id);
+        }
+
+        ClientMessage::LiveSelect { id, query } => {
+            handle_live_select(id, query, socket, state, session_id, codec).await;
+        }
+
+        ClientMessage::Kill { id, live_id } => {
+            handle_kill(id, live_id, socket, state, session_id, codec).await;
         }
 
         ClientMessage::PubSub { id, channel } => {
@@ -901,13 +965,22 @@ async fn handle_mutation(
     }
 
     let attrs: Vec<String> = all_triples.iter().map(|t| t.attribute.clone()).collect();
-    let _ = state.change_tx.send(ChangeEvent {
+    let change_event = ChangeEvent {
         tx_id,
         entity_ids: entity_ids.clone(),
         attributes: attrs,
         entity_type: entity_types.into_iter().next(),
         actor_id: None,
-    });
+    };
+
+    // Determine action for change feed logging.
+    let feed_action = ops_array
+        .first()
+        .and_then(|op| op.get("op").and_then(|v| v.as_str()))
+        .unwrap_or("UPDATE");
+    state.change_feed.append(&change_event, feed_action);
+
+    let _ = state.change_tx.send(change_event);
     debug!(session_id = %session_id, tx_id = tx_id, "ws mutation committed");
     let _ = send_message(
         socket,
@@ -1108,6 +1181,16 @@ fn cleanup(session_id: SessionId, state: &WsState) {
         "cleaned up subscriptions"
     );
 
+    // Kill all live queries for this session.
+    let removed_live = state.live_queries.kill_session(&session_id);
+    if removed_live > 0 {
+        debug!(
+            session_id = %session_id,
+            removed_live = removed_live,
+            "cleaned up live queries"
+        );
+    }
+
     // Unregister all pub/sub subscriptions.
     let removed_pubsub = state.pubsub.unsubscribe_all(&session_id.to_string());
     if removed_pubsub > 0 {
@@ -1125,6 +1208,206 @@ fn cleanup(session_id: SessionId, state: &WsState) {
 
     // Remove session.
     state.sessions.remove_session(&session_id);
+}
+
+/// Handle a LIVE SELECT request: parse the query, register the live subscription,
+/// and return the assigned live query ID.
+async fn handle_live_select(
+    req_id: String,
+    query_str: String,
+    socket: &mut WebSocket,
+    state: &WsState,
+    session_id: SessionId,
+    codec: Codec,
+) {
+    match state.live_queries.register(session_id, &query_str) {
+        Ok(live_id) => {
+            let _ = send_message(
+                socket,
+                &ServerMessage::LiveSelectOk {
+                    id: req_id,
+                    live_id: live_id.to_string(),
+                },
+                codec,
+            )
+            .await;
+
+            debug!(
+                session_id = %session_id,
+                live_id = %live_id,
+                query = %query_str,
+                "live query registered"
+            );
+        }
+        Err(e) => {
+            let _ = send_message(
+                socket,
+                &ServerMessage::LiveSelectErr {
+                    id: req_id,
+                    error: e,
+                },
+                codec,
+            )
+            .await;
+        }
+    }
+}
+
+/// Handle a KILL request: unsubscribe from a live query.
+async fn handle_kill(
+    req_id: String,
+    live_id_str: String,
+    socket: &mut WebSocket,
+    state: &WsState,
+    session_id: SessionId,
+    codec: Codec,
+) {
+    let live_id: LiveQueryId = match live_id_str.parse() {
+        Ok(id) => id,
+        Err(_) => {
+            let _ = send_message(
+                socket,
+                &ServerMessage::KillErr {
+                    id: req_id,
+                    error: "invalid live_id format".into(),
+                },
+                codec,
+            )
+            .await;
+            return;
+        }
+    };
+
+    if state.live_queries.kill(&live_id, &session_id) {
+        let _ = send_message(
+            socket,
+            &ServerMessage::KillOk {
+                id: req_id,
+                live_id: live_id.to_string(),
+            },
+            codec,
+        )
+        .await;
+
+        debug!(
+            session_id = %session_id,
+            live_id = %live_id,
+            "live query killed"
+        );
+    } else {
+        let _ = send_message(
+            socket,
+            &ServerMessage::KillErr {
+                id: req_id,
+                error: format!("live query '{live_id}' not found or not owned by this session"),
+            },
+            codec,
+        )
+        .await;
+    }
+}
+
+/// Process a change event through the live query engine and push matching
+/// events to this WebSocket client.
+///
+/// Fetches post-mutation entity data from the triple store, evaluates each
+/// live query's filter, and sends [`LiveEvent`] messages for matches.
+///
+/// Returns `true` if a send failed and the connection should be closed.
+async fn handle_live_query_change(
+    event: &ChangeEvent,
+    socket: &mut WebSocket,
+    state: &WsState,
+    session_id: SessionId,
+    codec: Codec,
+) -> bool {
+    // Check if this session has any live queries at all (fast path).
+    let session_live_ids = state.live_queries.session_queries(&session_id);
+    if session_live_ids.is_empty() {
+        return false;
+    }
+
+    // Fetch post-mutation entity data for filter evaluation.
+    // Uses a fresh transaction per entity to read committed state.
+    let mut entity_data = std::collections::HashMap::new();
+    for entity_id_str in &event.entity_ids {
+        if let Ok(eid) = uuid::Uuid::parse_str(entity_id_str) {
+            match state.triple_store.begin_tx().await {
+                Ok(mut tx) => {
+                    match PgTripleStore::get_entity_in_tx(&mut tx, eid).await {
+                        Ok(triples) => {
+                            let mut obj = serde_json::Map::new();
+                            obj.insert("_id".to_string(), Value::String(eid.to_string()));
+                            for t in &triples {
+                                // Strip the entity-type prefix from attribute names.
+                                let attr_name = t
+                                    .attribute
+                                    .split('/')
+                                    .last()
+                                    .unwrap_or(&t.attribute);
+                                if attr_name != ":db/type" && !t.attribute.starts_with(":db/") {
+                                    obj.insert(attr_name.to_string(), t.value.clone());
+                                }
+                            }
+                            entity_data.insert(entity_id_str.clone(), Value::Object(obj));
+                        }
+                        Err(_) => {
+                            // Entity may have been deleted; provide a minimal record.
+                            let obj = serde_json::json!({"_id": entity_id_str});
+                            entity_data.insert(entity_id_str.clone(), obj);
+                        }
+                    }
+                    // Read-only tx, just drop it (implicit rollback is fine).
+                    let _ = tx.rollback().await;
+                }
+                Err(_) => {
+                    let obj = serde_json::json!({"_id": entity_id_str});
+                    entity_data.insert(entity_id_str.clone(), obj);
+                }
+            }
+        }
+    }
+
+    // Determine the action type from the event heuristics.
+    let action = if entity_data.values().all(|v| {
+        v.as_object().map_or(true, |o| o.len() <= 1)
+    }) {
+        LiveAction::Delete
+    } else if event.tx_id > 0 && event.entity_ids.len() == 1 {
+        // Heuristic: single entity with data is likely create or update.
+        LiveAction::Update
+    } else {
+        LiveAction::Update
+    };
+
+    // Evaluate live queries and push events.
+    let events = state
+        .live_queries
+        .process_change(event, &entity_data, action);
+
+    for (target_session, live_event) in events {
+        if target_session != session_id {
+            continue;
+        }
+
+        if send_message(
+            socket,
+            &ServerMessage::LiveEventMsg {
+                live_id: live_event.live_id.to_string(),
+                action: live_event.action.to_string(),
+                result: live_event.result,
+                tx_id: live_event.tx_id,
+            },
+            codec,
+        )
+        .await
+        .is_err()
+        {
+            return true;
+        }
+    }
+
+    false
 }
 
 /// Handle a pub/sub subscribe request.

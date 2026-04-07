@@ -1,55 +1,149 @@
+## DarshJDB — Production Stack
+## Usage: docker compose up -d
+## Secrets: provide via .env file (never commit it)
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
+  # ── DarshJDB Server ──────────────────────────────────────────────────
   darshjdb:
-    build: .
+    image: darshjme/darshjdb:${DDB_VERSION:-latest}
+    build:
+      context: .
+      dockerfile: Dockerfile
     ports:
-      - "7700:7700"
+      - "${DDB_HOST_PORT:-7700}:7700"
     environment:
-      DATABASE_URL: postgres://darshan:darshan@postgres:5432/darshjdb
+      DATABASE_URL: "postgres://darshan:${POSTGRES_PASSWORD:-darshan}@postgres:5432/darshjdb"
       DDB_PORT: "7700"
       DDB_ADMIN_DIR: /usr/share/darshan/admin
-      DDB_JWT_SECRET: ${DDB_JWT_SECRET:-change-me-in-production}
-      RUST_LOG: info
+      DDB_JWT_SECRET: ${DDB_JWT_SECRET:?Set DDB_JWT_SECRET in .env}
+      DDB_REDIS_URL: "redis://redis:6379/0"
+      DDB_QDRANT_URL: "http://qdrant:6334"
+      RUST_LOG: ${RUST_LOG:-info}
     depends_on:
       postgres:
         condition: service_healthy
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
     restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:size=64M
+    volumes:
+      - ddb_data:/app/data
     deploy:
       resources:
         limits:
           memory: 512M
+          cpus: "2.0"
         reservations:
           memory: 128M
+          cpus: "0.25"
+    logging: *default-logging
     networks:
       - darshjdb
+    security_opt:
+      - no-new-privileges:true
 
+  # ── PostgreSQL 16 with pgvector ──────────────────────────────────────
   postgres:
     image: pgvector/pgvector:pg16
     environment:
       POSTGRES_USER: darshan
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-darshan}
       POSTGRES_DB: darshjdb
-    # Do not expose postgres port externally in production;
-    # override in docker-compose.dev.yml when local access is needed.
+      POSTGRES_INITDB_ARGS: "--data-checksums"
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./packages/server/migrations/001_initial.sql:/docker-entrypoint-initdb.d/001_initial.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U darshan -d darshjdb"]
-      interval: 5s
+      interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 30s
     restart: unless-stopped
+    shm_size: 256m
     deploy:
       resources:
         limits:
           memory: 1G
+          cpus: "2.0"
         reservations:
           memory: 256M
+    logging: *default-logging
+    networks:
+      - darshjdb
+    # Not exposed to host in production — access via darshjdb service only
+
+  # ── Redis (cache + pub/sub for real-time sync) ──────────────────────
+  redis:
+    image: redis:7-alpine
+    command: >
+      redis-server
+        --maxmemory 128mb
+        --maxmemory-policy allkeys-lru
+        --save 60 1000
+        --appendonly yes
+        --requirepass ${REDIS_PASSWORD:-}
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 192M
+          cpus: "0.5"
+    logging: *default-logging
+    networks:
+      - darshjdb
+
+  # ── Qdrant (vector search) ──────────────────────────────────────────
+  qdrant:
+    image: qdrant/qdrant:v1.13.2
+    volumes:
+      - qdrant_data:/qdrant/storage
+    environment:
+      QDRANT__SERVICE__GRPC_PORT: "6334"
+      QDRANT__SERVICE__HTTP_PORT: "6333"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:6333/healthz || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "1.0"
+    logging: *default-logging
     networks:
       - darshjdb
 
 volumes:
   pgdata:
+    driver: local
+  redis_data:
+    driver: local
+  qdrant_data:
+    driver: local
+  ddb_data:
+    driver: local
 
 networks:
   darshjdb:

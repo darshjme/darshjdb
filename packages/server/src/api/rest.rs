@@ -53,6 +53,7 @@ use crate::rules::RuleEngine;
 use crate::storage::{LocalFsBackend, StorageEngine, StorageError};
 use crate::sync::broadcaster::ChangeEvent;
 use crate::sync::pubsub::{PubSubEngine, PubSubEvent};
+use crate::graph::{Edge, EdgeInput, GraphEngine, RecordId, TraversalConfig};
 use crate::triple_store::{PgTripleStore, TripleInput, TripleStore};
 
 // ---------------------------------------------------------------------------
@@ -108,6 +109,10 @@ pub struct AppState {
     pub pool_stats: Arc<super::pool_stats::PoolStats>,
     /// Metrics for Solana-inspired parallel batch execution.
     pub parallel_metrics: Arc<crate::query::parallel::ParallelMetrics>,
+    /// Graph engine for SurrealDB-style record links and traversal.
+    pub graph_engine: Option<Arc<GraphEngine>>,
+    /// Schema registry for SCHEMAFULL/SCHEMALESS/MIXED mode enforcement.
+    pub schema_registry: Option<Arc<crate::schema::SchemaRegistry>>,
 }
 
 /// Load OAuth2 provider configurations from environment variables.
@@ -329,7 +334,21 @@ impl AppState {
             pubsub,
             pool_stats: Arc::new(super::pool_stats::PoolStats::new()),
             parallel_metrics: Arc::new(crate::query::parallel::ParallelMetrics::new()),
+            graph_engine: None,
+            schema_registry: None,
         }
+    }
+
+    /// Set the graph engine on this state for SurrealDB-style record links.
+    pub fn with_graph(mut self, graph_engine: Arc<GraphEngine>) -> Self {
+        self.graph_engine = Some(graph_engine);
+        self
+    }
+
+    /// Set the schema registry for SCHEMAFULL/SCHEMALESS/MIXED enforcement.
+    pub fn with_schema_registry(mut self, registry: Arc<crate::schema::SchemaRegistry>) -> Self {
+        self.schema_registry = Some(registry);
+        self
     }
 
     /// Set the forward-chaining rule engine on this state.
@@ -396,6 +415,8 @@ impl AppState {
             pubsub,
             pool_stats: Arc::new(super::pool_stats::PoolStats::new()),
             parallel_metrics: Arc::new(crate::query::parallel::ParallelMetrics::new()),
+            graph_engine: None,
+            schema_registry: None,
         }
     }
 }
@@ -591,6 +612,8 @@ pub fn build_router(state: AppState) -> Router {
     let protected_routes = Router::new()
         .route("/auth/signout", post(auth_signout))
         .route("/auth/me", get(auth_me))
+        // -- DarshQL -------------------------------------------------------
+        .route("/sql", post(darshql_handler))
         // -- Data ----------------------------------------------------------
         .route("/query", post(query))
         .route("/mutate", post(mutate))
@@ -632,6 +655,20 @@ pub fn build_router(state: AppState) -> Router {
         // .route("/embeddings", post(embeddings_store))
         // .route("/embeddings/{entity_id}", get(embeddings_get))
         // .route("/search/semantic", post(search_semantic))
+        // -- Graph (SurrealDB-style record links) -------------------------
+        .route("/graph/relate", post(graph_relate))
+        .route("/graph/traverse", post(graph_traverse))
+        .route("/graph/neighbors/{table}/{id}", get(graph_neighbors))
+        .route("/graph/outgoing/{table}/{id}", get(graph_outgoing))
+        .route("/graph/incoming/{table}/{id}", get(graph_incoming))
+        .route("/graph/edge/{edge_id}", axum::routing::delete(graph_delete_edge))
+        // -- Schema management (DEFINE TABLE / FIELD / INDEX) ---------------
+        .route("/schema/tables", get(schema_list_tables).post(schema_define_table))
+        .route("/schema/tables/{table}", axum::routing::delete(schema_remove_table))
+        .route("/schema/tables/{table}/fields", post(schema_define_field))
+        .route("/schema/tables/{table}/fields/{field}", axum::routing::delete(schema_remove_field))
+        .route("/schema/tables/{table}/indexes", post(schema_define_index))
+        .route("/schema/tables/{table}/migrations", get(schema_migration_history))
         // -- Batch / Pipeline ---------------------------------------------
         .route("/batch", post(super::batch::batch_handler))
         .route(
@@ -1461,6 +1498,52 @@ async fn auth_me(State(state): State<AppState>, headers: HeaderMap) -> Result<Re
 }
 
 // ===========================================================================
+// DarshQL handler
+// ===========================================================================
+
+/// Request body for the `/sql` endpoint.
+#[derive(Deserialize)]
+struct DarshQLRequest {
+    /// The DarshQL query string (one or more statements separated by `;`).
+    query: String,
+}
+
+/// `POST /api/sql` — Execute DarshQL statements.
+///
+/// Accepts a `{ "query": "SELECT * FROM users WHERE age > 18" }` body
+/// and returns the results of each statement.
+async fn darshql_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    axum::Json(body): axum::Json<DarshQLRequest>,
+) -> Result<Response, ApiError> {
+    let _auth_ctx = extract_auth_context(&headers, &state)?;
+
+    let start = Instant::now();
+
+    // Parse DarshQL into AST.
+    let statements = crate::query::darshql::Parser::parse(&body.query)
+        .map_err(|e| ApiError::bad_request(format!("DarshQL parse error: {e}")))?;
+
+    if statements.is_empty() {
+        return Err(ApiError::bad_request("empty query".to_string()));
+    }
+
+    // Execute all statements.
+    let results = crate::query::darshql::execute(&state.pool, statements)
+        .await
+        .map_err(|e| ApiError::internal(format!("DarshQL execution error: {e}")))?;
+
+    let elapsed = start.elapsed();
+    let response_body = serde_json::json!({
+        "results": results,
+        "time": format!("{}ms", elapsed.as_millis()),
+    });
+
+    Ok(negotiate_response(&headers, &response_body))
+}
+
+// ===========================================================================
 // Data handlers
 // ===========================================================================
 
@@ -1618,6 +1701,35 @@ async fn mutate(
                     return Err(ApiError::bad_request(format!(
                         "Mutation {i}: data is required for insert/upsert"
                     )));
+                }
+            }
+        }
+    }
+
+    // ── Schema validation for batch mutations ─────────────────────
+    if let Some(ref registry) = state.schema_registry {
+        for (i, m) in body.mutations.iter().enumerate() {
+            if let Some(data) = &m.data {
+                if let Some(obj) = data.as_object() {
+                    if let Some(schema) = registry.get(&m.entity) {
+                        let doc: std::collections::HashMap<String, Value> = obj
+                            .iter()
+                            .filter(|(k, _)| !k.starts_with('$'))
+                            .map(|(k, v)| (k.clone(), v.clone()))
+                            .collect();
+                        let is_update = matches!(m.op, MutationOp::Update | MutationOp::Upsert);
+                        let result = if is_update {
+                            crate::schema::validator::SchemaValidator::validate_update(&schema, &doc)
+                        } else {
+                            crate::schema::validator::SchemaValidator::validate_insert(&schema, &doc)
+                        };
+                        if !result.is_valid() {
+                            return Err(ApiError::bad_request(format!(
+                                "Mutation {i}: schema validation failed: {}",
+                                result.error_message()
+                            )));
+                        }
+                    }
                 }
             }
         }
@@ -1865,6 +1977,42 @@ async fn data_create(
         .as_object()
         .ok_or_else(|| ApiError::bad_request("Request body must be a JSON object"))?;
 
+    // ── Schema validation (SCHEMAFULL / MIXED mode) ──────────────
+    // If a schema registry is configured and the table has a schema
+    // definition, validate the document before persisting triples.
+    let obj = if let Some(ref registry) = state.schema_registry {
+        if let Some(schema) = registry.get(&entity) {
+            let doc: std::collections::HashMap<String, Value> = obj
+                .iter()
+                .filter(|(k, _)| !k.starts_with('$'))
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
+            let result = crate::schema::validator::SchemaValidator::validate_insert(&schema, &doc);
+            if !result.is_valid() {
+                return Err(ApiError::bad_request(format!(
+                    "Schema validation failed: {}",
+                    result.error_message()
+                )));
+            }
+            // Use the validated (coerced + defaults-injected) document.
+            // Re-add $-prefixed meta-keys from the original body.
+            let mut validated = result.document;
+            for (k, v) in obj.iter() {
+                if k.starts_with('$') {
+                    validated.insert(k.clone(), v.clone());
+                }
+            }
+            validated
+                .into_iter()
+                .collect::<serde_json::Map<String, Value>>()
+        } else {
+            obj.clone()
+        }
+    } else {
+        obj.clone()
+    };
+    let obj = &obj;
+
     // Extract optional TTL from the request body ($ttl key).
     let ttl_seconds: Option<i64> = obj.get("$ttl").and_then(|v| v.as_i64());
 
@@ -2097,6 +2245,38 @@ async fn data_patch(
     let obj = body
         .as_object()
         .ok_or_else(|| ApiError::bad_request("Request body must be a JSON object"))?;
+
+    // ── Schema validation for updates ────────────────────────────
+    let obj = if let Some(ref registry) = state.schema_registry {
+        if let Some(schema) = registry.get(&entity) {
+            let doc: std::collections::HashMap<String, Value> = obj
+                .iter()
+                .filter(|(k, _)| !k.starts_with('$'))
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
+            let result = crate::schema::validator::SchemaValidator::validate_update(&schema, &doc);
+            if !result.is_valid() {
+                return Err(ApiError::bad_request(format!(
+                    "Schema validation failed: {}",
+                    result.error_message()
+                )));
+            }
+            let mut validated = result.document;
+            for (k, v) in obj.iter() {
+                if k.starts_with('$') {
+                    validated.insert(k.clone(), v.clone());
+                }
+            }
+            validated
+                .into_iter()
+                .collect::<serde_json::Map<String, Value>>()
+        } else {
+            obj.clone()
+        }
+    } else {
+        obj.clone()
+    };
+    let obj = &obj;
 
     // Extract optional TTL from the request body ($ttl key).
     // $ttl: positive => set/extend TTL, -1 => remove TTL (persist forever).
@@ -3398,6 +3578,460 @@ fn format_pgvector_literal(vec: &[f32]) -> String {
     }
     s.push(']');
     s
+}
+
+// ===========================================================================
+// Graph handlers (SurrealDB-style record links and traversal)
+// ===========================================================================
+
+/// Extract the graph engine from state, returning 501 if not configured.
+fn require_graph_engine(state: &AppState) -> Result<&GraphEngine, ApiError> {
+    state
+        .graph_engine
+        .as_ref()
+        .map(|g| g.as_ref())
+        .ok_or_else(|| {
+            ApiError::new(
+                ErrorCode::Internal,
+                "Graph engine is not enabled on this server",
+            )
+        })
+}
+
+/// Request body for `POST /graph/relate`.
+#[derive(Deserialize)]
+struct GraphRelateRequest {
+    /// Source record in `table:id` format.
+    from: String,
+    /// Edge type / relationship label (e.g. `works_at`, `follows`).
+    edge_type: String,
+    /// Target record in `table:id` format.
+    to: String,
+    /// Optional JSONB metadata to attach to the edge.
+    #[serde(default)]
+    data: Option<serde_json::Value>,
+}
+
+/// `POST /graph/relate` — Create a directed edge between two records.
+///
+/// Implements SurrealDB-style `RELATE from->edge_type->to` semantics.
+/// If the edge already exists, its metadata is updated (upsert).
+///
+/// # Request body
+/// ```json
+/// {
+///   "from": "user:darsh",
+///   "edge_type": "works_at",
+///   "to": "company:knowai",
+///   "data": { "role": "CEO", "since": "2024" }
+/// }
+/// ```
+async fn graph_relate(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    axum::Json(body): axum::Json<GraphRelateRequest>,
+) -> Result<Response, ApiError> {
+    let engine = require_graph_engine(&state)?;
+
+    let input = EdgeInput {
+        from: body.from,
+        edge_type: body.edge_type,
+        to: body.to,
+        data: body.data,
+    };
+
+    let edge = engine
+        .relate(&input)
+        .await
+        .map_err(|e| ApiError::bad_request(format!("{e}")))?;
+
+    let response = serde_json::json!({
+        "edge": {
+            "id": edge.id,
+            "from": format!("{}:{}", edge.from_table, edge.from_id),
+            "edge_type": edge.edge_type,
+            "to": format!("{}:{}", edge.to_table, edge.to_id),
+            "data": edge.data,
+            "created_at": edge.created_at,
+        }
+    });
+
+    Ok(negotiate_response_status(
+        &headers,
+        StatusCode::CREATED,
+        &response,
+    ))
+}
+
+/// `POST /graph/traverse` — Execute a graph traversal from a starting node.
+///
+/// Supports BFS, DFS, and shortest-path algorithms with configurable
+/// depth limits, direction, and edge-type filtering.
+///
+/// # Request body
+/// ```json
+/// {
+///   "start": "user:darsh",
+///   "direction": "out",
+///   "edge_type": "works_at",
+///   "max_depth": 3,
+///   "algorithm": "bfs"
+/// }
+/// ```
+async fn graph_traverse(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    axum::Json(config): axum::Json<TraversalConfig>,
+) -> Result<Response, ApiError> {
+    let engine = require_graph_engine(&state)?;
+
+    let result = engine
+        .traverse(&config)
+        .await
+        .map_err(|e| ApiError::bad_request(format!("{e}")))?;
+
+    Ok(negotiate_response(&headers, &result))
+}
+
+/// Query parameters for neighbor/edge listing endpoints.
+#[derive(Deserialize, Default)]
+struct GraphEdgeQuery {
+    /// Optional edge type filter.
+    #[serde(default)]
+    edge_type: Option<String>,
+}
+
+/// Serialize a list of edges into the standard JSON representation.
+fn serialize_edges(edges: &[Edge]) -> Vec<serde_json::Value> {
+    edges
+        .iter()
+        .map(|e| {
+            serde_json::json!({
+                "id": e.id,
+                "from": format!("{}:{}", e.from_table, e.from_id),
+                "edge_type": e.edge_type,
+                "to": format!("{}:{}", e.to_table, e.to_id),
+                "data": e.data,
+                "created_at": e.created_at,
+            })
+        })
+        .collect()
+}
+
+/// `GET /graph/neighbors/:table/:id` — Get all edges (both directions) for a record.
+///
+/// Optional query parameter `edge_type` filters by relationship type.
+async fn graph_neighbors(
+    State(state): State<AppState>,
+    Path((table, id)): Path<(String, String)>,
+    Query(query): Query<GraphEdgeQuery>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    let engine = require_graph_engine(&state)?;
+    let record = RecordId::new(&table, &id);
+
+    let edges = engine
+        .neighbors(&record, query.edge_type.as_deref())
+        .await
+        .map_err(|e| ApiError::bad_request(format!("{e}")))?;
+
+    let response = serde_json::json!({
+        "record": record.to_string_repr(),
+        "edges": serialize_edges(&edges),
+        "count": edges.len(),
+    });
+
+    Ok(negotiate_response(&headers, &response))
+}
+
+/// `GET /graph/outgoing/:table/:id` — Get outgoing edges from a record.
+///
+/// Models SurrealDB `SELECT ->edge_type->? FROM table:id`.
+async fn graph_outgoing(
+    State(state): State<AppState>,
+    Path((table, id)): Path<(String, String)>,
+    Query(query): Query<GraphEdgeQuery>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    let engine = require_graph_engine(&state)?;
+    let record = RecordId::new(&table, &id);
+
+    let edges = engine
+        .outgoing(&record, query.edge_type.as_deref())
+        .await
+        .map_err(|e| ApiError::bad_request(format!("{e}")))?;
+
+    let response = serde_json::json!({
+        "record": record.to_string_repr(),
+        "direction": "out",
+        "edges": serialize_edges(&edges),
+        "count": edges.len(),
+    });
+
+    Ok(negotiate_response(&headers, &response))
+}
+
+/// `GET /graph/incoming/:table/:id` — Get incoming edges to a record.
+///
+/// Models SurrealDB `SELECT <-edge_type<-? FROM table:id`.
+async fn graph_incoming(
+    State(state): State<AppState>,
+    Path((table, id)): Path<(String, String)>,
+    Query(query): Query<GraphEdgeQuery>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    let engine = require_graph_engine(&state)?;
+    let record = RecordId::new(&table, &id);
+
+    let edges = engine
+        .incoming(&record, query.edge_type.as_deref())
+        .await
+        .map_err(|e| ApiError::bad_request(format!("{e}")))?;
+
+    let response = serde_json::json!({
+        "record": record.to_string_repr(),
+        "direction": "in",
+        "edges": serialize_edges(&edges),
+        "count": edges.len(),
+    });
+
+    Ok(negotiate_response(&headers, &response))
+}
+
+/// `DELETE /graph/edge/:edge_id` — Delete an edge by its UUID.
+async fn graph_delete_edge(
+    State(state): State<AppState>,
+    Path(edge_id): Path<Uuid>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    let engine = require_graph_engine(&state)?;
+
+    let deleted = engine
+        .delete_edge(edge_id)
+        .await
+        .map_err(|e| ApiError::internal(format!("{e}")))?;
+
+    if !deleted {
+        return Err(ApiError::not_found(format!("edge {edge_id} not found")));
+    }
+
+    let response = serde_json::json!({
+        "deleted": true,
+        "edge_id": edge_id,
+    });
+
+    Ok(negotiate_response(&headers, &response))
+}
+
+// ===========================================================================
+// Schema management handlers (DEFINE TABLE / FIELD / INDEX)
+// ===========================================================================
+
+/// `GET /api/schema/tables` — List all defined table schemas.
+async fn schema_list_tables(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    let registry = state
+        .schema_registry
+        .as_ref()
+        .ok_or_else(|| ApiError::internal("Schema registry not initialised"))?;
+
+    let tables = registry.list_tables();
+    let response = serde_json::json!({
+        "tables": tables,
+        "count": tables.len(),
+    });
+    Ok(negotiate_response(&headers, &response))
+}
+
+/// Request body for `POST /api/schema/tables` (DEFINE TABLE).
+#[derive(Debug, Deserialize)]
+struct DefineTableRequest {
+    /// Table name.
+    name: String,
+    /// Schema mode: "SCHEMAFULL", "SCHEMALESS", or "MIXED".
+    #[serde(default)]
+    mode: Option<String>,
+    /// Optional inline field definitions.
+    #[serde(default)]
+    fields: Option<HashMap<String, crate::schema::FieldDefinition>>,
+    /// Optional inline index definitions.
+    #[serde(default)]
+    indexes: Option<HashMap<String, crate::schema::IndexDefinition>>,
+}
+
+/// `POST /api/schema/tables` — Define (create or replace) a table schema.
+async fn schema_define_table(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    axum::Json(body): axum::Json<DefineTableRequest>,
+) -> Result<Response, ApiError> {
+    let registry = state
+        .schema_registry
+        .as_ref()
+        .ok_or_else(|| ApiError::internal("Schema registry not initialised"))?;
+
+    let mode = body
+        .mode
+        .as_deref()
+        .and_then(crate::schema::SchemaMode::parse)
+        .unwrap_or(crate::schema::SchemaMode::Schemaless);
+
+    let mut schema = match mode {
+        crate::schema::SchemaMode::Schemafull => crate::schema::TableSchema::schemafull(&body.name),
+        crate::schema::SchemaMode::Schemaless => crate::schema::TableSchema::schemaless(&body.name),
+        crate::schema::SchemaMode::Mixed => crate::schema::TableSchema::mixed(&body.name),
+    };
+
+    // Merge version from existing schema if it exists.
+    if let Some(existing) = registry.get(&body.name) {
+        schema.version = existing.version + 1;
+    }
+
+    if let Some(fields) = body.fields {
+        schema.fields = fields;
+    }
+    if let Some(indexes) = body.indexes {
+        schema.indexes = indexes;
+    }
+
+    registry
+        .define_table(schema.clone())
+        .await
+        .map_err(|e| ApiError::internal(format!("Failed to define table: {e}")))?;
+
+    let response = serde_json::json!({
+        "status": "ok",
+        "table": schema,
+    });
+    Ok(negotiate_response_status(
+        &headers,
+        StatusCode::CREATED,
+        &response,
+    ))
+}
+
+/// `DELETE /api/schema/tables/:table` — Remove a table schema.
+async fn schema_remove_table(
+    State(state): State<AppState>,
+    Path(table): Path<String>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    let registry = state
+        .schema_registry
+        .as_ref()
+        .ok_or_else(|| ApiError::internal("Schema registry not initialised"))?;
+
+    registry
+        .remove_table(&table)
+        .await
+        .map_err(|e| ApiError::internal(format!("Failed to remove table schema: {e}")))?;
+
+    let response = serde_json::json!({ "status": "ok", "table": table, "action": "removed" });
+    Ok(negotiate_response(&headers, &response))
+}
+
+/// `POST /api/schema/tables/:table/fields` — Define a field on a table.
+async fn schema_define_field(
+    State(state): State<AppState>,
+    Path(table): Path<String>,
+    headers: HeaderMap,
+    axum::Json(field): axum::Json<crate::schema::FieldDefinition>,
+) -> Result<Response, ApiError> {
+    let registry = state
+        .schema_registry
+        .as_ref()
+        .ok_or_else(|| ApiError::internal("Schema registry not initialised"))?;
+
+    registry
+        .define_field(&table, field.clone())
+        .await
+        .map_err(|e| ApiError::internal(format!("Failed to define field: {e}")))?;
+
+    let response = serde_json::json!({
+        "status": "ok",
+        "table": table,
+        "field": field,
+    });
+    Ok(negotiate_response_status(
+        &headers,
+        StatusCode::CREATED,
+        &response,
+    ))
+}
+
+/// `DELETE /api/schema/tables/:table/fields/:field` — Remove a field.
+async fn schema_remove_field(
+    State(state): State<AppState>,
+    Path((table, field)): Path<(String, String)>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    let registry = state
+        .schema_registry
+        .as_ref()
+        .ok_or_else(|| ApiError::internal("Schema registry not initialised"))?;
+
+    registry
+        .remove_field(&table, &field)
+        .await
+        .map_err(|e| ApiError::internal(format!("Failed to remove field: {e}")))?;
+
+    let response = serde_json::json!({ "status": "ok", "table": table, "field": field, "action": "removed" });
+    Ok(negotiate_response(&headers, &response))
+}
+
+/// `POST /api/schema/tables/:table/indexes` — Define an index on a table.
+async fn schema_define_index(
+    State(state): State<AppState>,
+    Path(table): Path<String>,
+    headers: HeaderMap,
+    axum::Json(index): axum::Json<crate::schema::IndexDefinition>,
+) -> Result<Response, ApiError> {
+    let registry = state
+        .schema_registry
+        .as_ref()
+        .ok_or_else(|| ApiError::internal("Schema registry not initialised"))?;
+
+    registry
+        .define_index(&table, index.clone())
+        .await
+        .map_err(|e| ApiError::internal(format!("Failed to define index: {e}")))?;
+
+    let response = serde_json::json!({
+        "status": "ok",
+        "table": table,
+        "index": index,
+    });
+    Ok(negotiate_response_status(
+        &headers,
+        StatusCode::CREATED,
+        &response,
+    ))
+}
+
+/// `GET /api/schema/tables/:table/migrations` — View migration history.
+async fn schema_migration_history(
+    State(state): State<AppState>,
+    Path(table): Path<String>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    let pool = state.pool.clone();
+    let engine = crate::schema::migration::SchemaMigrationEngine::new(pool)
+        .await
+        .map_err(|e| ApiError::internal(format!("Failed to init migration engine: {e}")))?;
+
+    let history = engine
+        .get_history(&table)
+        .await
+        .map_err(|e| ApiError::internal(format!("Failed to fetch migration history: {e}")))?;
+
+    let response = serde_json::json!({
+        "table": table,
+        "migrations": history,
+        "count": history.len(),
+    });
+    Ok(negotiate_response(&headers, &response))
 }
 
 #[cfg(test)]

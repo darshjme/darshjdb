@@ -42,6 +42,10 @@ pub struct AuthLayer {
     pub session_manager: Arc<SessionManager>,
     /// Rate limiter instance.
     pub rate_limiter: Arc<RateLimiter>,
+    /// Optional scope manager for API key validation.
+    /// When set, the middleware will also accept `X-API-Key` headers
+    /// and `Authorization: ApiKey <key>` schemes.
+    pub scope_manager: Option<Arc<tokio::sync::RwLock<super::scope::ScopeManager>>>,
 }
 
 /// Axum middleware function that validates Bearer tokens and enforces rate limits.
@@ -74,12 +78,28 @@ pub async fn auth_middleware(
         .unwrap_or("")
         .to_string();
 
-    // Extract Bearer token.
-    let token = headers
+    // Extract Bearer token or API key.
+    let auth_header = headers
         .get("authorization")
         .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+
+    let token = auth_header
+        .as_deref()
         .and_then(|v| v.strip_prefix("Bearer "))
         .map(|t| t.trim().to_string());
+
+    // API key from X-API-Key header or Authorization: ApiKey <key>.
+    let api_key = headers
+        .get("x-api-key")
+        .and_then(|v| v.to_str().ok())
+        .map(|t| t.trim().to_string())
+        .or_else(|| {
+            auth_header
+                .as_deref()
+                .and_then(|v| v.strip_prefix("ApiKey "))
+                .map(|t| t.trim().to_string())
+        });
 
     // Rate-limit check.
     let rate_key = if let Some(ref tok) = token {
@@ -90,16 +110,18 @@ pub async fn auth_middleware(
         let prefix = &tok[..std::cmp::min(tok.len(), 16)];
         let hash = sha2::Sha256::digest(prefix.as_bytes());
         RateLimitKey::Token(data_encoding::HEXLOWER.encode(&hash[..16]))
+    } else if let Some(ref key) = api_key {
+        RateLimitKey::ApiKey(key[..std::cmp::min(key.len(), 16)].to_string())
     } else {
         RateLimitKey::Ip(ip.clone())
     };
 
-    let is_authenticated = token.is_some();
+    let is_authenticated = token.is_some() || api_key.is_some();
     if let Err(retry_after) = layer.rate_limiter.check(&rate_key, is_authenticated) {
         return rate_limit_response(retry_after);
     }
 
-    // Validate token if present.
+    // Validate Bearer token if present.
     if let Some(ref token) = token {
         match layer
             .session_manager
@@ -111,6 +133,24 @@ pub async fn auth_middleware(
             Err(e) => {
                 return auth_error_response(&e);
             }
+        }
+    }
+    // Otherwise, validate API key if present and scope manager is configured.
+    else if let Some(ref key) = api_key {
+        if let Some(ref scope_mgr) = layer.scope_manager {
+            let mgr = scope_mgr.read().await;
+            match mgr.validate_api_key(key, &ip, &user_agent).await {
+                Ok((ctx, _scope)) => {
+                    request.extensions_mut().insert(ctx);
+                }
+                Err(e) => {
+                    return auth_error_response(&e);
+                }
+            }
+        } else {
+            return auth_error_response(&super::AuthError::Internal(
+                "API key authentication not configured".into(),
+            ));
         }
     }
 

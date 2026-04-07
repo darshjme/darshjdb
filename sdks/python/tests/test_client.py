@@ -1,33 +1,39 @@
-"""Comprehensive tests for the DarshanDB Python SDK client."""
+"""Comprehensive tests for the DarshJDB Python SDK."""
 
 from __future__ import annotations
 
-import inspect
+import json
 from typing import Any
-from unittest.mock import MagicMock, patch
 
 import httpx
 import pytest
 import respx
 
-from darshandb import DarshanDB, DarshanAdmin, AuthClient, StorageClient
-from darshandb.exceptions import DarshanError, DarshanAPIError
-
+from darshjdb import (
+    DarshDB,
+    DarshDBError,
+    DarshDBConnectionError,
+    DarshDBAuthError,
+    DarshDBQueryError,
+    DarshDBAPIError,
+    QueryResult,
+    LiveNotification,
+    LiveAction,
+    AuthResponse,
+    ConnectionState,
+)
 
 # ---------------------------------------------------------------------------
 #  Fixtures
 # ---------------------------------------------------------------------------
 
-SERVER = "http://localhost:7700"
-API_KEY = "test-key"
+SERVER = "http://localhost:8080"
 
 
 @pytest.fixture
 def db():
-    """Create a DarshanDB client for testing."""
-    client = DarshanDB(SERVER, api_key=API_KEY)
-    yield client
-    client.close()
+    """Create a DarshDB client for testing."""
+    return DarshDB(SERVER)
 
 
 @pytest.fixture
@@ -42,126 +48,220 @@ def mock_router():
 # ---------------------------------------------------------------------------
 
 
-class TestClientInit:
+class TestInit:
     def test_basic_init(self):
-        db = DarshanDB("http://localhost:7700", api_key="key1")
-        assert db._server_url == "http://localhost:7700"
-        assert db._api_key == "key1"
+        db = DarshDB("http://localhost:8080")
+        assert db._url == "http://localhost:8080"
         assert db._token is None
-        db.close()
+        assert db._namespace is None
+        assert db._database is None
+        assert db.state == ConnectionState.CONNECTED
 
     def test_strips_trailing_slash(self):
-        db = DarshanDB("http://localhost:7700/", api_key="key1")
-        assert db._server_url == "http://localhost:7700"
-        db.close()
-
-    def test_strips_multiple_trailing_slashes(self):
-        db = DarshanDB("http://localhost:7700///", api_key="key1")
-        # rstrip("/") removes all trailing slashes
-        assert db._server_url == "http://localhost:7700"
-        db.close()
+        db = DarshDB("http://localhost:8080/")
+        assert db._url == "http://localhost:8080"
 
     def test_custom_timeout(self):
-        db = DarshanDB(SERVER, api_key=API_KEY, timeout=60.0)
+        db = DarshDB(SERVER, timeout=60.0)
         assert db._http.timeout.connect == 60.0
-        db.close()
 
-    def test_default_timeout(self):
-        db = DarshanDB(SERVER, api_key=API_KEY)
-        assert db._http.timeout.connect == 30.0
-        db.close()
+    def test_missing_url_raises(self):
+        with pytest.raises(ValueError, match="url is required"):
+            DarshDB("")
 
-    def test_missing_server_url_raises(self):
-        with pytest.raises(ValueError, match="server_url is required"):
-            DarshanDB("", api_key="key1")
+    def test_context_manager(self):
+        async def _test():
+            async with DarshDB(SERVER) as db:
+                assert db.state == ConnectionState.CONNECTED
+            assert db.state == ConnectionState.DISCONNECTED
 
-    def test_missing_api_key_raises(self):
-        with pytest.raises(ValueError, match="api_key is required"):
-            DarshanDB(SERVER, api_key="")
-
-    def test_none_server_url_raises(self):
-        with pytest.raises((ValueError, TypeError)):
-            DarshanDB(None, api_key="key1")  # type: ignore[arg-type]
-
-    def test_none_api_key_raises(self):
-        with pytest.raises((ValueError, TypeError)):
-            DarshanDB(SERVER, api_key=None)  # type: ignore[arg-type]
+        import asyncio
+        asyncio.run(_test())
 
 
 # ---------------------------------------------------------------------------
-#  Sub-clients
+#  Authentication
 # ---------------------------------------------------------------------------
 
 
-class TestSubClients:
-    def test_auth_is_auth_client(self, db: DarshanDB):
-        assert isinstance(db.auth, AuthClient)
+class TestAuth:
+    @pytest.mark.asyncio
+    async def test_signin_with_user_pass(self, db: DarshDB, mock_router):
+        mock_router.post("/api/auth/signin").respond(
+            json={"accessToken": "tok123", "user": {"id": "u1"}, "refreshToken": "ref1"}
+        )
+        result = await db.signin({"user": "root", "pass": "root"})
+        assert isinstance(result, AuthResponse)
+        assert result.token == "tok123"
+        assert result.user == {"id": "u1"}
+        assert result.refresh_token == "ref1"
+        assert db._token == "tok123"
 
-    def test_storage_is_storage_client(self, db: DarshanDB):
-        assert isinstance(db.storage, StorageClient)
+    @pytest.mark.asyncio
+    async def test_signin_with_email_password(self, db: DarshDB, mock_router):
+        route = mock_router.post("/api/auth/signin").respond(
+            json={"accessToken": "tok456"}
+        )
+        await db.signin({"email": "alice@example.com", "password": "secret"})
+        body = json.loads(route.calls[0].request.content)
+        assert body["email"] == "alice@example.com"
+        assert body["password"] == "secret"
 
-    def test_auth_property_returns_same_instance(self, db: DarshanDB):
-        assert db.auth is db.auth
+    @pytest.mark.asyncio
+    async def test_signin_sets_namespace_database(self, db: DarshDB, mock_router):
+        mock_router.post("/api/auth/signin").respond(json={"accessToken": "tok"})
+        await db.signin({"user": "root", "pass": "root", "namespace": "ns1", "database": "db1"})
+        assert db._namespace == "ns1"
+        assert db._database == "db1"
 
-    def test_storage_property_returns_same_instance(self, db: DarshanDB):
-        assert db.storage is db.storage
+    @pytest.mark.asyncio
+    async def test_signin_auth_failure(self, db: DarshDB, mock_router):
+        mock_router.post("/api/auth/signin").respond(
+            status_code=401, json={"message": "Invalid credentials"}
+        )
+        with pytest.raises(DarshDBAuthError):
+            await db.signin({"user": "root", "pass": "wrong"})
 
-    def test_auth_client_holds_reference_to_parent(self, db: DarshanDB):
-        assert db.auth._client is db
+    @pytest.mark.asyncio
+    async def test_signup(self, db: DarshDB, mock_router):
+        mock_router.post("/api/auth/signup").respond(
+            json={"accessToken": "new-tok", "user": {"id": "u2", "email": "bob@test.com"}}
+        )
+        result = await db.signup({"email": "bob@test.com", "password": "pass123", "name": "Bob"})
+        assert result.token == "new-tok"
+        assert db._token == "new-tok"
 
-    def test_storage_client_holds_reference_to_parent(self, db: DarshanDB):
-        assert db.storage._client is db
+    @pytest.mark.asyncio
+    async def test_invalidate(self, db: DarshDB, mock_router):
+        db._token = "active-tok"
+        mock_router.post("/api/auth/signout").respond(json={})
+        await db.invalidate()
+        assert db._token is None
+
+    @pytest.mark.asyncio
+    async def test_authenticate(self, db: DarshDB):
+        await db.authenticate("stored-token")
+        assert db._token == "stored-token"
 
 
 # ---------------------------------------------------------------------------
-#  Token management
+#  Namespace / Database
 # ---------------------------------------------------------------------------
 
 
-class TestTokenManagement:
-    def test_set_and_get_token(self, db: DarshanDB):
-        assert db.get_token() is None
-        db.set_token("tok_abc")
-        assert db.get_token() == "tok_abc"
+class TestUse:
+    @pytest.mark.asyncio
+    async def test_use_sets_ns_db(self, db: DarshDB):
+        await db.use("test_ns", "test_db")
+        assert db._namespace == "test_ns"
+        assert db._database == "test_db"
 
-    def test_clear_token(self, db: DarshanDB):
-        db.set_token("tok_abc")
-        db.set_token(None)
-        assert db.get_token() is None
-
-    def test_build_headers_without_token(self, db: DarshanDB):
-        headers = db._build_headers()
-        assert headers["X-Api-Key"] == API_KEY
-        assert "Authorization" not in headers
-
-    def test_build_headers_with_token(self, db: DarshanDB):
-        db.set_token("tok_abc")
-        headers = db._build_headers()
-        assert headers["Authorization"] == "Bearer tok_abc"
-        assert headers["X-Api-Key"] == API_KEY
-
-    def test_build_headers_content_type(self, db: DarshanDB):
-        headers = db._build_headers()
-        assert headers["Content-Type"] == "application/json"
-        assert headers["Accept"] == "application/json"
+    @pytest.mark.asyncio
+    async def test_headers_include_ns_db(self, db: DarshDB, mock_router):
+        await db.use("myns", "mydb")
+        db._token = "tok"
+        route = mock_router.post("/api/query").respond(json={"data": []})
+        await db.query("SELECT * FROM users")
+        req = route.calls[0].request
+        assert req.headers["x-darshdb-ns"] == "myns"
+        assert req.headers["x-darshdb-db"] == "mydb"
+        assert req.headers["authorization"] == "Bearer tok"
 
 
 # ---------------------------------------------------------------------------
-#  Context manager
+#  CRUD
 # ---------------------------------------------------------------------------
 
 
-class TestContextManager:
-    def test_enter_returns_self(self):
-        db = DarshanDB(SERVER, api_key=API_KEY)
-        assert db.__enter__() is db
-        db.close()
+class TestCRUD:
+    @pytest.mark.asyncio
+    async def test_select_table(self, db: DarshDB, mock_router):
+        mock_router.get("/api/data/users").respond(
+            json={"data": [{"id": "u1", "name": "Alice"}]}
+        )
+        result = await db.select("users")
+        assert len(result) == 1
+        assert result[0]["name"] == "Alice"
 
-    def test_context_manager_closes(self):
-        with DarshanDB(SERVER, api_key=API_KEY) as db:
-            assert db._http is not None
-        # After exit, the http client should be closed
-        assert db._http.is_closed
+    @pytest.mark.asyncio
+    async def test_select_record(self, db: DarshDB, mock_router):
+        mock_router.get("/api/data/users/darsh").respond(
+            json={"id": "darsh", "name": "Darsh"}
+        )
+        result = await db.select("users:darsh")
+        assert len(result) == 1
+        assert result[0]["id"] == "darsh"
+
+    @pytest.mark.asyncio
+    async def test_create(self, db: DarshDB, mock_router):
+        route = mock_router.post("/api/data/users").respond(
+            json={"id": "u1", "name": "Darsh", "age": 30}
+        )
+        result = await db.create("users", {"name": "Darsh", "age": 30})
+        assert result["name"] == "Darsh"
+        body = json.loads(route.calls[0].request.content)
+        assert body["name"] == "Darsh"
+
+    @pytest.mark.asyncio
+    async def test_create_with_id(self, db: DarshDB, mock_router):
+        route = mock_router.post("/api/data/users").respond(
+            json={"id": "darsh", "name": "Darsh"}
+        )
+        await db.create("users:darsh", {"name": "Darsh"})
+        body = json.loads(route.calls[0].request.content)
+        assert body["id"] == "darsh"
+        assert body["name"] == "Darsh"
+
+    @pytest.mark.asyncio
+    async def test_update(self, db: DarshDB, mock_router):
+        mock_router.patch("/api/data/users/darsh").respond(
+            json={"id": "darsh", "age": 31}
+        )
+        result = await db.update("users:darsh", {"age": 31})
+        assert result["age"] == 31
+
+    @pytest.mark.asyncio
+    async def test_update_requires_id(self, db: DarshDB):
+        with pytest.raises(DarshDBError, match="requires a record ID"):
+            await db.update("users", {"age": 31})
+
+    @pytest.mark.asyncio
+    async def test_merge(self, db: DarshDB, mock_router):
+        mock_router.patch("/api/data/users/darsh").respond(
+            json={"id": "darsh", "name": "Darsh", "age": 31}
+        )
+        result = await db.merge("users:darsh", {"age": 31})
+        assert result["age"] == 31
+
+    @pytest.mark.asyncio
+    async def test_delete_record(self, db: DarshDB, mock_router):
+        mock_router.delete("/api/data/users/darsh").respond(json={"ok": True})
+        result = await db.delete("users:darsh")
+        assert result["ok"] is True
+
+    @pytest.mark.asyncio
+    async def test_delete_table(self, db: DarshDB, mock_router):
+        mock_router.delete("/api/data/users").respond(status_code=204)
+        result = await db.delete("users")
+        assert result == {}
+
+    @pytest.mark.asyncio
+    async def test_insert_single(self, db: DarshDB, mock_router):
+        mock_router.post("/api/mutate").respond(
+            json={"results": [{"id": "u1", "name": "Alice"}]}
+        )
+        result = await db.insert("users", {"name": "Alice"})
+        assert len(result) == 1
+
+    @pytest.mark.asyncio
+    async def test_insert_batch(self, db: DarshDB, mock_router):
+        route = mock_router.post("/api/mutate").respond(
+            json={"results": [{"id": "u1"}, {"id": "u2"}]}
+        )
+        await db.insert("users", [{"name": "A"}, {"name": "B"}])
+        body = json.loads(route.calls[0].request.content)
+        assert len(body["mutations"]) == 2
+        assert all(m["op"] == "insert" for m in body["mutations"])
 
 
 # ---------------------------------------------------------------------------
@@ -170,183 +270,96 @@ class TestContextManager:
 
 
 class TestQuery:
-    def test_query_sends_post(self, db: DarshanDB, mock_router):
-        route = mock_router.post("/api/query").respond(
-            json={"data": [{"id": "1"}], "txId": "tx1"}
+    @pytest.mark.asyncio
+    async def test_query_returns_query_result(self, db: DarshDB, mock_router):
+        mock_router.post("/api/query").respond(
+            json={"data": [{"id": "1", "age": 25}], "meta": {"count": 1, "duration_ms": 0.5}}
         )
-        result = db.query({"collection": "posts", "limit": 10})
-        assert route.called
-        assert result["data"] == [{"id": "1"}]
-        assert result["txId"] == "tx1"
+        results = await db.query("SELECT * FROM users WHERE age > 18")
+        assert len(results) == 1
+        assert isinstance(results[0], QueryResult)
+        assert results[0].count == 1
+        assert results[0].data[0]["age"] == 25
 
-    def test_query_sends_correct_body(self, db: DarshanDB, mock_router):
-        q = {
-            "collection": "posts",
-            "where": [{"field": "published", "op": "=", "value": True}],
-            "limit": 20,
-            "offset": 5,
-        }
-        route = mock_router.post("/api/query").respond(json={"data": [], "txId": "tx2"})
-        db.query(q)
-        assert route.called
-        request = route.calls[0].request
-        import json
-        body = json.loads(request.content)
-        assert body["collection"] == "posts"
-        assert body["limit"] == 20
-        assert body["offset"] == 5
-        assert len(body["where"]) == 1
-
-    def test_query_includes_api_key_header(self, db: DarshanDB, mock_router):
-        route = mock_router.post("/api/query").respond(json={"data": [], "txId": "tx3"})
-        db.query({"collection": "test"})
-        request = route.calls[0].request
-        assert request.headers["x-api-key"] == API_KEY
-
-    def test_query_includes_auth_token(self, db: DarshanDB, mock_router):
-        db.set_token("my-token")
-        route = mock_router.post("/api/query").respond(json={"data": [], "txId": "tx4"})
-        db.query({"collection": "test"})
-        request = route.calls[0].request
-        assert request.headers["authorization"] == "Bearer my-token"
-
-
-# ---------------------------------------------------------------------------
-#  Transact
-# ---------------------------------------------------------------------------
-
-
-class TestTransact:
-    def test_transact_sends_post(self, db: DarshanDB, mock_router):
-        route = mock_router.post("/api/transact").respond(json={"txId": "tx10"})
-        ops = [
-            {"kind": "set", "entity": "accounts", "id": "a1", "data": {"balance": 900}},
-        ]
-        result = db.transact(ops)
-        assert route.called
-        assert result["txId"] == "tx10"
-
-    def test_transact_wraps_ops(self, db: DarshanDB, mock_router):
-        route = mock_router.post("/api/transact").respond(json={"txId": "tx11"})
-        ops = [
-            {"kind": "set", "entity": "x", "id": "1", "data": {"a": 1}},
-            {"kind": "delete", "entity": "x", "id": "2"},
-        ]
-        db.transact(ops)
-        import json
+    @pytest.mark.asyncio
+    async def test_query_sends_correct_body(self, db: DarshDB, mock_router):
+        route = mock_router.post("/api/query").respond(json={"data": []})
+        await db.query("SELECT * FROM users", vars={"min_age": 18})
         body = json.loads(route.calls[0].request.content)
-        assert "ops" in body
-        assert len(body["ops"]) == 2
-        assert body["ops"][0]["kind"] == "set"
-        assert body["ops"][1]["kind"] == "delete"
+        assert body["query"] == "SELECT * FROM users"
+        assert body["vars"] == {"min_age": 18}
 
-    def test_transact_empty_ops(self, db: DarshanDB, mock_router):
-        route = mock_router.post("/api/transact").respond(json={"txId": "tx12"})
-        db.transact([])
-        import json
+    @pytest.mark.asyncio
+    async def test_query_error_raises(self, db: DarshDB, mock_router):
+        mock_router.post("/api/query").respond(
+            status_code=400, json={"message": "Parse error at line 1"}
+        )
+        with pytest.raises(DarshDBQueryError) as exc_info:
+            await db.query("INVALID QUERY")
+        assert exc_info.value.query == "INVALID QUERY"
+
+    @pytest.mark.asyncio
+    async def test_query_raw(self, db: DarshDB, mock_router):
+        mock_router.post("/api/query").respond(
+            json={"data": [], "meta": {"count": 0}, "extra": "field"}
+        )
+        raw = await db.query_raw("SELECT * FROM users")
+        assert "extra" in raw
+
+
+# ---------------------------------------------------------------------------
+#  Graph
+# ---------------------------------------------------------------------------
+
+
+class TestGraph:
+    @pytest.mark.asyncio
+    async def test_relate(self, db: DarshDB, mock_router):
+        route = mock_router.post("/api/mutate").respond(
+            json={"results": [{"id": "r1"}]}
+        )
+        result = await db.relate("user:darsh", "works_at", "company:knowai")
         body = json.loads(route.calls[0].request.content)
-        assert body["ops"] == []
+        mutation = body["mutations"][0]
+        assert mutation["op"] == "insert"
+        assert mutation["entity"] == "works_at"
+        assert mutation["data"]["from_entity"] == "user"
+        assert mutation["data"]["from_id"] == "darsh"
+        assert mutation["data"]["to_entity"] == "company"
+        assert mutation["data"]["to_id"] == "knowai"
+
+    @pytest.mark.asyncio
+    async def test_relate_with_data(self, db: DarshDB, mock_router):
+        route = mock_router.post("/api/mutate").respond(json={"results": [{}]})
+        await db.relate("user:darsh", "works_at", "company:knowai", {"role": "CEO"})
+        body = json.loads(route.calls[0].request.content)
+        assert body["mutations"][0]["data"]["role"] == "CEO"
 
 
 # ---------------------------------------------------------------------------
-#  Server-side functions (fn)
+#  Server-side functions
 # ---------------------------------------------------------------------------
 
 
-class TestFn:
-    def test_fn_sends_to_correct_path(self, db: DarshanDB, mock_router):
-        route = mock_router.post("/api/fn/generateReport").respond(
+class TestRun:
+    @pytest.mark.asyncio
+    async def test_run_function(self, db: DarshDB, mock_router):
+        mock_router.post("/api/fn/generateReport").respond(
             json={"result": {"rows": 42}}
         )
-        result = db.fn("generateReport", {"month": "2026-04"})
-        assert route.called
+        result = await db.run("generateReport", {"month": "2026-04"})
         assert result == {"rows": 42}
 
-    def test_fn_extracts_result_key(self, db: DarshanDB, mock_router):
-        mock_router.post("/api/fn/myFunc").respond(json={"result": "hello"})
-        assert db.fn("myFunc") == "hello"
+    @pytest.mark.asyncio
+    async def test_run_extracts_result(self, db: DarshDB, mock_router):
+        mock_router.post("/api/fn/ping").respond(json={"result": "pong"})
+        assert await db.run("ping") == "pong"
 
-    def test_fn_returns_full_body_if_no_result_key(self, db: DarshanDB, mock_router):
-        mock_router.post("/api/fn/myFunc").respond(json={"data": "raw"})
-        result = db.fn("myFunc")
-        assert result == {"data": "raw"}
-
-    def test_fn_sends_empty_dict_when_no_args(self, db: DarshanDB, mock_router):
-        route = mock_router.post("/api/fn/noArgs").respond(json={"result": True})
-        db.fn("noArgs")
-        import json
-        body = json.loads(route.calls[0].request.content)
-        assert body == {}
-
-    def test_fn_sends_provided_args(self, db: DarshanDB, mock_router):
-        route = mock_router.post("/api/fn/withArgs").respond(json={"result": True})
-        db.fn("withArgs", {"x": 1, "y": "two"})
-        import json
-        body = json.loads(route.calls[0].request.content)
-        assert body == {"x": 1, "y": "two"}
-
-
-# ---------------------------------------------------------------------------
-#  Data helpers (get, create, update, delete)
-# ---------------------------------------------------------------------------
-
-
-class TestDataHelpers:
-    def test_get_builds_minimal_query(self, db: DarshanDB, mock_router):
-        route = mock_router.post("/api/query").respond(json={"data": [], "txId": "t1"})
-        db.get("users")
-        import json
-        body = json.loads(route.calls[0].request.content)
-        assert body == {"collection": "users"}
-
-    def test_get_with_all_params(self, db: DarshanDB, mock_router):
-        route = mock_router.post("/api/query").respond(json={"data": [], "txId": "t2"})
-        db.get(
-            "users",
-            where=[{"field": "active", "op": "=", "value": True}],
-            order=[{"field": "name", "direction": "asc"}],
-            limit=10,
-            offset=5,
-            select=["id", "name"],
-        )
-        import json
-        body = json.loads(route.calls[0].request.content)
-        assert body["collection"] == "users"
-        assert body["where"] == [{"field": "active", "op": "=", "value": True}]
-        assert body["order"] == [{"field": "name", "direction": "asc"}]
-        assert body["limit"] == 10
-        assert body["offset"] == 5
-        assert body["select"] == ["id", "name"]
-
-    def test_get_omits_none_params(self, db: DarshanDB, mock_router):
-        route = mock_router.post("/api/query").respond(json={"data": [], "txId": "t3"})
-        db.get("users", limit=5)
-        import json
-        body = json.loads(route.calls[0].request.content)
-        assert "where" not in body
-        assert "order" not in body
-        assert "offset" not in body
-        assert "select" not in body
-        assert body["limit"] == 5
-
-    def test_create_sends_post(self, db: DarshanDB, mock_router):
-        route = mock_router.post("/api/data/users").respond(
-            json={"id": "u1", "name": "Alice"}
-        )
-        result = db.create("users", {"name": "Alice"})
-        assert result["id"] == "u1"
-
-    def test_update_sends_post(self, db: DarshanDB, mock_router):
-        route = mock_router.post("/api/data/users/u1").respond(
-            json={"id": "u1", "name": "Bob"}
-        )
-        result = db.update("users", "u1", {"name": "Bob"})
-        assert result["name"] == "Bob"
-
-    def test_delete_sends_delete_method(self, db: DarshanDB, mock_router):
-        route = mock_router.delete("/api/data/users/u1").respond(json={"ok": True})
-        result = db.delete("users", "u1")
-        assert result["ok"] is True
+    @pytest.mark.asyncio
+    async def test_run_no_result_key(self, db: DarshDB, mock_router):
+        mock_router.post("/api/fn/raw").respond(json={"data": "test"})
+        result = await db.run("raw")
+        assert result == {"data": "test"}
 
 
 # ---------------------------------------------------------------------------
@@ -354,289 +367,117 @@ class TestDataHelpers:
 # ---------------------------------------------------------------------------
 
 
-class TestErrorHandling:
-    def test_4xx_raises_api_error(self, db: DarshanDB, mock_router):
+class TestErrors:
+    @pytest.mark.asyncio
+    async def test_4xx_raises_api_error(self, db: DarshDB, mock_router):
         mock_router.post("/api/query").respond(
-            status_code=400,
-            json={"message": "Bad query"},
+            status_code=400, json={"message": "Bad query"}
         )
-        with pytest.raises(DarshanAPIError) as exc_info:
-            db.query({"collection": "x"})
-        assert exc_info.value.status_code == 400
-        assert "Bad query" in str(exc_info.value)
+        with pytest.raises(DarshDBQueryError):
+            await db.query("BAD")
 
-    def test_5xx_raises_api_error(self, db: DarshanDB, mock_router):
-        mock_router.post("/api/query").respond(
-            status_code=500,
-            json={"error": "Internal error"},
+    @pytest.mark.asyncio
+    async def test_5xx_raises_api_error(self, db: DarshDB, mock_router):
+        mock_router.get("/api/data/users").respond(
+            status_code=500, json={"error": "Internal error"}
         )
-        with pytest.raises(DarshanAPIError) as exc_info:
-            db.query({"collection": "x"})
+        with pytest.raises(DarshDBAPIError) as exc_info:
+            await db.select("users")
         assert exc_info.value.status_code == 500
 
-    def test_401_raises_api_error(self, db: DarshanDB, mock_router):
-        mock_router.post("/api/query").respond(
-            status_code=401,
-            json={"message": "Unauthorized"},
+    @pytest.mark.asyncio
+    async def test_401_raises_auth_error(self, db: DarshDB, mock_router):
+        mock_router.get("/api/data/users").respond(
+            status_code=401, json={"message": "Unauthorized"}
         )
-        with pytest.raises(DarshanAPIError) as exc_info:
-            db.query({"collection": "x"})
-        assert exc_info.value.status_code == 401
+        with pytest.raises(DarshDBAuthError):
+            await db.select("users")
 
-    def test_error_body_preserved(self, db: DarshanDB, mock_router):
-        mock_router.post("/api/query").respond(
-            status_code=403,
-            json={"message": "Forbidden", "code": "PERM_DENIED"},
-        )
-        with pytest.raises(DarshanAPIError) as exc_info:
-            db.query({"collection": "x"})
-        assert exc_info.value.error_body["code"] == "PERM_DENIED"
+    @pytest.mark.asyncio
+    async def test_network_error(self, db: DarshDB, mock_router):
+        mock_router.get("/api/data/users").mock(side_effect=httpx.ConnectError("refused"))
+        with pytest.raises(DarshDBConnectionError):
+            await db.select("users")
 
-    def test_non_json_error_body(self, db: DarshanDB, mock_router):
-        mock_router.post("/api/query").respond(
-            status_code=502,
-            text="Bad Gateway",
-            headers={"content-type": "text/plain"},
-        )
-        with pytest.raises(DarshanAPIError) as exc_info:
-            db.query({"collection": "x"})
-        assert exc_info.value.status_code == 502
-        assert "raw" in exc_info.value.error_body
-
-    def test_network_error_raises_darshan_error(self, db: DarshanDB, mock_router):
-        mock_router.post("/api/query").mock(side_effect=httpx.ConnectError("refused"))
-        with pytest.raises(DarshanError, match="Network error"):
-            db.query({"collection": "x"})
-
-    def test_invalid_json_response_raises_darshan_error(self, db: DarshanDB, mock_router):
-        mock_router.post("/api/query").respond(
-            status_code=200,
-            text="not json at all",
-            headers={"content-type": "text/plain"},
-        )
-        with pytest.raises(DarshanError, match="Invalid JSON"):
-            db.query({"collection": "x"})
-
-    def test_204_returns_empty_dict(self, db: DarshanDB, mock_router):
+    @pytest.mark.asyncio
+    async def test_204_returns_empty(self, db: DarshDB, mock_router):
         mock_router.delete("/api/data/users/u1").respond(status_code=204)
-        result = db.delete("users", "u1")
+        result = await db.delete("users:u1")
         assert result == {}
 
 
 # ---------------------------------------------------------------------------
-#  Auth client method signatures
+#  Models
 # ---------------------------------------------------------------------------
 
 
-class TestAuthClientSignatures:
-    def test_sign_up_signature(self, db: DarshanDB):
-        sig = inspect.signature(db.auth.sign_up)
-        params = list(sig.parameters.keys())
-        assert "email" in params
-        assert "password" in params
-        assert "display_name" in params
-        assert "metadata" in params
+class TestModels:
+    def test_query_result_iteration(self):
+        qr = QueryResult(data=[{"a": 1}, {"a": 2}], meta={"count": 2})
+        assert len(qr) == 2
+        assert list(qr) == [{"a": 1}, {"a": 2}]
+        assert qr.first() == {"a": 1}
+        assert qr.count == 2
+        assert bool(qr) is True
 
-    def test_sign_in_signature(self, db: DarshanDB):
-        sig = inspect.signature(db.auth.sign_in)
-        params = list(sig.parameters.keys())
-        assert "email" in params
-        assert "password" in params
+    def test_query_result_empty(self):
+        qr = QueryResult()
+        assert len(qr) == 0
+        assert qr.first() is None
+        assert bool(qr) is False
 
-    def test_sign_in_with_oauth_signature(self, db: DarshanDB):
-        sig = inspect.signature(db.auth.sign_in_with_oauth)
-        params = list(sig.parameters.keys())
-        assert "provider" in params
-        assert "token" in params
-        assert "redirect_uri" in params
+    def test_live_notification_from_dict(self):
+        notif = LiveNotification.from_dict({"action": "CREATE", "result": {"id": "u1"}})
+        assert notif.action == LiveAction.CREATE
+        assert notif.result == {"id": "u1"}
 
-    def test_sign_out_signature(self, db: DarshanDB):
-        sig = inspect.signature(db.auth.sign_out)
-        params = list(sig.parameters.keys())
-        assert params == []
+    def test_live_notification_from_dict_event_key(self):
+        notif = LiveNotification.from_dict({"event": "deleted", "data": {"id": "u2"}})
+        assert notif.action == LiveAction.DELETE
+        assert notif.result == {"id": "u2"}
 
-    def test_get_user_signature(self, db: DarshanDB):
-        sig = inspect.signature(db.auth.get_user)
-        params = list(sig.parameters.keys())
-        assert params == []
-
-    def test_refresh_signature(self, db: DarshanDB):
-        sig = inspect.signature(db.auth.refresh)
-        params = list(sig.parameters.keys())
-        assert "refresh_token" in params
-
-    def test_set_token_signature(self, db: DarshanDB):
-        sig = inspect.signature(db.auth.set_token)
-        params = list(sig.parameters.keys())
-        assert "token" in params
+    def test_auth_response(self):
+        ar = AuthResponse(token="tok", user={"id": "1"}, refresh_token="ref")
+        assert ar.token == "tok"
+        assert ar.user == {"id": "1"}
+        assert ar.refresh_token == "ref"
 
 
 # ---------------------------------------------------------------------------
-#  Storage client method signatures
+#  Batch
 # ---------------------------------------------------------------------------
 
 
-class TestStorageClientSignatures:
-    def test_upload_signature(self, db: DarshanDB):
-        sig = inspect.signature(db.storage.upload)
-        params = list(sig.parameters.keys())
-        assert "path" in params
-        assert "file_path" in params
-        assert "content_type" in params
-        assert "metadata" in params
-
-    def test_upload_bytes_signature(self, db: DarshanDB):
-        sig = inspect.signature(db.storage.upload_bytes)
-        params = list(sig.parameters.keys())
-        assert "path" in params
-        assert "content" in params
-        assert "filename" in params
-
-    def test_get_url_signature(self, db: DarshanDB):
-        sig = inspect.signature(db.storage.get_url)
-        params = list(sig.parameters.keys())
-        assert "path" in params
-        assert "expiry" in params
-
-    def test_delete_signature(self, db: DarshanDB):
-        sig = inspect.signature(db.storage.delete)
-        params = list(sig.parameters.keys())
-        assert "path" in params
-
-    def test_list_signature(self, db: DarshanDB):
-        sig = inspect.signature(db.storage.list)
-        params = list(sig.parameters.keys())
-        assert "prefix" in params
-        assert "limit" in params
-        assert "cursor" in params
+class TestBatch:
+    @pytest.mark.asyncio
+    async def test_batch_operations(self, db: DarshDB, mock_router):
+        route = mock_router.post("/api/batch").respond(
+            json={"results": [{"id": "u1"}, {"data": []}]}
+        )
+        results = await db.batch([
+            {"method": "POST", "path": "/api/data/users", "body": {"name": "A"}},
+            {"method": "GET", "path": "/api/data/users"},
+        ])
+        assert len(results) == 2
 
 
 # ---------------------------------------------------------------------------
-#  DarshanAdmin
+#  Health
 # ---------------------------------------------------------------------------
 
 
-class TestDarshanAdmin:
-    def test_init(self):
-        admin = DarshanAdmin(SERVER, admin_token="admin-tok")
-        assert admin._server_url == "http://localhost:7700"
-        assert admin._admin_token == "admin-tok"
-        admin.close()
+class TestHealth:
+    @pytest.mark.asyncio
+    async def test_health_true(self, db: DarshDB, mock_router):
+        mock_router.get("/api/health").respond(json={"status": "ok"})
+        assert await db.health() is True
 
-    def test_strips_trailing_slash(self):
-        admin = DarshanAdmin("http://localhost:7700/", admin_token="admin-tok")
-        assert admin._server_url == "http://localhost:7700"
-        admin.close()
+    @pytest.mark.asyncio
+    async def test_health_false_on_error(self, db: DarshDB, mock_router):
+        mock_router.get("/api/health").mock(side_effect=httpx.ConnectError("down"))
+        assert await db.health() is False
 
-    def test_missing_server_url_raises(self):
-        with pytest.raises(ValueError, match="server_url is required"):
-            DarshanAdmin("", admin_token="admin-tok")
-
-    def test_missing_admin_token_raises(self):
-        with pytest.raises(ValueError, match="admin_token is required"):
-            DarshanAdmin(SERVER, admin_token="")
-
-    def test_custom_timeout(self):
-        admin = DarshanAdmin(SERVER, admin_token="tok", timeout=120.0)
-        assert admin._timeout == 120.0
-        admin.close()
-
-    def test_context_manager(self):
-        with DarshanAdmin(SERVER, admin_token="tok") as admin:
-            assert admin._http is not None
-        assert admin._http.is_closed
-
-    def test_build_headers(self):
-        admin = DarshanAdmin(SERVER, admin_token="admin-tok")
-        headers = admin._build_headers()
-        assert headers["Authorization"] == "Bearer admin-tok"
-        assert headers["Content-Type"] == "application/json"
-        admin.close()
-
-
-class TestDarshanAdminAsUser:
-    def test_as_user_with_email(self):
-        """as_user with email calls impersonate endpoint."""
-        admin = DarshanAdmin(SERVER, admin_token="admin-tok")
-        with respx.mock(base_url=SERVER) as router:
-            router.post("/api/admin/impersonate").respond(
-                json={"accessToken": "user-tok-123"}
-            )
-            user_db = admin.as_user("alice@example.com")
-            assert isinstance(user_db, DarshanDB)
-            assert user_db.get_token() == "user-tok-123"
-            user_db.close()
-        admin.close()
-
-    def test_as_user_with_token(self):
-        """as_user with a JWT-like string uses it directly."""
-        admin = DarshanAdmin(SERVER, admin_token="admin-tok")
-        user_db = admin.as_user("eyJhbGciOiJIUzI1NiJ9.payload.signature")
-        assert isinstance(user_db, DarshanDB)
-        assert user_db.get_token() == "eyJhbGciOiJIUzI1NiJ9.payload.signature"
-        user_db.close()
-        admin.close()
-
-    def test_as_user_sets_admin_token_as_api_key(self):
-        """Impersonated client uses admin token as the api_key."""
-        admin = DarshanAdmin(SERVER, admin_token="admin-tok")
-        user_db = admin.as_user("eyJ.payload.sig")
-        assert user_db._api_key == "admin-tok"
-        user_db.close()
-        admin.close()
-
-
-class TestDarshanAdminQuery:
-    def test_admin_query(self):
-        admin = DarshanAdmin(SERVER, admin_token="admin-tok")
-        with respx.mock(base_url=SERVER) as router:
-            route = router.post("/api/query").respond(
-                json={"data": [{"id": "1"}], "txId": "tx1"}
-            )
-            result = admin.query({"collection": "users"})
-            assert result["data"] == [{"id": "1"}]
-            assert route.called
-        admin.close()
-
-    def test_admin_transact(self):
-        admin = DarshanAdmin(SERVER, admin_token="admin-tok")
-        with respx.mock(base_url=SERVER) as router:
-            route = router.post("/api/transact").respond(json={"txId": "tx20"})
-            result = admin.transact([{"kind": "set", "entity": "x", "id": "1", "data": {}}])
-            assert result["txId"] == "tx20"
-        admin.close()
-
-    def test_admin_fn(self):
-        admin = DarshanAdmin(SERVER, admin_token="admin-tok")
-        with respx.mock(base_url=SERVER) as router:
-            router.post("/api/fn/cleanup").respond(json={"result": "done"})
-            result = admin.fn("cleanup")
-            assert result == "done"
-        admin.close()
-
-    def test_admin_error_handling(self):
-        admin = DarshanAdmin(SERVER, admin_token="admin-tok")
-        with respx.mock(base_url=SERVER) as router:
-            router.post("/api/query").respond(
-                status_code=403, json={"message": "Admin only"}
-            )
-            with pytest.raises(DarshanAPIError) as exc_info:
-                admin.query({"collection": "x"})
-            assert exc_info.value.status_code == 403
-        admin.close()
-
-    def test_admin_network_error(self):
-        admin = DarshanAdmin(SERVER, admin_token="admin-tok")
-        with respx.mock(base_url=SERVER) as router:
-            router.post("/api/query").mock(side_effect=httpx.ConnectError("fail"))
-            with pytest.raises(DarshanError, match="Network error"):
-                admin.query({"collection": "x"})
-        admin.close()
-
-    def test_admin_204_returns_empty(self):
-        admin = DarshanAdmin(SERVER, admin_token="admin-tok")
-        with respx.mock(base_url=SERVER) as router:
-            router.post("/api/transact").respond(status_code=204)
-            result = admin.transact([])
-            assert result == {}
-        admin.close()
+    @pytest.mark.asyncio
+    async def test_version(self, db: DarshDB, mock_router):
+        mock_router.get("/api/health").respond(json={"version": "0.2.0"})
+        assert await db.version() == "0.2.0"

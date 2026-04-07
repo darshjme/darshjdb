@@ -1,11 +1,6 @@
 # DarshJDB Python SDK
 
-Official Python SDK for [DarshJDB](https://github.com/darshjdb/darshjdb) with sync and async support.
-
-## Requirements
-
-- Python 3.9+
-- httpx 0.24+
+Official async Python client for [DarshJDB](https://db.darshj.me) — a real-time database with graph relations, live queries, auth, and storage.
 
 ## Installation
 
@@ -13,227 +8,154 @@ Official Python SDK for [DarshJDB](https://github.com/darshjdb/darshjdb) with sy
 pip install darshjdb
 ```
 
-For real-time SSE subscriptions:
+Or with [uv](https://github.com/astral-sh/uv):
 
 ```bash
-pip install darshjdb[sse]
+uv add darshjdb
 ```
 
 ## Quick Start
 
 ```python
-from darshjdb import DarshJDB
+from darshjdb import DarshDB
 
-db = DarshJDB(server_url="https://db.example.com", api_key="your-key")
+async def main():
+    db = DarshDB("http://localhost:8080")
+    await db.signin({"user": "root", "pass": "root"})
+    await db.use("test", "test")
 
-# Auth
-db.auth.sign_up("alice@example.com", "password123", display_name="Alice")
-db.auth.sign_in("alice@example.com", "password123")
-user = db.auth.get_user()
-db.auth.sign_out()
+    # Create
+    user = await db.create("users", {"name": "Darsh", "age": 30})
 
-# Query
-result = db.query({
-    "collection": "posts",
-    "where": [{"field": "published", "op": "=", "value": True}],
-    "order": [{"field": "createdAt", "direction": "desc"}],
-    "limit": 20,
-})
+    # Read
+    users = await db.select("users")
+    user = await db.select("users:darsh")
 
-# Convenience helpers
-posts = db.get("posts", where=[{"field": "published", "op": "=", "value": True}], limit=20)
-post = db.create("posts", {"title": "Hello", "body": "My first post."})
-db.update("posts", post["id"], {"title": "Updated"})
-db.delete("posts", post["id"])
+    # Update
+    await db.update("users:darsh", {"age": 31})
 
-# Transactions
-db.transact([
-    {"kind": "set", "entity": "accounts", "id": "a1", "data": {"balance": 900}},
-    {"kind": "set", "entity": "accounts", "id": "a2", "data": {"balance": 1100}},
-])
+    # Delete
+    await db.delete("users:darsh")
 
-# Server-side functions
-report = db.fn("generateReport", {"month": "2026-04"})
+    # Query
+    results = await db.query("SELECT * FROM users WHERE age > 18")
 
-# Storage
-result = db.storage.upload("/avatars/photo.jpg", "/tmp/photo.jpg")
-url = db.storage.get_url("/avatars/photo.jpg")
-db.storage.delete("/avatars/photo.jpg")
+    # Graph relations
+    await db.relate("user:darsh", "works_at", "company:knowai")
 
-db.close()
+    # Live queries (WebSocket)
+    async for change in db.live("SELECT * FROM users"):
+        print(f"{change.action}: {change.result}")
+
+    # Server-side functions
+    report = await db.run("generateReport", {"month": "2026-04"})
+
+    await db.close()
 ```
 
-## Context Manager
+## API Reference
+
+### Connection
 
 ```python
-with DarshJDB(server_url="https://db.example.com", api_key="key") as db:
-    db.auth.sign_in("user@example.com", "password")
-    posts = db.get("posts", limit=10)
-# HTTP client is automatically closed
+db = DarshDB("http://localhost:8080", timeout=30.0)
+
+# Context manager (auto-close)
+async with DarshDB("http://localhost:8080") as db:
+    ...
 ```
 
-## Admin Client
+### Authentication
 
 ```python
-from darshjdb import DarshanAdmin
+# Root/system auth
+await db.signin({"user": "root", "pass": "root"})
 
-admin = DarshanAdmin(
-    server_url="https://db.example.com",
-    admin_token="dsk_admin_...",
-)
+# Email/password auth
+await db.signin({"email": "alice@example.com", "password": "secret"})
 
-# Impersonate a user
-user_db = admin.as_user("alice@example.com")
-posts = user_db.query({"collection": "posts"})
+# Signup
+await db.signup({"email": "bob@example.com", "password": "pass", "name": "Bob"})
 
-# Admin-level queries (bypass permissions)
-all_users = admin.query({"collection": "users", "limit": 1000})
+# Set token directly
+await db.authenticate("existing-jwt-token")
 
-# Real-time subscriptions (async, requires darshjdb[sse])
-import asyncio
-
-async def watch_orders():
-    async for event in admin.subscribe({"collection": "orders"}):
-        print(f"Order update: {event}")
-
-asyncio.run(watch_orders())
+# Sign out
+await db.invalidate()
 ```
 
-## FastAPI Integration
+### Namespace & Database
 
 ```python
-from contextlib import asynccontextmanager
-from fastapi import FastAPI, Depends, HTTPException
-from darshjdb import DarshJDB
-
-db: DarshJDB | None = None
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    global db
-    db = DarshJDB(
-        server_url="https://db.example.com",
-        api_key="your-key",
-    )
-    yield
-    db.close()
-
-app = FastAPI(lifespan=lifespan)
-
-def get_db() -> DarshJDB:
-    assert db is not None
-    return db
-
-@app.get("/posts")
-def list_posts(db: DarshJDB = Depends(get_db)):
-    result = db.get(
-        "posts",
-        where=[{"field": "published", "op": "=", "value": True}],
-        order=[{"field": "createdAt", "direction": "desc"}],
-        limit=20,
-    )
-    return result["data"]
-
-@app.post("/posts")
-def create_post(title: str, body: str, db: DarshJDB = Depends(get_db)):
-    post = db.create("posts", {"title": title, "body": body, "published": False})
-    return post
-
-@app.post("/auth/signin")
-def sign_in(email: str, password: str, db: DarshJDB = Depends(get_db)):
-    try:
-        result = db.auth.sign_in(email, password)
-        return {"token": result["accessToken"], "user": result["user"]}
-    except Exception:
-        raise HTTPException(status_code=401, detail="Invalid credentials")
+await db.use("namespace", "database")
 ```
 
-## Django Integration
+### CRUD
 
 ```python
-# settings.py
-DDB_SERVER_URL = "https://db.example.com"
-DDB_API_KEY = "your-key"
+# Select all from table
+users = await db.select("users")
 
-# ddb_client.py
-from django.conf import settings
-from darshjdb import DarshJDB
+# Select specific record
+user = await db.select("users:darsh")
 
-_client: DarshJDB | None = None
+# Create
+user = await db.create("users", {"name": "Darsh"})
+user = await db.create("users:darsh", {"name": "Darsh"})  # with ID
 
-def get_ddb() -> DarshJDB:
-    global _client
-    if _client is None:
-        _client = DarshJDB(
-            server_url=settings.DDB_SERVER_URL,
-            api_key=settings.DDB_API_KEY,
-        )
-    return _client
+# Insert (batch)
+await db.insert("users", [{"name": "A"}, {"name": "B"}])
 
-# views.py
-from django.http import JsonResponse
-from django.views import View
-from .ddb_client import get_ddb
+# Update (full replace)
+await db.update("users:darsh", {"name": "Darsh", "age": 31})
 
-class PostListView(View):
-    def get(self, request):
-        db = get_ddb()
-        result = db.get(
-            "posts",
-            where=[{"field": "published", "op": "=", "value": True}],
-            order=[{"field": "createdAt", "direction": "desc"}],
-            limit=20,
-        )
-        return JsonResponse({"posts": result["data"]})
+# Merge (partial update)
+await db.merge("users:darsh", {"age": 31})
 
-    def post(self, request):
-        import json
-        data = json.loads(request.body)
-        db = get_ddb()
-        post = db.create("posts", {
-            "title": data["title"],
-            "body": data["body"],
-        })
-        return JsonResponse(post, status=201)
-
-# middleware.py
-from .ddb_client import get_ddb
-
-class DarshanAuthMiddleware:
-    def __init__(self, get_response):
-        self.get_response = get_response
-
-    def __call__(self, request):
-        token = request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
-        if token:
-            db = get_ddb()
-            db.auth.set_token(token)
-            request.darshan_db = db
-        return self.get_response(request)
+# Delete
+await db.delete("users:darsh")   # single record
+await db.delete("users")          # all records in table
 ```
 
-## Error Handling
+### Queries
 
 ```python
-from darshjdb import DarshJDB, DarshanAPIError
+results = await db.query("SELECT * FROM users WHERE age > $min_age", vars={"min_age": 18})
 
-db = DarshJDB(server_url="https://db.example.com", api_key="key")
-
-try:
-    db.auth.sign_in("user@example.com", "wrong-password")
-except DarshanAPIError as e:
-    print(e)                 # "invalid credentials"
-    print(e.status_code)     # 401
-    print(e.error_body)      # {"error": "invalid credentials", ...}
+for qr in results:
+    print(qr.data)       # list of records
+    print(qr.count)      # record count
+    print(qr.duration_ms) # execution time
 ```
 
-## Configuration
+### Live Queries
 
-| Parameter    | Type  | Default | Description                      |
-| ------------ | ----- | ------- | -------------------------------- |
-| `server_url` | str   | --      | DarshJDB server URL (required)  |
-| `api_key`    | str   | --      | Application API key (required)   |
-| `timeout`    | float | 30.0    | HTTP timeout in seconds          |
+```python
+async for change in db.live("SELECT * FROM users"):
+    print(change.action)  # LiveAction.CREATE / UPDATE / DELETE
+    print(change.result)  # the record
+```
+
+### Graph Relations
+
+```python
+await db.relate("user:darsh", "works_at", "company:knowai")
+await db.relate("user:darsh", "follows", "user:alice", {"since": "2026-01-01"})
+```
+
+### Server-Side Functions
+
+```python
+result = await db.run("generateReport", {"month": "2026-04"})
+```
+
+## Development
+
+```bash
+uv sync --dev
+uv run pytest
+uv run ruff check src/
+```
 
 ## License
 

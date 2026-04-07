@@ -42,6 +42,10 @@ pub enum DarshJError {
     #[error("serialization error: {0}")]
     Serialization(#[from] serde_json::Error),
 
+    /// A document failed schema validation (SCHEMAFULL / MIXED mode).
+    #[error("schema validation failed: {0}")]
+    SchemaValidation(String),
+
     /// An internal invariant was violated.
     #[error("internal error: {0}")]
     Internal(String),
