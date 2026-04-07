@@ -212,6 +212,7 @@ impl From<DarshJError> for ApiError {
             DarshJError::InvalidAttribute(_) => ErrorCode::BadRequest,
             DarshJError::TypeMismatch { .. } => ErrorCode::TypeMismatch,
             DarshJError::SchemaConflict(_) => ErrorCode::SchemaConflict,
+            DarshJError::SchemaValidation(_) => ErrorCode::BadRequest,
             DarshJError::Serialization(_) => ErrorCode::BadRequest,
         };
 

@@ -25,3 +25,11 @@ dirs.workspace = true
 toml.workspace = true
 chrono.workspace = true
 uuid.workspace = true
+rustyline.workspace = true
+comfy-table.workspace = true
+ctrlc.workspace = true
+self_update.workspace = true
+sqlx.workspace = true
+axum.workspace = true
+tower-http.workspace = true
+ddb-server = { path = "../server" }

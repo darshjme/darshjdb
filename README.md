@@ -13,10 +13,10 @@
 
 <br/>
 
-**A self-hosted Backend-as-a-Service built in Rust.**
-**Triple-store architecture over PostgreSQL. Real-time by default.**
+**The multi-model database for the next decade of applications.**
+**Document + Graph + Relational + KV + Vector — one binary, zero dependencies.**
 
-[Getting Started](#quick-start) | [Architecture](#architecture) | [Documentation](docs/) | [Contributing](#contributing)
+[Getting Started](#quick-start) | [DarshQL](#darshql) | [Multi-Model](#multi-model-storage) | [Architecture](#architecture) | [Documentation](docs/) | [Contributing](#contributing)
 
 </div>
 
@@ -89,9 +89,14 @@ flowchart TD
 
 ## What DarshJDB Is
 
-A single Rust binary that gives you a complete backend. Authentication. Permissions. Real-time subscriptions. Query engine. Admin dashboard. Connect from React, Angular, Next.js, PHP, Python, or cURL.
+A single Rust binary that replaces your entire backend stack. Authentication. Permissions. Real-time subscriptions. Query engine. Graph relations. Vector search. Admin dashboard. Connect from React, Angular, Next.js, PHP, Python, or cURL.
 
-The data model is a triple store (Entity-Attribute-Value) over PostgreSQL. No rigid schemas, no migrations during development. Write data first — structure emerges from usage. When you're ready for production, switch to strict mode and lock it down.
+DarshJDB is a **multi-model database** — document store, graph database, relational tables, key-value cache, and vector search engine — unified under one query language called **DarshQL**. The data model is a triple store (Entity-Attribute-Value) over PostgreSQL. No rigid schemas, no migrations during development. Write data first — structure emerges from usage. When you're ready for production, switch to `SCHEMAFULL` mode and lock it down.
+
+Three schema modes, one database:
+- **`SCHEMALESS`** — write anything, schema inferred from data (development)
+- **`SCHEMAFULL`** — strict types, validated on write (production)
+- **`SCHEMAMIXED`** — defined fields are strict, unknown fields pass through (migration)
 
 This is alpha software. It works. It has 731 tests proving it works. But it is not production-hardened yet. Use it to prototype, learn the architecture, and contribute. Don't put your startup's production data on it today.
 
@@ -150,6 +155,466 @@ graph TB
 - Hosted documentation site
 - Performance benchmarks against Firebase/Supabase/Convex
 - Horizontal scaling / multi-node
+
+---
+
+## DarshQL
+
+DarshQL is the query language purpose-built for DarshJDB. It borrows the clarity of SQL, the traversal power of graph query languages, and the expressiveness of document query builders — then unifies them under one syntax that works across every data model.
+
+### Define
+
+```sql
+-- Namespace and database
+USE NS production DB myapp;
+
+-- Define a schemafull table
+DEFINE TABLE user SCHEMAFULL;
+DEFINE FIELD name ON user TYPE string ASSERT $value != NONE;
+DEFINE FIELD email ON user TYPE string ASSERT string::is::email($value);
+DEFINE FIELD created ON user TYPE datetime DEFAULT time::now();
+DEFINE INDEX idx_email ON user FIELDS email UNIQUE;
+
+-- Define a schemaless table (anything goes)
+DEFINE TABLE event SCHEMALESS;
+
+-- Define a graph edge table
+DEFINE TABLE follows SCHEMAFULL TYPE RELATION IN user OUT user;
+DEFINE FIELD since ON follows TYPE datetime DEFAULT time::now();
+```
+
+### Create
+
+```sql
+-- Create with auto-generated ID
+CREATE user SET name = 'Darsh', email = 'darsh@navsari.dev';
+
+-- Create with specific ID
+CREATE user:darsh SET name = 'Darsh Joshi', email = 'darsh@navsari.dev';
+
+-- Insert multiple records
+INSERT INTO user [
+  { name: 'Alice', email: 'alice@example.com' },
+  { name: 'Bob', email: 'bob@example.com' }
+];
+```
+
+### Query
+
+```sql
+-- Simple select with conditions
+SELECT * FROM user WHERE email CONTAINS 'example.com' ORDER BY created DESC LIMIT 10;
+
+-- Nested field access
+SELECT name, settings.theme, settings.notifications.email FROM user;
+
+-- Aggregations
+SELECT count() AS total, math::mean(age) AS avg_age FROM user GROUP BY country;
+```
+
+### Graph Relations
+
+```sql
+-- Create a relationship between two records
+RELATE user:darsh -> follows -> user:alice SET since = time::now();
+RELATE user:darsh -> wrote -> article:rust_is_great SET published = true;
+
+-- Traverse the graph — who does Darsh follow?
+SELECT ->follows->user.name FROM user:darsh;
+
+-- Reverse traversal — who follows Alice?
+SELECT <-follows<-user.name FROM user:alice;
+
+-- Multi-hop — friends of friends
+SELECT ->follows->user->follows->user.name FROM user:darsh;
+
+-- Graph with conditions
+SELECT ->follows->user WHERE age > 25 FROM user:darsh;
+```
+
+### LIVE SELECT — Real-Time Subscriptions
+
+```sql
+-- Subscribe to all changes on a table
+LIVE SELECT * FROM user;
+
+-- Subscribe with filters — only get notified about relevant changes
+LIVE SELECT * FROM user WHERE country = 'IN';
+
+-- Subscribe to graph changes
+LIVE SELECT * FROM follows WHERE in = user:darsh;
+
+-- Subscribe with diff mode — only receive the changed fields
+LIVE SELECT DIFF FROM user;
+```
+
+When a mutation matches a LIVE SELECT, DarshJDB pushes the change to all subscribed clients over WebSocket. No polling. No webhooks. No external message broker.
+
+### Embedded Functions
+
+```sql
+-- String functions
+SELECT string::uppercase(name), string::slug(title) FROM article;
+
+-- Math functions
+SELECT math::mean(scores), math::median(scores) FROM student;
+
+-- Time functions
+SELECT * FROM event WHERE created > time::now() - 7d;
+
+-- Crypto functions
+SELECT crypto::argon2::generate(password) AS hash FROM $input;
+
+-- Vector search — semantic similarity
+SELECT * FROM document WHERE embedding <|4|> $query_vector;
+
+-- Geo functions
+SELECT * FROM restaurant WHERE geo::distance(location, $user_location) < 5km;
+
+-- HTTP functions (server-side)
+SELECT http::get('https://api.example.com/data') AS response;
+
+-- Custom functions
+DEFINE FUNCTION fn::greet($name: string) {
+  RETURN string::concat('Namaste, ', $name, '!');
+};
+SELECT fn::greet(name) FROM user;
+```
+
+### Transactions
+
+```sql
+BEGIN TRANSACTION;
+  LET $from = (UPDATE wallet:darsh SET balance -= 100 RETURN AFTER);
+  LET $to = (UPDATE wallet:alice SET balance += 100 RETURN AFTER);
+  IF $from.balance < 0 {
+    CANCEL TRANSACTION;
+  };
+COMMIT TRANSACTION;
+```
+
+```mermaid
+graph LR
+    subgraph pipeline["DarshQL Query Pipeline"]
+        direction LR
+        Q["DarshQL\n<i>query string</i>"] --> P["Parser\n<i>lexer + grammar</i>"]
+        P --> AST["AST\n<i>typed syntax tree</i>"]
+        AST --> OPT["Optimizer\n<i>index selection\njoin reordering</i>"]
+        OPT --> EXEC["Executor\n<i>parallel evaluation\npermission injection</i>"]
+        EXEC --> STORE["Storage\n<i>Postgres / Memory\n/ RocksDB</i>"]
+    end
+
+    style Q fill:#cc9933,color:#000
+    style P fill:#1a1a2e,color:#fff
+    style AST fill:#1a1a2e,color:#fff
+    style OPT fill:#0f3460,color:#fff
+    style EXEC fill:#14532d,color:#fff
+    style STORE fill:#336791,color:#fff
+```
+
+---
+
+## Multi-Model Storage
+
+DarshJDB is not five databases duct-taped together. It is one engine with five access patterns over the same storage layer.
+
+| Model | How DarshJDB implements it | Example |
+|-------|---------------------------|---------|
+| **Document** | Schemaless tables, nested JSON, flexible fields | `CREATE article SET title = 'Hello', tags = ['rust', 'db']` |
+| **Graph** | `RELATE` statements, `->` / `<-` traversals, typed edges | `RELATE user:darsh -> authored -> article:hello` |
+| **Relational** | `SCHEMAFULL` tables, indexes, joins, foreign keys | `DEFINE TABLE invoice SCHEMAFULL; DEFINE FIELD customer ON invoice TYPE record<customer>` |
+| **Key-Value** | Direct record access by ID, O(1) lookups | `SELECT * FROM config:smtp` / `UPDATE config:smtp SET host = 'mail.example.com'` |
+| **Vector** | pgvector HNSW indexes, cosine/euclidean/dot product | `SELECT * FROM document WHERE embedding <\|4\|> $query ORDER BY dist ASC` |
+
+```mermaid
+graph TB
+    subgraph models["Five Models, One Engine"]
+        DOC["Document Store\n<i>schemaless JSON\nnested objects, arrays</i>"]
+        GRAPH["Graph Database\n<i>RELATE, traverse\nmulti-hop queries</i>"]
+        REL["Relational Tables\n<i>SCHEMAFULL, indexes\njoins, constraints</i>"]
+        KV["Key-Value Cache\n<i>O(1) record access\nconfig, sessions</i>"]
+        VEC["Vector Search\n<i>HNSW embeddings\nsemantic similarity</i>"]
+    end
+
+    subgraph storage["Unified Storage Layer"]
+        TS["Triple Store\n<i>Entity-Attribute-Value</i>"]
+        PG[("PostgreSQL 16+\n<i>pgvector + tsvector</i>")]
+        TS --> PG
+    end
+
+    DOC --> TS
+    GRAPH --> TS
+    REL --> TS
+    KV --> TS
+    VEC --> TS
+
+    style models fill:#1a1a2e,stroke:#F59E0B,color:#fff
+    style storage fill:#0f3460,stroke:#F59E0B,color:#fff
+    style PG fill:#336791,stroke:#fff,color:#fff
+```
+
+---
+
+## Real-Time Architecture
+
+Every mutation in DarshJDB flows through a change feed. LIVE SELECT queries register interest in specific data patterns. When a mutation matches, the diff is pushed to all subscribers — filtered through row-level permissions so each client only sees what they are allowed to see.
+
+```mermaid
+sequenceDiagram
+    participant W as Writer Client
+    participant S as DarshJDB Server
+    participant CF as Change Feed
+    participant LQM as Live Query Manager
+    participant P as Permission Engine
+    participant R1 as Reader A (WebSocket)
+    participant R2 as Reader B (WebSocket)
+
+    W->>S: CREATE user SET name = 'Darsh'
+    S->>S: Execute mutation + write to storage
+    S->>CF: Emit ChangeEvent{table: user, action: CREATE, data: {...}}
+    CF->>LQM: Match against registered LIVE SELECTs
+    LQM->>P: Filter: which subscribers can see this record?
+    P-->>LQM: Reader A: full access, Reader B: denied
+    LQM-->>R1: WebSocket push: {action: CREATE, result: {name: 'Darsh'}}
+    Note over R2: Reader B receives nothing — permission denied
+```
+
+---
+
+## How DarshJDB Compares
+
+No names. Just capabilities.
+
+| Capability | DarshJDB | Traditional BaaS | Cloud Databases |
+|-----------|----------|------------------|-----------------|
+| Multi-model (doc + graph + relational + KV + vector) | Yes | Partial | Rare |
+| Graph relations with traversal | Yes | No | Some |
+| LIVE SELECT real-time queries | Yes | Polling or webhooks | Some |
+| Single binary deployment | Yes | 3-7 services | Cloud-only |
+| Self-hosted, your metal | Yes | Some | Cloud-first |
+| Row-level permissions | Yes | Yes | Some |
+| Embedded functions (string, math, geo, crypto, http) | Yes | Rare | Rare |
+| Vector search (HNSW) | Yes | No | Some |
+| Triple store / knowledge graph | Yes | No | No |
+| Schema modes (strict, flexible, mixed) | Yes | Pick one | Pick one |
+| WebSocket + SSE subscriptions | Yes | WebSocket only | Varies |
+| Merkle audit trail | Yes | No | Enterprise only |
+| Runs on a $5 VPS | Yes | Depends | No |
+
+---
+
+## Deployment
+
+### Docker
+
+```bash
+# Single command — DarshJDB + Postgres
+docker compose up -d
+
+# Or pull the image directly
+docker pull ghcr.io/darshjme/darshjdb:latest
+docker run -d \
+  --name darshjdb \
+  -p 7700:7700 \
+  -e DATABASE_URL=postgres://user:pass@host:5432/darshjdb \
+  ghcr.io/darshjme/darshjdb:latest
+```
+
+### Docker Compose (production)
+
+```yaml
+version: '3.8'
+services:
+  darshjdb:
+    image: ghcr.io/darshjme/darshjdb:latest
+    ports:
+      - "7700:7700"
+    environment:
+      DATABASE_URL: postgres://darshan:darshan@postgres:5432/darshjdb
+      DDB_JWT_SECRET: your-secret-here
+      DDB_CORS_ORIGINS: https://yourapp.com
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: darshan
+      POSTGRES_PASSWORD: darshan
+      POSTGRES_DB: darshjdb
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: pg_isready -U darshan
+      interval: 5s
+      retries: 5
+
+volumes:
+  pgdata:
+```
+
+### LXC Container
+
+```bash
+# On Proxmox or any LXC host
+lxc launch ubuntu:22.04 darshjdb
+lxc exec darshjdb -- bash
+
+# Inside the container
+curl -fsSL https://db.darshj.me/install.sh | sh
+ddb start --bind 0.0.0.0:7700 --database postgres://localhost/darshjdb
+```
+
+### CLI
+
+```bash
+# Start the server
+ddb start
+ddb start --bind 0.0.0.0:7700 --log debug
+
+# Interactive SQL console
+ddb sql
+ddb sql --ns production --db myapp
+
+# Import/export data
+ddb export --output backup.darshql
+ddb import --input backup.darshql
+
+# Health and status
+ddb status
+ddb version
+```
+
+---
+
+## SDK Examples
+
+### JavaScript / TypeScript
+
+```typescript
+import { DDB } from '@darshjdb/client';
+
+// Connect
+const db = new DDB({ serverUrl: 'http://localhost:7700' });
+
+// Authenticate
+await db.signin({ email: 'darsh@navsari.dev', password: 'chai-pani' });
+
+// Create a record
+const user = await db.create('user', {
+  name: 'Darsh Joshi',
+  email: 'darsh@navsari.dev',
+  location: { city: 'Navsari', state: 'Gujarat' }
+});
+
+// Query with filters
+const engineers = await db.select('user', {
+  where: { 'location.state': 'Gujarat' },
+  orderBy: { created: 'desc' },
+  limit: 10
+});
+
+// Graph relation
+await db.relate('user:darsh', 'follows', 'user:alice');
+
+// Traverse
+const following = await db.query('SELECT ->follows->user.name FROM user:darsh');
+
+// Live subscription
+const unsubscribe = db.live('user', { where: { role: 'admin' } }, (change) => {
+  console.log(change.action, change.result);
+  // CREATE { name: 'New Admin', role: 'admin' }
+});
+
+// React hook
+import { useQuery } from '@darshjdb/react';
+
+function UserList() {
+  const { data, loading, error } = useQuery({
+    users: { $where: { active: true }, profile: {} }
+  });
+
+  if (loading) return <p>Loading...</p>;
+  return data.users.map(u => <div key={u.id}>{u.name}</div>);
+}
+```
+
+### Python
+
+```python
+from darshjdb import DarshJDB, AsyncDarshJDB
+
+# Synchronous client
+db = DarshJDB("http://localhost:7700")
+db.signin(email="darsh@navsari.dev", password="chai-pani")
+
+# Create
+user = db.create("user", {
+    "name": "Darsh Joshi",
+    "email": "darsh@navsari.dev"
+})
+
+# Query
+results = db.select("user", where={"location.state": "Gujarat"}, limit=10)
+
+# Raw DarshQL
+articles = db.query("SELECT * FROM article WHERE ->authored<-user = user:darsh")
+
+# Graph relation
+db.relate("user:darsh", "follows", "user:alice")
+
+# Async client (FastAPI)
+from fastapi import FastAPI
+app = FastAPI()
+adb = AsyncDarshJDB("http://localhost:7700")
+
+@app.get("/users")
+async def get_users():
+    return await adb.select("user", limit=50)
+
+# Live subscription (async)
+async for change in adb.live("user", where={"role": "admin"}):
+    print(change.action, change.result)
+```
+
+---
+
+## Storage Architecture
+
+DarshJDB supports multiple storage backends. PostgreSQL is the default for production. Memory mode is available for testing and development. File-based storage is planned for embedded use cases.
+
+```mermaid
+graph TB
+    subgraph engine["DarshJDB Engine"]
+        QE["Query Engine\n<i>DarshQL execution</i>"]
+        CACHE["Query Cache\n<i>DashMap, TTL-aware\nChangeEvent invalidation</i>"]
+        IDX["Index Manager\n<i>B-tree, HNSW, GIN\ntsvector, trigram</i>"]
+    end
+
+    subgraph backends["Storage Backends"]
+        MEM["Memory\n<i>HashMap + BTreeMap\ndev/test only</i>"]
+        PG["PostgreSQL 16+\n<i>ACID, pgvector\ntsvector, JSONB</i>"]
+        FILE["File Store\n<i>RocksDB / SQLite\nembedded mode</i>"]
+    end
+
+    subgraph external["External Storage"]
+        S3["S3 / R2 / MinIO\n<i>file uploads\nobject storage</i>"]
+    end
+
+    QE --> CACHE
+    CACHE --> IDX
+    IDX --> MEM
+    IDX --> PG
+    IDX --> FILE
+    QE --> S3
+
+    style engine fill:#1a1a2e,stroke:#F59E0B,color:#fff
+    style backends fill:#14532d,stroke:#86efac,color:#fff
+    style external fill:#0f3460,stroke:#F59E0B,color:#fff
+    style PG fill:#336791,stroke:#fff,color:#fff
+```
 
 ---
 

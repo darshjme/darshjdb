@@ -333,6 +333,12 @@ async fn main() -> Result<()> {
     // Pub/sub engine for keyspace notifications (shared between WS and REST).
     let (pubsub_engine, _pubsub_rx) = ddb_server::sync::pubsub::PubSubEngine::new(4096);
 
+    // Change feed for mutation logging and cursor-based replay.
+    let (change_feed, _change_feed_rx) = ddb_server::sync::change_feed::ChangeFeed::with_defaults();
+
+    // Live query manager for LIVE SELECT subscriptions.
+    let (live_query_manager, _live_query_rx) = ddb_server::sync::live_query::LiveQueryManager::new(4096);
+
     let ws_state = WsState {
         sessions: sync_sessions.clone(),
         registry: subscription_registry,
@@ -342,6 +348,8 @@ async fn main() -> Result<()> {
         triple_store: triple_store_arc.clone(),
         change_tx: change_tx.clone(),
         pubsub: pubsub_engine.clone(),
+        live_queries: live_query_manager,
+        change_feed,
     };
 
     tracing::info!("sync engine initialized");
@@ -525,6 +533,41 @@ async fn main() -> Result<()> {
         app_state = app_state.with_functions(reg, rt);
     }
     app_state = app_state.with_pubsub(pubsub_engine);
+
+    // -- Graph Engine --------------------------------------------------------
+    let edge_store = ddb_server::graph::PgEdgeStore::new(pool.clone()).await?;
+    let graph_engine = Arc::new(ddb_server::graph::GraphEngine::new(Arc::new(edge_store)));
+    app_state = app_state.with_graph(graph_engine);
+    tracing::info!("Graph engine initialized (SurrealDB-style record links)");
+
+    // -- Schema Registry (SCHEMAFULL / SCHEMALESS / MIXED) --------------------
+    match ddb_server::schema::SchemaRegistry::new(pool.clone()).await {
+        Ok(registry) => {
+            let table_count = registry.list_tables().len();
+            let registry = Arc::new(registry);
+            app_state = app_state.with_schema_registry(registry);
+            tracing::info!(
+                tables = table_count,
+                "Schema registry initialized (SurrealDB-style schema modes)"
+            );
+        }
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "Failed to initialize schema registry, running in schemaless-only mode"
+            );
+        }
+    }
+
+    // -- Schema Migration Engine -----------------------------------------------
+    match ddb_server::schema::migration::SchemaMigrationEngine::new(pool.clone()).await {
+        Ok(_engine) => {
+            tracing::info!("Schema migration engine initialized");
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "Failed to initialize schema migration engine");
+        }
+    }
 
     // -- CORS Layer -----------------------------------------------------------
     let dev_mode = std::env::var("DDB_DEV")

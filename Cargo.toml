@@ -14,7 +14,7 @@ license = "MIT"
 tokio = { version = "1", features = ["full"] }
 axum = { version = "0.8", features = ["ws", "multipart"] }
 sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "uuid", "json", "chrono"] }
-uuid = { version = "1", features = ["v4", "serde"] }
+uuid = { version = "1", features = ["v4", "v5", "serde"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
@@ -57,3 +57,8 @@ aws-sdk-s3 = "1"
 aws-config = "1"
 aws-credential-types = "1"
 aws-types = "1"
+rustyline = { version = "14", features = ["derive"] }
+comfy-table = "7"
+ctrlc = { version = "3", features = ["termination"] }
+self_update = "0.41"
+async-trait = "0.1"

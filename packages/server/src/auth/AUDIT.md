@@ -2,8 +2,8 @@
 
 **Date:** 2026-04-05
 **Auditor:** PhD Security Engineer (automated)
-**Scope:** `packages/server/src/auth/` -- mod.rs, providers.rs, session.rs, mfa.rs, permissions.rs, middleware.rs
-**Result:** 7 issues found, 5 fixed, 2 documented as recommendations
+**Scope:** `packages/server/src/auth/` -- mod.rs, providers.rs, session.rs, mfa.rs, permissions.rs, middleware.rs, row_level.rs, scope.rs
+**Result:** 7 issues found, 5 fixed, 2 documented as recommendations, 2 modules added (row-level security, scope-based auth)
 
 ---
 

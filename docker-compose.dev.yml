@@ -1,22 +1,45 @@
-# Development overrides -- extends docker-compose.yml
-# Usage: docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+## DarshJDB — Development Overrides
+## Usage: docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+##
+## What changes from production:
+##   - Source volumes mounted for hot reload
+##   - Debug logging
+##   - Ports exposed for direct DB/cache access
+##   - pgAdmin, Prometheus, Grafana included
+##   - JWT secret auto-set (no .env required)
 
 services:
+  # ── DarshJDB (dev mode) ─────────────────────────────────────────────
   darshjdb:
     build:
       context: .
       target: builder
     environment:
+      DDB_JWT_SECRET: "dev-secret-not-for-production"
       RUST_LOG: debug
       DDB_WATCH: "true"
+    read_only: false
     volumes:
       - ./packages/server/src:/build/packages/server/src:ro
       - ./packages/cli/src:/build/packages/cli/src:ro
 
+  # ── PostgreSQL (expose port for local tools) ─────────────────────────
   postgres:
     ports:
       - "5432:5432"
 
+  # ── Redis (expose port for debugging) ────────────────────────────────
+  redis:
+    ports:
+      - "6379:6379"
+
+  # ── Qdrant (expose HTTP + gRPC for local testing) ────────────────────
+  qdrant:
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+
+  # ── pgAdmin ─────────────────────────────────────────────────────────
   pgadmin:
     image: dpage/pgadmin4:8
     environment:
@@ -31,6 +54,7 @@ services:
     networks:
       - darshjdb
 
+  # ── Prometheus ───────────────────────────────────────────────────────
   prometheus:
     image: prom/prometheus:v2.53.0
     volumes:
@@ -42,6 +66,7 @@ services:
     networks:
       - darshjdb
 
+  # ── Grafana ──────────────────────────────────────────────────────────
   grafana:
     image: grafana/grafana:11.1.0
     environment:
@@ -54,6 +79,17 @@ services:
       - "3000:3000"
     depends_on:
       - prometheus
+    restart: unless-stopped
+    networks:
+      - darshjdb
+
+  # ── RedisInsight (Redis GUI) ─────────────────────────────────────────
+  redisinsight:
+    image: redis/redisinsight:2.64
+    ports:
+      - "5540:5540"
+    depends_on:
+      - redis
     restart: unless-stopped
     networks:
       - darshjdb

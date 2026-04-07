@@ -4,7 +4,21 @@
 //! local filesystem, Amazon S3, Cloudflare R2, and MinIO. All backends
 //! implement the [`StorageBackend`] trait.
 //!
-//! # Features
+//! # Data backends
+//!
+//! In addition to file/object storage, this module provides a pluggable
+//! **data backend** layer via [`traits::DataBackend`]. Supported engines:
+//!
+//! - [`memory::MemoryBackend`] — in-memory, concurrent, ephemeral.
+//! - [`postgres::PostgresBackend`] — production PostgreSQL via `sqlx`.
+//! - `file` (RocksDB) — reserved for future implementation.
+//!
+//! The [`engine::DataEngine`] reads `DDB_STORAGE=memory|postgres|file`
+//! and wires up the appropriate backend automatically.
+//!
+//! # File storage
+//!
+//! ## Features
 //!
 //! - **Signed URLs**: Time-limited, HMAC-authenticated download links.
 //! - **Image transforms**: On-the-fly resize, crop, and format conversion
@@ -13,7 +27,7 @@
 //!   scanning, metadata extraction, etc.
 //! - **Resumable uploads**: TUS-protocol-compatible chunked upload support.
 //!
-//! # Architecture
+//! ## Architecture
 //!
 //! ```text
 //! Client ──▶ StorageEngine ──▶ Backend (LocalFs | S3 | R2 | MinIO)
@@ -23,6 +37,19 @@
 //!                ├── SignedUrl generator    ├── delete_object
 //!                └── ImageTransform         └── head_object
 //! ```
+//!
+//! ```text
+//! Client ──▶ DataEngine ──▶ DataBackend (Memory | Postgres | File)
+//!                                │
+//!                                ├── get / set / delete
+//!                                ├── scan (prefix, limit)
+//!                                └── query (SQL / DSL)
+//! ```
+
+pub mod engine;
+pub mod memory;
+pub mod postgres;
+pub mod traits;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

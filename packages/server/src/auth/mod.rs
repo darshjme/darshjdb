@@ -22,6 +22,8 @@
 //! - **Session**: JWT issuance, refresh rotation, key management.
 //! - **MFA**: TOTP, recovery codes, and WebAuthn stubs.
 //! - **Permissions**: Rule-based access control with query-level injection.
+//! - **Row-Level Security**: SurrealDB-style per-table, per-operation permission expressions.
+//! - **Scopes**: Scope-based authentication with custom session TTL, claims, and API keys.
 //! - **Middleware**: Axum layers for token extraction, rate limiting, and context building.
 
 pub mod default_permissions;
@@ -29,6 +31,8 @@ pub mod mfa;
 pub mod middleware;
 pub mod permissions;
 pub mod providers;
+pub mod row_level;
+pub mod scope;
 pub mod session;
 
 pub use default_permissions::{build_default_engine, get_rule_with_fallback};
@@ -41,6 +45,14 @@ pub use permissions::{
 pub use providers::{
     GenericOAuth2Provider, MagicLinkProvider, OAuth2Provider, OAuthConfig, OAuthProviderKind,
     OAuthUserInfo, PasswordProvider,
+};
+pub use row_level::{
+    AuthVars, CompareOp, EvalValue, PermExpr, LiteralValue, RowLevelSecurity, RowOp,
+    TablePermissions, evaluate_expr, expr_to_sql,
+};
+pub use scope::{
+    ApiKeyCreated, ApiKeyRecord, ScopeDefinition, ScopeManager, ScopedAccessClaims,
+    ScopedTokenPair, default_admin_scope, default_service_scope, default_user_scope,
 };
 pub use session::{KeyManager, SessionManager, SessionRecord, TokenPair};
 

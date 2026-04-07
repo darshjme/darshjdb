@@ -1,0 +1,54 @@
+{
+  "name": "darshjdb",
+  "version": "0.2.0",
+  "description": "Official TypeScript/JavaScript SDK for DarshJDB — real-time database with graph, live queries, auth, and storage.",
+  "main": "./dist/cjs/index.js",
+  "module": "./dist/esm/index.js",
+  "types": "./dist/types/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/esm/index.js",
+      "require": "./dist/cjs/index.js",
+      "types": "./dist/types/index.d.ts"
+    }
+  },
+  "files": [
+    "dist",
+    "src",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "npm run build:esm && npm run build:cjs",
+    "build:esm": "tsc -p tsconfig.esm.json",
+    "build:cjs": "tsc -p tsconfig.cjs.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "tsc --noEmit && eslint src/",
+    "clean": "rm -rf dist",
+    "prepublishOnly": "npm run clean && npm run build"
+  },
+  "keywords": [
+    "darshjdb",
+    "database",
+    "realtime",
+    "sdk",
+    "graph",
+    "live-queries",
+    "typescript"
+  ],
+  "author": "DarshJDB <dev@db.darshj.me>",
+  "license": "MIT",
+  "homepage": "https://db.darshj.me",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/darshjme/darshjdb"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0"
+  }
+}
