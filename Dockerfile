@@ -1,5 +1,5 @@
 # ── Stage 1: Build the Rust server and CLI ───────────────────────────
-FROM rust:1.87-slim-bookworm AS builder
+FROM rust:1.92-slim-bookworm AS builder
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
