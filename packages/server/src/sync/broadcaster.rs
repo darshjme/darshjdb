@@ -191,7 +191,10 @@ impl Broadcaster {
                 }
             }
 
-            debug!(batch_size = batch.len(), "processing debounced change batch");
+            debug!(
+                batch_size = batch.len(),
+                "processing debounced change batch"
+            );
 
             // Merge all events: collect the union of affected query hashes and
             // use the highest tx_id as the batch cursor. Entity type filtering
@@ -258,9 +261,9 @@ impl Broadcaster {
 
                     // Skip if none of the batched events match this query's entity type.
                     if let Some(query_et) = query_ast.get("from").and_then(|v| v.as_str()) {
-                        let any_match = batch.iter().any(|e| {
-                            e.entity_type.as_deref().is_none_or(|et| et == query_et)
-                        });
+                        let any_match = batch
+                            .iter()
+                            .any(|e| e.entity_type.as_deref().is_none_or(|et| et == query_et));
                         if !any_match {
                             continue;
                         }

@@ -42,36 +42,23 @@ struct Cli {
 
 fn clap_styles() -> clap::builder::Styles {
     clap::builder::Styles::styled()
-        .usage(
-            clap::builder::styling::Style::new()
-                .bold()
-                .fg_color(Some(clap::builder::styling::Color::Ansi(
-                    clap::builder::styling::AnsiColor::Cyan,
-                ))),
-        )
-        .header(
-            clap::builder::styling::Style::new()
-                .bold()
-                .fg_color(Some(clap::builder::styling::Color::Ansi(
-                    clap::builder::styling::AnsiColor::Cyan,
-                ))),
-        )
-        .literal(
-            clap::builder::styling::Style::new().fg_color(Some(
-                clap::builder::styling::Color::Ansi(clap::builder::styling::AnsiColor::Green),
-            )),
-        )
-        .placeholder(
-            clap::builder::styling::Style::new().fg_color(Some(
-                clap::builder::styling::Color::Ansi(clap::builder::styling::AnsiColor::Yellow),
-            )),
-        )
+        .usage(clap::builder::styling::Style::new().bold().fg_color(Some(
+            clap::builder::styling::Color::Ansi(clap::builder::styling::AnsiColor::Cyan),
+        )))
+        .header(clap::builder::styling::Style::new().bold().fg_color(Some(
+            clap::builder::styling::Color::Ansi(clap::builder::styling::AnsiColor::Cyan),
+        )))
+        .literal(clap::builder::styling::Style::new().fg_color(Some(
+            clap::builder::styling::Color::Ansi(clap::builder::styling::AnsiColor::Green),
+        )))
+        .placeholder(clap::builder::styling::Style::new().fg_color(Some(
+            clap::builder::styling::Color::Ansi(clap::builder::styling::AnsiColor::Yellow),
+        )))
 }
 
 #[derive(Subcommand)]
 enum Commands {
     // ── Core Commands ──────────────────────────────────────────────
-
     /// Start the DarshJDB server
     ///
     /// Launches a full DarshJDB instance with HTTP API, WebSocket sync,
@@ -187,7 +174,6 @@ enum Commands {
     },
 
     // ── Development Commands ───────────────────────────────────────
-
     /// Start a local development server (alias for start with dev defaults)
     Dev {
         /// Port to listen on
@@ -207,7 +193,6 @@ enum Commands {
     },
 
     // ── Deployment & Operations ────────────────────────────────────
-
     /// Build and deploy a Docker image to production
     Deploy {
         /// Docker image tag
@@ -353,9 +338,7 @@ async fn main() -> Result<()> {
             log,
             strict,
             no_banner,
-        } => {
-            cmd_start::run(storage, conn, bind, user, pass, log, strict, no_banner).await
-        }
+        } => cmd_start::run(storage, conn, bind, user, pass, log, strict, no_banner).await,
 
         Commands::Sql {
             conn,
@@ -370,9 +353,7 @@ async fn main() -> Result<()> {
             conn,
             output,
             format,
-        } => {
-            cmd_export::run_export(conn, output, cli.token, format).await
-        }
+        } => cmd_export::run_export(conn, output, cli.token, format).await,
 
         Commands::Import { conn, file, yes } => {
             cmd_export::run_import(conn, file, cli.token, yes).await
@@ -548,7 +529,9 @@ async fn cmd_upgrade(target_version: Option<&str>, yes: bool) -> Result<()> {
         update_builder.target_version_tag(&format!("v{ver}"));
     }
 
-    let update = update_builder.build().context("Failed to configure updater")?;
+    let update = update_builder
+        .build()
+        .context("Failed to configure updater")?;
 
     spinner.set_message("Downloading update...");
 

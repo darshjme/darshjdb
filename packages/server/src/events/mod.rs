@@ -20,8 +20,6 @@
 pub mod kb;
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -186,10 +184,10 @@ impl DdbEvent {
 
     /// Check if this event matches a filter.
     pub fn matches(&self, filter: &EventFilter) -> bool {
-        if let Some(ref kinds) = filter.kinds {
-            if !kinds.contains(&self.kind) {
-                return false;
-            }
+        if let Some(ref kinds) = filter.kinds
+            && !kinds.contains(&self.kind)
+        {
+            return false;
         }
         if let Some(ref types) = filter.entity_types {
             match &self.entity_type {
@@ -542,12 +540,10 @@ mod tests {
     fn event_filter_matches_by_entity_type() {
         let event = DdbEvent::new(EventKind::RecordCreated, 1).with_entity_type("User");
 
-        let match_filter =
-            EventFilter::all().with_entity_types(vec!["User".to_string()]);
+        let match_filter = EventFilter::all().with_entity_types(vec!["User".to_string()]);
         assert!(event.matches(&match_filter));
 
-        let miss_filter =
-            EventFilter::all().with_entity_types(vec!["Post".to_string()]);
+        let miss_filter = EventFilter::all().with_entity_types(vec!["Post".to_string()]);
         assert!(!event.matches(&miss_filter));
     }
 
@@ -599,18 +595,14 @@ mod tests {
         let filter = EventFilter::all().with_kinds(vec![EventKind::RecordCreated]);
         let mut stream = bus.subscribe(filter);
 
-        let event = DdbEvent::new(EventKind::RecordCreated, 42)
-            .with_entity_type("User");
+        let event = DdbEvent::new(EventKind::RecordCreated, 42).with_entity_type("User");
 
         bus.publish(event.clone());
 
-        let received = tokio::time::timeout(
-            std::time::Duration::from_millis(100),
-            stream.recv(),
-        )
-        .await
-        .expect("timed out waiting for event")
-        .expect("stream closed unexpectedly");
+        let received = tokio::time::timeout(std::time::Duration::from_millis(100), stream.recv())
+            .await
+            .expect("timed out waiting for event")
+            .expect("stream closed unexpectedly");
 
         assert_eq!(received.kind, EventKind::RecordCreated);
         assert_eq!(received.tx_id, 42);
@@ -628,17 +620,12 @@ mod tests {
         bus.publish(DdbEvent::new(EventKind::RecordCreated, 1));
 
         // Publish a delete event — should match.
-        bus.publish(
-            DdbEvent::new(EventKind::RecordDeleted, 2).with_entity_type("Post"),
-        );
+        bus.publish(DdbEvent::new(EventKind::RecordDeleted, 2).with_entity_type("Post"));
 
-        let received = tokio::time::timeout(
-            std::time::Duration::from_millis(100),
-            stream.recv(),
-        )
-        .await
-        .expect("timed out")
-        .expect("stream closed");
+        let received = tokio::time::timeout(std::time::Duration::from_millis(100), stream.recv())
+            .await
+            .expect("timed out")
+            .expect("stream closed");
 
         assert_eq!(received.kind, EventKind::RecordDeleted);
         assert_eq!(received.tx_id, 2);
@@ -649,9 +636,8 @@ mod tests {
         let bus = EventBus::new_without_logger(64);
 
         let mut stream_a = bus.subscribe(EventFilter::all());
-        let mut stream_b = bus.subscribe(
-            EventFilter::all().with_entity_types(vec!["User".to_string()]),
-        );
+        let mut stream_b =
+            bus.subscribe(EventFilter::all().with_entity_types(vec!["User".to_string()]));
 
         bus.publish(DdbEvent::new(EventKind::RecordCreated, 1).with_entity_type("User"));
         bus.publish(DdbEvent::new(EventKind::RecordCreated, 2).with_entity_type("Post"));
@@ -718,7 +704,10 @@ mod tests {
         assert_eq!(event.old_value, Some(serde_json::json!("Old Title")));
         assert_eq!(event.new_value, Some(serde_json::json!("New Title")));
         assert_eq!(event.user_id, Some(user));
-        assert_eq!(event.metadata.get("source"), Some(&serde_json::json!("api")));
+        assert_eq!(
+            event.metadata.get("source"),
+            Some(&serde_json::json!("api"))
+        );
         assert_eq!(event.tx_id, 99);
     }
 

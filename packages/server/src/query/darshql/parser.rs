@@ -58,24 +58,25 @@ pub(crate) enum Token {
     Since,
 
     // Symbols
-    Star,         // *
-    Comma,        // ,
-    Dot,          // .
-    LParen,       // (
-    RParen,       // )
-    LBrace,       // {
-    RBrace,       // }
-    Eq,           // =
-    Neq,          // !=
-    Gt,           // >
-    Gte,          // >=
-    Lt,           // <
-    Lte,          // <=
-    Arrow,        // ->
-    BackArrow,    // <-
-    Semicolon,    // ;
-    Colon,        // :
-    LAngle,       // < (when used for type cast)
+    Star,      // *
+    Comma,     // ,
+    Dot,       // .
+    LParen,    // (
+    RParen,    // )
+    LBrace,    // {
+    RBrace,    // }
+    Eq,        // =
+    Neq,       // !=
+    Gt,        // >
+    Gte,       // >=
+    Lt,        // <
+    Lte,       // <=
+    Arrow,     // ->
+    BackArrow, // <-
+    Semicolon, // ;
+    Colon,     // :
+    #[allow(dead_code)]
+    LAngle, // < (when used for type cast)
 
     // Literals
     Ident(String),
@@ -442,10 +443,10 @@ impl Parser {
 
     /// Consume "BY" after ORDER/GROUP keywords.
     fn eat_by(&mut self) {
-        if let Token::Ident(s) = self.peek() {
-            if s.to_uppercase() == "BY" {
-                self.advance();
-            }
+        if let Token::Ident(s) = self.peek()
+            && s.to_uppercase() == "BY"
+        {
+            self.advance();
         }
     }
 
@@ -1167,14 +1168,14 @@ impl Parser {
                 self.advance();
                 if let Token::Ident(type_name) = self.peek().clone() {
                     self.advance();
-                    if self.eat(Token::Gt) {
-                        if let Some(dt) = DarshType::from_str(&type_name.to_lowercase()) {
-                            let inner = self.parse_primary()?;
-                            return Ok(Expr::Cast {
-                                cast_type: dt,
-                                expr: Box::new(inner),
-                            });
-                        }
+                    if self.eat(Token::Gt)
+                        && let Some(dt) = DarshType::from_str(&type_name.to_lowercase())
+                    {
+                        let inner = self.parse_primary()?;
+                        return Ok(Expr::Cast {
+                            cast_type: dt,
+                            expr: Box::new(inner),
+                        });
                     }
                 }
                 self.pos = saved;
@@ -1243,9 +1244,8 @@ mod tests {
 
     #[test]
     fn parse_select_with_order_limit() {
-        let stmts =
-            Parser::parse("SELECT name, age FROM users ORDER BY age DESC LIMIT 10 START 5")
-                .unwrap();
+        let stmts = Parser::parse("SELECT name, age FROM users ORDER BY age DESC LIMIT 10 START 5")
+            .unwrap();
         match &stmts[0] {
             Statement::Select(s) => {
                 assert_eq!(s.fields.len(), 2);
@@ -1260,8 +1260,7 @@ mod tests {
 
     #[test]
     fn parse_graph_traversal() {
-        let stmts =
-            Parser::parse("SELECT ->friends->friends FROM user:darsh").unwrap();
+        let stmts = Parser::parse("SELECT ->friends->friends FROM user:darsh").unwrap();
         match &stmts[0] {
             Statement::Select(s) => {
                 assert_eq!(s.fields.len(), 1);
@@ -1273,7 +1272,9 @@ mod tests {
                     }
                     _ => panic!("expected Graph field"),
                 }
-                assert!(matches!(&s.from, Target::Record(r) if r.table == "user" && r.id == "darsh"));
+                assert!(
+                    matches!(&s.from, Target::Record(r) if r.table == "user" && r.id == "darsh")
+                );
             }
             _ => panic!("expected Select"),
         }
@@ -1281,17 +1282,18 @@ mod tests {
 
     #[test]
     fn parse_create_with_record_link() {
-        let stmts = Parser::parse(
-            r#"CREATE user:darsh SET name = "Darsh", company = company:knowai"#,
-        )
-        .unwrap();
+        let stmts =
+            Parser::parse(r#"CREATE user:darsh SET name = "Darsh", company = company:knowai"#)
+                .unwrap();
         match &stmts[0] {
             Statement::Create(c) => {
                 assert!(matches!(&c.target, Target::Record(r) if r.id == "darsh"));
                 match &c.data {
                     SetOrContent::Set(pairs) => {
                         assert_eq!(pairs.len(), 2);
-                        assert!(matches!(&pairs[1].1, Expr::RecordLink(r) if r.table == "company" && r.id == "knowai"));
+                        assert!(
+                            matches!(&pairs[1].1, Expr::RecordLink(r) if r.table == "company" && r.id == "knowai")
+                        );
                     }
                     _ => panic!("expected Set"),
                 }
@@ -1302,10 +1304,9 @@ mod tests {
 
     #[test]
     fn parse_relate() {
-        let stmts = Parser::parse(
-            r#"RELATE user:darsh->works_at->company:knowai SET since = "2024""#,
-        )
-        .unwrap();
+        let stmts =
+            Parser::parse(r#"RELATE user:darsh->works_at->company:knowai SET since = "2024""#)
+                .unwrap();
         match &stmts[0] {
             Statement::Relate(r) => {
                 assert_eq!(r.from.table, "user");
@@ -1337,8 +1338,20 @@ mod tests {
         match &stmts[0] {
             Statement::Select(s) => {
                 assert_eq!(s.fields.len(), 2);
-                assert!(matches!(&s.fields[0], Field::Cast { cast_type: DarshType::Int, .. }));
-                assert!(matches!(&s.fields[1], Field::Cast { cast_type: DarshType::String, .. }));
+                assert!(matches!(
+                    &s.fields[0],
+                    Field::Cast {
+                        cast_type: DarshType::Int,
+                        ..
+                    }
+                ));
+                assert!(matches!(
+                    &s.fields[1],
+                    Field::Cast {
+                        cast_type: DarshType::String,
+                        ..
+                    }
+                ));
             }
             _ => panic!("expected Select"),
         }
@@ -1346,8 +1359,7 @@ mod tests {
 
     #[test]
     fn parse_computed_field() {
-        let stmts =
-            Parser::parse("SELECT *, count(->posts) AS post_count FROM users").unwrap();
+        let stmts = Parser::parse("SELECT *, count(->posts) AS post_count FROM users").unwrap();
         match &stmts[0] {
             Statement::Select(s) => {
                 assert_eq!(s.fields.len(), 2);
@@ -1378,8 +1390,7 @@ mod tests {
 
     #[test]
     fn parse_define_field() {
-        let stmts =
-            Parser::parse("DEFINE FIELD email ON TABLE users TYPE string").unwrap();
+        let stmts = Parser::parse("DEFINE FIELD email ON TABLE users TYPE string").unwrap();
         match &stmts[0] {
             Statement::DefineField(df) => {
                 assert_eq!(df.name, "email");
@@ -1425,8 +1436,7 @@ mod tests {
 
     #[test]
     fn parse_update() {
-        let stmts =
-            Parser::parse(r#"UPDATE users SET active = true WHERE age >= 18"#).unwrap();
+        let stmts = Parser::parse(r#"UPDATE users SET active = true WHERE age >= 18"#).unwrap();
         match &stmts[0] {
             Statement::Update(u) => {
                 assert!(matches!(&u.target, Target::Table(t) if t == "users"));
@@ -1438,10 +1448,9 @@ mod tests {
 
     #[test]
     fn parse_insert() {
-        let stmts = Parser::parse(
-            r#"INSERT INTO users (name, age) VALUES ("Darsh", 25), ("Alice", 30)"#,
-        )
-        .unwrap();
+        let stmts =
+            Parser::parse(r#"INSERT INTO users (name, age) VALUES ("Darsh", 25), ("Alice", 30)"#)
+                .unwrap();
         match &stmts[0] {
             Statement::Insert(i) => {
                 assert_eq!(i.table, "users");
@@ -1454,10 +1463,8 @@ mod tests {
 
     #[test]
     fn parse_multiple_statements() {
-        let stmts = Parser::parse(
-            "SELECT * FROM users; CREATE user:test SET name = \"Test\"",
-        )
-        .unwrap();
+        let stmts =
+            Parser::parse("SELECT * FROM users; CREATE user:test SET name = \"Test\"").unwrap();
         assert_eq!(stmts.len(), 2);
         assert!(matches!(&stmts[0], Statement::Select(_)));
         assert!(matches!(&stmts[1], Statement::Create(_)));
@@ -1465,13 +1472,15 @@ mod tests {
 
     #[test]
     fn parse_logical_operators() {
-        let stmts = Parser::parse("SELECT * FROM users WHERE age > 18 AND active = true")
-            .unwrap();
+        let stmts = Parser::parse("SELECT * FROM users WHERE age > 18 AND active = true").unwrap();
         match &stmts[0] {
             Statement::Select(s) => {
                 assert!(matches!(
                     &s.condition,
-                    Some(Expr::LogicalOp { op: LogicOp::And, .. })
+                    Some(Expr::LogicalOp {
+                        op: LogicOp::And,
+                        ..
+                    })
                 ));
             }
             _ => panic!("expected Select"),

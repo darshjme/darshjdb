@@ -229,7 +229,19 @@ impl PgEdgeStore {
         let to = RecordId::parse(&input.to)?;
         let id = Uuid::new_v4();
 
-        let row = sqlx::query_as::<_, (Uuid, String, String, String, String, String, Option<serde_json::Value>, DateTime<Utc>)>(
+        let row = sqlx::query_as::<
+            _,
+            (
+                Uuid,
+                String,
+                String,
+                String,
+                String,
+                String,
+                Option<serde_json::Value>,
+                DateTime<Utc>,
+            ),
+        >(
             r#"
             INSERT INTO _edges (id, from_table, from_id, edge_type, to_table, to_id, data)
             VALUES ($1, $2, $3, $4, $5, $6, $7)
@@ -303,7 +315,19 @@ impl PgEdgeStore {
         edge_type: Option<&str>,
     ) -> Result<Vec<Edge>> {
         let rows = if let Some(et) = edge_type {
-            sqlx::query_as::<_, (Uuid, String, String, String, String, String, Option<serde_json::Value>, DateTime<Utc>)>(
+            sqlx::query_as::<
+                _,
+                (
+                    Uuid,
+                    String,
+                    String,
+                    String,
+                    String,
+                    String,
+                    Option<serde_json::Value>,
+                    DateTime<Utc>,
+                ),
+            >(
                 r#"
                 SELECT id, from_table, from_id, edge_type, to_table, to_id, data, created_at
                 FROM _edges
@@ -317,7 +341,19 @@ impl PgEdgeStore {
             .fetch_all(&self.pool)
             .await?
         } else {
-            sqlx::query_as::<_, (Uuid, String, String, String, String, String, Option<serde_json::Value>, DateTime<Utc>)>(
+            sqlx::query_as::<
+                _,
+                (
+                    Uuid,
+                    String,
+                    String,
+                    String,
+                    String,
+                    String,
+                    Option<serde_json::Value>,
+                    DateTime<Utc>,
+                ),
+            >(
                 r#"
                 SELECT id, from_table, from_id, edge_type, to_table, to_id, data, created_at
                 FROM _edges
@@ -331,28 +367,39 @@ impl PgEdgeStore {
             .await?
         };
 
-        Ok(rows.into_iter().map(|r| Edge {
-            id: r.0,
-            from_table: r.1,
-            from_id: r.2,
-            edge_type: r.3,
-            to_table: r.4,
-            to_id: r.5,
-            data: r.6,
-            created_at: r.7,
-        }).collect())
+        Ok(rows
+            .into_iter()
+            .map(|r| Edge {
+                id: r.0,
+                from_table: r.1,
+                from_id: r.2,
+                edge_type: r.3,
+                to_table: r.4,
+                to_id: r.5,
+                data: r.6,
+                created_at: r.7,
+            })
+            .collect())
     }
 
     /// Get incoming edges to a record, optionally filtered by edge type.
     ///
     /// Models: `SELECT <-edge_type<-? FROM table:id`
-    pub async fn get_incoming(
-        &self,
-        to: &RecordId,
-        edge_type: Option<&str>,
-    ) -> Result<Vec<Edge>> {
+    pub async fn get_incoming(&self, to: &RecordId, edge_type: Option<&str>) -> Result<Vec<Edge>> {
         let rows = if let Some(et) = edge_type {
-            sqlx::query_as::<_, (Uuid, String, String, String, String, String, Option<serde_json::Value>, DateTime<Utc>)>(
+            sqlx::query_as::<
+                _,
+                (
+                    Uuid,
+                    String,
+                    String,
+                    String,
+                    String,
+                    String,
+                    Option<serde_json::Value>,
+                    DateTime<Utc>,
+                ),
+            >(
                 r#"
                 SELECT id, from_table, from_id, edge_type, to_table, to_id, data, created_at
                 FROM _edges
@@ -366,7 +413,19 @@ impl PgEdgeStore {
             .fetch_all(&self.pool)
             .await?
         } else {
-            sqlx::query_as::<_, (Uuid, String, String, String, String, String, Option<serde_json::Value>, DateTime<Utc>)>(
+            sqlx::query_as::<
+                _,
+                (
+                    Uuid,
+                    String,
+                    String,
+                    String,
+                    String,
+                    String,
+                    Option<serde_json::Value>,
+                    DateTime<Utc>,
+                ),
+            >(
                 r#"
                 SELECT id, from_table, from_id, edge_type, to_table, to_id, data, created_at
                 FROM _edges
@@ -380,16 +439,19 @@ impl PgEdgeStore {
             .await?
         };
 
-        Ok(rows.into_iter().map(|r| Edge {
-            id: r.0,
-            from_table: r.1,
-            from_id: r.2,
-            edge_type: r.3,
-            to_table: r.4,
-            to_id: r.5,
-            data: r.6,
-            created_at: r.7,
-        }).collect())
+        Ok(rows
+            .into_iter()
+            .map(|r| Edge {
+                id: r.0,
+                from_table: r.1,
+                from_id: r.2,
+                edge_type: r.3,
+                to_table: r.4,
+                to_id: r.5,
+                data: r.6,
+                created_at: r.7,
+            })
+            .collect())
     }
 
     /// Get all neighbors (both directions) of a record, optionally filtered
@@ -400,7 +462,19 @@ impl PgEdgeStore {
         edge_type: Option<&str>,
     ) -> Result<Vec<Edge>> {
         let rows = if let Some(et) = edge_type {
-            sqlx::query_as::<_, (Uuid, String, String, String, String, String, Option<serde_json::Value>, DateTime<Utc>)>(
+            sqlx::query_as::<
+                _,
+                (
+                    Uuid,
+                    String,
+                    String,
+                    String,
+                    String,
+                    String,
+                    Option<serde_json::Value>,
+                    DateTime<Utc>,
+                ),
+            >(
                 r#"
                 SELECT id, from_table, from_id, edge_type, to_table, to_id, data, created_at
                 FROM _edges
@@ -415,7 +489,19 @@ impl PgEdgeStore {
             .fetch_all(&self.pool)
             .await?
         } else {
-            sqlx::query_as::<_, (Uuid, String, String, String, String, String, Option<serde_json::Value>, DateTime<Utc>)>(
+            sqlx::query_as::<
+                _,
+                (
+                    Uuid,
+                    String,
+                    String,
+                    String,
+                    String,
+                    String,
+                    Option<serde_json::Value>,
+                    DateTime<Utc>,
+                ),
+            >(
                 r#"
                 SELECT id, from_table, from_id, edge_type, to_table, to_id, data, created_at
                 FROM _edges
@@ -429,16 +515,19 @@ impl PgEdgeStore {
             .await?
         };
 
-        Ok(rows.into_iter().map(|r| Edge {
-            id: r.0,
-            from_table: r.1,
-            from_id: r.2,
-            edge_type: r.3,
-            to_table: r.4,
-            to_id: r.5,
-            data: r.6,
-            created_at: r.7,
-        }).collect())
+        Ok(rows
+            .into_iter()
+            .map(|r| Edge {
+                id: r.0,
+                from_table: r.1,
+                from_id: r.2,
+                edge_type: r.3,
+                to_table: r.4,
+                to_id: r.5,
+                data: r.6,
+                created_at: r.7,
+            })
+            .collect())
     }
 
     /// Multi-hop traversal: follow a chain of edge types from a starting record.

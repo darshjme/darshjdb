@@ -113,13 +113,13 @@ impl PluginRegistry {
     /// if the plugin was found and removed.
     pub async fn unregister(&self, plugin_id: PluginId) -> bool {
         // Shut down if active.
-        if let Some(mut entry) = self.plugins.get_mut(&plugin_id) {
-            if matches!(entry.state, PluginState::Active) {
-                if let Some(ref mut instance) = entry.instance {
-                    instance.shutdown().await;
-                }
-                entry.state = PluginState::Disabled;
+        if let Some(mut entry) = self.plugins.get_mut(&plugin_id)
+            && matches!(entry.state, PluginState::Active)
+        {
+            if let Some(ref mut instance) = entry.instance {
+                instance.shutdown().await;
             }
+            entry.state = PluginState::Disabled;
         }
 
         // Remove hook handlers.

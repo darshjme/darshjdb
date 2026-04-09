@@ -337,7 +337,8 @@ async fn main() -> Result<()> {
     let (change_feed, _change_feed_rx) = ddb_server::sync::change_feed::ChangeFeed::with_defaults();
 
     // Live query manager for LIVE SELECT subscriptions.
-    let (live_query_manager, _live_query_rx) = ddb_server::sync::live_query::LiveQueryManager::new(4096);
+    let (live_query_manager, _live_query_rx) =
+        ddb_server::sync::live_query::LiveQueryManager::new(4096);
 
     let ws_state = WsState {
         sessions: sync_sessions.clone(),

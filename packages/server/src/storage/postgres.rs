@@ -11,8 +11,8 @@
 use serde_json::Value;
 use sqlx::PgPool;
 
-use crate::error::{DarshJError, Result};
 use super::traits::DataBackend;
+use crate::error::{DarshJError, Result};
 
 // ---------------------------------------------------------------------------
 // PostgreSQL backend
@@ -56,14 +56,13 @@ impl PostgresBackend {
 #[async_trait::async_trait]
 impl DataBackend for PostgresBackend {
     async fn get(&self, table: &str, id: &str) -> Result<Option<Value>> {
-        let row: Option<(Value,)> = sqlx::query_as(
-            "SELECT data FROM ddb_data WHERE tbl = $1 AND id = $2",
-        )
-        .bind(table)
-        .bind(id)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(DarshJError::Database)?;
+        let row: Option<(Value,)> =
+            sqlx::query_as("SELECT data FROM ddb_data WHERE tbl = $1 AND id = $2")
+                .bind(table)
+                .bind(id)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(DarshJError::Database)?;
 
         Ok(row.map(|(data,)| data))
     }
@@ -88,14 +87,12 @@ impl DataBackend for PostgresBackend {
     }
 
     async fn delete(&self, table: &str, id: &str) -> Result<bool> {
-        let result = sqlx::query(
-            "DELETE FROM ddb_data WHERE tbl = $1 AND id = $2",
-        )
-        .bind(table)
-        .bind(id)
-        .execute(&self.pool)
-        .await
-        .map_err(DarshJError::Database)?;
+        let result = sqlx::query("DELETE FROM ddb_data WHERE tbl = $1 AND id = $2")
+            .bind(table)
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(DarshJError::Database)?;
 
         Ok(result.rows_affected() > 0)
     }
@@ -127,21 +124,19 @@ impl DataBackend for PostgresBackend {
                 .await
                 .map_err(DarshJError::Database)?
             }
-            None => {
-                sqlx::query_as(
-                    r#"
+            None => sqlx::query_as(
+                r#"
                     SELECT id, data FROM ddb_data
                     WHERE tbl = $1
                     ORDER BY id
                     LIMIT $2
                     "#,
-                )
-                .bind(table)
-                .bind(limit as i64)
-                .fetch_all(&self.pool)
-                .await
-                .map_err(DarshJError::Database)?
-            }
+            )
+            .bind(table)
+            .bind(limit as i64)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(DarshJError::Database)?,
         };
 
         Ok(rows)

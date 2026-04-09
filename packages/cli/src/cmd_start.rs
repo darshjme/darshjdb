@@ -29,6 +29,7 @@ impl std::fmt::Display for StorageBackend {
 ///
 /// This embeds the full server binary — no separate process needed.
 /// The `ddb` binary IS the server.
+#[allow(clippy::too_many_arguments)]
 pub async fn run(
     storage: StorageBackend,
     conn: Option<String>,
@@ -59,9 +60,9 @@ pub async fn run(
                 "postgres://postgres:darshan@localhost:5432/darshjdb_mem".to_string()
             })
         }
-        StorageBackend::Postgres => conn.unwrap_or_else(|| {
-            "postgres://darshan:darshan@localhost:5432/darshjdb".to_string()
-        }),
+        StorageBackend::Postgres => {
+            conn.unwrap_or_else(|| "postgres://darshan:darshan@localhost:5432/darshjdb".to_string())
+        }
     };
 
     // Set environment variables that the server reads.
@@ -119,10 +120,9 @@ pub async fn run(
         .await
         .context("Failed to acquire advisory lock")?;
 
-    let triple_store =
-        ddb_server::triple_store::PgTripleStore::new(pool.clone())
-            .await
-            .context("Failed to initialize triple store")?;
+    let triple_store = ddb_server::triple_store::PgTripleStore::new(pool.clone())
+        .await
+        .context("Failed to initialize triple store")?;
     tracing::info!("triple store initialized");
 
     ddb_server::api::rest::ensure_auth_schema(&pool)
@@ -167,12 +167,12 @@ pub async fn run(
         },
     };
 
-    let session_manager = Arc::new(
-        ddb_server::auth::session::SessionManager::new(pool.clone(), key_manager),
-    );
+    let session_manager = Arc::new(ddb_server::auth::session::SessionManager::new(
+        pool.clone(),
+        key_manager,
+    ));
     let rate_limiter = Arc::new(ddb_server::auth::middleware::RateLimiter::new());
-    let _rate_limit_cleanup = rate_limiter
-        .spawn_cleanup_task(Duration::from_secs(60));
+    let _rate_limit_cleanup = rate_limiter.spawn_cleanup_task(Duration::from_secs(60));
 
     tracing::info!("auth engine initialized");
 
@@ -231,18 +231,9 @@ pub async fn run(
                 let size = monitor_pool.size();
                 let idle = monitor_pool.num_idle() as u32;
                 let active = size.saturating_sub(idle);
-                let utilization = if 20 > 0 {
-                    active as f64 / 20.0
-                } else {
-                    0.0
-                };
+                let utilization = if 20 > 0 { active as f64 / 20.0 } else { 0.0 };
                 if utilization > 0.80 {
-                    tracing::warn!(
-                        active,
-                        idle,
-                        size,
-                        "connection pool utilization above 80%"
-                    );
+                    tracing::warn!(active, idle, size, "connection pool utilization above 80%");
                 }
             }
         });
@@ -295,8 +286,7 @@ pub async fn run(
     let (pubsub_engine, _pubsub_rx) = ddb_server::sync::pubsub::PubSubEngine::new(4096);
 
     // ── Live Query Manager ──────────────────────────────────────────
-    let (live_query_manager, _live_rx) =
-        ddb_server::sync::live_query::LiveQueryManager::new(4096);
+    let (live_query_manager, _live_rx) = ddb_server::sync::live_query::LiveQueryManager::new(4096);
 
     // ── Change Feed ─────────────────────────────────────────────────
     let (change_feed, _cf_rx) = ddb_server::sync::ChangeFeed::with_defaults();

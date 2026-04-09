@@ -62,11 +62,7 @@ fn filter_to_where(filter: &FilterClause) -> Vec<WhereClause> {
 /// View filters are prepended so they act as a mandatory base constraint.
 /// User-supplied filters are appended afterwards and further narrow results.
 pub fn apply_view_filters(ast: &mut QueryAST, view: &ViewConfig) {
-    let mut view_wheres: Vec<WhereClause> = view
-        .filters
-        .iter()
-        .flat_map(filter_to_where)
-        .collect();
+    let mut view_wheres: Vec<WhereClause> = view.filters.iter().flat_map(filter_to_where).collect();
 
     // Prepend view filters, then user filters follow.
     view_wheres.append(&mut ast.where_clauses);

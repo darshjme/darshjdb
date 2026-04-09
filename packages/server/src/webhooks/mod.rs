@@ -481,13 +481,11 @@ async fn update_failure_count(
     disable: bool,
 ) -> Result<(), sqlx::Error> {
     if disable {
-        sqlx::query(
-            "UPDATE webhooks SET consecutive_failures = $2, active = false WHERE id = $1",
-        )
-        .bind(webhook_id)
-        .bind(failures as i32)
-        .execute(pool)
-        .await?;
+        sqlx::query("UPDATE webhooks SET consecutive_failures = $2, active = false WHERE id = $1")
+            .bind(webhook_id)
+            .bind(failures as i32)
+            .execute(pool)
+            .await?;
     } else {
         sqlx::query("UPDATE webhooks SET consecutive_failures = $2 WHERE id = $1")
             .bind(webhook_id)

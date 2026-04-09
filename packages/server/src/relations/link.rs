@@ -161,9 +161,7 @@ pub async fn add_link(
 
             if symmetric {
                 let bl = backlink_name.ok_or_else(|| {
-                    DarshJError::InvalidAttribute(
-                        "symmetric links require a backlink_name".into(),
-                    )
+                    DarshJError::InvalidAttribute("symmetric links require a backlink_name".into())
                 })?;
                 triples.push(make_ref_triple(target_id, bl, source_id));
             }
@@ -171,10 +169,8 @@ pub async fn add_link(
             // For OneToOne, retract any existing reference first.
             if relationship == Relationship::OneToOne {
                 let _ = store.retract(source_id, link_attribute).await;
-                if symmetric {
-                    if let Some(bl) = backlink_name {
-                        let _ = store.retract(target_id, bl).await;
-                    }
+                if symmetric && let Some(bl) = backlink_name {
+                    let _ = store.retract(target_id, bl).await;
                 }
             }
 
@@ -207,9 +203,7 @@ pub async fn add_link(
 
             if symmetric {
                 let bl = backlink_name.ok_or_else(|| {
-                    DarshJError::InvalidAttribute(
-                        "symmetric links require a backlink_name".into(),
-                    )
+                    DarshJError::InvalidAttribute("symmetric links require a backlink_name".into())
                 })?;
                 triples.push(make_ref_triple(target_id, bl, source_id));
             }
@@ -239,10 +233,8 @@ pub async fn remove_link(
             // Retract the specific reference triple.
             retract_specific_ref(&store, source_id, link_attribute, target_id).await?;
 
-            if symmetric {
-                if let Some(bl) = backlink_name {
-                    retract_specific_ref(&store, target_id, bl, source_id).await?;
-                }
+            if symmetric && let Some(bl) = backlink_name {
+                retract_specific_ref(&store, target_id, bl, source_id).await?;
             }
         }
 
@@ -253,10 +245,8 @@ pub async fn remove_link(
             // Also retract the direct reference on the source.
             retract_specific_ref(&store, source_id, link_attribute, target_id).await?;
 
-            if symmetric {
-                if let Some(bl) = backlink_name {
-                    retract_specific_ref(&store, target_id, bl, source_id).await?;
-                }
+            if symmetric && let Some(bl) = backlink_name {
+                retract_specific_ref(&store, target_id, bl, source_id).await?;
             }
         }
     }
@@ -268,22 +258,17 @@ pub async fn remove_link(
 ///
 /// Returns the UUIDs of all linked entities (following active, non-retracted
 /// reference triples).
-pub async fn get_linked(
-    pool: &PgPool,
-    entity_id: Uuid,
-    link_attribute: &str,
-) -> Result<Vec<Uuid>> {
+pub async fn get_linked(pool: &PgPool, entity_id: Uuid, link_attribute: &str) -> Result<Vec<Uuid>> {
     let store = PgTripleStore::new_lazy(pool.clone());
     let triples = store.get_attribute(entity_id, link_attribute).await?;
 
     let mut linked = Vec::new();
     for t in triples {
-        if t.value_type == ValueType::Reference as i16 {
-            if let Some(uuid_str) = t.value.as_str() {
-                if let Ok(id) = Uuid::parse_str(uuid_str) {
-                    linked.push(id);
-                }
-            }
+        if t.value_type == ValueType::Reference as i16
+            && let Some(uuid_str) = t.value.as_str()
+            && let Ok(id) = Uuid::parse_str(uuid_str)
+        {
+            linked.push(id);
         }
     }
     Ok(linked)
@@ -472,12 +457,10 @@ async fn retract_junction(
 
     // Retract all triples on each matched junction entity.
     for (jid,) in junction_ids {
-        sqlx::query(
-            "UPDATE triples SET retracted = true WHERE entity_id = $1 AND NOT retracted",
-        )
-        .bind(jid)
-        .execute(pool)
-        .await?;
+        sqlx::query("UPDATE triples SET retracted = true WHERE entity_id = $1 AND NOT retracted")
+            .bind(jid)
+            .execute(pool)
+            .await?;
     }
 
     Ok(())

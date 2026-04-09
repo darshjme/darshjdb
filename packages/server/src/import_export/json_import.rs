@@ -22,19 +22,15 @@ use super::{ImportError, ImportResult};
 /// Input format discriminator.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 pub enum JsonFormat {
     /// Standard JSON array `[{...}, {...}]`.
     Array,
     /// Newline-delimited JSON (one object per line).
     Ndjson,
     /// Auto-detect: try array first, fall back to NDJSON.
+    #[default]
     Auto,
-}
-
-impl Default for JsonFormat {
-    fn default() -> Self {
-        Self::Auto
-    }
 }
 
 /// Configuration for a JSON import job.

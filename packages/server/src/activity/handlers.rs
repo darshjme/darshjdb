@@ -125,20 +125,24 @@ pub async fn comment_create(
     }
 
     // Auto-generate reply notification.
-    if let Some(parent_id) = input.reply_to {
-        if let Ok(parent) = comments::get_comment_by_id(&state.pool, parent_id).await {
-            let _ = notifications::notify_reply(
-                &state.pool,
-                user_id,
-                comment.id,
-                parent.user_id,
-                &input.content,
-            )
-            .await;
-        }
+    if let Some(parent_id) = input.reply_to
+        && let Ok(parent) = comments::get_comment_by_id(&state.pool, parent_id).await
+    {
+        let _ = notifications::notify_reply(
+            &state.pool,
+            user_id,
+            comment.id,
+            parent.user_id,
+            &input.content,
+        )
+        .await;
     }
 
-    Ok((StatusCode::CREATED, axum::Json(json!({ "comment": comment }))).into_response())
+    Ok((
+        StatusCode::CREATED,
+        axum::Json(json!({ "comment": comment })),
+    )
+        .into_response())
 }
 
 /// `GET /api/data/{entity}/{id}/comments` — List threaded comments.
@@ -274,7 +278,11 @@ pub async fn notifications_list(
         .await
         .map_err(|e| ApiError::internal(format!("Failed to fetch notifications: {e}")))?;
 
-    Ok((StatusCode::OK, axum::Json(json!({ "notifications": notifs }))).into_response())
+    Ok((
+        StatusCode::OK,
+        axum::Json(json!({ "notifications": notifs })),
+    )
+        .into_response())
 }
 
 /// `PATCH /api/notifications/{id}/read` — Mark a notification as read.

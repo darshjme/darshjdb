@@ -58,12 +58,15 @@ pub async fn run_export(
         .unwrap_or_default();
 
     let mut all_data = serde_json::Map::new();
-    all_data.insert("_meta".to_string(), serde_json::json!({
-        "version": env!("CARGO_PKG_VERSION"),
-        "exported_at": chrono::Utc::now().to_rfc3339(),
-        "format": format!("{format:?}"),
-        "source": conn,
-    }));
+    all_data.insert(
+        "_meta".to_string(),
+        serde_json::json!({
+            "version": env!("CARGO_PKG_VERSION"),
+            "exported_at": chrono::Utc::now().to_rfc3339(),
+            "format": format!("{format:?}"),
+            "source": conn,
+        }),
+    );
     all_data.insert("schema".to_string(), schema.clone());
 
     let mut entities = serde_json::Map::new();
@@ -289,10 +292,7 @@ pub async fn run_import(
         }
     }
 
-    println!(
-        "\n  {} Import complete\n",
-        "-->".bright_green()
-    );
+    println!("\n  {} Import complete\n", "-->".bright_green());
 
     Ok(())
 }

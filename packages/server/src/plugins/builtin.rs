@@ -93,14 +93,8 @@ impl Plugin for SlackNotificationPlugin {
         &mut self,
         config: Value,
     ) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + '_>> {
-        let webhook_url = config["webhook_url"]
-            .as_str()
-            .unwrap_or("")
-            .to_string();
-        let channel = config["channel"]
-            .as_str()
-            .unwrap_or("#general")
-            .to_string();
+        let webhook_url = config["webhook_url"].as_str().unwrap_or("").to_string();
+        let channel = config["channel"].as_str().unwrap_or("#general").to_string();
         let entity_types: Vec<String> = config["entity_types"]
             .as_array()
             .map(|arr| {
@@ -132,7 +126,10 @@ impl Plugin for SlackNotificationPlugin {
     fn shutdown(&mut self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
         Box::pin(async move {
             self.active.store(false, Ordering::SeqCst);
-            info!(plugin = "slack-notifications", "Slack notification plugin shut down");
+            info!(
+                plugin = "slack-notifications",
+                "Slack notification plugin shut down"
+            );
         })
     }
 
@@ -148,6 +145,7 @@ impl Plugin for SlackNotificationPlugin {
 }
 
 /// Hook handler that fires Slack notifications on AfterCreate / AfterUpdate.
+#[allow(dead_code)]
 pub struct SlackHookHandler {
     plugin_id: PluginId,
     webhook_url: String,
@@ -186,10 +184,7 @@ impl HookHandler for SlackHookHandler {
         self.plugin_id
     }
 
-    fn handle(
-        &self,
-        ctx: &HookContext,
-    ) -> Pin<Box<dyn Future<Output = HookResult> + Send + '_>> {
+    fn handle(&self, ctx: &HookContext) -> Pin<Box<dyn Future<Output = HookResult> + Send + '_>> {
         let entity_type = ctx.entity_type.clone();
         let entity_id = ctx.entity_id;
         let hook = ctx.hook;
@@ -387,7 +382,9 @@ impl ValidationHookHandler {
                 }
             }
             "regex" => {
-                if let (Some(pattern), Some(value)) = (&rule.pattern, field_value.and_then(|v| v.as_str())) {
+                if let (Some(pattern), Some(value)) =
+                    (&rule.pattern, field_value.and_then(|v| v.as_str()))
+                {
                     // Simple substring check — for production, use the `regex` crate.
                     if !value.contains(pattern.trim_start_matches('^').trim_end_matches('$')) {
                         // Simplified: in production, compile and match the actual regex.
@@ -401,15 +398,15 @@ impl ValidationHookHandler {
             }
             "range" => {
                 if let Some(value) = field_value.and_then(|v| v.as_f64()) {
-                    if let Some(min) = rule.min {
-                        if value < min {
-                            return Err(rule.message.clone());
-                        }
+                    if let Some(min) = rule.min
+                        && value < min
+                    {
+                        return Err(rule.message.clone());
                     }
-                    if let Some(max) = rule.max {
-                        if value > max {
-                            return Err(rule.message.clone());
-                        }
+                    if let Some(max) = rule.max
+                        && value > max
+                    {
+                        return Err(rule.message.clone());
                     }
                 }
             }
@@ -431,10 +428,7 @@ impl HookHandler for ValidationHookHandler {
         self.plugin_id
     }
 
-    fn handle(
-        &self,
-        ctx: &HookContext,
-    ) -> Pin<Box<dyn Future<Output = HookResult> + Send + '_>> {
+    fn handle(&self, ctx: &HookContext) -> Pin<Box<dyn Future<Output = HookResult> + Send + '_>> {
         // Only validate on create and update.
         if !matches!(ctx.hook, Hook::BeforeCreate | Hook::BeforeUpdate) {
             return Box::pin(async { HookResult::Continue });
@@ -620,10 +614,7 @@ impl HookHandler for AuditHookHandler {
         self.plugin_id
     }
 
-    fn handle(
-        &self,
-        ctx: &HookContext,
-    ) -> Pin<Box<dyn Future<Output = HookResult> + Send + '_>> {
+    fn handle(&self, ctx: &HookContext) -> Pin<Box<dyn Future<Output = HookResult> + Send + '_>> {
         if !self.should_audit(&ctx.entity_type) {
             return Box::pin(async { HookResult::Continue });
         }
@@ -900,12 +891,7 @@ mod tests {
     async fn audit_handler_skips_reads_when_disabled() {
         let handler = AuditHookHandler::new(Uuid::new_v4(), false, vec![]);
 
-        let ctx = HookContext::query(
-            Hook::AfterQuery,
-            "tasks",
-            None,
-            serde_json::json!({}),
-        );
+        let ctx = HookContext::query(Hook::AfterQuery, "tasks", None, serde_json::json!({}));
 
         let result = handler.handle(&ctx).await;
         assert!(matches!(result, HookResult::Continue));
@@ -913,11 +899,7 @@ mod tests {
 
     #[tokio::test]
     async fn audit_handler_filters_entity_types() {
-        let handler = AuditHookHandler::new(
-            Uuid::new_v4(),
-            false,
-            vec!["users".into()],
-        );
+        let handler = AuditHookHandler::new(Uuid::new_v4(), false, vec!["users".into()]);
 
         // "tasks" should be skipped.
         let ctx = HookContext::mutation(

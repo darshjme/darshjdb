@@ -235,10 +235,7 @@ pub trait ViewStore: Send + Sync {
         created_by: Uuid,
     ) -> impl std::future::Future<Output = Result<ViewConfig>> + Send;
 
-    fn get_view(
-        &self,
-        id: ViewId,
-    ) -> impl std::future::Future<Output = Result<ViewConfig>> + Send;
+    fn get_view(&self, id: ViewId) -> impl std::future::Future<Output = Result<ViewConfig>> + Send;
 
     fn list_views(
         &self,
@@ -251,10 +248,7 @@ pub trait ViewStore: Send + Sync {
         update: ViewUpdate,
     ) -> impl std::future::Future<Output = Result<ViewConfig>> + Send;
 
-    fn delete_view(
-        &self,
-        id: ViewId,
-    ) -> impl std::future::Future<Output = Result<()>> + Send;
+    fn delete_view(&self, id: ViewId) -> impl std::future::Future<Output = Result<()>> + Send;
 }
 
 // ── PgViewStore ────────────────────────────────────────────────────
@@ -310,9 +304,7 @@ impl PgViewStore {
             .unwrap_or("Untitled")
             .to_string();
 
-        let kind_str = attr("view/kind")
-            .and_then(|v| v.as_str())
-            .unwrap_or("grid");
+        let kind_str = attr("view/kind").and_then(|v| v.as_str()).unwrap_or("grid");
         let kind = ViewKind::from_str_value(kind_str)
             .ok_or_else(|| DarshJError::Internal(format!("unknown view kind: {kind_str}")))?;
 
@@ -323,7 +315,9 @@ impl PgViewStore {
 
         // Config blob stores filters, sorts, field_order, hidden_fields, and
         // display-specific settings.
-        let config_val = attr("view/config").cloned().unwrap_or(serde_json::json!({}));
+        let config_val = attr("view/config")
+            .cloned()
+            .unwrap_or(serde_json::json!({}));
         let config_obj = config_val.as_object();
 
         let filters: Vec<FilterClause> = config_obj
@@ -505,7 +499,9 @@ impl ViewStore for PgViewStore {
         let id = Uuid::new_v4();
 
         if req.name.trim().is_empty() {
-            return Err(DarshJError::InvalidQuery("view name must not be empty".into()));
+            return Err(DarshJError::InvalidQuery(
+                "view name must not be empty".into(),
+            ));
         }
         if req.table_entity_type.trim().is_empty() {
             return Err(DarshJError::InvalidQuery(
@@ -580,7 +576,9 @@ impl ViewStore for PgViewStore {
 
         if let Some(name) = update.name {
             if name.trim().is_empty() {
-                return Err(DarshJError::InvalidQuery("view name must not be empty".into()));
+                return Err(DarshJError::InvalidQuery(
+                    "view name must not be empty".into(),
+                ));
             }
             view.name = name;
         }

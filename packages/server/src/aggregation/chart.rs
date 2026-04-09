@@ -174,7 +174,9 @@ struct RawChartRow {
 /// Sanitize an attribute name (same as sql_builder).
 fn sanitize_attr(attr: &str) -> String {
     attr.chars()
-        .filter(|c| c.is_alphanumeric() || *c == '_' || *c == '/' || *c == ':' || *c == '-' || *c == '.')
+        .filter(|c| {
+            c.is_alphanumeric() || *c == '_' || *c == '/' || *c == ':' || *c == '-' || *c == '.'
+        })
         .collect()
 }
 
@@ -220,15 +222,15 @@ fn build_chart_sql(query: &ChartQuery) -> (String, Vec<Value>) {
     sql.push_str("dated AS (\n");
     sql.push_str("  SELECT\n");
     sql.push_str("    e.entity_id,\n");
-    sql.push_str(&format!(
+    sql.push_str(
         "    d.value AS date_val,\n\
-         \x20   v.value AS val\n"
-    ));
+         \x20   v.value AS val\n",
+    );
 
     // Optional series column.
     if let Some(ref group_attr) = query.group_by {
         let safe_group = sanitize_attr(group_attr);
-        sql.push_str(&format!("    , s.value AS series_val\n"));
+        sql.push_str("    , s.value AS series_val\n");
         let _ = safe_group; // used in join below
     }
 
@@ -285,9 +287,7 @@ fn build_chart_sql(query: &ChartQuery) -> (String, Vec<Value>) {
     sql.push_str("WHERE date_val IS NOT NULL\n");
 
     // GROUP BY.
-    sql.push_str(&format!(
-        "GROUP BY bucket_label, bucket_start, bucket_end"
-    ));
+    sql.push_str("GROUP BY bucket_label, bucket_start, bucket_end");
     if query.group_by.is_some() {
         sql.push_str(", series_name");
     }

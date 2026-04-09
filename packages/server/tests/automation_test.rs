@@ -11,9 +11,9 @@
 
 use std::collections::HashMap;
 
+use ddb_server::automations::action::{ActionConfig, ActionKind};
 use ddb_server::automations::event_bus::{DdbEvent, EventBus};
 use ddb_server::automations::trigger::{TriggerConfig, TriggerEvaluator, TriggerKind};
-use ddb_server::automations::action::{ActionConfig, ActionKind};
 use ddb_server::triple_store::{PgTripleStore, TripleInput, TripleStore};
 use serde_json::json;
 use sqlx::PgPool;
@@ -79,8 +79,7 @@ async fn test_trigger_serde_roundtrip() {
     let trigger = TriggerConfig::new(TriggerKind::OnRecordUpdate, "Contact");
 
     let json = serde_json::to_string(&trigger).expect("serialize");
-    let restored: TriggerConfig =
-        serde_json::from_str(&json).expect("deserialize");
+    let restored: TriggerConfig = serde_json::from_str(&json).expect("deserialize");
 
     assert_eq!(restored.kind, TriggerKind::OnRecordUpdate);
     assert_eq!(restored.table_entity_type, "Contact");
@@ -401,8 +400,7 @@ async fn test_action_kind_serde() {
 
     for kind in &kinds {
         let json = serde_json::to_value(kind).expect("serialize");
-        let restored: ActionKind =
-            serde_json::from_value(json).expect("deserialize");
+        let restored: ActionKind = serde_json::from_value(json).expect("deserialize");
         assert_eq!(&restored, kind);
     }
 }

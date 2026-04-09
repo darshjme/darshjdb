@@ -160,13 +160,11 @@ fn contacts() -> TableTemplate {
                 options: HashMap::new(),
             },
         ],
-        sample_data: vec![
-            HashMap::from([
-                ("Name".into(), serde_json::json!("Jane Doe")),
-                ("Email".into(), serde_json::json!("jane@example.com")),
-                ("Company".into(), serde_json::json!("Acme Corp")),
-            ]),
-        ],
+        sample_data: vec![HashMap::from([
+            ("Name".into(), serde_json::json!("Jane Doe")),
+            ("Email".into(), serde_json::json!("jane@example.com")),
+            ("Company".into(), serde_json::json!("Acme Corp")),
+        ])],
     }
 }
 
@@ -217,16 +215,14 @@ fn inventory() -> TableTemplate {
                 options: HashMap::new(),
             },
         ],
-        sample_data: vec![
-            HashMap::from([
-                ("Product Name".into(), serde_json::json!("Widget A")),
-                ("SKU".into(), serde_json::json!("WGT-001")),
-                ("Category".into(), serde_json::json!("Electronics")),
-                ("Quantity".into(), serde_json::json!(150)),
-                ("Price".into(), serde_json::json!(29.99)),
-                ("Reorder Level".into(), serde_json::json!(25)),
-            ]),
-        ],
+        sample_data: vec![HashMap::from([
+            ("Product Name".into(), serde_json::json!("Widget A")),
+            ("SKU".into(), serde_json::json!("WGT-001")),
+            ("Category".into(), serde_json::json!("Electronics")),
+            ("Quantity".into(), serde_json::json!(150)),
+            ("Price".into(), serde_json::json!(29.99)),
+            ("Reorder Level".into(), serde_json::json!(25)),
+        ])],
     }
 }
 
@@ -328,15 +324,16 @@ fn bug_tracker() -> TableTemplate {
                 options: HashMap::new(),
             },
         ],
-        sample_data: vec![
-            HashMap::from([
-                ("Title".into(), serde_json::json!("Login button unresponsive on mobile")),
-                ("Severity".into(), serde_json::json!("High")),
-                ("Status".into(), serde_json::json!("Open")),
-                ("Reporter".into(), serde_json::json!("QA Team")),
-                ("Environment".into(), serde_json::json!("iOS Safari 17")),
-            ]),
-        ],
+        sample_data: vec![HashMap::from([
+            (
+                "Title".into(),
+                serde_json::json!("Login button unresponsive on mobile"),
+            ),
+            ("Severity".into(), serde_json::json!("High")),
+            ("Status".into(), serde_json::json!("Open")),
+            ("Reporter".into(), serde_json::json!("QA Team")),
+            ("Environment".into(), serde_json::json!("iOS Safari 17")),
+        ])],
     }
 }
 
@@ -502,11 +499,7 @@ mod tests {
     #[test]
     fn all_templates_have_fields() {
         for t in builtin_templates() {
-            assert!(
-                !t.fields.is_empty(),
-                "Template '{}' has no fields",
-                t.name
-            );
+            assert!(!t.fields.is_empty(), "Template '{}' has no fields", t.name);
         }
     }
 
@@ -632,10 +625,7 @@ mod tests {
         let ft = FieldTemplate {
             name: "Status".into(),
             field_type: "select".into(),
-            options: HashMap::from([(
-                "choices".into(),
-                serde_json::json!(["A", "B"]),
-            )]),
+            options: HashMap::from([("choices".into(), serde_json::json!(["A", "B"]))]),
         };
         let json = serde_json::to_value(&ft).unwrap();
         let back: FieldTemplate = serde_json::from_value(json).unwrap();
@@ -673,10 +663,7 @@ mod tests {
 
     #[test]
     fn infer_value_type_json_array() {
-        assert_eq!(
-            infer_triple_value_type(&serde_json::json!([1, 2, 3])),
-            6
-        );
+        assert_eq!(infer_triple_value_type(&serde_json::json!([1, 2, 3])), 6);
     }
 
     #[test]

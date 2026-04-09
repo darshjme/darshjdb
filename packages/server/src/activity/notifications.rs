@@ -224,11 +224,12 @@ pub async fn mark_read(pool: &PgPool, notification_id: Uuid) -> Result<()> {
 
 /// Mark all notifications as read for a user.
 pub async fn mark_all_read(pool: &PgPool, user_id: Uuid) -> Result<u64> {
-    let result = sqlx::query("UPDATE notifications SET read = true WHERE user_id = $1 AND NOT read")
-        .bind(user_id)
-        .execute(pool)
-        .await
-        .map_err(DarshJError::Database)?;
+    let result =
+        sqlx::query("UPDATE notifications SET read = true WHERE user_id = $1 AND NOT read")
+            .bind(user_id)
+            .execute(pool)
+            .await
+            .map_err(DarshJError::Database)?;
 
     Ok(result.rows_affected())
 }
@@ -381,8 +382,8 @@ struct NotificationRow {
 
 impl NotificationRow {
     fn into_notification(self) -> Notification {
-        let kind = NotificationKind::from_str_opt(&self.kind)
-            .unwrap_or(NotificationKind::SystemAlert);
+        let kind =
+            NotificationKind::from_str_opt(&self.kind).unwrap_or(NotificationKind::SystemAlert);
         Notification {
             id: self.id,
             user_id: self.user_id,

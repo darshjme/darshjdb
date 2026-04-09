@@ -5,9 +5,9 @@
 //! - `ApiError` for uniform error envelopes
 //! - Auth via the `require_auth_middleware` layer
 
+use axum::Json;
 use axum::extract::{Path, State};
 use axum::response::IntoResponse;
-use axum::Json;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -278,7 +278,7 @@ pub async fn compute_rollup_handler(
 ///
 /// All routes are nested under `/api/data/{entity}/{id}/...`.
 pub fn relation_routes() -> axum::Router<AppState> {
-    use axum::routing::{delete, get, post};
+    use axum::routing::{get, post};
 
     axum::Router::new()
         .route(

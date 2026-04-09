@@ -61,9 +61,11 @@ impl PluginSummary {
             author: manifest.author.clone(),
             description: manifest.description.clone(),
             state,
-            capabilities: manifest.capabilities.iter().map(|c| {
-                format!("{}:{}", c.kind(), c.name())
-            }).collect(),
+            capabilities: manifest
+                .capabilities
+                .iter()
+                .map(|c| format!("{}:{}", c.kind(), c.name()))
+                .collect(),
         }
     }
 }
@@ -124,9 +126,7 @@ pub fn plugin_routes(state: PluginApiState) -> Router {
 // ---------------------------------------------------------------------------
 
 /// `GET /api/plugins` — List all installed plugins.
-async fn list_plugins(
-    State(state): State<PluginApiState>,
-) -> impl IntoResponse {
+async fn list_plugins(State(state): State<PluginApiState>) -> impl IntoResponse {
     let manifests = state.registry.list();
     let summaries: Vec<PluginSummary> = manifests
         .iter()
@@ -197,8 +197,14 @@ async fn get_plugin(
         }
     };
 
-    let plugin_state = state.registry.get_state(id).unwrap_or(PluginState::Installed);
-    let config = state.registry.get_config(id).unwrap_or(serde_json::json!({}));
+    let plugin_state = state
+        .registry
+        .get_state(id)
+        .unwrap_or(PluginState::Installed);
+    let config = state
+        .registry
+        .get_config(id)
+        .unwrap_or(serde_json::json!({}));
 
     (
         StatusCode::OK,
@@ -429,11 +435,7 @@ mod tests {
         // Get.
         let app = plugin_routes(state);
         let resp = app
-            .oneshot(
-                Request::get(&format!("/{id}"))
-                    .body(Body::empty())
-                    .unwrap(),
-            )
+            .oneshot(Request::get(&format!("/{id}")).body(Body::empty()).unwrap())
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
@@ -505,11 +507,7 @@ mod tests {
         let app = plugin_routes(state);
 
         let resp = app
-            .oneshot(
-                Request::get("/marketplace")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
+            .oneshot(Request::get("/marketplace").body(Body::empty()).unwrap())
             .await
             .unwrap();
 

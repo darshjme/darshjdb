@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
-use crate::error::{DarshJError, Result};
+use crate::error::Result;
 use crate::triple_store::schema::ValueType;
 use crate::triple_store::{PgTripleStore, TripleStore};
 
@@ -82,10 +82,10 @@ impl LookupCache {
     ) -> Option<Vec<serde_json::Value>> {
         let guard = self.inner.read().await;
         let key = (entity_id, link_field.to_string(), lookup_field.to_string());
-        if let Some(cached) = guard.get(&key) {
-            if cached.cached_at.elapsed() < self.ttl {
-                return Some(cached.values.clone());
-            }
+        if let Some(cached) = guard.get(&key)
+            && cached.cached_at.elapsed() < self.ttl
+        {
+            return Some(cached.values.clone());
         }
         None
     }
@@ -152,10 +152,12 @@ pub async fn resolve_lookup(
     cache: Option<&LookupCache>,
 ) -> Result<Vec<serde_json::Value>> {
     // Check cache first.
-    if let Some(c) = cache {
-        if let Some(cached) = c.get(entity_id, &config.link_field, &config.lookup_field).await {
-            return Ok(cached);
-        }
+    if let Some(c) = cache
+        && let Some(cached) = c
+            .get(entity_id, &config.link_field, &config.lookup_field)
+            .await
+    {
+        return Ok(cached);
     }
 
     // Step 1: Resolve linked entity IDs.
@@ -164,8 +166,13 @@ pub async fn resolve_lookup(
     if linked_ids.is_empty() {
         let empty = Vec::new();
         if let Some(c) = cache {
-            c.set(entity_id, &config.link_field, &config.lookup_field, empty.clone())
-                .await;
+            c.set(
+                entity_id,
+                &config.link_field,
+                &config.lookup_field,
+                empty.clone(),
+            )
+            .await;
         }
         return Ok(empty);
     }
@@ -175,7 +182,9 @@ pub async fn resolve_lookup(
     let mut values = Vec::with_capacity(linked_ids.len());
 
     for target_id in &linked_ids {
-        let triples = store.get_attribute(*target_id, &config.lookup_field).await?;
+        let triples = store
+            .get_attribute(*target_id, &config.lookup_field)
+            .await?;
         for t in triples {
             values.push(t.value);
         }
@@ -231,10 +240,7 @@ pub async fn resolve_lookup_batch(
         // The value is stored as a JSON string, so strip quotes.
         let clean = target_str.trim_matches('"');
         if let Ok(target_id) = Uuid::parse_str(clean) {
-            links_map
-                .entry(*source_id)
-                .or_default()
-                .push(target_id);
+            links_map.entry(*source_id).or_default().push(target_id);
             all_target_ids.push(target_id);
         }
     }
@@ -420,9 +426,7 @@ mod tests {
         let cache = LookupCache::new(Duration::from_secs(60));
         let id = Uuid::new_v4();
 
-        cache
-            .set(id, "a", "b", vec![serde_json::json!(1)])
-            .await;
+        cache.set(id, "a", "b", vec![serde_json::json!(1)]).await;
         cache.clear().await;
         assert!(cache.get(id, "a", "b").await.is_none());
     }

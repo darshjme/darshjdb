@@ -24,5 +24,5 @@ pub mod share;
 pub mod workspace;
 
 pub use collaborator::{Collaborator, CollaboratorRole, InviteStatus};
-pub use share::{ShareConfig, ShareId, ShareLink, SharePermission, ResourceType};
+pub use share::{ResourceType, ShareConfig, ShareId, ShareLink, SharePermission};
 pub use workspace::{Workspace, WorkspaceMember, WorkspaceRole};

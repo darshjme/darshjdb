@@ -19,8 +19,8 @@ pub mod sql_builder;
 
 pub use chart::{ChartBucket, ChartQuery, ChartResult, TimeBucket};
 pub use engine::{
-    AggFn, AggGroup, AggregateQuery, AggregateResult, Aggregation, AggregationEngine,
-    HavingClause, HavingOp,
+    AggFn, AggGroup, AggregateQuery, AggregateResult, Aggregation, AggregationEngine, HavingClause,
+    HavingOp,
 };
 pub use handlers::aggregation_routes;
 pub use sql_builder::build_aggregate_sql;

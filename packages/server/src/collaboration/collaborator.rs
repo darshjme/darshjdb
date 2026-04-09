@@ -243,9 +243,8 @@ pub async fn accept_invite(
     user_id: Uuid,
 ) -> Result<()> {
     let collab = load_collaborator(store, collaborator_id).await?;
-    let collab = collab.ok_or_else(|| {
-        DarshJError::InvalidAttribute("collaborator not found".into())
-    })?;
+    let collab =
+        collab.ok_or_else(|| DarshJError::InvalidAttribute("collaborator not found".into()))?;
 
     if collab.status != InviteStatus::Pending {
         return Err(DarshJError::InvalidAttribute(format!(
@@ -310,9 +309,7 @@ pub async fn update_role(
         ));
     }
 
-    store
-        .retract(collaborator_id, "collaborator/role")
-        .await?;
+    store.retract(collaborator_id, "collaborator/role").await?;
     store
         .set_triples(&[TripleInput {
             entity_id: collaborator_id,
@@ -327,10 +324,7 @@ pub async fn update_role(
 }
 
 /// Remove a collaborator (revoke their access).
-pub async fn remove_collaborator(
-    store: &PgTripleStore,
-    collaborator_id: Uuid,
-) -> Result<()> {
+pub async fn remove_collaborator(store: &PgTripleStore, collaborator_id: Uuid) -> Result<()> {
     store
         .retract(collaborator_id, "collaborator/status")
         .await?;
@@ -415,12 +409,11 @@ pub async fn load_collaborator(
         None => return Ok(None),
     };
 
-    let resource_id = match get_str("collaborator/resource_id")
-        .and_then(|s| Uuid::parse_str(&s).ok())
-    {
-        Some(id) => id,
-        None => return Ok(None),
-    };
+    let resource_id =
+        match get_str("collaborator/resource_id").and_then(|s| Uuid::parse_str(&s).ok()) {
+            Some(id) => id,
+            None => return Ok(None),
+        };
 
     let role: CollaboratorRole = match get_str("collaborator/role") {
         Some(s) => s.parse()?,
@@ -432,8 +425,7 @@ pub async fn load_collaborator(
         None => return Ok(None),
     };
 
-    let invited_by = match get_str("collaborator/invited_by")
-        .and_then(|s| Uuid::parse_str(&s).ok())
+    let invited_by = match get_str("collaborator/invited_by").and_then(|s| Uuid::parse_str(&s).ok())
     {
         Some(id) => id,
         None => return Ok(None),
@@ -444,8 +436,7 @@ pub async fn load_collaborator(
         .map(|dt| dt.with_timezone(&Utc))
         .unwrap_or_else(Utc::now);
 
-    let user_id = get_str("collaborator/user_id")
-        .and_then(|s| Uuid::parse_str(&s).ok());
+    let user_id = get_str("collaborator/user_id").and_then(|s| Uuid::parse_str(&s).ok());
 
     let accepted_at = get_str("collaborator/accepted_at")
         .and_then(|s| DateTime::parse_from_rfc3339(&s).ok())

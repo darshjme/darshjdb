@@ -91,13 +91,9 @@ impl FilterPredicate {
         match self {
             FilterPredicate::All => true,
 
-            FilterPredicate::Eq { field, value } => {
-                entity.get(field).map_or(false, |v| v == value)
-            }
+            FilterPredicate::Eq { field, value } => entity.get(field) == Some(value),
 
-            FilterPredicate::Ne { field, value } => {
-                entity.get(field).map_or(true, |v| v != value)
-            }
+            FilterPredicate::Ne { field, value } => entity.get(field) != Some(value),
 
             FilterPredicate::Gt { field, value } => {
                 compare_numeric(entity.get(field), value, |a, b| a > b)
@@ -115,31 +111,25 @@ impl FilterPredicate {
                 compare_numeric(entity.get(field), value, |a, b| a <= b)
             }
 
-            FilterPredicate::Contains { field, value } => {
-                match entity.get(field) {
-                    Some(Value::String(s)) => {
-                        if let Some(needle) = value.as_str() {
-                            s.contains(needle)
-                        } else {
-                            false
-                        }
+            FilterPredicate::Contains { field, value } => match entity.get(field) {
+                Some(Value::String(s)) => {
+                    if let Some(needle) = value.as_str() {
+                        s.contains(needle)
+                    } else {
+                        false
                     }
-                    Some(Value::Array(arr)) => arr.contains(value),
-                    _ => false,
                 }
-            }
+                Some(Value::Array(arr)) => arr.contains(value),
+                _ => false,
+            },
 
             FilterPredicate::In { field, values } => {
-                entity.get(field).map_or(false, |v| values.contains(v))
+                entity.get(field).is_some_and(|v| values.contains(v))
             }
 
-            FilterPredicate::And { predicates } => {
-                predicates.iter().all(|p| p.matches(entity))
-            }
+            FilterPredicate::And { predicates } => predicates.iter().all(|p| p.matches(entity)),
 
-            FilterPredicate::Or { predicates } => {
-                predicates.iter().any(|p| p.matches(entity))
-            }
+            FilterPredicate::Or { predicates } => predicates.iter().any(|p| p.matches(entity)),
 
             FilterPredicate::Not { predicate } => !predicate.matches(entity),
         }
@@ -147,7 +137,11 @@ impl FilterPredicate {
 }
 
 /// Compare a field value against a threshold using a numeric comparator.
-fn compare_numeric(field_val: Option<&Value>, threshold: &Value, cmp: fn(f64, f64) -> bool) -> bool {
+fn compare_numeric(
+    field_val: Option<&Value>,
+    threshold: &Value,
+    cmp: fn(f64, f64) -> bool,
+) -> bool {
     let a = field_val.and_then(as_f64);
     let b = as_f64(threshold);
     match (a, b) {
@@ -270,7 +264,8 @@ fn parse_where_clause(clause: &str) -> Result<FilterPredicate, String> {
     // Split on OR first (lower precedence), then AND.
     let or_parts = split_preserving_strings(clause, " OR ");
     if or_parts.len() > 1 {
-        let predicates: Result<Vec<_>, _> = or_parts.iter().map(|p| parse_where_clause(p)).collect();
+        let predicates: Result<Vec<_>, _> =
+            or_parts.iter().map(|p| parse_where_clause(p)).collect();
         return Ok(FilterPredicate::Or {
             predicates: predicates?,
         });
@@ -279,7 +274,10 @@ fn parse_where_clause(clause: &str) -> Result<FilterPredicate, String> {
     // Split on AND.
     let and_parts = split_preserving_strings(clause, " AND ");
     if and_parts.len() > 1 {
-        let predicates: Result<Vec<_>, _> = and_parts.iter().map(|p| parse_single_condition(p)).collect();
+        let predicates: Result<Vec<_>, _> = and_parts
+            .iter()
+            .map(|p| parse_single_condition(p))
+            .collect();
         return Ok(FilterPredicate::And {
             predicates: predicates?,
         });
@@ -530,11 +528,7 @@ impl LiveQueryManager {
     ///
     /// Parses the query string, creates a [`LiveQuery`], and returns
     /// the assigned [`LiveQueryId`].
-    pub fn register(
-        &self,
-        session_id: SessionId,
-        query_str: &str,
-    ) -> Result<LiveQueryId, String> {
+    pub fn register(&self, session_id: SessionId, query_str: &str) -> Result<LiveQueryId, String> {
         let parsed = parse_live_select(query_str)?;
 
         let live_id = LiveQueryId::new_v4();
@@ -552,7 +546,10 @@ impl LiveQueryManager {
             queries.insert(live_id, query);
         }
         {
-            let mut by_session = self.by_session.write().expect("live query session lock poisoned");
+            let mut by_session = self
+                .by_session
+                .write()
+                .expect("live query session lock poisoned");
             by_session.entry(session_id).or_default().insert(live_id);
         }
 
@@ -575,23 +572,26 @@ impl LiveQueryManager {
             let entry = queries.get(live_id);
 
             // Verify ownership.
-            if let Some(q) = entry {
-                if q.session_id != *session_id {
-                    warn!(
-                        live_id = %live_id,
-                        owner = %q.session_id,
-                        requester = %session_id,
-                        "kill rejected: session does not own this live query"
-                    );
-                    return false;
-                }
+            if let Some(q) = entry
+                && q.session_id != *session_id
+            {
+                warn!(
+                    live_id = %live_id,
+                    owner = %q.session_id,
+                    requester = %session_id,
+                    "kill rejected: session does not own this live query"
+                );
+                return false;
             }
 
             queries.remove(live_id).is_some()
         };
 
         if removed {
-            let mut by_session = self.by_session.write().expect("live query session lock poisoned");
+            let mut by_session = self
+                .by_session
+                .write()
+                .expect("live query session lock poisoned");
             if let Some(set) = by_session.get_mut(session_id) {
                 set.remove(live_id);
                 if set.is_empty() {
@@ -614,7 +614,10 @@ impl LiveQueryManager {
     /// Returns the number of queries removed.
     pub fn kill_session(&self, session_id: &SessionId) -> usize {
         let live_ids: Vec<LiveQueryId> = {
-            let mut by_session = self.by_session.write().expect("live query session lock poisoned");
+            let mut by_session = self
+                .by_session
+                .write()
+                .expect("live query session lock poisoned");
             match by_session.remove(session_id) {
                 Some(ids) => ids.into_iter().collect(),
                 None => return 0,
@@ -919,8 +922,7 @@ mod tests {
 
     #[test]
     fn parse_select_with_where() {
-        let result =
-            parse_live_select("LIVE SELECT * FROM users WHERE age > 18").unwrap();
+        let result = parse_live_select("LIVE SELECT * FROM users WHERE age > 18").unwrap();
         assert_eq!(result.collection, "users");
         assert!(matches!(result.filter, FilterPredicate::Gt { .. }));
     }
@@ -984,9 +986,7 @@ mod tests {
         let sid1 = SessionId::new_v4();
         let sid2 = SessionId::new_v4();
 
-        let live_id = mgr
-            .register(sid1, "LIVE SELECT * FROM users")
-            .unwrap();
+        let live_id = mgr.register(sid1, "LIVE SELECT * FROM users").unwrap();
 
         // Another session cannot kill this query.
         assert!(!mgr.kill(&live_id, &sid2));
@@ -1079,10 +1079,16 @@ mod tests {
         };
 
         let mut entity_data = HashMap::new();
-        entity_data.insert("order-1".to_string(), json!({"_id": "order-1", "total": 99}));
+        entity_data.insert(
+            "order-1".to_string(),
+            json!({"_id": "order-1", "total": 99}),
+        );
 
         let results = mgr.process_change(&event, &entity_data, LiveAction::Create);
-        assert!(results.is_empty(), "orders change should not match users query");
+        assert!(
+            results.is_empty(),
+            "orders change should not match users query"
+        );
     }
 
     // -----------------------------------------------------------------------

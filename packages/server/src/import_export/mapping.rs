@@ -41,10 +41,10 @@ pub fn auto_map_csv_headers(
         }
 
         // 2. Suffix match: attribute ends with `/<header>`.
-        if let Some(attr) = existing_attributes.iter().find(|a| {
-            a.to_lowercase()
-                .ends_with(&format!("/{}", header_lower))
-        }) {
+        if let Some(attr) = existing_attributes
+            .iter()
+            .find(|a| a.to_lowercase().ends_with(&format!("/{}", header_lower)))
+        {
             result.insert(idx, attr.clone());
             continue;
         }
@@ -104,10 +104,12 @@ fn infer_column_type(values: &[&str]) -> ValueType {
     }
 
     // Check if all values are booleans.
-    if values
-        .iter()
-        .all(|v| matches!(v.to_lowercase().as_str(), "true" | "false" | "1" | "0" | "yes" | "no"))
-    {
+    if values.iter().all(|v| {
+        matches!(
+            v.to_lowercase().as_str(),
+            "true" | "false" | "1" | "0" | "yes" | "no"
+        )
+    }) {
         return ValueType::Boolean;
     }
 
@@ -122,10 +124,10 @@ fn infer_column_type(values: &[&str]) -> ValueType {
     }
 
     // Check if all values are RFC 3339 timestamps.
-    if values
-        .iter()
-        .all(|v| chrono::DateTime::parse_from_rfc3339(v).is_ok() || chrono::NaiveDate::parse_from_str(v, "%Y-%m-%d").is_ok())
-    {
+    if values.iter().all(|v| {
+        chrono::DateTime::parse_from_rfc3339(v).is_ok()
+            || chrono::NaiveDate::parse_from_str(v, "%Y-%m-%d").is_ok()
+    }) {
         return ValueType::Timestamp;
     }
 
@@ -153,10 +155,10 @@ pub fn infer_value_type_from_str(value: &str) -> (Value, i16) {
     }
 
     // Float
-    if let Ok(n) = trimmed.parse::<f64>() {
-        if let Some(num) = serde_json::Number::from_f64(n) {
-            return (Value::Number(num), ValueType::Float as i16);
-        }
+    if let Ok(n) = trimmed.parse::<f64>()
+        && let Some(num) = serde_json::Number::from_f64(n)
+    {
+        return (Value::Number(num), ValueType::Float as i16);
     }
 
     // Timestamp (RFC 3339)
@@ -184,12 +186,11 @@ pub fn infer_value_type_from_str(value: &str) -> (Value, i16) {
     }
 
     // JSON object or array
-    if (trimmed.starts_with('{') && trimmed.ends_with('}'))
-        || (trimmed.starts_with('[') && trimmed.ends_with(']'))
+    if ((trimmed.starts_with('{') && trimmed.ends_with('}'))
+        || (trimmed.starts_with('[') && trimmed.ends_with(']')))
+        && let Ok(parsed) = serde_json::from_str::<Value>(trimmed)
     {
-        if let Ok(parsed) = serde_json::from_str::<Value>(trimmed) {
-            return (parsed, ValueType::Json as i16);
-        }
+        return (parsed, ValueType::Json as i16);
     }
 
     // Default: string

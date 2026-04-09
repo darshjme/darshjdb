@@ -5,13 +5,13 @@
 
 use std::sync::Arc;
 
+use axum::Router;
 use axum::body::Body;
 use axum::extract::{Multipart, Path, Query, State};
-use axum::http::header::{CONTENT_DISPOSITION, CONTENT_TYPE};
 use axum::http::StatusCode;
+use axum::http::header::{CONTENT_DISPOSITION, CONTENT_TYPE};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
-use axum::Router;
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -19,11 +19,11 @@ use uuid::Uuid;
 use crate::api::error::ApiError;
 use crate::api::rest::AppState;
 
+use super::ImportResult;
 use super::csv_export::{CsvExportConfig, export_csv};
 use super::csv_import::{CsvImportConfig, import_csv};
 use super::json_export::{JsonExportConfig, export_json};
 use super::json_import::{JsonImportConfig, import_json};
-use super::ImportResult;
 
 // ── Job tracking ──────────────────────────────────────────────────────
 
@@ -155,9 +155,7 @@ async fn import_csv_handler(
     let data = file_data.ok_or_else(|| ApiError::bad_request("Missing 'file' field"))?;
 
     if config.entity_type.is_empty() {
-        return Err(ApiError::bad_request(
-            "entity_type is required in config",
-        ));
+        return Err(ApiError::bad_request("entity_type is required in config"));
     }
 
     // For files larger than 1MB, run async and return job ID.
@@ -278,9 +276,7 @@ async fn import_json_handler(
     let data = file_data.ok_or_else(|| ApiError::bad_request("Missing 'file' field"))?;
 
     if config.entity_type.is_empty() {
-        return Err(ApiError::bad_request(
-            "entity_type is required in config",
-        ));
+        return Err(ApiError::bad_request("entity_type is required in config"));
     }
 
     // For files larger than 1MB, run async.

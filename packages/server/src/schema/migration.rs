@@ -33,10 +33,7 @@ pub enum SchemaMigrationAction {
         field: FieldDefinition,
     },
     /// A field was removed.
-    RemoveField {
-        table: String,
-        field_name: String,
-    },
+    RemoveField { table: String, field_name: String },
     /// A field's type changed.
     AlterFieldType {
         table: String,
@@ -73,10 +70,7 @@ pub enum SchemaMigrationAction {
         unique: bool,
     },
     /// An index was removed.
-    RemoveIndex {
-        table: String,
-        index_name: String,
-    },
+    RemoveIndex { table: String, index_name: String },
 }
 
 // ── Migration record ───────────────────────────────────────────────
@@ -276,10 +270,7 @@ impl SchemaMigrationEngine {
     }
 
     /// Fetch migration history for a table, ordered by version.
-    pub async fn get_history(
-        &self,
-        table: &str,
-    ) -> crate::error::Result<Vec<MigrationRecord>> {
+    pub async fn get_history(&self, table: &str) -> crate::error::Result<Vec<MigrationRecord>> {
         let rows = sqlx::query_as::<_, MigrationRecord>(
             r#"
             SELECT id, table_name, from_version, to_version, actions, applied_at, rolled_back
@@ -413,7 +404,11 @@ mod tests {
         assert_eq!(actions.len(), 1);
         assert!(matches!(
             &actions[0],
-            SchemaMigrationAction::ChangeMode { from: SchemaMode::Schemaless, to: SchemaMode::Schemafull, .. }
+            SchemaMigrationAction::ChangeMode {
+                from: SchemaMode::Schemaless,
+                to: SchemaMode::Schemafull,
+                ..
+            }
         ));
     }
 
@@ -465,7 +460,11 @@ mod tests {
         let actions = SchemaMigrationEngine::diff(&old, &new);
         assert!(actions.iter().any(|a| matches!(
             a,
-            SchemaMigrationAction::AlterFieldRequired { from: false, to: true, .. }
+            SchemaMigrationAction::AlterFieldRequired {
+                from: false,
+                to: true,
+                ..
+            }
         )));
     }
 
@@ -513,8 +512,7 @@ mod tests {
         let new = TableSchema::schemafull("posts")
             .define_field(FieldDefinition::new("title", FieldType::String).required())
             .define_field(
-                FieldDefinition::new("views", FieldType::Int)
-                    .with_default(serde_json::json!(0)),
+                FieldDefinition::new("views", FieldType::Int).with_default(serde_json::json!(0)),
             )
             .define_index(IndexDefinition {
                 name: "idx_title".into(),
@@ -526,7 +524,11 @@ mod tests {
 
         // Should have: ChangeMode, AddField(views), RemoveField(body),
         //              AddIndex(idx_title), RemoveIndex(idx_old)
-        assert!(actions.iter().any(|a| matches!(a, SchemaMigrationAction::ChangeMode { .. })));
+        assert!(
+            actions
+                .iter()
+                .any(|a| matches!(a, SchemaMigrationAction::ChangeMode { .. }))
+        );
         assert!(actions.iter().any(|a| matches!(
             a,
             SchemaMigrationAction::AddField { field, .. } if field.name == "views"

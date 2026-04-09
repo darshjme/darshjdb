@@ -66,12 +66,13 @@ pub struct ManifestLoader;
 impl ManifestLoader {
     /// Load a plugin manifest from a JSON file.
     pub async fn load_json(path: &Path) -> LoaderResult<PluginManifest> {
-        let content = tokio::fs::read_to_string(path)
-            .await
-            .map_err(|e| LoaderError::ManifestReadError {
-                path: path.to_path_buf(),
-                source: e,
-            })?;
+        let content =
+            tokio::fs::read_to_string(path)
+                .await
+                .map_err(|e| LoaderError::ManifestReadError {
+                    path: path.to_path_buf(),
+                    source: e,
+                })?;
 
         serde_json::from_str::<PluginManifest>(&content).map_err(|e| {
             LoaderError::ManifestParseError {
@@ -87,12 +88,13 @@ impl ManifestLoader {
     /// requires the content to be valid JSON-compatible YAML (no anchors,
     /// no multi-document). For full YAML support, add `serde_yaml` to deps.
     pub async fn load_yaml(path: &Path) -> LoaderResult<PluginManifest> {
-        let content = tokio::fs::read_to_string(path)
-            .await
-            .map_err(|e| LoaderError::ManifestReadError {
-                path: path.to_path_buf(),
-                source: e,
-            })?;
+        let content =
+            tokio::fs::read_to_string(path)
+                .await
+                .map_err(|e| LoaderError::ManifestReadError {
+                    path: path.to_path_buf(),
+                    source: e,
+                })?;
 
         // Attempt JSON-compatible YAML parse via serde_json.
         // For production YAML support, integrate serde_yaml.
@@ -124,20 +126,22 @@ impl ManifestLoader {
         }
 
         let mut manifests = Vec::new();
-        let mut read_dir = tokio::fs::read_dir(dir)
-            .await
-            .map_err(|e| LoaderError::ManifestReadError {
-                path: dir.to_path_buf(),
-                source: e,
-            })?;
+        let mut read_dir =
+            tokio::fs::read_dir(dir)
+                .await
+                .map_err(|e| LoaderError::ManifestReadError {
+                    path: dir.to_path_buf(),
+                    source: e,
+                })?;
 
-        while let Some(entry) = read_dir
-            .next_entry()
-            .await
-            .map_err(|e| LoaderError::ManifestReadError {
-                path: dir.to_path_buf(),
-                source: e,
-            })?
+        while let Some(entry) =
+            read_dir
+                .next_entry()
+                .await
+                .map_err(|e| LoaderError::ManifestReadError {
+                    path: dir.to_path_buf(),
+                    source: e,
+                })?
         {
             let path = entry.path();
 
@@ -300,8 +304,8 @@ impl PluginDirectoryWatcher {
     {
         use notify::{Event, EventKind, RecursiveMode, Watcher};
 
-        let watcher = notify::recommended_watcher(move |result: Result<Event, notify::Error>| {
-            match result {
+        let watcher =
+            notify::recommended_watcher(move |result: Result<Event, notify::Error>| match result {
                 Ok(event) => {
                     let dominated = matches!(
                         event.kind,
@@ -319,9 +323,8 @@ impl PluginDirectoryWatcher {
                 Err(e) => {
                     error!(error = %e, "plugin directory watcher error");
                 }
-            }
-        })
-        .map_err(|e| LoaderError::WatcherError(e.to_string()))?;
+            })
+            .map_err(|e| LoaderError::WatcherError(e.to_string()))?;
 
         let mut watcher = watcher;
         watcher
@@ -336,10 +339,7 @@ impl PluginDirectoryWatcher {
 
 /// Check if a path looks like a plugin manifest file.
 fn is_manifest_file(path: &Path) -> bool {
-    let name = path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("");
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
     matches!(name, "plugin.json" | "plugin.yaml" | "plugin.yml")
 }
 
@@ -350,6 +350,7 @@ fn is_manifest_file(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::Value;
     use uuid::Uuid;
 
     /// Create a unique temp directory for each test.

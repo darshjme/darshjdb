@@ -73,29 +73,17 @@ impl GraphEngine {
     }
 
     /// Get all neighbors of a record (edges in both directions).
-    pub async fn neighbors(
-        &self,
-        record: &RecordId,
-        edge_type: Option<&str>,
-    ) -> Result<Vec<Edge>> {
+    pub async fn neighbors(&self, record: &RecordId, edge_type: Option<&str>) -> Result<Vec<Edge>> {
         self.edge_store.get_neighbors(record, edge_type).await
     }
 
     /// Get outgoing edges from a record.
-    pub async fn outgoing(
-        &self,
-        record: &RecordId,
-        edge_type: Option<&str>,
-    ) -> Result<Vec<Edge>> {
+    pub async fn outgoing(&self, record: &RecordId, edge_type: Option<&str>) -> Result<Vec<Edge>> {
         self.edge_store.get_outgoing(record, edge_type).await
     }
 
     /// Get incoming edges to a record.
-    pub async fn incoming(
-        &self,
-        record: &RecordId,
-        edge_type: Option<&str>,
-    ) -> Result<Vec<Edge>> {
+    pub async fn incoming(&self, record: &RecordId, edge_type: Option<&str>) -> Result<Vec<Edge>> {
         self.edge_store.get_incoming(record, edge_type).await
     }
 

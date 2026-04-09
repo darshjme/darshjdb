@@ -63,7 +63,10 @@ impl CronExpr {
     }
 
     /// Returns the next occurrence after `after`.
-    pub fn next_after(&self, after: chrono::DateTime<chrono::Utc>) -> Option<chrono::DateTime<chrono::Utc>> {
+    pub fn next_after(
+        &self,
+        after: chrono::DateTime<chrono::Utc>,
+    ) -> Option<chrono::DateTime<chrono::Utc>> {
         self.schedule.after(&after).next()
     }
 }
@@ -191,14 +194,12 @@ impl TriggerEvaluator {
         match (&trigger.kind, event) {
             // Record creation
             (TriggerKind::OnRecordCreate, DdbEvent::RecordCreated { entity_type, .. }) => {
-                trigger.table_entity_type == *entity_type
-                    && self.check_condition(trigger, event)
+                trigger.table_entity_type == *entity_type && self.check_condition(trigger, event)
             }
 
             // Record update
             (TriggerKind::OnRecordUpdate, DdbEvent::RecordUpdated { entity_type, .. }) => {
-                trigger.table_entity_type == *entity_type
-                    && self.check_condition(trigger, event)
+                trigger.table_entity_type == *entity_type && self.check_condition(trigger, event)
             }
 
             // Record deletion
@@ -273,10 +274,10 @@ fn match_where_clause(value: &serde_json::Value, clause: &WhereClause) -> bool {
     match clause.op {
         WhereOp::Eq => *value == clause.value,
         WhereOp::Neq => *value != clause.value,
-        WhereOp::Gt => json_cmp(value, &clause.value).map_or(false, |o| o.is_gt()),
-        WhereOp::Gte => json_cmp(value, &clause.value).map_or(false, |o| o.is_ge()),
-        WhereOp::Lt => json_cmp(value, &clause.value).map_or(false, |o| o.is_lt()),
-        WhereOp::Lte => json_cmp(value, &clause.value).map_or(false, |o| o.is_le()),
+        WhereOp::Gt => json_cmp(value, &clause.value).is_some_and(|o| o.is_gt()),
+        WhereOp::Gte => json_cmp(value, &clause.value).is_some_and(|o| o.is_ge()),
+        WhereOp::Lt => json_cmp(value, &clause.value).is_some_and(|o| o.is_lt()),
+        WhereOp::Lte => json_cmp(value, &clause.value).is_some_and(|o| o.is_le()),
         WhereOp::Contains => {
             if let (Some(haystack), Some(needle)) = (value.as_str(), clause.value.as_str()) {
                 haystack.contains(needle)

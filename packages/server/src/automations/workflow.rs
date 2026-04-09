@@ -50,19 +50,15 @@ impl std::fmt::Display for WorkflowId {
 /// What to do when a workflow step fails.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum ErrorStrategy {
     /// Continue to the next step despite the failure.
     Continue,
     /// Stop the entire workflow.
+    #[default]
     Stop,
     /// Retry the step up to N times before failing.
     Retry { max_retries: u32 },
-}
-
-impl Default for ErrorStrategy {
-    fn default() -> Self {
-        Self::Stop
-    }
 }
 
 // ── Workflow step ─────────────────────────────────────────────────
@@ -126,11 +122,7 @@ pub struct Workflow {
 
 impl Workflow {
     /// Create a new enabled workflow.
-    pub fn new(
-        name: impl Into<String>,
-        trigger: TriggerConfig,
-        steps: Vec<WorkflowStep>,
-    ) -> Self {
+    pub fn new(name: impl Into<String>, trigger: TriggerConfig, steps: Vec<WorkflowStep>) -> Self {
         let now = Utc::now();
         Self {
             id: WorkflowId::new(),
@@ -268,22 +260,22 @@ impl WorkflowEngine {
             let step_start = Utc::now();
 
             // Check condition.
-            if let Some(ref condition) = step.condition {
-                if !self.evaluate_condition(condition, &context) {
-                    info!(
-                        step_id = %step.id,
-                        step_index = idx,
-                        "step skipped: condition not met"
-                    );
-                    run.step_results.push(StepResult {
-                        step_id: step.id.clone(),
-                        result: ActionResult::ok(Value::Null, 0),
-                        skipped: true,
-                        started_at: step_start,
-                        completed_at: Utc::now(),
-                    });
-                    continue;
-                }
+            if let Some(ref condition) = step.condition
+                && !self.evaluate_condition(condition, &context)
+            {
+                info!(
+                    step_id = %step.id,
+                    step_index = idx,
+                    "step skipped: condition not met"
+                );
+                run.step_results.push(StepResult {
+                    step_id: step.id.clone(),
+                    result: ActionResult::ok(Value::Null, 0),
+                    skipped: true,
+                    started_at: step_start,
+                    completed_at: Utc::now(),
+                });
+                continue;
             }
 
             // Execute with retry logic.
@@ -418,10 +410,10 @@ fn condition_matches(value: &Value, clause: &WhereClause) -> bool {
     match clause.op {
         WhereOp::Eq => *value == clause.value,
         WhereOp::Neq => *value != clause.value,
-        WhereOp::Gt => json_cmp(value, &clause.value).map_or(false, |o| o.is_gt()),
-        WhereOp::Gte => json_cmp(value, &clause.value).map_or(false, |o| o.is_ge()),
-        WhereOp::Lt => json_cmp(value, &clause.value).map_or(false, |o| o.is_lt()),
-        WhereOp::Lte => json_cmp(value, &clause.value).map_or(false, |o| o.is_le()),
+        WhereOp::Gt => json_cmp(value, &clause.value).is_some_and(|o| o.is_gt()),
+        WhereOp::Gte => json_cmp(value, &clause.value).is_some_and(|o| o.is_ge()),
+        WhereOp::Lt => json_cmp(value, &clause.value).is_some_and(|o| o.is_lt()),
+        WhereOp::Lte => json_cmp(value, &clause.value).is_some_and(|o| o.is_le()),
         WhereOp::Contains | WhereOp::Like => false,
     }
 }
@@ -624,11 +616,7 @@ mod tests {
                 ActionKind::CreateRecord,
                 json!({ "entity_type": "tasks", "data": {} }),
             ),
-            make_step(
-                "notify",
-                ActionKind::Notify,
-                json!({ "message": "done" }),
-            ),
+            make_step("notify", ActionKind::Notify, json!({ "message": "done" })),
         ]);
 
         let context = ActionContext::manual("tasks");
@@ -647,10 +635,7 @@ mod tests {
             TriggerConfig::new(TriggerKind::OnRecordCreate, "users"),
             vec![WorkflowStep::new(
                 "step_1",
-                ActionConfig::new(
-                    ActionKind::Notify,
-                    json!({ "message": "welcome" }),
-                ),
+                ActionConfig::new(ActionKind::Notify, json!({ "message": "welcome" })),
             )],
         );
 

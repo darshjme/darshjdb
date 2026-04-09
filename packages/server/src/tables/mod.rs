@@ -207,10 +207,7 @@ pub trait TableStore: Send + Sync {
     ) -> impl std::future::Future<Output = Result<()>> + Send;
 
     /// Delete a table config and optionally cascade to records.
-    fn delete_table(
-        &self,
-        id: TableId,
-    ) -> impl std::future::Future<Output = Result<()>> + Send;
+    fn delete_table(&self, id: TableId) -> impl std::future::Future<Output = Result<()>> + Send;
 
     /// Get statistics for a table.
     fn get_stats(
@@ -292,9 +289,7 @@ impl TableStore for PgTableStore {
         }
 
         // Find the table/config triple which holds the full serialized config.
-        let config_triple = triples
-            .iter()
-            .find(|t| t.attribute == "table/config");
+        let config_triple = triples.iter().find(|t| t.attribute == "table/config");
 
         match config_triple {
             Some(t) => {
@@ -321,12 +316,10 @@ impl TableStore for PgTableStore {
             if let Some(config_triple) = entity_triples
                 .iter()
                 .find(|et| et.attribute == "table/config")
-            {
-                if let Ok(config) =
+                && let Ok(config) =
                     serde_json::from_value::<TableConfig>(config_triple.value.clone())
-                {
-                    configs.push(config);
-                }
+            {
+                configs.push(config);
             }
         }
 
@@ -339,15 +332,9 @@ impl TableStore for PgTableStore {
         let entity_id = config.id.entity_id();
 
         // Retract old values, then write new ones.
-        self.triple_store
-            .retract(entity_id, "table/name")
-            .await?;
-        self.triple_store
-            .retract(entity_id, "table/slug")
-            .await?;
-        self.triple_store
-            .retract(entity_id, "table/config")
-            .await?;
+        self.triple_store.retract(entity_id, "table/name").await?;
+        self.triple_store.retract(entity_id, "table/slug").await?;
+        self.triple_store.retract(entity_id, "table/config").await?;
 
         let config_json = serde_json::to_value(config)?;
         let triples = vec![
@@ -382,18 +369,10 @@ impl TableStore for PgTableStore {
         let entity_id = id.entity_id();
 
         // Retract all table metadata triples.
-        self.triple_store
-            .retract(entity_id, ":db/type")
-            .await?;
-        self.triple_store
-            .retract(entity_id, "table/name")
-            .await?;
-        self.triple_store
-            .retract(entity_id, "table/slug")
-            .await?;
-        self.triple_store
-            .retract(entity_id, "table/config")
-            .await?;
+        self.triple_store.retract(entity_id, ":db/type").await?;
+        self.triple_store.retract(entity_id, "table/name").await?;
+        self.triple_store.retract(entity_id, "table/slug").await?;
+        self.triple_store.retract(entity_id, "table/config").await?;
 
         // Also retract all records that belong to this table.
         // Records have :db/type = table slug, so find and retract them.

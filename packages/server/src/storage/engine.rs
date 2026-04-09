@@ -17,10 +17,10 @@ use std::sync::Arc;
 
 use sqlx::PgPool;
 
-use crate::error::{DarshJError, Result};
 use super::memory::MemoryBackend;
 use super::postgres::PostgresBackend;
 use super::traits::DataBackend;
+use crate::error::{DarshJError, Result};
 
 // ---------------------------------------------------------------------------
 // Engine kind
@@ -111,10 +111,7 @@ impl DataEngine {
         // Run one-time initialization (schema creation, etc.).
         backend.init().await?;
 
-        tracing::info!(
-            backend = backend.backend_name(),
-            "data engine initialized"
-        );
+        tracing::info!(backend = backend.backend_name(), "data engine initialized");
 
         Ok(Self { backend, kind })
     }
@@ -155,7 +152,9 @@ mod tests {
         assert_eq!(engine.kind(), EngineKind::Memory);
 
         let b = engine.backend();
-        b.set("test", "k1", json!({"hello": "world"})).await.unwrap();
+        b.set("test", "k1", json!({"hello": "world"}))
+            .await
+            .unwrap();
 
         let val = b.get("test", "k1").await.unwrap();
         assert_eq!(val, Some(json!({"hello": "world"})));

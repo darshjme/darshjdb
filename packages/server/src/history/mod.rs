@@ -30,7 +30,9 @@ pub mod snapshots;
 pub mod versions;
 
 pub use restore::{restore_deleted, restore_version, undo_last};
-pub use snapshots::{Snapshot, SnapshotDiff, create_snapshot, diff_snapshot, list_snapshots, restore_snapshot};
+pub use snapshots::{
+    Snapshot, SnapshotDiff, create_snapshot, diff_snapshot, list_snapshots, restore_snapshot,
+};
 pub use versions::{ChangeType, FieldChange, RecordVersion, get_at_time, get_history, get_version};
 
 /// Create the `snapshots` table if it does not exist.

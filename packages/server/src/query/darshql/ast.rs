@@ -116,16 +116,11 @@ pub struct DefineTableStatement {
 }
 
 /// Whether a table enforces a strict schema.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum SchemaMode {
+    #[default]
     Schemaless,
     Schemafull,
-}
-
-impl Default for SchemaMode {
-    fn default() -> Self {
-        Self::Schemaless
-    }
 }
 
 // ── DEFINE FIELD ───────────────────────────────────────────────────
@@ -286,16 +281,11 @@ pub struct OrderBy {
 }
 
 /// Sort direction.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum SortDir {
+    #[default]
     Asc,
     Desc,
-}
-
-impl Default for SortDir {
-    fn default() -> Self {
-        Self::Asc
-    }
 }
 
 /// Expression node for WHERE clauses, SET values, and assertions.
@@ -320,10 +310,7 @@ pub enum Expr {
         right: Box<Expr>,
     },
     /// A function call: `count(->posts)`.
-    FnCall {
-        name: String,
-        args: Vec<Expr>,
-    },
+    FnCall { name: String, args: Vec<Expr> },
     /// A graph traversal expression (used inside functions).
     GraphExpr(GraphTraversal),
     /// A type cast expression: `<int>field`.

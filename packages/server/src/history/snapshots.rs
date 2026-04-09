@@ -76,10 +76,9 @@ pub async fn create_snapshot(
     created_by: Option<Uuid>,
 ) -> Result<Snapshot> {
     // Get the current max tx_id.
-    let max_tx: (Option<i64>,) =
-        sqlx::query_as("SELECT MAX(tx_id) FROM triples")
-            .fetch_one(pool)
-            .await?;
+    let max_tx: (Option<i64>,) = sqlx::query_as("SELECT MAX(tx_id) FROM triples")
+        .fetch_one(pool)
+        .await?;
 
     let tx_id_at_snapshot = max_tx.0.unwrap_or(0);
 
@@ -118,10 +117,7 @@ pub async fn create_snapshot(
 }
 
 /// List all snapshots for an entity type, most recent first.
-pub async fn list_snapshots(
-    pool: &PgPool,
-    entity_type: &str,
-) -> Result<Vec<Snapshot>> {
+pub async fn list_snapshots(pool: &PgPool, entity_type: &str) -> Result<Vec<Snapshot>> {
     let snapshots = sqlx::query_as::<_, Snapshot>(
         r#"
         SELECT id, entity_type, name, description, created_by, created_at,
@@ -139,10 +135,7 @@ pub async fn list_snapshots(
 }
 
 /// Compute a diff showing what changed since a snapshot was taken.
-pub async fn diff_snapshot(
-    pool: &PgPool,
-    snapshot_id: Uuid,
-) -> Result<SnapshotDiff> {
+pub async fn diff_snapshot(pool: &PgPool, snapshot_id: Uuid) -> Result<SnapshotDiff> {
     let snapshot = sqlx::query_as::<_, Snapshot>(
         r#"
         SELECT id, entity_type, name, description, created_by, created_at,
@@ -159,10 +152,9 @@ pub async fn diff_snapshot(
     let prefix = format!("{}/%", snapshot.entity_type);
 
     // Current max tx_id.
-    let current_tx: (Option<i64>,) =
-        sqlx::query_as("SELECT MAX(tx_id) FROM triples")
-            .fetch_one(pool)
-            .await?;
+    let current_tx: (Option<i64>,) = sqlx::query_as("SELECT MAX(tx_id) FROM triples")
+        .fetch_one(pool)
+        .await?;
     let current_tx_id = current_tx.0.unwrap_or(0);
 
     // Count new non-retracted triples since snapshot.
@@ -269,10 +261,7 @@ pub async fn diff_snapshot(
 /// Entities created after the snapshot are fully retracted.
 /// Entities deleted after the snapshot are re-asserted.
 /// This is a potentially expensive operation on large datasets.
-pub async fn restore_snapshot(
-    pool: &PgPool,
-    snapshot_id: Uuid,
-) -> Result<i64> {
+pub async fn restore_snapshot(pool: &PgPool, snapshot_id: Uuid) -> Result<i64> {
     let snapshot = sqlx::query_as::<_, Snapshot>(
         r#"
         SELECT id, entity_type, name, description, created_by, created_at,

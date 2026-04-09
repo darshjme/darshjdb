@@ -5,11 +5,11 @@
 //! Users can only manage their own keys unless they have the `admin` role.
 
 use axum::{
+    Json, Router,
     extract::{Path, State},
     http::StatusCode,
     response::IntoResponse,
     routing::{delete, post},
-    Json, Router,
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -17,7 +17,7 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use super::{
-    create_api_key, get_api_key, list_api_keys, revoke_api_key, rotate_api_key, ApiKeyScope,
+    ApiKeyScope, create_api_key, get_api_key, list_api_keys, revoke_api_key, rotate_api_key,
 };
 use crate::auth::AuthContext;
 
@@ -183,11 +183,7 @@ async fn list_keys(
                 .into_iter()
                 .map(|k| serde_json::to_value(k).unwrap_or_default())
                 .collect();
-            (
-                StatusCode::OK,
-                Json(serde_json::json!({"keys": sanitized})),
-            )
-                .into_response()
+            (StatusCode::OK, Json(serde_json::json!({"keys": sanitized}))).into_response()
         }
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -242,9 +238,7 @@ async fn revoke_key(
     }
 
     match revoke_api_key(&state.pool, id).await {
-        Ok(true) => {
-            (StatusCode::OK, Json(serde_json::json!({"revoked": true}))).into_response()
-        }
+        Ok(true) => (StatusCode::OK, Json(serde_json::json!({"revoked": true}))).into_response(),
         Ok(false) => (
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({"error": "API key not found or already revoked"})),

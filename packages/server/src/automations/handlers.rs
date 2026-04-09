@@ -162,6 +162,7 @@ impl AutomationResponse {
         )
     }
 
+    #[allow(dead_code)]
     fn internal_error(msg: impl Into<String>) -> (StatusCode, Json<Self>) {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -470,9 +471,7 @@ async fn get_run(
 
 // ── Helpers ───────────────────────────────────────────────────────
 
-fn parse_workflow_id(
-    id: &str,
-) -> Result<WorkflowId, (StatusCode, Json<AutomationResponse>)> {
+fn parse_workflow_id(id: &str) -> Result<WorkflowId, (StatusCode, Json<AutomationResponse>)> {
     Uuid::parse_str(id)
         .map(WorkflowId)
         .map_err(|_| AutomationResponse::bad_request("invalid automation ID format"))

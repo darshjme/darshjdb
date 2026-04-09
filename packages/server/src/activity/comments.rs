@@ -137,13 +137,12 @@ pub async fn create_comment(
 
     // If replying, verify the parent exists and belongs to the same entity.
     if let Some(parent_id) = input.reply_to {
-        let parent_exists: Option<(Uuid,)> = sqlx::query_as(
-            "SELECT entity_id FROM comments WHERE id = $1 AND NOT deleted",
-        )
-        .bind(parent_id)
-        .fetch_optional(pool)
-        .await
-        .map_err(DarshJError::Database)?;
+        let parent_exists: Option<(Uuid,)> =
+            sqlx::query_as("SELECT entity_id FROM comments WHERE id = $1 AND NOT deleted")
+                .bind(parent_id)
+                .fetch_optional(pool)
+                .await
+                .map_err(DarshJError::Database)?;
 
         match parent_exists {
             None => {
@@ -228,16 +227,14 @@ pub async fn update_comment(
         .map_err(|e| DarshJError::Internal(format!("Failed to serialize mentions: {e}")))?;
     let now = Utc::now();
 
-    sqlx::query(
-        "UPDATE comments SET content = $1, mentions = $2, updated_at = $3 WHERE id = $4",
-    )
-    .bind(new_content)
-    .bind(&mentions_json)
-    .bind(now)
-    .bind(comment_id)
-    .execute(pool)
-    .await
-    .map_err(DarshJError::Database)?;
+    sqlx::query("UPDATE comments SET content = $1, mentions = $2, updated_at = $3 WHERE id = $4")
+        .bind(new_content)
+        .bind(&mentions_json)
+        .bind(now)
+        .bind(comment_id)
+        .execute(pool)
+        .await
+        .map_err(DarshJError::Database)?;
 
     Ok(Comment {
         id: comment_id,
@@ -257,11 +254,7 @@ pub async fn update_comment(
 /// The comment remains in the database for audit purposes but is excluded
 /// from all listing queries. Only the author can delete their comment
 /// (enforced at the handler level).
-pub async fn delete_comment(
-    pool: &PgPool,
-    comment_id: CommentId,
-    user_id: Uuid,
-) -> Result<()> {
+pub async fn delete_comment(pool: &PgPool, comment_id: CommentId, user_id: Uuid) -> Result<()> {
     let existing = get_comment_by_id(pool, comment_id).await?;
 
     if existing.user_id != user_id {
@@ -378,7 +371,10 @@ pub fn build_thread_tree(comments: Vec<Comment>) -> Vec<ThreadedComment> {
         }
     }
 
-    fn build_node(comment: Comment, children_map: &HashMap<CommentId, Vec<Comment>>) -> ThreadedComment {
+    fn build_node(
+        comment: Comment,
+        children_map: &HashMap<CommentId, Vec<Comment>>,
+    ) -> ThreadedComment {
         let replies = children_map
             .get(&comment.id)
             .map(|children| {
@@ -487,6 +483,9 @@ mod tests {
         // are excluded from the query.
         let orphan = make_comment(Uuid::new_v4(), Some(Uuid::new_v4()));
         let tree = build_thread_tree(vec![orphan]);
-        assert!(tree.is_empty(), "orphaned replies should not appear as roots");
+        assert!(
+            tree.is_empty(),
+            "orphaned replies should not appear as roots"
+        );
     }
 }

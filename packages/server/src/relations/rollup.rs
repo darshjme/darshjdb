@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use crate::error::{DarshJError, Result};
+use crate::error::Result;
 use crate::triple_store::schema::ValueType;
 
 use super::link;
@@ -249,29 +249,19 @@ async fn compute_rust_rollup(
 
     match function {
         RollupFn::ArrayJoin(separator) => {
-            let strings: Vec<String> = values
-                .iter()
-                .map(|v| value_to_string(v))
-                .collect();
+            let strings: Vec<String> = values.iter().map(value_to_string).collect();
             Ok(serde_json::json!(strings.join(separator)))
         }
 
         RollupFn::Concatenate => {
-            let strings: Vec<String> = values
-                .iter()
-                .map(|v| value_to_string(v))
-                .collect();
+            let strings: Vec<String> = values.iter().map(value_to_string).collect();
             Ok(serde_json::json!(strings.concat()))
         }
 
         // Fallback for any function that somehow got routed here.
-        RollupFn::Count | RollupFn::CountValues => {
-            Ok(serde_json::json!(values.len()))
-        }
+        RollupFn::Count | RollupFn::CountValues => Ok(serde_json::json!(values.len())),
 
-        RollupFn::CountAll => {
-            Ok(serde_json::json!(target_ids.len()))
-        }
+        RollupFn::CountAll => Ok(serde_json::json!(target_ids.len())),
 
         RollupFn::CountEmpty => {
             let empty = target_ids.len().saturating_sub(values.len());
@@ -279,15 +269,12 @@ async fn compute_rust_rollup(
         }
 
         RollupFn::Sum => {
-            let sum: f64 = values
-                .iter()
-                .filter_map(|v| value_to_f64(v))
-                .sum();
+            let sum: f64 = values.iter().filter_map(value_to_f64).sum();
             Ok(serde_json::json!(sum))
         }
 
         RollupFn::Average => {
-            let nums: Vec<f64> = values.iter().filter_map(|v| value_to_f64(v)).collect();
+            let nums: Vec<f64> = values.iter().filter_map(value_to_f64).collect();
             if nums.is_empty() {
                 Ok(serde_json::Value::Null)
             } else {
@@ -299,7 +286,7 @@ async fn compute_rust_rollup(
         RollupFn::Min => {
             let min = values
                 .iter()
-                .filter_map(|v| value_to_f64(v))
+                .filter_map(value_to_f64)
                 .fold(f64::INFINITY, f64::min);
             if min == f64::INFINITY {
                 Ok(serde_json::Value::Null)
@@ -311,7 +298,7 @@ async fn compute_rust_rollup(
         RollupFn::Max => {
             let max = values
                 .iter()
-                .filter_map(|v| value_to_f64(v))
+                .filter_map(value_to_f64)
                 .fold(f64::NEG_INFINITY, f64::max);
             if max == f64::NEG_INFINITY {
                 Ok(serde_json::Value::Null)
@@ -327,10 +314,9 @@ async fn compute_rust_rollup(
 /// Return the "zero" value for a rollup function with no inputs.
 fn empty_result(function: &RollupFn) -> serde_json::Value {
     match function {
-        RollupFn::Count
-        | RollupFn::CountAll
-        | RollupFn::CountValues
-        | RollupFn::CountEmpty => serde_json::json!(0),
+        RollupFn::Count | RollupFn::CountAll | RollupFn::CountValues | RollupFn::CountEmpty => {
+            serde_json::json!(0)
+        }
         RollupFn::Sum => serde_json::json!(0.0),
         RollupFn::Average | RollupFn::Min | RollupFn::Max => serde_json::Value::Null,
         RollupFn::ArrayJoin(_) | RollupFn::Concatenate => serde_json::json!(""),
@@ -439,26 +425,17 @@ mod tests {
             empty_result(&RollupFn::ArrayJoin(", ".into())),
             serde_json::json!("")
         );
-        assert_eq!(
-            empty_result(&RollupFn::Concatenate),
-            serde_json::json!("")
-        );
+        assert_eq!(empty_result(&RollupFn::Concatenate), serde_json::json!(""));
     }
 
     #[test]
     fn value_to_string_variants() {
-        assert_eq!(
-            value_to_string(&serde_json::json!("hello")),
-            "hello"
-        );
+        assert_eq!(value_to_string(&serde_json::json!("hello")), "hello");
         assert_eq!(value_to_string(&serde_json::json!(42)), "42");
         assert_eq!(value_to_string(&serde_json::json!(3.14)), "3.14");
         assert_eq!(value_to_string(&serde_json::json!(true)), "true");
         assert_eq!(value_to_string(&serde_json::Value::Null), "");
-        assert_eq!(
-            value_to_string(&serde_json::json!({"a": 1})),
-            r#"{"a":1}"#
-        );
+        assert_eq!(value_to_string(&serde_json::json!({"a": 1})), r#"{"a":1}"#);
     }
 
     #[test]

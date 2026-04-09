@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use tokio::sync::{broadcast, RwLock};
+use tokio::sync::{RwLock, broadcast};
 use tracing::{debug, warn};
 use uuid::Uuid;
 
@@ -317,9 +317,7 @@ impl EventSubscriber {
     fn matches(&self, event: &DdbEvent) -> bool {
         match &self.filter {
             None => true,
-            Some(EventFilter::EntityType(et)) => {
-                event.entity_type().map_or(false, |t| t == et)
-            }
+            Some(EventFilter::EntityType(et)) => event.entity_type().is_some_and(|t| t == et),
         }
     }
 }
@@ -393,8 +391,8 @@ mod tests {
 
     #[tokio::test]
     async fn event_bus_emit_and_receive() {
-        let bus = EventBus::new(16, 100);
-        let mut sub = bus.subscribe();
+        let _bus_init = EventBus::new(16, 100);
+        let _sub_init = _bus_init.subscribe();
 
         let event = DdbEvent::RecordCreated {
             entity_id: Uuid::new_v4(),
@@ -405,12 +403,7 @@ mod tests {
 
         // Emit in a separate task so recv doesn't block forever.
         let event_clone = event.clone();
-        let bus_ref = &bus;
-        tokio::spawn({
-            let bus = EventBus::new(16, 100);
-            // We need to use the same bus — let's restructure.
-            async move { drop(event_clone) }
-        });
+        tokio::spawn({ async move { drop(event_clone) } });
 
         // Use a channel-based approach instead.
         let bus = Arc::new(EventBus::new(16, 100));

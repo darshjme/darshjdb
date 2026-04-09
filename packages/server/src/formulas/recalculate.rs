@@ -9,7 +9,7 @@ use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use crate::error::{DarshJError, Result};
-use crate::formulas::evaluator::{evaluate, RecordContext};
+use crate::formulas::evaluator::{RecordContext, evaluate};
 use crate::formulas::graph::DependencyGraph;
 
 /// Metrics captured during a recalculation pass.
@@ -147,7 +147,11 @@ pub async fn recalculate_affected(
         let value_type: i16 = match value {
             serde_json::Value::String(_) => 0,
             serde_json::Value::Number(n) => {
-                if n.is_f64() { 2 } else { 1 }
+                if n.is_f64() {
+                    2
+                } else {
+                    1
+                }
             }
             serde_json::Value::Bool(_) => 3,
             serde_json::Value::Null => 0,

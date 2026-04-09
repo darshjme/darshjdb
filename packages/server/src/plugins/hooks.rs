@@ -174,10 +174,7 @@ pub trait HookHandler: Send + Sync {
     fn plugin_id(&self) -> Uuid;
 
     /// Handle the hook event and return a result controlling the pipeline.
-    fn handle(
-        &self,
-        ctx: &HookContext,
-    ) -> Pin<Box<dyn Future<Output = HookResult> + Send + '_>>;
+    fn handle(&self, ctx: &HookContext) -> Pin<Box<dyn Future<Output = HookResult> + Send + '_>>;
 }
 
 // ---------------------------------------------------------------------------

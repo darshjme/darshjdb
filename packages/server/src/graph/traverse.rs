@@ -142,14 +142,11 @@ impl TraversalEngine {
             TraversalAlgorithm::ShortestPath => {
                 // For shortest path, delegate to the dedicated method and
                 // convert the result into a TraversalResult for uniformity.
-                let target = config
-                    .target
-                    .as_deref()
-                    .ok_or_else(|| {
-                        crate::error::DarshJError::InvalidQuery(
-                            "shortest_path algorithm requires a 'target' field".into(),
-                        )
-                    })?;
+                let target = config.target.as_deref().ok_or_else(|| {
+                    crate::error::DarshJError::InvalidQuery(
+                        "shortest_path algorithm requires a 'target' field".into(),
+                    )
+                })?;
                 let sp = Self::shortest_path(store, config, target).await?;
                 let nodes: Vec<TraversalNode> = sp
                     .path
@@ -175,10 +172,7 @@ impl TraversalEngine {
     }
 
     /// Breadth-first search from the start node.
-    async fn bfs(
-        store: &PgEdgeStore,
-        config: &TraversalConfig,
-    ) -> Result<TraversalResult> {
+    async fn bfs(store: &PgEdgeStore, config: &TraversalConfig) -> Result<TraversalResult> {
         let start = RecordId::parse(&config.start)?;
         let mut visited: HashSet<String> = HashSet::new();
         let mut queue: VecDeque<(RecordId, u32)> = VecDeque::new();
@@ -198,11 +192,17 @@ impl TraversalEngine {
                 continue;
             }
 
-            let edges = Self::fetch_edges(store, &current, config.direction, config.edge_type.as_deref()).await?;
+            let edges = Self::fetch_edges(
+                store,
+                &current,
+                config.direction,
+                config.edge_type.as_deref(),
+            )
+            .await?;
             edges_examined += edges.len();
 
             for edge in &edges {
-                let neighbor = Self::resolve_neighbor(&edge, &current, config.direction);
+                let neighbor = Self::resolve_neighbor(edge, &current, config.direction);
                 let key = neighbor.to_string_repr();
 
                 if !visited.contains(&key) {
@@ -235,10 +235,7 @@ impl TraversalEngine {
     }
 
     /// Depth-first search from the start node.
-    async fn dfs(
-        store: &PgEdgeStore,
-        config: &TraversalConfig,
-    ) -> Result<TraversalResult> {
+    async fn dfs(store: &PgEdgeStore, config: &TraversalConfig) -> Result<TraversalResult> {
         let start = RecordId::parse(&config.start)?;
         let mut visited: HashSet<String> = HashSet::new();
         let mut stack: Vec<(RecordId, u32, Option<EdgeSummary>)> = Vec::new();
@@ -272,7 +269,13 @@ impl TraversalEngine {
                 continue;
             }
 
-            let edges = Self::fetch_edges(store, &current, config.direction, config.edge_type.as_deref()).await?;
+            let edges = Self::fetch_edges(
+                store,
+                &current,
+                config.direction,
+                config.edge_type.as_deref(),
+            )
+            .await?;
             edges_examined += edges.len();
 
             // Push in reverse order so the first edge is explored first.
@@ -333,7 +336,13 @@ impl TraversalEngine {
                 continue;
             }
 
-            let edges = Self::fetch_edges(store, &current, config.direction, config.edge_type.as_deref()).await?;
+            let edges = Self::fetch_edges(
+                store,
+                &current,
+                config.direction,
+                config.edge_type.as_deref(),
+            )
+            .await?;
 
             for edge in &edges {
                 let neighbor = Self::resolve_neighbor(edge, &current, config.direction);

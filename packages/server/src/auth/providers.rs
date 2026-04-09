@@ -1322,10 +1322,8 @@ mod tests {
     #[test]
     fn magic_link_different_tokens_produce_different_hashes() {
         use sha2::Digest;
-        let hash1 = data_encoding::HEXLOWER
-            .encode(&sha2::Sha256::digest(b"token-aaa"));
-        let hash2 = data_encoding::HEXLOWER
-            .encode(&sha2::Sha256::digest(b"token-bbb"));
+        let hash1 = data_encoding::HEXLOWER.encode(&sha2::Sha256::digest(b"token-aaa"));
+        let hash2 = data_encoding::HEXLOWER.encode(&sha2::Sha256::digest(b"token-bbb"));
         assert_ne!(hash1, hash2);
     }
 

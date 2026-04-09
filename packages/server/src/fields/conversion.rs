@@ -39,10 +39,7 @@ pub fn convert_field_type(
             .collect();
     }
 
-    values
-        .iter()
-        .map(|v| convert_single(v, from, to))
-        .collect()
+    values.iter().map(|v| convert_single(v, from, to)).collect()
 }
 
 /// Summary of a batch conversion.
@@ -63,10 +60,7 @@ pub fn summarise(results: &[ConversionResult]) -> ConversionSummary {
     let total = results.len();
     let success = results.iter().filter(|r| r.value.is_some()).count();
     let failed = total - success;
-    let warnings = results
-        .iter()
-        .filter_map(|r| r.warning.clone())
-        .collect();
+    let warnings = results.iter().filter_map(|r| r.warning.clone()).collect();
     ConversionSummary {
         total,
         success,
@@ -87,22 +81,17 @@ fn convert_single(value: &Value, from: FieldType, to: FieldType) -> ConversionRe
 
     let result = match (from, to) {
         // ── To text (always lossless) ──────────────────────────────
-        (_, FieldType::SingleLineText | FieldType::LongText) => {
-            Some(to_text(value))
-        }
+        (_, FieldType::SingleLineText | FieldType::LongText) => Some(to_text(value)),
 
         // ── Text → Number ──────────────────────────────────────────
-        (FieldType::SingleLineText | FieldType::LongText, FieldType::Number | FieldType::Currency | FieldType::Percent) => {
-            text_to_number(value)
-        }
+        (
+            FieldType::SingleLineText | FieldType::LongText,
+            FieldType::Number | FieldType::Currency | FieldType::Percent,
+        ) => text_to_number(value),
 
         // ── Number → Number-like ───────────────────────────────────
-        (FieldType::Number, FieldType::Currency | FieldType::Percent) => {
-            Some(value.clone())
-        }
-        (FieldType::Currency | FieldType::Percent, FieldType::Number) => {
-            Some(value.clone())
-        }
+        (FieldType::Number, FieldType::Currency | FieldType::Percent) => Some(value.clone()),
+        (FieldType::Currency | FieldType::Percent, FieldType::Number) => Some(value.clone()),
         (FieldType::Currency, FieldType::Percent) | (FieldType::Percent, FieldType::Currency) => {
             Some(value.clone())
         }
@@ -125,32 +114,29 @@ fn convert_single(value: &Value, from: FieldType, to: FieldType) -> ConversionRe
         }
 
         // ── Text → Date/DateTime ───────────────────────────────────
-        (FieldType::SingleLineText | FieldType::LongText, FieldType::Date) => {
-            text_to_date(value)
-        }
+        (FieldType::SingleLineText | FieldType::LongText, FieldType::Date) => text_to_date(value),
         (FieldType::SingleLineText | FieldType::LongText, FieldType::DateTime) => {
             text_to_datetime(value)
         }
 
         // ── Date ↔ DateTime ────────────────────────────────────────
-        (FieldType::Date, FieldType::DateTime) => {
-            value.as_str().map(|s| {
-                if s.contains('T') {
-                    Value::String(s.to_string())
-                } else {
-                    Value::String(format!("{s}T00:00:00Z"))
-                }
-            })
-        }
-        (FieldType::DateTime, FieldType::Date) => {
-            value.as_str().map(|s| {
-                let date_part = s.split('T').next().unwrap_or(s);
-                Value::String(date_part.to_string())
-            })
-        }
+        (FieldType::Date, FieldType::DateTime) => value.as_str().map(|s| {
+            if s.contains('T') {
+                Value::String(s.to_string())
+            } else {
+                Value::String(format!("{s}T00:00:00Z"))
+            }
+        }),
+        (FieldType::DateTime, FieldType::Date) => value.as_str().map(|s| {
+            let date_part = s.split('T').next().unwrap_or(s);
+            Value::String(date_part.to_string())
+        }),
 
         // ── Text → Email/URL/Phone ─────────────────────────────────
-        (FieldType::SingleLineText | FieldType::LongText, FieldType::Email | FieldType::Url | FieldType::Phone) => {
+        (
+            FieldType::SingleLineText | FieldType::LongText,
+            FieldType::Email | FieldType::Url | FieldType::Phone,
+        ) => {
             // Pass through -- validation happens at the field level.
             Some(value.clone())
         }
@@ -162,23 +148,17 @@ fn convert_single(value: &Value, from: FieldType, to: FieldType) -> ConversionRe
 
         // ── MultiSelect → SingleSelect ─────────────────────────────
         (FieldType::MultiSelect, FieldType::SingleSelect) => {
-            value
-                .as_array()
-                .and_then(|arr| arr.first().cloned())
+            value.as_array().and_then(|arr| arr.first().cloned())
         }
 
         // ── Number → Rating ────────────────────────────────────────
-        (FieldType::Number, FieldType::Rating) => {
-            value.as_f64().map(|n| {
-                let clamped = n.round().max(0.0).min(5.0) as u64;
-                serde_json::json!(clamped)
-            })
-        }
+        (FieldType::Number, FieldType::Rating) => value.as_f64().map(|n| {
+            let clamped = n.round().max(0.0).min(5.0) as u64;
+            serde_json::json!(clamped)
+        }),
 
         // ── Rating → Number ────────────────────────────────────────
-        (FieldType::Rating, FieldType::Number) => {
-            Some(value.clone())
-        }
+        (FieldType::Rating, FieldType::Number) => Some(value.clone()),
 
         // ── Text → SingleSelect ────────────────────────────────────
         (FieldType::SingleLineText | FieldType::LongText, FieldType::SingleSelect) => {
@@ -307,7 +287,11 @@ mod tests {
     fn identity_conversion() {
         let values = vec![json!(1), json!(2), json!(3)];
         let results = convert_field_type(&values, FieldType::Number, FieldType::Number);
-        assert!(results.iter().all(|r| r.value.is_some() && r.warning.is_none()));
+        assert!(
+            results
+                .iter()
+                .all(|r| r.value.is_some() && r.warning.is_none())
+        );
     }
 
     #[test]
@@ -388,22 +372,14 @@ mod tests {
     #[test]
     fn single_select_to_multi_select() {
         let values = vec![json!("Active")];
-        let results = convert_field_type(
-            &values,
-            FieldType::SingleSelect,
-            FieldType::MultiSelect,
-        );
+        let results = convert_field_type(&values, FieldType::SingleSelect, FieldType::MultiSelect);
         assert_eq!(results[0].value.as_ref().unwrap(), &json!(["Active"]));
     }
 
     #[test]
     fn multi_select_to_single_select() {
         let values = vec![json!(["A", "B"])];
-        let results = convert_field_type(
-            &values,
-            FieldType::MultiSelect,
-            FieldType::SingleSelect,
-        );
+        let results = convert_field_type(&values, FieldType::MultiSelect, FieldType::SingleSelect);
         assert_eq!(results[0].value.as_ref().unwrap(), &json!("A"));
     }
 
@@ -482,22 +458,16 @@ mod tests {
     #[test]
     fn text_to_select() {
         let values = vec![json!("Active")];
-        let results = convert_field_type(
-            &values,
-            FieldType::SingleLineText,
-            FieldType::SingleSelect,
-        );
+        let results =
+            convert_field_type(&values, FieldType::SingleLineText, FieldType::SingleSelect);
         assert_eq!(results[0].value.as_ref().unwrap(), &json!("Active"));
     }
 
     #[test]
     fn text_to_multi_select_wraps() {
         let values = vec![json!("Tag1")];
-        let results = convert_field_type(
-            &values,
-            FieldType::SingleLineText,
-            FieldType::MultiSelect,
-        );
+        let results =
+            convert_field_type(&values, FieldType::SingleLineText, FieldType::MultiSelect);
         assert_eq!(results[0].value.as_ref().unwrap(), &json!(["Tag1"]));
     }
 }

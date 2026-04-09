@@ -1,4 +1,18 @@
 #![recursion_limit = "512"]
+#![allow(clippy::type_complexity)]
+#![allow(clippy::should_implement_trait)]
+#![allow(clippy::too_many_arguments)]
+#![allow(clippy::large_enum_variant)]
+#![allow(clippy::new_without_default)]
+#![allow(clippy::module_inception)]
+#![allow(clippy::manual_strip)]
+#![allow(clippy::redundant_guards)]
+#![allow(clippy::ptr_arg)]
+#![allow(clippy::float_cmp)]
+#![allow(clippy::if_same_then_else)]
+#![allow(clippy::match_like_matches_macro)]
+#![allow(clippy::manual_clamp)]
+#![allow(clippy::explicit_counter_loop)]
 //! DarshJDB server library crate.
 //!
 //! Provides the core data layer: a Postgres-backed triple store,

@@ -12,7 +12,7 @@
 use serde_json::Value;
 use std::collections::HashMap;
 
-use super::{FieldDefinition, FieldType, SchemaMode, TableSchema};
+use super::{FieldType, SchemaMode, TableSchema};
 
 // ── Validation result ──────────────────────────────────────────────
 
@@ -155,9 +155,7 @@ impl SchemaValidator {
 
                     // Assert expression.
                     if let Some(ref expr) = field_def.assert_expr {
-                        let check_value = result_doc
-                            .get(field_name)
-                            .unwrap_or(value);
+                        let check_value = result_doc.get(field_name).unwrap_or(value);
                         if let Err(msg) = evaluate_assert(check_value, expr) {
                             errors.push(ValidationError {
                                 field: field_name.clone(),
@@ -238,15 +236,14 @@ fn coerce_value(value: &Value, target: &FieldType) -> Result<Value, String> {
                 // All JSON numbers can be treated as float.
                 Ok(value.clone())
             }
-            Value::String(s) => {
-                s.parse::<f64>()
-                    .map(|f| {
-                        serde_json::Number::from_f64(f)
-                            .map(Value::Number)
-                            .unwrap_or(Value::Null)
-                    })
-                    .map_err(|_| format!("cannot coerce string '{s}' to float"))
-            }
+            Value::String(s) => s
+                .parse::<f64>()
+                .map(|f| {
+                    serde_json::Number::from_f64(f)
+                        .map(Value::Number)
+                        .unwrap_or(Value::Null)
+                })
+                .map_err(|_| format!("cannot coerce string '{s}' to float")),
             _ => Err(format!("expected float, got {}", value_type_label(value))),
         },
 
@@ -287,7 +284,10 @@ fn coerce_value(value: &Value, target: &FieldType) -> Result<Value, String> {
                     Err(format!("cannot interpret number {n} as datetime"))
                 }
             }
-            _ => Err(format!("expected datetime, got {}", value_type_label(value))),
+            _ => Err(format!(
+                "expected datetime, got {}",
+                value_type_label(value)
+            )),
         },
 
         FieldType::Uuid => match value {
@@ -298,7 +298,10 @@ fn coerce_value(value: &Value, target: &FieldType) -> Result<Value, String> {
                     Err(format!("invalid UUID: '{s}'"))
                 }
             }
-            _ => Err(format!("expected uuid string, got {}", value_type_label(value))),
+            _ => Err(format!(
+                "expected uuid string, got {}",
+                value_type_label(value)
+            )),
         },
 
         FieldType::Record(table_hint) => match value {
@@ -419,9 +422,12 @@ fn evaluate_assert(value: &Value, expr: &str) -> Result<(), String> {
         if let Some(rest) = expr.strip_prefix(&pattern) {
             let rest = rest.trim().trim_matches('"');
             if let Ok(threshold) = rest.parse::<f64>() {
-                let val_num = value
-                    .as_f64()
-                    .ok_or_else(|| format!("assertion requires numeric value, got {}", value_type_label(value)))?;
+                let val_num = value.as_f64().ok_or_else(|| {
+                    format!(
+                        "assertion requires numeric value, got {}",
+                        value_type_label(value)
+                    )
+                })?;
                 let pass = match op_str {
                     ">=" => val_num >= threshold,
                     "<=" => val_num <= threshold,
@@ -434,9 +440,7 @@ fn evaluate_assert(value: &Value, expr: &str) -> Result<(), String> {
                 return if pass {
                     Ok(())
                 } else {
-                    Err(format!(
-                        "assertion failed: {val_num} {op_str} {threshold}"
-                    ))
+                    Err(format!("assertion failed: {val_num} {op_str} {threshold}"))
                 };
             }
         }
@@ -459,7 +463,9 @@ fn evaluate_assert(value: &Value, expr: &str) -> Result<(), String> {
             return Ok(());
         }
         if !val_str.contains(pattern) {
-            return Err(format!("assertion failed: '{val_str}' does not match pattern '{pattern}'"));
+            return Err(format!(
+                "assertion failed: '{val_str}' does not match pattern '{pattern}'"
+            ));
         }
         return Ok(());
     }
@@ -471,9 +477,7 @@ fn evaluate_assert(value: &Value, expr: &str) -> Result<(), String> {
             if arr.contains(value) {
                 return Ok(());
             } else {
-                return Err(format!(
-                    "assertion failed: value not in allowed set {rest}"
-                ));
+                return Err(format!("assertion failed: value not in allowed set {rest}"));
             }
         }
         return Err(format!("invalid IN expression: {rest}"));
@@ -527,6 +531,7 @@ fn evaluate_assert(value: &Value, expr: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::schema::FieldDefinition;
 
     fn make_schemafull_users() -> TableSchema {
         TableSchema::schemafull("users")
@@ -545,22 +550,25 @@ mod tests {
                     .required()
                     .unique(),
             )
-            .define_field(FieldDefinition::new("tags", FieldType::Array(Box::new(FieldType::String))))
+            .define_field(FieldDefinition::new(
+                "tags",
+                FieldType::Array(Box::new(FieldType::String)),
+            ))
     }
 
     fn make_mixed_posts() -> TableSchema {
         TableSchema::mixed("posts")
+            .define_field(FieldDefinition::new("title", FieldType::String).required())
             .define_field(
-                FieldDefinition::new("title", FieldType::String).required(),
-            )
-            .define_field(
-                FieldDefinition::new("views", FieldType::Int)
-                    .with_default(serde_json::json!(0)),
+                FieldDefinition::new("views", FieldType::Int).with_default(serde_json::json!(0)),
             )
     }
 
     fn doc(pairs: &[(&str, Value)]) -> HashMap<String, Value> {
-        pairs.iter().map(|(k, v)| (k.to_string(), v.clone())).collect()
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.clone()))
+            .collect()
     }
 
     // ── SCHEMAFULL tests ──────────────────────────────────────────
@@ -596,9 +604,7 @@ mod tests {
     #[test]
     fn schemafull_missing_required_field() {
         let schema = make_schemafull_users();
-        let document = doc(&[
-            ("email", Value::String("alice@example.com".into())),
-        ]);
+        let document = doc(&[("email", Value::String("alice@example.com".into()))]);
         let result = SchemaValidator::validate_insert(&schema, &document);
         assert!(!result.is_valid());
         assert!(
@@ -691,9 +697,7 @@ mod tests {
     #[test]
     fn mixed_still_validates_defined_fields() {
         let schema = make_mixed_posts();
-        let document = doc(&[
-            ("views", Value::String("not a number".into())),
-        ]);
+        let document = doc(&[("views", Value::String("not a number".into()))]);
         let result = SchemaValidator::validate_insert(&schema, &document);
         // Should fail because 'title' is required and missing,
         // and 'views' cannot be coerced from "not a number" to int.
@@ -731,9 +735,7 @@ mod tests {
     #[test]
     fn update_skips_required_check() {
         let schema = make_schemafull_users();
-        let document = doc(&[
-            ("age", Value::Number(31.into())),
-        ]);
+        let document = doc(&[("age", Value::Number(31.into()))]);
         let result = SchemaValidator::validate_update(&schema, &document);
         assert!(result.is_valid(), "errors: {}", result.error_message());
     }
@@ -741,12 +743,8 @@ mod tests {
     #[test]
     fn update_readonly_field_rejected() {
         let schema = TableSchema::schemafull("config")
-            .define_field(
-                FieldDefinition::new("created_by", FieldType::String).readonly(),
-            );
-        let document = doc(&[
-            ("created_by", Value::String("someone_else".into())),
-        ]);
+            .define_field(FieldDefinition::new("created_by", FieldType::String).readonly());
+        let document = doc(&[("created_by", Value::String("someone_else".into()))]);
         let result = SchemaValidator::validate_update(&schema, &document);
         assert!(!result.is_valid());
         assert!(result.errors.iter().any(|e| e.field == "created_by"));
@@ -756,11 +754,10 @@ mod tests {
 
     #[test]
     fn assert_in_expression() {
-        let schema = TableSchema::schemafull("orders")
-            .define_field(
-                FieldDefinition::new("status", FieldType::String)
-                    .with_assert(r#"$value IN ["pending", "active", "closed"]"#),
-            );
+        let schema = TableSchema::schemafull("orders").define_field(
+            FieldDefinition::new("status", FieldType::String)
+                .with_assert(r#"$value IN ["pending", "active", "closed"]"#),
+        );
         let valid = doc(&[("status", Value::String("active".into()))]);
         let invalid = doc(&[("status", Value::String("unknown".into()))]);
 
@@ -770,11 +767,10 @@ mod tests {
 
     #[test]
     fn assert_string_len() {
-        let schema = TableSchema::schemafull("users")
-            .define_field(
-                FieldDefinition::new("password", FieldType::String)
-                    .with_assert("string::len($value) >= 8"),
-            );
+        let schema = TableSchema::schemafull("users").define_field(
+            FieldDefinition::new("password", FieldType::String)
+                .with_assert("string::len($value) >= 8"),
+        );
         let short = doc(&[("password", Value::String("abc".into()))]);
         let ok = doc(&[("password", Value::String("longpassword".into()))]);
 
@@ -786,16 +782,34 @@ mod tests {
 
     #[test]
     fn coerce_bool_from_string() {
-        assert_eq!(coerce_value(&Value::String("true".into()), &FieldType::Bool).unwrap(), Value::Bool(true));
-        assert_eq!(coerce_value(&Value::String("false".into()), &FieldType::Bool).unwrap(), Value::Bool(false));
-        assert_eq!(coerce_value(&Value::String("yes".into()), &FieldType::Bool).unwrap(), Value::Bool(true));
-        assert_eq!(coerce_value(&Value::String("no".into()), &FieldType::Bool).unwrap(), Value::Bool(false));
+        assert_eq!(
+            coerce_value(&Value::String("true".into()), &FieldType::Bool).unwrap(),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            coerce_value(&Value::String("false".into()), &FieldType::Bool).unwrap(),
+            Value::Bool(false)
+        );
+        assert_eq!(
+            coerce_value(&Value::String("yes".into()), &FieldType::Bool).unwrap(),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            coerce_value(&Value::String("no".into()), &FieldType::Bool).unwrap(),
+            Value::Bool(false)
+        );
     }
 
     #[test]
     fn coerce_null_always_passes() {
-        assert_eq!(coerce_value(&Value::Null, &FieldType::Int).unwrap(), Value::Null);
-        assert_eq!(coerce_value(&Value::Null, &FieldType::String).unwrap(), Value::Null);
+        assert_eq!(
+            coerce_value(&Value::Null, &FieldType::Int).unwrap(),
+            Value::Null
+        );
+        assert_eq!(
+            coerce_value(&Value::Null, &FieldType::String).unwrap(),
+            Value::Null
+        );
     }
 
     #[test]

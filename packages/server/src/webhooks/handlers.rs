@@ -7,19 +7,19 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use axum::{
+    Json, Router,
     extract::{Path, Query, State},
     http::StatusCode,
     response::IntoResponse,
     routing::{get, post},
-    Json, Router,
 };
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::{
-    delete_webhook, get_webhook, list_deliveries, list_webhooks, register_webhook,
-    update_webhook, RetryPolicy, WebhookConfig, WebhookSender,
+    RetryPolicy, WebhookConfig, WebhookSender, delete_webhook, get_webhook, list_deliveries,
+    list_webhooks, register_webhook, update_webhook,
 };
 use crate::auth::AuthContext;
 use crate::events::EventKind;
@@ -314,9 +314,7 @@ async fn patch_webhook(
     )
     .await
     {
-        Ok(true) => {
-            (StatusCode::OK, Json(serde_json::json!({"updated": true}))).into_response()
-        }
+        Ok(true) => (StatusCode::OK, Json(serde_json::json!({"updated": true}))).into_response(),
         Ok(false) => (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({"error": "no fields to update"})),
@@ -374,9 +372,7 @@ async fn delete_webhook_handler(
     }
 
     match delete_webhook(&state.pool, id).await {
-        Ok(true) => {
-            (StatusCode::OK, Json(serde_json::json!({"deleted": true}))).into_response()
-        }
+        Ok(true) => (StatusCode::OK, Json(serde_json::json!({"deleted": true}))).into_response(),
         Ok(false) => (
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({"error": "webhook not found"})),

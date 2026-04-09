@@ -22,8 +22,8 @@ use crate::triple_store::{TripleInput, TripleStore};
 
 use super::conversion::{self, ConversionSummary};
 use super::{
-    FieldConfig, FieldId, FieldOptions, FieldType, ATTR_FIELD_CONFIG, ATTR_FIELD_NAME,
-    ATTR_FIELD_ORDER, ATTR_FIELD_TABLE, ATTR_FIELD_TYPE,
+    ATTR_FIELD_CONFIG, ATTR_FIELD_NAME, ATTR_FIELD_ORDER, ATTR_FIELD_TABLE, ATTR_FIELD_TYPE,
+    FieldConfig, FieldId, FieldOptions, FieldType,
 };
 
 // ── Route builder ──────────────────────────────────────────────────
@@ -32,7 +32,10 @@ use super::{
 pub fn field_routes() -> Router<AppState> {
     Router::new()
         .route("/", post(create_field).get(list_fields))
-        .route("/{id}", get(get_field).patch(update_field).delete(delete_field))
+        .route(
+            "/{id}",
+            get(get_field).patch(update_field).delete(delete_field),
+        )
 }
 
 // ── Request / Response types ───────────────────────────────────────
@@ -139,9 +142,7 @@ async fn create_field(
         return Err(ApiError::bad_request("field name must not be empty"));
     }
     if req.table_entity_type.trim().is_empty() {
-        return Err(ApiError::bad_request(
-            "table_entity_type must not be empty",
-        ));
+        return Err(ApiError::bad_request("table_entity_type must not be empty"));
     }
 
     let id = FieldId::new();
@@ -227,22 +228,21 @@ async fn update_field(
 
     let mut conversion_summary = None;
 
-    if let Some(new_type) = req.field_type {
-        if new_type != old_type {
-            config.field_type = new_type;
+    if let Some(new_type) = req.field_type
+        && new_type != old_type
+    {
+        config.field_type = new_type;
 
-            // Batch-convert existing values.
-            let existing_values = load_field_values(&state, &config).await?;
-            if !existing_values.is_empty() {
-                let results =
-                    conversion::convert_field_type(&existing_values, old_type, new_type);
-                let summary = conversion::summarise(&results);
+        // Batch-convert existing values.
+        let existing_values = load_field_values(&state, &config).await?;
+        if !existing_values.is_empty() {
+            let results = conversion::convert_field_type(&existing_values, old_type, new_type);
+            let summary = conversion::summarise(&results);
 
-                // Write back converted values.
-                write_converted_values(&state, &config, &results).await?;
+            // Write back converted values.
+            write_converted_values(&state, &config, &results).await?;
 
-                conversion_summary = Some(ConversionSummaryResponse::from(summary));
-            }
+            conversion_summary = Some(ConversionSummaryResponse::from(summary));
         }
     }
 
@@ -319,8 +319,8 @@ async fn persist_field(state: &AppState, config: &FieldConfig) -> Result<(), Api
         let _ = state.triple_store.retract(entity_id, attr).await;
     }
 
-    let config_json = serde_json::to_value(config)
-        .map_err(|e| ApiError::internal(e.to_string()))?;
+    let config_json =
+        serde_json::to_value(config).map_err(|e| ApiError::internal(e.to_string()))?;
 
     let triples = vec![
         TripleInput {
@@ -385,9 +385,7 @@ async fn load_field(state: &AppState, id: Uuid) -> Result<FieldConfig, ApiError>
     let config_triple = triples
         .iter()
         .find(|t| t.attribute == ATTR_FIELD_CONFIG)
-        .ok_or_else(|| {
-            ApiError::internal(format!("field {id} missing config triple"))
-        })?;
+        .ok_or_else(|| ApiError::internal(format!("field {id} missing config triple")))?;
 
     let config: FieldConfig = serde_json::from_value(config_triple.value.clone())
         .map_err(|e| ApiError::internal(format!("corrupt field config: {e}")))?;
@@ -415,10 +413,10 @@ async fn load_all_fields(
             Err(_) => continue, // skip corrupt entries
         };
 
-        if let Some(et) = entity_type {
-            if config.table_entity_type != et {
-                continue;
-            }
+        if let Some(et) = entity_type
+            && config.table_entity_type != et
+        {
+            continue;
         }
 
         fields.push(config);
@@ -432,10 +430,7 @@ async fn load_all_fields(
 
 /// Load all values for a field (by querying triples with the field's
 /// attribute name within entities of the field's table type).
-async fn load_field_values(
-    state: &AppState,
-    config: &FieldConfig,
-) -> Result<Vec<Value>, ApiError> {
+async fn load_field_values(state: &AppState, config: &FieldConfig) -> Result<Vec<Value>, ApiError> {
     let triples = state
         .triple_store
         .query_by_attribute(&config.name, None)
@@ -498,14 +493,17 @@ fn value_type_for_field(ft: FieldType) -> i16 {
         FieldType::Number | FieldType::Currency | FieldType::Percent | FieldType::Duration => {
             2 // Float
         }
-        FieldType::Checkbox => 3,    // Boolean
-        FieldType::Date | FieldType::DateTime | FieldType::CreatedTime | FieldType::LastModifiedTime => {
+        FieldType::Checkbox => 3, // Boolean
+        FieldType::Date
+        | FieldType::DateTime
+        | FieldType::CreatedTime
+        | FieldType::LastModifiedTime => {
             4 // Timestamp
         }
-        FieldType::Link => 5,       // Reference
-        FieldType::Rating | FieldType::AutoNumber => 1, // Integer
+        FieldType::Link => 5,                                // Reference
+        FieldType::Rating | FieldType::AutoNumber => 1,      // Integer
         FieldType::Attachment | FieldType::MultiSelect => 6, // Json
-        _ => 0,                      // String (default)
+        _ => 0,                                              // String (default)
     }
 }
 

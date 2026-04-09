@@ -16,6 +16,7 @@ use crate::formulas::parser::{Expr, Op};
 // ── Error sentinel values ──────────────────────────────────────────
 
 const ERROR_VALUE: &str = "#ERROR";
+#[allow(dead_code)]
 const ERROR_REF: &str = "#REF";
 const ERROR_TYPE: &str = "#VALUE";
 const ERROR_DIV0: &str = "#DIV/0";
@@ -68,7 +69,7 @@ fn to_bool(v: &Value) -> bool {
     match v {
         Value::Bool(b) => *b,
         Value::Null => false,
-        Value::Number(n) => n.as_f64().map_or(false, |f| f != 0.0),
+        Value::Number(n) => n.as_f64().is_some_and(|f| f != 0.0),
         Value::String(s) => !s.is_empty(),
         _ => true,
     }
@@ -114,13 +115,11 @@ pub fn evaluate(expr: &Expr, context: &RecordContext) -> Result<Value> {
     match expr {
         Expr::Literal(v) => Ok(v.clone()),
 
-        Expr::FieldRef(name) => {
-            Ok(context
-                .field_values
-                .get(name)
-                .cloned()
-                .unwrap_or(Value::Null))
-        }
+        Expr::FieldRef(name) => Ok(context
+            .field_values
+            .get(name)
+            .cloned()
+            .unwrap_or(Value::Null)),
 
         Expr::UnaryOp(op, operand) => {
             let val = evaluate(operand, context)?;
@@ -176,10 +175,20 @@ pub fn evaluate(expr: &Expr, context: &RecordContext) -> Result<Value> {
                 // Comparison
                 Op::Eq => Ok(Value::Bool(left == right)),
                 Op::Neq => Ok(Value::Bool(left != right)),
-                Op::Gt => Ok(Value::Bool(compare_values(&left, &right) == Some(std::cmp::Ordering::Greater))),
-                Op::Gte => Ok(Value::Bool(matches!(compare_values(&left, &right), Some(std::cmp::Ordering::Greater | std::cmp::Ordering::Equal)))),
-                Op::Lt => Ok(Value::Bool(compare_values(&left, &right) == Some(std::cmp::Ordering::Less))),
-                Op::Lte => Ok(Value::Bool(matches!(compare_values(&left, &right), Some(std::cmp::Ordering::Less | std::cmp::Ordering::Equal)))),
+                Op::Gt => Ok(Value::Bool(
+                    compare_values(&left, &right) == Some(std::cmp::Ordering::Greater),
+                )),
+                Op::Gte => Ok(Value::Bool(matches!(
+                    compare_values(&left, &right),
+                    Some(std::cmp::Ordering::Greater | std::cmp::Ordering::Equal)
+                ))),
+                Op::Lt => Ok(Value::Bool(
+                    compare_values(&left, &right) == Some(std::cmp::Ordering::Less),
+                )),
+                Op::Lte => Ok(Value::Bool(matches!(
+                    compare_values(&left, &right),
+                    Some(std::cmp::Ordering::Less | std::cmp::Ordering::Equal)
+                ))),
 
                 // Logical
                 Op::And => Ok(Value::Bool(to_bool(&left) && to_bool(&right))),
@@ -405,10 +414,10 @@ fn eval_function(name: &str, args: &[Expr], ctx: &RecordContext) -> Result<Value
             let mut min = f64::INFINITY;
             for arg in args {
                 let v = evaluate(arg, ctx)?;
-                if let Some(n) = to_f64(&v) {
-                    if n < min {
-                        min = n;
-                    }
+                if let Some(n) = to_f64(&v)
+                    && n < min
+                {
+                    min = n;
                 }
             }
             Ok(num_val(min))
@@ -420,10 +429,10 @@ fn eval_function(name: &str, args: &[Expr], ctx: &RecordContext) -> Result<Value
             let mut max = f64::NEG_INFINITY;
             for arg in args {
                 let v = evaluate(arg, ctx)?;
-                if let Some(n) = to_f64(&v) {
-                    if n > max {
-                        max = n;
-                    }
+                if let Some(n) = to_f64(&v)
+                    && n > max
+                {
+                    max = n;
                 }
             }
             Ok(num_val(max))
@@ -531,9 +540,7 @@ fn eval_function(name: &str, args: &[Expr], ctx: &RecordContext) -> Result<Value
                             // Approximate: 30 days per month
                             d + chrono::Duration::days(amount * 30)
                         }
-                        "years" | "year" | "y" => {
-                            d + chrono::Duration::days(amount * 365)
-                        }
+                        "years" | "year" | "y" => d + chrono::Duration::days(amount * 365),
                         _ => return Ok(error_val(ERROR_VALUE)),
                     };
                     Ok(str_val(result.format("%Y-%m-%d").to_string()))
@@ -605,10 +612,7 @@ fn expect_arity(name: &str, args: &[Expr], expected: usize) -> Result<()> {
 
 fn require_number(fn_name: &str, v: &Value) -> Result<f64> {
     to_f64(v).ok_or_else(|| {
-        DarshJError::InvalidQuery(format!(
-            "{fn_name}: expected number, got {}",
-            to_string(v)
-        ))
+        DarshJError::InvalidQuery(format!("{fn_name}: expected number, got {}", to_string(v)))
     })
 }
 
@@ -618,10 +622,10 @@ fn parse_date(s: &str) -> Option<NaiveDate> {
         return Some(d);
     }
     // Try datetime with T separator (take date part)
-    if s.len() >= 10 {
-        if let Ok(d) = NaiveDate::parse_from_str(&s[..10], "%Y-%m-%d") {
-            return Some(d);
-        }
+    if s.len() >= 10
+        && let Ok(d) = NaiveDate::parse_from_str(&s[..10], "%Y-%m-%d")
+    {
+        return Some(d);
     }
     None
 }
@@ -644,7 +648,10 @@ mod tests {
     }
 
     fn fields(pairs: &[(&str, Value)]) -> HashMap<String, Value> {
-        pairs.iter().map(|(k, v)| (k.to_string(), v.clone())).collect()
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.clone()))
+            .collect()
     }
 
     // ── Arithmetic ─────────────────────────────────────────────
@@ -760,10 +767,7 @@ mod tests {
         assert_eq!(eval("SUM(1, 2, 3)"), serde_json::json!(6.0));
         assert_eq!(eval("AVERAGE(2, 4, 6)"), serde_json::json!(4.0));
         assert_eq!(eval("COUNT(1, 2, 3)"), serde_json::json!(3.0));
-        assert_eq!(
-            eval(r#"COUNTA(1, "a", TRUE)"#),
-            serde_json::json!(3.0)
-        );
+        assert_eq!(eval(r#"COUNTA(1, "a", TRUE)"#), serde_json::json!(3.0));
     }
 
     // ── Date ───────────────────────────────────────────────────

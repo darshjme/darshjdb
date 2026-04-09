@@ -176,7 +176,8 @@ impl ChangeFeed {
     pub fn new(
         config: ChangeFeedConfig,
     ) -> (Arc<Self>, tokio::sync::broadcast::Receiver<ChangeFeedEntry>) {
-        let (entry_tx, entry_rx) = tokio::sync::broadcast::channel(config.buffer_capacity.min(4096));
+        let (entry_tx, entry_rx) =
+            tokio::sync::broadcast::channel(config.buffer_capacity.min(4096));
         let feed = Arc::new(Self {
             config,
             buffer: RwLock::new(VecDeque::new()),
@@ -229,7 +230,10 @@ impl ChangeFeed {
 
         // Append to ring buffer.
         {
-            let mut buffer = self.buffer.write().expect("change feed buffer lock poisoned");
+            let mut buffer = self
+                .buffer
+                .write()
+                .expect("change feed buffer lock poisoned");
             if buffer.len() >= self.config.buffer_capacity {
                 buffer.pop_front();
             }
@@ -239,7 +243,12 @@ impl ChangeFeed {
         // Broadcast the entry.
         let _ = self.entry_tx.send(entry);
 
-        debug!(sequence = sequence, tx_id = event.tx_id, action = action, "change feed entry appended");
+        debug!(
+            sequence = sequence,
+            tx_id = event.tx_id,
+            action = action,
+            "change feed entry appended"
+        );
 
         sequence
     }
@@ -250,7 +259,10 @@ impl ChangeFeed {
     /// `after.0`. If `after` is `Cursor::ZERO`, reads from the beginning
     /// of the available buffer.
     pub fn read_after(&self, after: Cursor, limit: usize) -> ChangeFeedPage {
-        let buffer = self.buffer.read().expect("change feed buffer lock poisoned");
+        let buffer = self
+            .buffer
+            .read()
+            .expect("change feed buffer lock poisoned");
 
         let entries: Vec<ChangeFeedEntry> = buffer
             .iter()
@@ -259,14 +271,9 @@ impl ChangeFeed {
             .cloned()
             .collect();
 
-        let next_cursor = entries
-            .last()
-            .map(|e| Cursor(e.sequence))
-            .unwrap_or(after);
+        let next_cursor = entries.last().map(|e| Cursor(e.sequence)).unwrap_or(after);
 
-        let has_more = buffer
-            .iter()
-            .any(|e| e.sequence > next_cursor.0);
+        let has_more = buffer.iter().any(|e| e.sequence > next_cursor.0);
 
         ChangeFeedPage {
             entries,
@@ -277,7 +284,10 @@ impl ChangeFeed {
 
     /// Read entries within a sequence range (inclusive).
     pub fn read_range(&self, from: u64, to: u64) -> Vec<ChangeFeedEntry> {
-        let buffer = self.buffer.read().expect("change feed buffer lock poisoned");
+        let buffer = self
+            .buffer
+            .read()
+            .expect("change feed buffer lock poisoned");
         buffer
             .iter()
             .filter(|e| e.sequence >= from && e.sequence <= to)
@@ -287,7 +297,10 @@ impl ChangeFeed {
 
     /// Get the latest cursor (sequence number of the most recent entry).
     pub fn latest_cursor(&self) -> Cursor {
-        let buffer = self.buffer.read().expect("change feed buffer lock poisoned");
+        let buffer = self
+            .buffer
+            .read()
+            .expect("change feed buffer lock poisoned");
         buffer
             .back()
             .map(|e| Cursor(e.sequence))
@@ -296,7 +309,10 @@ impl ChangeFeed {
 
     /// Get the total number of entries currently in the buffer.
     pub fn len(&self) -> usize {
-        self.buffer.read().expect("change feed buffer lock poisoned").len()
+        self.buffer
+            .read()
+            .expect("change feed buffer lock poisoned")
+            .len()
     }
 
     /// Check if the buffer is empty.
@@ -309,7 +325,10 @@ impl ChangeFeed {
     /// Returns the number of entries removed.
     pub fn prune_expired(&self) -> usize {
         let cutoff = Instant::now() - self.config.retention_ttl;
-        let mut buffer = self.buffer.write().expect("change feed buffer lock poisoned");
+        let mut buffer = self
+            .buffer
+            .write()
+            .expect("change feed buffer lock poisoned");
         let before = buffer.len();
 
         // Since entries are ordered by time, we can pop from the front.
@@ -323,7 +342,11 @@ impl ChangeFeed {
 
         let removed = before - buffer.len();
         if removed > 0 {
-            debug!(removed = removed, remaining = buffer.len(), "pruned expired change feed entries");
+            debug!(
+                removed = removed,
+                remaining = buffer.len(),
+                "pruned expired change feed entries"
+            );
         }
         removed
     }

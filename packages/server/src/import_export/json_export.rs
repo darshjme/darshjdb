@@ -17,17 +17,13 @@ use super::ExportResult;
 /// Output format for JSON export.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 pub enum JsonExportFormat {
     /// Standard JSON array `[{...}, {...}]`.
+    #[default]
     Array,
     /// Newline-delimited JSON.
     Ndjson,
-}
-
-impl Default for JsonExportFormat {
-    fn default() -> Self {
-        Self::Array
-    }
 }
 
 /// Configuration for a JSON export job.
@@ -116,10 +112,7 @@ pub async fn export_json(
         // Group triples by entity.
         let mut entity_map: BTreeMap<
             uuid::Uuid,
-            (
-                BTreeMap<String, Vec<Value>>,
-                chrono::DateTime<chrono::Utc>,
-            ),
+            (BTreeMap<String, Vec<Value>>, chrono::DateTime<chrono::Utc>),
         > = BTreeMap::new();
 
         for (eid, attr, val, created_at) in &triples {
@@ -139,10 +132,7 @@ pub async fn export_json(
             if let Some((attrs, created_at)) = entity_map.get(eid) {
                 let mut obj = serde_json::Map::new();
                 obj.insert("id".into(), Value::String(eid.to_string()));
-                obj.insert(
-                    "created_at".into(),
-                    Value::String(created_at.to_rfc3339()),
-                );
+                obj.insert("created_at".into(), Value::String(created_at.to_rfc3339()));
 
                 for (attr, values) in attrs {
                     if attr == ":db/type" {
