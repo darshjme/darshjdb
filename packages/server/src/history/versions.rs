@@ -91,11 +91,11 @@ pub(crate) fn build_versions(triples: &[Triple]) -> Vec<RecordVersion> {
     // Group triples by tx_id, preserving order.
     let mut tx_groups: Vec<(i64, DateTime<Utc>, Vec<&Triple>)> = Vec::new();
     for triple in triples {
-        if let Some(last) = tx_groups.last_mut() {
-            if last.0 == triple.tx_id {
-                last.2.push(triple);
-                continue;
-            }
+        if let Some(last) = tx_groups.last_mut()
+            && last.0 == triple.tx_id
+        {
+            last.2.push(triple);
+            continue;
         }
         tx_groups.push((triple.tx_id, triple.created_at, vec![triple]));
     }
@@ -117,10 +117,11 @@ pub(crate) fn build_versions(triples: &[Triple]) -> Vec<RecordVersion> {
             }
 
             // Check for a `_changed_by` meta-attribute.
-            if triple.attribute == "_changed_by" && !triple.retracted {
-                if let Some(s) = triple.value.as_str() {
-                    changed_by = Uuid::parse_str(s).ok();
-                }
+            if triple.attribute == "_changed_by"
+                && !triple.retracted
+                && let Some(s) = triple.value.as_str()
+            {
+                changed_by = Uuid::parse_str(s).ok();
             }
         }
 
@@ -185,11 +186,7 @@ pub(crate) fn build_versions(triples: &[Triple]) -> Vec<RecordVersion> {
 ///
 /// Returns versions in chronological order (oldest first). The `limit`
 /// parameter caps the number of versions returned (0 = unlimited).
-pub async fn get_history(
-    pool: &PgPool,
-    entity_id: Uuid,
-    limit: u32,
-) -> Result<Vec<RecordVersion>> {
+pub async fn get_history(pool: &PgPool, entity_id: Uuid, limit: u32) -> Result<Vec<RecordVersion>> {
     let triples = fetch_all_triples(pool, entity_id).await?;
     if triples.is_empty() {
         return Err(DarshJError::EntityNotFound(entity_id));
@@ -416,13 +413,7 @@ mod tests {
         let user_id = Uuid::new_v4();
         let triples = vec![
             make_triple(id, "name", json!("Alice"), 1, false),
-            make_triple(
-                id,
-                "_changed_by",
-                json!(user_id.to_string()),
-                1,
-                false,
-            ),
+            make_triple(id, "_changed_by", json!(user_id.to_string()), 1, false),
         ];
 
         let versions = build_versions(&triples);

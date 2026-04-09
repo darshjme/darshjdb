@@ -280,16 +280,14 @@ fn validate_rating(value: &Value, options: Option<&FieldOptions>) -> Result<Valu
 }
 
 fn validate_single_select(value: &Value, options: Option<&FieldOptions>) -> Result<Value> {
-    let s = value
-        .as_str()
-        .ok_or_else(|| type_err("string", value))?;
+    let s = value.as_str().ok_or_else(|| type_err("string", value))?;
 
-    if let Some(FieldOptions::Select { choices }) = options {
-        if !choices.iter().any(|c| c.name == s || c.id == s) {
-            return Err(DarshJError::InvalidAttribute(format!(
-                "value '{s}' is not a valid choice"
-            )));
-        }
+    if let Some(FieldOptions::Select { choices }) = options
+        && !choices.iter().any(|c| c.name == s || c.id == s)
+    {
+        return Err(DarshJError::InvalidAttribute(format!(
+            "value '{s}' is not a valid choice"
+        )));
     }
 
     Ok(value.clone())
@@ -336,15 +334,14 @@ fn validate_link(value: &Value) -> Result<Value> {
 
 fn coerce_to_f64(value: &Value) -> Result<f64> {
     match value {
-        Value::Number(n) => n
-            .as_f64()
-            .ok_or_else(|| type_err("finite number", value)),
-        Value::String(s) => s.trim().parse::<f64>().map_err(|_| {
-            DarshJError::TypeMismatch {
+        Value::Number(n) => n.as_f64().ok_or_else(|| type_err("finite number", value)),
+        Value::String(s) => s
+            .trim()
+            .parse::<f64>()
+            .map_err(|_| DarshJError::TypeMismatch {
                 expected: "number".into(),
                 actual: format!("string '{s}'"),
-            }
-        }),
+            }),
         _ => Err(type_err("number", value)),
     }
 }
@@ -378,43 +375,37 @@ fn parse_date(s: &str) -> Result<String> {
     let trimmed = s.trim();
 
     // Try YYYY-MM-DD
-    if let Some((y, rest)) = try_split_date(trimmed, '-') {
-        if y.len() == 4 {
-            if let Some((m, d)) = try_split_date(rest, '-') {
-                return validate_ymd(y, m, d);
-            }
-        }
+    if let Some((y, rest)) = try_split_date(trimmed, '-')
+        && y.len() == 4
+        && let Some((m, d)) = try_split_date(rest, '-')
+    {
+        return validate_ymd(y, m, d);
     }
 
     // Try YYYY/MM/DD
-    if let Some((y, rest)) = try_split_date(trimmed, '/') {
-        if y.len() == 4 {
-            if let Some((m, d)) = try_split_date(rest, '/') {
-                return validate_ymd(y, m, d);
-            }
-        }
+    if let Some((y, rest)) = try_split_date(trimmed, '/')
+        && y.len() == 4
+        && let Some((m, d)) = try_split_date(rest, '/')
+    {
+        return validate_ymd(y, m, d);
     }
 
     // Try MM/DD/YYYY
-    if let Some((m, rest)) = try_split_date(trimmed, '/') {
-        if m.len() <= 2 {
-            if let Some((d, y)) = try_split_date(rest, '/') {
-                if y.len() == 4 {
-                    return validate_ymd(y, m, d);
-                }
-            }
-        }
+    if let Some((m, rest)) = try_split_date(trimmed, '/')
+        && m.len() <= 2
+        && let Some((d, y)) = try_split_date(rest, '/')
+        && y.len() == 4
+    {
+        return validate_ymd(y, m, d);
     }
 
     // Try DD.MM.YYYY
-    if let Some((d, rest)) = try_split_date(trimmed, '.') {
-        if d.len() <= 2 {
-            if let Some((m, y)) = try_split_date(rest, '.') {
-                if y.len() == 4 {
-                    return validate_ymd(y, m, d);
-                }
-            }
-        }
+    if let Some((d, rest)) = try_split_date(trimmed, '.')
+        && d.len() <= 2
+        && let Some((m, y)) = try_split_date(rest, '.')
+        && y.len() == 4
+    {
+        return validate_ymd(y, m, d);
     }
 
     Err(DarshJError::InvalidAttribute(format!(
@@ -461,15 +452,15 @@ fn try_split_date(s: &str, sep: char) -> Option<(&str, &str)> {
 }
 
 fn validate_ymd(y: &str, m: &str, d: &str) -> Result<String> {
-    let year: u32 = y.parse().map_err(|_| {
-        DarshJError::InvalidAttribute(format!("invalid year: '{y}'"))
-    })?;
-    let month: u32 = m.parse().map_err(|_| {
-        DarshJError::InvalidAttribute(format!("invalid month: '{m}'"))
-    })?;
-    let day: u32 = d.parse().map_err(|_| {
-        DarshJError::InvalidAttribute(format!("invalid day: '{d}'"))
-    })?;
+    let year: u32 = y
+        .parse()
+        .map_err(|_| DarshJError::InvalidAttribute(format!("invalid year: '{y}'")))?;
+    let month: u32 = m
+        .parse()
+        .map_err(|_| DarshJError::InvalidAttribute(format!("invalid month: '{m}'")))?;
+    let day: u32 = d
+        .parse()
+        .map_err(|_| DarshJError::InvalidAttribute(format!("invalid day: '{d}'")))?;
 
     if !(1..=12).contains(&month) {
         return Err(DarshJError::InvalidAttribute(format!(
@@ -481,7 +472,7 @@ fn validate_ymd(y: &str, m: &str, d: &str) -> Result<String> {
             "day out of range: {day}"
         )));
     }
-    if year < 1 || year > 9999 {
+    if !(1..=9999).contains(&year) {
         return Err(DarshJError::InvalidAttribute(format!(
             "year out of range: {year}"
         )));

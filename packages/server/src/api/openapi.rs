@@ -53,8 +53,14 @@ pub fn generate_openapi_spec() -> Value {
 
     // Fields
     paths.insert("/tables/{table}/fields".into(), fields_collection_path());
-    paths.insert("/tables/{table}/fields/{field_id}".into(), fields_item_path());
-    paths.insert("/tables/{table}/fields/{field_id}/convert".into(), fields_convert_path());
+    paths.insert(
+        "/tables/{table}/fields/{field_id}".into(),
+        fields_item_path(),
+    );
+    paths.insert(
+        "/tables/{table}/fields/{field_id}/convert".into(),
+        fields_convert_path(),
+    );
 
     // Tables
     paths.insert("/tables".into(), tables_collection_path());
@@ -65,7 +71,10 @@ pub fn generate_openapi_spec() -> Value {
     // Automations
     paths.insert("/automations".into(), automations_collection_path());
     paths.insert("/automations/{id}".into(), automations_item_path());
-    paths.insert("/automations/{id}/trigger".into(), automations_trigger_path());
+    paths.insert(
+        "/automations/{id}/trigger".into(),
+        automations_trigger_path(),
+    );
     paths.insert("/automations/{id}/runs".into(), automations_runs_path());
 
     // Relations
@@ -86,10 +95,19 @@ pub fn generate_openapi_spec() -> Value {
     // Collaboration
     paths.insert("/collaboration/share".into(), collab_share_path());
     paths.insert("/collaboration/share/{id}".into(), collab_share_item_path());
-    paths.insert("/collaboration/collaborators".into(), collab_collaborators_path());
-    paths.insert("/collaboration/collaborators/{id}".into(), collab_collaborator_item_path());
+    paths.insert(
+        "/collaboration/collaborators".into(),
+        collab_collaborators_path(),
+    );
+    paths.insert(
+        "/collaboration/collaborators/{id}".into(),
+        collab_collaborator_item_path(),
+    );
     paths.insert("/collaboration/workspaces".into(), collab_workspaces_path());
-    paths.insert("/collaboration/workspaces/{id}".into(), collab_workspace_item_path());
+    paths.insert(
+        "/collaboration/workspaces/{id}".into(),
+        collab_workspace_item_path(),
+    );
 
     // Plugins
     paths.insert("/plugins".into(), plugins_collection_path());
@@ -102,17 +120,26 @@ pub fn generate_openapi_spec() -> Value {
 
     // Activity
     paths.insert("/activity".into(), activity_log_path());
-    paths.insert("/activity/notifications".into(), activity_notifications_path());
+    paths.insert(
+        "/activity/notifications".into(),
+        activity_notifications_path(),
+    );
 
     // History
     paths.insert("/history/{entity}/{id}".into(), history_versions_path());
-    paths.insert("/history/{entity}/{id}/restore".into(), history_restore_path());
+    paths.insert(
+        "/history/{entity}/{id}/restore".into(),
+        history_restore_path(),
+    );
     paths.insert("/history/snapshots".into(), history_snapshots_path());
 
     // Webhooks
     paths.insert("/webhooks".into(), webhooks_collection_path());
     paths.insert("/webhooks/{id}".into(), webhooks_item_path());
-    paths.insert("/webhooks/{id}/deliveries".into(), webhooks_deliveries_path());
+    paths.insert(
+        "/webhooks/{id}/deliveries".into(),
+        webhooks_deliveries_path(),
+    );
     paths.insert("/webhooks/{id}/test".into(), webhooks_test_path());
 
     // API Keys

@@ -10,8 +10,8 @@ use std::collections::BTreeMap;
 use dashmap::DashMap;
 use serde_json::Value;
 
-use crate::error::{DarshJError, Result};
 use super::traits::DataBackend;
+use crate::error::{DarshJError, Result};
 
 // ---------------------------------------------------------------------------
 // In-memory backend
@@ -56,16 +56,13 @@ impl Default for MemoryBackend {
 #[async_trait::async_trait]
 impl DataBackend for MemoryBackend {
     async fn get(&self, table: &str, id: &str) -> Result<Option<Value>> {
-        Ok(self
-            .tables
-            .get(table)
-            .and_then(|t| t.get(id).cloned()))
+        Ok(self.tables.get(table).and_then(|t| t.get(id).cloned()))
     }
 
     async fn set(&self, table: &str, id: &str, value: Value) -> Result<()> {
         self.tables
             .entry(table.to_string())
-            .or_insert_with(BTreeMap::new)
+            .or_default()
             .insert(id.to_string(), value);
         Ok(())
     }
@@ -136,19 +133,19 @@ impl DataBackend for MemoryBackend {
         };
 
         // Check for WHERE id = '<value>'
-        if let Some(where_pos) = parts.iter().position(|p| p.eq_ignore_ascii_case("where")) {
-            if parts.get(where_pos + 1).map(|s| s.eq_ignore_ascii_case("id")) == Some(true)
-                && parts.get(where_pos + 2).map(|s| *s == "=") == Some(true)
-            {
-                if let Some(id_val) = parts.get(where_pos + 3) {
-                    let id = id_val.trim_matches('\'').trim_matches('"').trim_end_matches(';');
-                    return Ok(table_map
-                        .get(id)
-                        .into_iter()
-                        .cloned()
-                        .collect());
-                }
-            }
+        if let Some(where_pos) = parts.iter().position(|p| p.eq_ignore_ascii_case("where"))
+            && parts
+                .get(where_pos + 1)
+                .map(|s| s.eq_ignore_ascii_case("id"))
+                == Some(true)
+            && parts.get(where_pos + 2).map(|s| *s == "=") == Some(true)
+            && let Some(id_val) = parts.get(where_pos + 3)
+        {
+            let id = id_val
+                .trim_matches('\'')
+                .trim_matches('"')
+                .trim_end_matches(';');
+            return Ok(table_map.get(id).into_iter().cloned().collect());
         }
 
         // No WHERE clause — return all records.
@@ -238,7 +235,10 @@ mod tests {
     #[tokio::test]
     async fn test_query_select_by_id() {
         let backend = MemoryBackend::new();
-        backend.set("docs", "myid", json!({"val": 42})).await.unwrap();
+        backend
+            .set("docs", "myid", json!({"val": 42}))
+            .await
+            .unwrap();
 
         let results = backend
             .query("SELECT * FROM docs WHERE id = 'myid'", &[])

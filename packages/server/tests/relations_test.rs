@@ -11,8 +11,8 @@
 use ddb_server::relations::link::{self, LinkConfig, Relationship};
 use ddb_server::relations::lookup::{self, LookupCache, LookupConfig};
 use ddb_server::relations::rollup::{self, RollupConfig, RollupFn};
-use ddb_server::triple_store::{PgTripleStore, TripleInput, TripleStore};
 use ddb_server::triple_store::schema::ValueType;
+use ddb_server::triple_store::{PgTripleStore, TripleInput, TripleStore};
 use serde_json::json;
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -293,10 +293,7 @@ async fn test_link_remove() {
     let linked_after = link::get_linked(&pool, project_id, "project/tasks")
         .await
         .expect("get after");
-    assert!(
-        !linked_after.contains(&task_id),
-        "link should be removed"
-    );
+    assert!(!linked_after.contains(&task_id), "link should be removed");
 
     cleanup_entities(&pool, &[project_id, task_id]).await;
 }

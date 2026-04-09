@@ -37,7 +37,6 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use uuid::Uuid;
 
 use super::{AuthContext, AuthError};
 
@@ -253,7 +252,10 @@ impl AuthVars {
             "id" => Some(EvalValue::String(self.id.clone())),
             "session_id" => Some(EvalValue::String(self.session_id.clone())),
             "role" | "roles" => Some(EvalValue::Array(
-                self.roles.iter().map(|r| EvalValue::String(r.clone())).collect(),
+                self.roles
+                    .iter()
+                    .map(|r| EvalValue::String(r.clone()))
+                    .collect(),
             )),
             "ip" => Some(EvalValue::String(self.ip.clone())),
             other => {
@@ -302,10 +304,10 @@ impl EvalValue {
         match op {
             CompareOp::Eq => self == other,
             CompareOp::Ne => self != other,
-            CompareOp::Lt => self.partial_ord(other).map_or(false, |o| o.is_lt()),
-            CompareOp::Le => self.partial_ord(other).map_or(false, |o| o.is_le()),
-            CompareOp::Gt => self.partial_ord(other).map_or(false, |o| o.is_gt()),
-            CompareOp::Ge => self.partial_ord(other).map_or(false, |o| o.is_ge()),
+            CompareOp::Lt => self.partial_ord(other).is_some_and(|o| o.is_lt()),
+            CompareOp::Le => self.partial_ord(other).is_some_and(|o| o.is_le()),
+            CompareOp::Gt => self.partial_ord(other).is_some_and(|o| o.is_gt()),
+            CompareOp::Ge => self.partial_ord(other).is_some_and(|o| o.is_ge()),
         }
     }
 
@@ -350,9 +352,7 @@ fn json_to_eval(v: &serde_json::Value) -> EvalValue {
             }
         }
         serde_json::Value::String(s) => EvalValue::String(s.clone()),
-        serde_json::Value::Array(arr) => {
-            EvalValue::Array(arr.iter().map(json_to_eval).collect())
-        }
+        serde_json::Value::Array(arr) => EvalValue::Array(arr.iter().map(json_to_eval).collect()),
         serde_json::Value::Null => EvalValue::Null,
         serde_json::Value::Object(_) => EvalValue::Null, // objects not supported in expressions
     }
@@ -399,16 +399,12 @@ pub fn evaluate_expr(
 
         PermExpr::Literal(lit) => literal_to_eval(lit),
 
-        PermExpr::FieldRef { field } => {
-            row_data
-                .and_then(|row| row.get(field))
-                .map(json_to_eval)
-                .unwrap_or(EvalValue::Null)
-        }
+        PermExpr::FieldRef { field } => row_data
+            .and_then(|row| row.get(field))
+            .map(json_to_eval)
+            .unwrap_or(EvalValue::Null),
 
-        PermExpr::AuthVar { path } => {
-            auth.resolve(path).unwrap_or(EvalValue::Null)
-        }
+        PermExpr::AuthVar { path } => auth.resolve(path).unwrap_or(EvalValue::Null),
 
         PermExpr::Compare { lhs, op, rhs } => {
             let left = evaluate_expr(lhs, auth, row_data);
@@ -494,19 +490,17 @@ pub fn expr_to_sql(
         PermExpr::Full => ("TRUE".to_string(), vec![]),
         PermExpr::None => ("FALSE".to_string(), vec![]),
 
-        PermExpr::Literal(lit) => {
-            match lit {
-                LiteralValue::Bool(b) => (b.to_string().to_uppercase(), vec![]),
-                LiteralValue::String(s) => {
-                    let idx = *param_offset;
-                    *param_offset += 1;
-                    (format!("${idx}"), vec![s.clone()])
-                }
-                LiteralValue::Int(n) => (n.to_string(), vec![]),
-                LiteralValue::Float(f) => (f.to_string(), vec![]),
-                LiteralValue::Null => ("NULL".to_string(), vec![]),
+        PermExpr::Literal(lit) => match lit {
+            LiteralValue::Bool(b) => (b.to_string().to_uppercase(), vec![]),
+            LiteralValue::String(s) => {
+                let idx = *param_offset;
+                *param_offset += 1;
+                (format!("${idx}"), vec![s.clone()])
             }
-        }
+            LiteralValue::Int(n) => (n.to_string(), vec![]),
+            LiteralValue::Float(f) => (f.to_string(), vec![]),
+            LiteralValue::Null => ("NULL".to_string(), vec![]),
+        },
 
         PermExpr::FieldRef { field } => {
             // Validate field name to prevent SQL injection: only
@@ -828,8 +822,8 @@ pub mod expr {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::expr::*;
+    use super::*;
     use uuid::Uuid;
 
     fn test_ctx(roles: &[&str]) -> AuthContext {
@@ -867,14 +861,18 @@ mod tests {
         assert!(result.is_truthy(), "published posts should be visible");
 
         // Unpublished but owned: visible.
-        let row = serde_json::json!({"published": false, "user": "11111111-1111-1111-1111-111111111111"});
+        let row =
+            serde_json::json!({"published": false, "user": "11111111-1111-1111-1111-111111111111"});
         let result = evaluate_expr(&select_expr, &auth, Some(&row));
         assert!(result.is_truthy(), "own posts should be visible");
 
         // Unpublished and not owned: hidden.
         let row = serde_json::json!({"published": false, "user": "other-user"});
         let result = evaluate_expr(&select_expr, &auth, Some(&row));
-        assert!(!result.is_truthy(), "others' unpublished posts should be hidden");
+        assert!(
+            !result.is_truthy(),
+            "others' unpublished posts should be hidden"
+        );
     }
 
     #[test]
@@ -890,7 +888,10 @@ mod tests {
         let user_ctx = test_ctx(&["user"]);
         let user_auth = test_auth_vars(&user_ctx);
         let result = evaluate_expr(&create_expr, &user_auth, None);
-        assert!(!result.is_truthy(), "non-admin should not be allowed to create");
+        assert!(
+            !result.is_truthy(),
+            "non-admin should not be allowed to create"
+        );
     }
 
     #[test]
@@ -928,19 +929,19 @@ mod tests {
     #[test]
     fn contains_expression() {
         let ctx = test_ctx(&["editor", "reviewer"]);
-        let auth = test_auth_vars(&ctx);
+        let auth_vars = test_auth_vars(&ctx);
 
         let expr = PermExpr::Contains {
             haystack: Box::new(auth("roles")),
             needle: Box::new(str_val("editor")),
         };
-        assert!(evaluate_expr(&expr, &auth, None).is_truthy());
+        assert!(evaluate_expr(&expr, &auth_vars, None).is_truthy());
 
         let expr = PermExpr::Contains {
             haystack: Box::new(auth("roles")),
             needle: Box::new(str_val("admin")),
         };
-        assert!(!evaluate_expr(&expr, &auth, None).is_truthy());
+        assert!(!evaluate_expr(&expr, &auth_vars, None).is_truthy());
     }
 
     // -- RLS engine tests ----------------------------------------------------
@@ -961,18 +962,30 @@ mod tests {
 
         // Admin can create.
         let row = serde_json::json!({});
-        assert!(rls.check_row("posts", RowOp::Create, &admin_ctx, &row).unwrap());
+        assert!(
+            rls.check_row("posts", RowOp::Create, &admin_ctx, &row)
+                .unwrap()
+        );
 
         // User cannot create.
-        assert!(!rls.check_row("posts", RowOp::Create, &user_ctx, &row).unwrap());
+        assert!(
+            !rls.check_row("posts", RowOp::Create, &user_ctx, &row)
+                .unwrap()
+        );
 
         // User can update own row.
         let own_row = serde_json::json!({"user": "11111111-1111-1111-1111-111111111111"});
-        assert!(rls.check_row("posts", RowOp::Update, &user_ctx, &own_row).unwrap());
+        assert!(
+            rls.check_row("posts", RowOp::Update, &user_ctx, &own_row)
+                .unwrap()
+        );
 
         // User cannot update others' row.
         let other_row = serde_json::json!({"user": "other"});
-        assert!(!rls.check_row("posts", RowOp::Update, &user_ctx, &other_row).unwrap());
+        assert!(
+            !rls.check_row("posts", RowOp::Update, &user_ctx, &other_row)
+                .unwrap()
+        );
     }
 
     #[test]
@@ -980,14 +993,16 @@ mod tests {
         let rls = RowLevelSecurity::new();
         let ctx = test_ctx(&["admin"]);
         let row = serde_json::json!({});
-        assert!(!rls.check_row("nonexistent", RowOp::Select, &ctx, &row).unwrap());
+        assert!(
+            !rls.check_row("nonexistent", RowOp::Select, &ctx, &row)
+                .unwrap()
+        );
     }
 
     #[test]
     fn rls_engine_undefined_op_denies() {
         let mut rls = RowLevelSecurity::new();
-        let perms = TablePermissions::new("posts")
-            .with(RowOp::Select, full());
+        let perms = TablePermissions::new("posts").with(RowOp::Select, full());
         rls.define_table(perms);
 
         let ctx = test_ctx(&["admin"]);
@@ -999,14 +1014,13 @@ mod tests {
     #[test]
     fn rls_build_select_filter() {
         let mut rls = RowLevelSecurity::new();
-        let posts = TablePermissions::new("posts")
-            .with(
-                RowOp::Select,
-                or(
-                    eq(field("published"), bool_val(true)),
-                    eq(field("user_id"), auth_id()),
-                ),
-            );
+        let posts = TablePermissions::new("posts").with(
+            RowOp::Select,
+            or(
+                eq(field("published"), bool_val(true)),
+                eq(field("user_id"), auth_id()),
+            ),
+        );
         rls.define_table(posts);
 
         let ctx = test_ctx(&["user"]);
@@ -1021,8 +1035,7 @@ mod tests {
     #[test]
     fn rls_build_select_filter_full_access() {
         let mut rls = RowLevelSecurity::new();
-        let posts = TablePermissions::new("public_data")
-            .with(RowOp::Select, full());
+        let posts = TablePermissions::new("public_data").with(RowOp::Select, full());
         rls.define_table(posts);
 
         let ctx = test_ctx(&[]);
@@ -1100,19 +1113,19 @@ mod tests {
     #[test]
     fn custom_claims_in_auth_vars() {
         let ctx = test_ctx(&[]);
-        let mut auth = AuthVars::from(&ctx);
-        auth.custom_claims.insert(
+        let mut auth_vars = AuthVars::from(&ctx);
+        auth_vars.custom_claims.insert(
             "org_id".to_string(),
             serde_json::Value::String("org-42".to_string()),
         );
 
         let expr = eq(field("org_id"), auth("org_id"));
         let row = serde_json::json!({"org_id": "org-42"});
-        let result = evaluate_expr(&expr, &auth, Some(&row));
+        let result = evaluate_expr(&expr, &auth_vars, Some(&row));
         assert!(result.is_truthy());
 
         let row = serde_json::json!({"org_id": "org-99"});
-        let result = evaluate_expr(&expr, &auth, Some(&row));
+        let result = evaluate_expr(&expr, &auth_vars, Some(&row));
         assert!(!result.is_truthy());
     }
 
@@ -1126,10 +1139,7 @@ mod tests {
         };
         let mut offset = 1;
         let (sql, _) = expr_to_sql(&expr, &auth, &mut offset);
-        assert!(
-            !sql.contains(';'),
-            "field name must be sanitized: {sql}"
-        );
+        assert!(!sql.contains(';'), "field name must be sanitized: {sql}");
         assert!(
             !sql.contains("DROP"),
             "field name must strip dangerous chars: {sql}"
@@ -1154,16 +1164,21 @@ mod tests {
         assert!(EvalValue::Int(5).compare(CompareOp::Lt, &EvalValue::Int(10)));
         assert!(EvalValue::Int(10).compare(CompareOp::Ge, &EvalValue::Int(10)));
         assert!(!EvalValue::Int(10).compare(CompareOp::Lt, &EvalValue::Int(5)));
-        assert!(EvalValue::String("a".into()).compare(CompareOp::Lt, &EvalValue::String("b".into())));
+        assert!(
+            EvalValue::String("a".into()).compare(CompareOp::Lt, &EvalValue::String("b".into()))
+        );
     }
 
     #[test]
     fn table_permissions_builder() {
         let perms = TablePermissions::new("users")
-            .with(RowOp::Select, or(
-                eq(field("published"), bool_val(true)),
-                eq(field("user"), auth_id()),
-            ))
+            .with(
+                RowOp::Select,
+                or(
+                    eq(field("published"), bool_val(true)),
+                    eq(field("user"), auth_id()),
+                ),
+            )
             .with(RowOp::Create, eq(auth_role(), str_val("admin")))
             .with(RowOp::Update, eq(field("user"), auth_id()))
             .with(RowOp::Delete, eq(auth_role(), str_val("admin")));

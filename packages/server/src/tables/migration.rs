@@ -231,18 +231,10 @@ pub async fn split_table(
         let field_value = entity_triples
             .iter()
             .find(|t| t.attribute == split_attr)
-            .map(|t| {
-                t.value
-                    .as_str()
-                    .unwrap_or(&t.value.to_string())
-                    .to_string()
-            })
+            .map(|t| t.value.as_str().unwrap_or(&t.value.to_string()).to_string())
             .unwrap_or_else(|| "__none__".to_string());
 
-        groups
-            .entry(field_value)
-            .or_default()
-            .push(rt.entity_id);
+        groups.entry(field_value).or_default().push(rt.entity_id);
     }
 
     if groups.is_empty() {
@@ -267,11 +259,7 @@ pub async fn split_table(
         new_config.icon = source.icon.clone();
         new_config.settings = source.settings.clone();
         // Copy field ids structure.
-        new_config.field_ids = source
-            .field_ids
-            .iter()
-            .map(|_| FieldId::new())
-            .collect();
+        new_config.field_ids = source.field_ids.iter().map(|_| FieldId::new()).collect();
         new_config.primary_field = if !new_config.field_ids.is_empty() {
             Some(new_config.field_ids[0])
         } else {
@@ -303,12 +291,11 @@ pub async fn split_table(
                 if t.attribute == ":db/type" {
                     continue;
                 }
-                let new_attr =
-                    if let Some(suffix) = t.attribute.strip_prefix(&source_prefix) {
-                        format!("{}/{suffix}", new_config.slug)
-                    } else {
-                        t.attribute.clone()
-                    };
+                let new_attr = if let Some(suffix) = t.attribute.strip_prefix(&source_prefix) {
+                    format!("{}/{suffix}", new_config.slug)
+                } else {
+                    t.attribute.clone()
+                };
                 new_triples.push(TripleInput {
                     entity_id,
                     attribute: new_attr,

@@ -47,7 +47,7 @@ pub use providers::{
     OAuthUserInfo, PasswordProvider,
 };
 pub use row_level::{
-    AuthVars, CompareOp, EvalValue, PermExpr, LiteralValue, RowLevelSecurity, RowOp,
+    AuthVars, CompareOp, EvalValue, LiteralValue, PermExpr, RowLevelSecurity, RowOp,
     TablePermissions, evaluate_expr, expr_to_sql,
 };
 pub use scope::{

@@ -154,17 +154,8 @@ async fn exec_select(
     }
 
     // Execute the query.
-    let mut query = sqlx::query_as::<
-        _,
-        (
-            Uuid,
-            String,
-            Value,
-            i16,
-            i64,
-            chrono::DateTime<chrono::Utc>,
-        ),
-    >(&sql);
+    let mut query =
+        sqlx::query_as::<_, (Uuid, String, Value, i16, i64, chrono::DateTime<chrono::Utc>)>(&sql);
 
     for p in &params {
         query = bind_param(query, p);
@@ -225,24 +216,19 @@ async fn exec_select(
                     }
                 }
                 Field::Cast { cast_type, expr } => {
-                    if let Field::Attribute(name) = expr.as_ref() {
-                        if let Some(v) = attrs.get(name) {
-                            obj.insert(name.clone(), cast_value(v, cast_type));
-                        }
+                    if let Field::Attribute(name) = expr.as_ref()
+                        && let Some(v) = attrs.get(name)
+                    {
+                        obj.insert(name.clone(), cast_value(v, cast_type));
                     }
                 }
                 Field::Graph(trav) => {
                     // Graph traversal: follow edges.
-                    let traversed =
-                        exec_graph_traversal(pool, *eid, trav).await?;
+                    let traversed = exec_graph_traversal(pool, *eid, trav).await?;
                     let key = format_graph_key(trav);
                     obj.insert(key, json!(traversed));
                 }
-                Field::Computed {
-                    func,
-                    args,
-                    alias,
-                } => {
+                Field::Computed { func, args, alias } => {
                     let val = exec_computed(pool, *eid, func, args).await?;
                     obj.insert(alias.clone(), val);
                 }
@@ -445,13 +431,18 @@ async fn exec_define_table(
     start: std::time::Instant,
 ) -> Result<ExecResult> {
     // Store table definition as a schema triple.
-    let schema_id = Uuid::new_v5(&Uuid::NAMESPACE_DNS, format!("table:{}", stmt.name).as_bytes());
+    let schema_id = Uuid::new_v5(
+        &Uuid::NAMESPACE_DNS,
+        format!("table:{}", stmt.name).as_bytes(),
+    );
 
     // Retract any existing definition.
-    sqlx::query("UPDATE triples SET retracted = true WHERE entity_id = $1 AND attribute LIKE ':schema/%'")
-        .bind(schema_id)
-        .execute(pool)
-        .await?;
+    sqlx::query(
+        "UPDATE triples SET retracted = true WHERE entity_id = $1 AND attribute LIKE ':schema/%'",
+    )
+    .bind(schema_id)
+    .execute(pool)
+    .await?;
 
     insert_triple(pool, schema_id, ":db/type", &json!("__schema_table")).await?;
     insert_triple(pool, schema_id, ":schema/name", &json!(stmt.name)).await?;
@@ -547,7 +538,7 @@ async fn exec_info(
                    AND t1.attribute = ':schema/table' \
                    AND t1.value = to_jsonb($1::text) \
                    AND NOT t1.retracted \
-                 WHERE NOT t0.retracted AND t0.attribute LIKE ':schema/%'"
+                 WHERE NOT t0.retracted AND t0.attribute LIKE ':schema/%'",
             )
             .bind(name)
             .fetch_all(pool)
@@ -586,7 +577,12 @@ async fn exec_info(
 // ── Helpers ────────────────────────────────────────────────────────
 
 /// Insert a single triple into the store.
-async fn insert_triple(pool: &PgPool, entity_id: Uuid, attribute: &str, value: &Value) -> Result<()> {
+async fn insert_triple(
+    pool: &PgPool,
+    entity_id: Uuid,
+    attribute: &str,
+    value: &Value,
+) -> Result<()> {
     sqlx::query(
         "INSERT INTO triples (entity_id, attribute, value, value_type, tx_id, retracted) \
          VALUES ($1, $2, $3, 0, nextval('tx_id_seq'), false)",
@@ -679,9 +675,7 @@ fn translate_where(expr: &Expr, params: &mut Vec<Value>, idx: &mut u32) -> Strin
                 *idx += 1;
 
                 sql.push_str(&format!("  AND NOT {alias}.retracted\n"));
-                sql.push_str(&format!(
-                    "  AND {alias}.value {op_str} {jsonb_param}\n"
-                ));
+                sql.push_str(&format!("  AND {alias}.value {op_str} {jsonb_param}\n"));
                 params.push(expr_to_json(right_val).unwrap_or(Value::Null));
                 *idx += 1;
 
@@ -772,9 +766,8 @@ async fn exec_graph_traversal(
             };
 
             // Find edges of this type where the in-node matches.
-            let rows = sqlx::query_as::<_, (Value,)>(
-                &format!(
-                    "SELECT t_out.value FROM triples t_edge \
+            let rows = sqlx::query_as::<_, (Value,)>(&format!(
+                "SELECT t_out.value FROM triples t_edge \
                      INNER JOIN triples t_in ON t_in.entity_id = t_edge.entity_id \
                        AND t_in.attribute = '{}' AND NOT t_in.retracted \
                        AND t_in.value = to_jsonb($1::text) \
@@ -783,19 +776,18 @@ async fn exec_graph_traversal(
                      WHERE t_edge.attribute = ':db/type' \
                        AND t_edge.value = to_jsonb($2::text) \
                        AND NOT t_edge.retracted",
-                    attr_in, attr_out
-                ),
-            )
+                attr_in, attr_out
+            ))
             .bind(id.to_string())
             .bind(&step.edge)
             .fetch_all(pool)
             .await?;
 
             for (val,) in rows {
-                if let Some(uid_str) = val.as_str() {
-                    if let Ok(uid) = uid_str.parse::<Uuid>() {
-                        next_ids.push(uid);
-                    }
+                if let Some(uid_str) = val.as_str()
+                    && let Ok(uid) = uid_str.parse::<Uuid>()
+                {
+                    next_ids.push(uid);
                 }
             }
         }
@@ -943,14 +935,7 @@ fn cast_value(val: &Value, target: &DarshType) -> Value {
 }
 
 /// Bind a JSON value as the appropriate sqlx parameter type (for multi-column queries).
-type TripleRow = (
-    Uuid,
-    String,
-    Value,
-    i16,
-    i64,
-    chrono::DateTime<chrono::Utc>,
-);
+type TripleRow = (Uuid, String, Value, i16, i64, chrono::DateTime<chrono::Utc>);
 
 fn bind_param<'q>(
     query: sqlx::query::QueryAs<'q, sqlx::Postgres, TripleRow, sqlx::postgres::PgArguments>,

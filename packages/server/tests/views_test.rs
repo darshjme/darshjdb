@@ -231,10 +231,7 @@ async fn test_view_list_by_table() {
         view_ids.push(v.id);
     }
 
-    let views = view_store
-        .list_views("Contact")
-        .await
-        .expect("list views");
+    let views = view_store.list_views("Contact").await.expect("list views");
     assert!(views.len() >= 2);
 
     let our_names: Vec<&str> = views
@@ -262,8 +259,8 @@ async fn test_view_query_applies_filters() {
         return;
     };
 
-    use ddb_server::views::query::{apply_view_filters, apply_view_sorts, project_fields};
     use ddb_server::views::ViewConfig;
+    use ddb_server::views::query::{apply_view_filters, apply_view_sorts, project_fields};
 
     let (task_eids, _task_txs) = seed_tasks(&store).await;
 
@@ -368,10 +365,7 @@ async fn test_view_update_config() {
         color_field: None,
         row_height: Some(32),
     };
-    let view = view_store
-        .create_view(req, user_id)
-        .await
-        .expect("create");
+    let view = view_store.create_view(req, user_id).await.expect("create");
 
     // Update name and add a filter.
     let update = ViewUpdate {

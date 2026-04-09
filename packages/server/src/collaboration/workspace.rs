@@ -13,7 +13,7 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use uuid::Uuid;
 
 use crate::error::{DarshJError, Result};
@@ -219,10 +219,7 @@ pub async fn create_workspace(
 }
 
 /// Load a workspace by ID.
-pub async fn get_workspace(
-    store: &PgTripleStore,
-    workspace_id: Uuid,
-) -> Result<Option<Workspace>> {
+pub async fn get_workspace(store: &PgTripleStore, workspace_id: Uuid) -> Result<Option<Workspace>> {
     let triples = store.get_entity(workspace_id).await?;
     if triples.is_empty() {
         return Ok(None);
@@ -242,9 +239,7 @@ pub async fn get_workspace(
 
     let slug = get_str("workspace/slug").unwrap_or_else(|| slugify(&name));
 
-    let owner_id = match get_str("workspace/owner_id")
-        .and_then(|s| Uuid::parse_str(&s).ok())
-    {
+    let owner_id = match get_str("workspace/owner_id").and_then(|s| Uuid::parse_str(&s).ok()) {
         Some(id) => id,
         None => return Ok(None),
     };
@@ -384,10 +379,7 @@ pub async fn add_member(
 }
 
 /// Remove a member from a workspace (soft-delete via active flag).
-pub async fn remove_member(
-    store: &PgTripleStore,
-    member_id: Uuid,
-) -> Result<()> {
+pub async fn remove_member(store: &PgTripleStore, member_id: Uuid) -> Result<()> {
     store.retract(member_id, "workspace_member/active").await?;
     store
         .set_triples(&[TripleInput {
@@ -407,9 +399,7 @@ pub async fn update_member_role(
     member_id: Uuid,
     new_role: WorkspaceRole,
 ) -> Result<()> {
-    store
-        .retract(member_id, "workspace_member/role")
-        .await?;
+    store.retract(member_id, "workspace_member/role").await?;
     store
         .set_triples(&[TripleInput {
             entity_id: member_id,
@@ -445,10 +435,7 @@ pub async fn list_members(
 }
 
 /// List all workspaces a user belongs to.
-pub async fn list_user_workspaces(
-    store: &PgTripleStore,
-    user_id: Uuid,
-) -> Result<Vec<Workspace>> {
+pub async fn list_user_workspaces(store: &PgTripleStore, user_id: Uuid) -> Result<Vec<Workspace>> {
     let triples = store
         .query_by_attribute(
             "workspace_member/user_id",
@@ -460,12 +447,11 @@ pub async fn list_user_workspaces(
     let mut seen_ids = std::collections::HashSet::new();
 
     for triple in &triples {
-        if let Some(member) = load_member(store, triple.entity_id).await? {
-            if seen_ids.insert(member.workspace_id) {
-                if let Some(ws) = get_workspace(store, member.workspace_id).await? {
-                    workspaces.push(ws);
-                }
-            }
+        if let Some(member) = load_member(store, triple.entity_id).await?
+            && seen_ids.insert(member.workspace_id)
+            && let Some(ws) = get_workspace(store, member.workspace_id).await?
+        {
+            workspaces.push(ws);
         }
     }
 
@@ -515,19 +501,17 @@ fn load_member(
             return Ok(None);
         }
 
-        let workspace_id = match get_str("workspace_member/workspace_id")
-            .and_then(|s| Uuid::parse_str(&s).ok())
-        {
-            Some(id) => id,
-            None => return Ok(None),
-        };
+        let workspace_id =
+            match get_str("workspace_member/workspace_id").and_then(|s| Uuid::parse_str(&s).ok()) {
+                Some(id) => id,
+                None => return Ok(None),
+            };
 
-        let user_id = match get_str("workspace_member/user_id")
-            .and_then(|s| Uuid::parse_str(&s).ok())
-        {
-            Some(id) => id,
-            None => return Ok(None),
-        };
+        let user_id =
+            match get_str("workspace_member/user_id").and_then(|s| Uuid::parse_str(&s).ok()) {
+                Some(id) => id,
+                None => return Ok(None),
+            };
 
         let role: WorkspaceRole = match get_str("workspace_member/role") {
             Some(s) => s.parse()?,

@@ -29,702 +29,1022 @@ pub fn generate_typescript_types() -> String {
         field("error", "{ code: ErrorCode; message: string; status: number; retry_after_secs?: number | null }"),
     ]));
 
-    out.push_str(&enum_union("ErrorCode", &[
-        "BAD_REQUEST", "UNAUTHENTICATED", "PERMISSION_DENIED", "NOT_FOUND",
-        "CONFLICT", "PAYLOAD_TOO_LARGE", "RATE_LIMITED", "INVALID_QUERY",
-        "TYPE_MISMATCH", "SCHEMA_CONFLICT", "INTERNAL",
-    ]));
+    out.push_str(&enum_union(
+        "ErrorCode",
+        &[
+            "BAD_REQUEST",
+            "UNAUTHENTICATED",
+            "PERMISSION_DENIED",
+            "NOT_FOUND",
+            "CONFLICT",
+            "PAYLOAD_TOO_LARGE",
+            "RATE_LIMITED",
+            "INVALID_QUERY",
+            "TYPE_MISMATCH",
+            "SCHEMA_CONFLICT",
+            "INTERNAL",
+        ],
+    ));
 
     // ── Auth ──────────────────────────────────────────────────────
-    out.push_str(&interface("TokenPair", &[
-        field("access_token", "string"),
-        field("refresh_token", "string"),
-        field("expires_in", "number"),
-    ]));
+    out.push_str(&interface(
+        "TokenPair",
+        &[
+            field("access_token", "string"),
+            field("refresh_token", "string"),
+            field("expires_in", "number"),
+        ],
+    ));
 
-    out.push_str(&interface("UserProfile", &[
-        field("user_id", "UUID"),
-        field("email", "string"),
-        field("roles", "string[]"),
-        field("created_at", "DateTime"),
-    ]));
+    out.push_str(&interface(
+        "UserProfile",
+        &[
+            field("user_id", "UUID"),
+            field("email", "string"),
+            field("roles", "string[]"),
+            field("created_at", "DateTime"),
+        ],
+    ));
 
-    out.push_str(&interface("SignupRequest", &[
-        field("email", "string"),
-        field("password", "string"),
-    ]));
+    out.push_str(&interface(
+        "SignupRequest",
+        &[field("email", "string"), field("password", "string")],
+    ));
 
-    out.push_str(&interface("SigninRequest", &[
-        field("email", "string"),
-        field("password", "string"),
-    ]));
+    out.push_str(&interface(
+        "SigninRequest",
+        &[field("email", "string"), field("password", "string")],
+    ));
 
-    out.push_str(&interface("MagicLinkRequest", &[
-        field("email", "string"),
-    ]));
+    out.push_str(&interface("MagicLinkRequest", &[field("email", "string")]));
 
-    out.push_str(&interface("VerifyRequest", &[
-        field("token", "string"),
-        field_opt("mfa_code", "string | null"),
-    ]));
+    out.push_str(&interface(
+        "VerifyRequest",
+        &[
+            field("token", "string"),
+            field_opt("mfa_code", "string | null"),
+        ],
+    ));
 
-    out.push_str(&interface("RefreshRequest", &[
-        field("refresh_token", "string"),
-    ]));
+    out.push_str(&interface(
+        "RefreshRequest",
+        &[field("refresh_token", "string")],
+    ));
 
-    out.push_str(&interface("OAuthRequest", &[
-        field_opt("code", "string"),
-        field_opt("redirect_uri", "string"),
-    ]));
+    out.push_str(&interface(
+        "OAuthRequest",
+        &[
+            field_opt("code", "string"),
+            field_opt("redirect_uri", "string"),
+        ],
+    ));
 
-    out.push_str(&enum_union("OAuthProvider", &[
-        "google", "github", "apple", "discord", "microsoft",
-        "twitter", "linkedin", "slack", "gitlab", "bitbucket",
-        "facebook", "spotify",
-    ]));
+    out.push_str(&enum_union(
+        "OAuthProvider",
+        &[
+            "google",
+            "github",
+            "apple",
+            "discord",
+            "microsoft",
+            "twitter",
+            "linkedin",
+            "slack",
+            "gitlab",
+            "bitbucket",
+            "facebook",
+            "spotify",
+        ],
+    ));
 
     // ── Data / Query ──────────────────────────────────────────────
-    out.push_str(&interface("QueryRequest", &[
-        doc("DarshJQL query execution request."),
-        field("query", "string"),
-        field_opt("args", "Record<string, JsonValue>"),
-    ]));
+    out.push_str(&interface(
+        "QueryRequest",
+        &[
+            doc("DarshJQL query execution request."),
+            field("query", "string"),
+            field_opt("args", "Record<string, JsonValue>"),
+        ],
+    ));
 
-    out.push_str(&interface("QueryResponse<T = Record<string, JsonValue>>", &[
-        field("data", "T[]"),
-        field("meta", "{ count: number; duration_ms: number }"),
-    ]));
+    out.push_str(&interface(
+        "QueryResponse<T = Record<string, JsonValue>>",
+        &[
+            field("data", "T[]"),
+            field("meta", "{ count: number; duration_ms: number }"),
+        ],
+    ));
 
-    out.push_str(&interface("MutateRequest", &[
-        field("mutations", "Mutation[]"),
-    ]));
+    out.push_str(&interface(
+        "MutateRequest",
+        &[field("mutations", "Mutation[]")],
+    ));
 
-    out.push_str(&interface("Mutation", &[
-        field("op", "MutationOp"),
-        field("entity", "string"),
-        field_opt("id", "UUID | null"),
-        field_opt("data", "Record<string, JsonValue>"),
-    ]));
+    out.push_str(&interface(
+        "Mutation",
+        &[
+            field("op", "MutationOp"),
+            field("entity", "string"),
+            field_opt("id", "UUID | null"),
+            field_opt("data", "Record<string, JsonValue>"),
+        ],
+    ));
 
-    out.push_str(&enum_union("MutationOp", &["insert", "update", "delete", "upsert"]));
+    out.push_str(&enum_union(
+        "MutationOp",
+        &["insert", "update", "delete", "upsert"],
+    ));
 
-    out.push_str(&interface("MutateResponse", &[
-        field("tx_id", "number"),
-        field("affected", "number"),
-    ]));
+    out.push_str(&interface(
+        "MutateResponse",
+        &[field("tx_id", "number"), field("affected", "number")],
+    ));
 
     // ── Views ─────────────────────────────────────────────────────
-    out.push_str(&enum_union("ViewKind", &["grid", "form", "kanban", "gallery", "calendar"]));
+    out.push_str(&enum_union(
+        "ViewKind",
+        &["grid", "form", "kanban", "gallery", "calendar"],
+    ));
 
-    out.push_str(&enum_union("FilterOp", &[
-        "eq", "neq", "gt", "gte", "lt", "lte", "contains", "is_empty", "is_not_empty",
-    ]));
+    out.push_str(&enum_union(
+        "FilterOp",
+        &[
+            "eq",
+            "neq",
+            "gt",
+            "gte",
+            "lt",
+            "lte",
+            "contains",
+            "is_empty",
+            "is_not_empty",
+        ],
+    ));
 
     out.push_str(&enum_union("SortDir", &["asc", "desc"]));
 
-    out.push_str(&interface("FilterClause", &[
-        field("field", "string"),
-        field("op", "FilterOp"),
-        field_opt("value", "JsonValue"),
-    ]));
+    out.push_str(&interface(
+        "FilterClause",
+        &[
+            field("field", "string"),
+            field("op", "FilterOp"),
+            field_opt("value", "JsonValue"),
+        ],
+    ));
 
-    out.push_str(&interface("SortClause", &[
-        field("field", "string"),
-        field("direction", "SortDir"),
-    ]));
+    out.push_str(&interface(
+        "SortClause",
+        &[field("field", "string"), field("direction", "SortDir")],
+    ));
 
-    out.push_str(&interface("ViewConfig", &[
-        field("id", "UUID"),
-        field("name", "string"),
-        field("kind", "ViewKind"),
-        field("table_entity_type", "string"),
-        field("filters", "FilterClause[]"),
-        field("sorts", "SortClause[]"),
-        field("field_order", "string[]"),
-        field("hidden_fields", "string[]"),
-        field_opt("group_by", "string | null"),
-        field_opt("kanban_field", "string | null"),
-        field_opt("calendar_field", "string | null"),
-        field_opt("color_field", "string | null"),
-        field_opt("row_height", "number | null"),
-        field("created_by", "UUID"),
-        field("created_at", "DateTime"),
-        field("updated_at", "DateTime"),
-    ]));
+    out.push_str(&interface(
+        "ViewConfig",
+        &[
+            field("id", "UUID"),
+            field("name", "string"),
+            field("kind", "ViewKind"),
+            field("table_entity_type", "string"),
+            field("filters", "FilterClause[]"),
+            field("sorts", "SortClause[]"),
+            field("field_order", "string[]"),
+            field("hidden_fields", "string[]"),
+            field_opt("group_by", "string | null"),
+            field_opt("kanban_field", "string | null"),
+            field_opt("calendar_field", "string | null"),
+            field_opt("color_field", "string | null"),
+            field_opt("row_height", "number | null"),
+            field("created_by", "UUID"),
+            field("created_at", "DateTime"),
+            field("updated_at", "DateTime"),
+        ],
+    ));
 
-    out.push_str(&interface("CreateViewRequest", &[
-        field("name", "string"),
-        field("kind", "ViewKind"),
-        field("table_entity_type", "string"),
-        field_opt("filters", "FilterClause[]"),
-        field_opt("sorts", "SortClause[]"),
-        field_opt("field_order", "string[]"),
-        field_opt("hidden_fields", "string[]"),
-        field_opt("group_by", "string | null"),
-        field_opt("kanban_field", "string | null"),
-        field_opt("calendar_field", "string | null"),
-        field_opt("color_field", "string | null"),
-        field_opt("row_height", "number | null"),
-    ]));
+    out.push_str(&interface(
+        "CreateViewRequest",
+        &[
+            field("name", "string"),
+            field("kind", "ViewKind"),
+            field("table_entity_type", "string"),
+            field_opt("filters", "FilterClause[]"),
+            field_opt("sorts", "SortClause[]"),
+            field_opt("field_order", "string[]"),
+            field_opt("hidden_fields", "string[]"),
+            field_opt("group_by", "string | null"),
+            field_opt("kanban_field", "string | null"),
+            field_opt("calendar_field", "string | null"),
+            field_opt("color_field", "string | null"),
+            field_opt("row_height", "number | null"),
+        ],
+    ));
 
-    out.push_str(&interface("ViewUpdate", &[
-        doc("Partial update for a view. Only provided fields are changed."),
-        field_opt("name", "string"),
-        field_opt("kind", "ViewKind"),
-        field_opt("filters", "FilterClause[]"),
-        field_opt("sorts", "SortClause[]"),
-        field_opt("field_order", "string[]"),
-        field_opt("hidden_fields", "string[]"),
-        field_opt("group_by", "string | null"),
-        field_opt("kanban_field", "string | null"),
-        field_opt("calendar_field", "string | null"),
-        field_opt("color_field", "string | null"),
-        field_opt("row_height", "number | null"),
-    ]));
+    out.push_str(&interface(
+        "ViewUpdate",
+        &[
+            doc("Partial update for a view. Only provided fields are changed."),
+            field_opt("name", "string"),
+            field_opt("kind", "ViewKind"),
+            field_opt("filters", "FilterClause[]"),
+            field_opt("sorts", "SortClause[]"),
+            field_opt("field_order", "string[]"),
+            field_opt("hidden_fields", "string[]"),
+            field_opt("group_by", "string | null"),
+            field_opt("kanban_field", "string | null"),
+            field_opt("calendar_field", "string | null"),
+            field_opt("color_field", "string | null"),
+            field_opt("row_height", "number | null"),
+        ],
+    ));
 
-    out.push_str(&interface("ViewQueryRequest", &[
-        field_opt("query", "JsonValue"),
-    ]));
+    out.push_str(&interface(
+        "ViewQueryRequest",
+        &[field_opt("query", "JsonValue")],
+    ));
 
     // ── Fields ────────────────────────────────────────────────────
-    out.push_str(&enum_union("FieldType", &[
-        "text", "number", "boolean", "date", "datetime", "email", "url",
-        "select", "multi_select", "attachment", "relation", "formula",
-        "rollup", "lookup", "json", "rich_text", "phone", "rating",
-        "checkbox", "currency", "percent", "duration", "auto_number",
-        "created_at", "updated_at", "created_by", "updated_by",
-    ]));
+    out.push_str(&enum_union(
+        "FieldType",
+        &[
+            "text",
+            "number",
+            "boolean",
+            "date",
+            "datetime",
+            "email",
+            "url",
+            "select",
+            "multi_select",
+            "attachment",
+            "relation",
+            "formula",
+            "rollup",
+            "lookup",
+            "json",
+            "rich_text",
+            "phone",
+            "rating",
+            "checkbox",
+            "currency",
+            "percent",
+            "duration",
+            "auto_number",
+            "created_at",
+            "updated_at",
+            "created_by",
+            "updated_by",
+        ],
+    ));
 
-    out.push_str(&interface("FieldDefinition", &[
-        field("id", "UUID"),
-        field("name", "string"),
-        field("field_type", "FieldType"),
-        field("table", "string"),
-        field_opt("required", "boolean"),
-        field_opt("unique", "boolean"),
-        field_opt("default_value", "JsonValue | null"),
-        field_opt("options", "Record<string, JsonValue> | null"),
-        field_opt("description", "string | null"),
-        field_opt("order", "number"),
-        field_opt("created_at", "DateTime"),
-        field_opt("updated_at", "DateTime"),
-    ]));
+    out.push_str(&interface(
+        "FieldDefinition",
+        &[
+            field("id", "UUID"),
+            field("name", "string"),
+            field("field_type", "FieldType"),
+            field("table", "string"),
+            field_opt("required", "boolean"),
+            field_opt("unique", "boolean"),
+            field_opt("default_value", "JsonValue | null"),
+            field_opt("options", "Record<string, JsonValue> | null"),
+            field_opt("description", "string | null"),
+            field_opt("order", "number"),
+            field_opt("created_at", "DateTime"),
+            field_opt("updated_at", "DateTime"),
+        ],
+    ));
 
-    out.push_str(&interface("CreateFieldRequest", &[
-        field("name", "string"),
-        field("field_type", "FieldType"),
-        field_opt("required", "boolean"),
-        field_opt("unique", "boolean"),
-        field_opt("default_value", "JsonValue | null"),
-        field_opt("options", "Record<string, JsonValue> | null"),
-        field_opt("description", "string | null"),
-    ]));
+    out.push_str(&interface(
+        "CreateFieldRequest",
+        &[
+            field("name", "string"),
+            field("field_type", "FieldType"),
+            field_opt("required", "boolean"),
+            field_opt("unique", "boolean"),
+            field_opt("default_value", "JsonValue | null"),
+            field_opt("options", "Record<string, JsonValue> | null"),
+            field_opt("description", "string | null"),
+        ],
+    ));
 
-    out.push_str(&interface("UpdateFieldRequest", &[
-        field_opt("name", "string"),
-        field_opt("required", "boolean"),
-        field_opt("unique", "boolean"),
-        field_opt("default_value", "JsonValue | null"),
-        field_opt("options", "Record<string, JsonValue>"),
-        field_opt("description", "string"),
-    ]));
+    out.push_str(&interface(
+        "UpdateFieldRequest",
+        &[
+            field_opt("name", "string"),
+            field_opt("required", "boolean"),
+            field_opt("unique", "boolean"),
+            field_opt("default_value", "JsonValue | null"),
+            field_opt("options", "Record<string, JsonValue>"),
+            field_opt("description", "string"),
+        ],
+    ));
 
-    out.push_str(&interface("ConvertFieldRequest", &[
-        field("target_type", "FieldType"),
-        field_opt("options", "Record<string, JsonValue> | null"),
-    ]));
+    out.push_str(&interface(
+        "ConvertFieldRequest",
+        &[
+            field("target_type", "FieldType"),
+            field_opt("options", "Record<string, JsonValue> | null"),
+        ],
+    ));
 
     // ── Tables ────────────────────────────────────────────────────
-    out.push_str(&interface("TableConfig", &[
-        field("name", "string"),
-        field("entity_type", "string"),
-        field_opt("description", "string | null"),
-        field_opt("icon", "string | null"),
-        field_opt("color", "string | null"),
-        field_opt("fields", "FieldDefinition[]"),
-        field_opt("primary_field", "string"),
-        field_opt("created_at", "DateTime"),
-        field_opt("updated_at", "DateTime"),
-    ]));
+    out.push_str(&interface(
+        "TableConfig",
+        &[
+            field("name", "string"),
+            field("entity_type", "string"),
+            field_opt("description", "string | null"),
+            field_opt("icon", "string | null"),
+            field_opt("color", "string | null"),
+            field_opt("fields", "FieldDefinition[]"),
+            field_opt("primary_field", "string"),
+            field_opt("created_at", "DateTime"),
+            field_opt("updated_at", "DateTime"),
+        ],
+    ));
 
-    out.push_str(&interface("CreateTableRequest", &[
-        field("name", "string"),
-        field_opt("description", "string | null"),
-        field_opt("icon", "string | null"),
-        field_opt("color", "string | null"),
-        field_opt("fields", "CreateFieldRequest[]"),
-        field_opt("template", "string | null"),
-    ]));
+    out.push_str(&interface(
+        "CreateTableRequest",
+        &[
+            field("name", "string"),
+            field_opt("description", "string | null"),
+            field_opt("icon", "string | null"),
+            field_opt("color", "string | null"),
+            field_opt("fields", "CreateFieldRequest[]"),
+            field_opt("template", "string | null"),
+        ],
+    ));
 
-    out.push_str(&interface("UpdateTableRequest", &[
-        field_opt("name", "string"),
-        field_opt("description", "string"),
-        field_opt("icon", "string"),
-        field_opt("color", "string"),
-    ]));
+    out.push_str(&interface(
+        "UpdateTableRequest",
+        &[
+            field_opt("name", "string"),
+            field_opt("description", "string"),
+            field_opt("icon", "string"),
+            field_opt("color", "string"),
+        ],
+    ));
 
-    out.push_str(&interface("TableStats", &[
-        field("entity_type", "string"),
-        field("row_count", "number"),
-        field("field_count", "number"),
-        field("view_count", "number"),
-        field("triple_count", "number"),
-        field("storage_bytes", "number"),
-        field("last_modified", "DateTime"),
-    ]));
+    out.push_str(&interface(
+        "TableStats",
+        &[
+            field("entity_type", "string"),
+            field("row_count", "number"),
+            field("field_count", "number"),
+            field("view_count", "number"),
+            field("triple_count", "number"),
+            field("storage_bytes", "number"),
+            field("last_modified", "DateTime"),
+        ],
+    ));
 
-    out.push_str(&interface("TableTemplate", &[
-        field("name", "string"),
-        field("display_name", "string"),
-        field_opt("description", "string"),
-        field_opt("category", "string"),
-        field_opt("fields", "CreateFieldRequest[]"),
-        field_opt("sample_views", "CreateViewRequest[]"),
-    ]));
+    out.push_str(&interface(
+        "TableTemplate",
+        &[
+            field("name", "string"),
+            field("display_name", "string"),
+            field_opt("description", "string"),
+            field_opt("category", "string"),
+            field_opt("fields", "CreateFieldRequest[]"),
+            field_opt("sample_views", "CreateViewRequest[]"),
+        ],
+    ));
 
     // ── Automations ───────────────────────────────────────────────
-    out.push_str(&enum_union("TriggerType", &[
-        "on_create", "on_update", "on_delete", "schedule", "webhook", "manual",
-    ]));
+    out.push_str(&enum_union(
+        "TriggerType",
+        &[
+            "on_create",
+            "on_update",
+            "on_delete",
+            "schedule",
+            "webhook",
+            "manual",
+        ],
+    ));
 
-    out.push_str(&enum_union("ActionType", &[
-        "set_field", "create_entity", "delete_entity", "send_webhook",
-        "send_email", "invoke_function", "notify",
-    ]));
+    out.push_str(&enum_union(
+        "ActionType",
+        &[
+            "set_field",
+            "create_entity",
+            "delete_entity",
+            "send_webhook",
+            "send_email",
+            "invoke_function",
+            "notify",
+        ],
+    ));
 
-    out.push_str(&interface("AutomationTrigger", &[
-        field("type", "TriggerType"),
-        field_opt("entity_type", "string"),
-        field_opt("filter", "FilterClause"),
-        field_opt("cron", "string"),
-    ]));
+    out.push_str(&interface(
+        "AutomationTrigger",
+        &[
+            field("type", "TriggerType"),
+            field_opt("entity_type", "string"),
+            field_opt("filter", "FilterClause"),
+            field_opt("cron", "string"),
+        ],
+    ));
 
-    out.push_str(&interface("AutomationAction", &[
-        field("type", "ActionType"),
-        field_opt("config", "Record<string, JsonValue>"),
-    ]));
+    out.push_str(&interface(
+        "AutomationAction",
+        &[
+            field("type", "ActionType"),
+            field_opt("config", "Record<string, JsonValue>"),
+        ],
+    ));
 
-    out.push_str(&interface("AutomationConfig", &[
-        field("id", "UUID"),
-        field("name", "string"),
-        field_opt("description", "string | null"),
-        field("trigger", "AutomationTrigger"),
-        field("actions", "AutomationAction[]"),
-        field("enabled", "boolean"),
-        field_opt("last_run_at", "DateTime | null"),
-        field_opt("run_count", "number"),
-        field("created_at", "DateTime"),
-        field("updated_at", "DateTime"),
-    ]));
+    out.push_str(&interface(
+        "AutomationConfig",
+        &[
+            field("id", "UUID"),
+            field("name", "string"),
+            field_opt("description", "string | null"),
+            field("trigger", "AutomationTrigger"),
+            field("actions", "AutomationAction[]"),
+            field("enabled", "boolean"),
+            field_opt("last_run_at", "DateTime | null"),
+            field_opt("run_count", "number"),
+            field("created_at", "DateTime"),
+            field("updated_at", "DateTime"),
+        ],
+    ));
 
-    out.push_str(&interface("CreateAutomationRequest", &[
-        field("name", "string"),
-        field_opt("description", "string | null"),
-        field("trigger", "AutomationTrigger"),
-        field("actions", "AutomationAction[]"),
-        field_opt("enabled", "boolean"),
-    ]));
+    out.push_str(&interface(
+        "CreateAutomationRequest",
+        &[
+            field("name", "string"),
+            field_opt("description", "string | null"),
+            field("trigger", "AutomationTrigger"),
+            field("actions", "AutomationAction[]"),
+            field_opt("enabled", "boolean"),
+        ],
+    ));
 
-    out.push_str(&enum_union("RunStatus", &["pending", "running", "completed", "failed"]));
+    out.push_str(&enum_union(
+        "RunStatus",
+        &["pending", "running", "completed", "failed"],
+    ));
 
-    out.push_str(&interface("AutomationRun", &[
-        field("id", "UUID"),
-        field("automation_id", "UUID"),
-        field("status", "RunStatus"),
-        field_opt("trigger_data", "Record<string, JsonValue>"),
-        field_opt("result", "JsonValue | null"),
-        field_opt("error", "string | null"),
-        field_opt("duration_ms", "number"),
-        field("started_at", "DateTime"),
-        field_opt("completed_at", "DateTime | null"),
-    ]));
+    out.push_str(&interface(
+        "AutomationRun",
+        &[
+            field("id", "UUID"),
+            field("automation_id", "UUID"),
+            field("status", "RunStatus"),
+            field_opt("trigger_data", "Record<string, JsonValue>"),
+            field_opt("result", "JsonValue | null"),
+            field_opt("error", "string | null"),
+            field_opt("duration_ms", "number"),
+            field("started_at", "DateTime"),
+            field_opt("completed_at", "DateTime | null"),
+        ],
+    ));
 
     // ── Relations ─────────────────────────────────────────────────
-    out.push_str(&interface("LinkRequest", &[
-        field("source_entity", "string"),
-        field("source_id", "UUID"),
-        field("target_entity", "string"),
-        field("target_id", "UUID"),
-        field("relation", "string"),
-    ]));
+    out.push_str(&interface(
+        "LinkRequest",
+        &[
+            field("source_entity", "string"),
+            field("source_id", "UUID"),
+            field("target_entity", "string"),
+            field("target_id", "UUID"),
+            field("relation", "string"),
+        ],
+    ));
 
-    out.push_str(&interface("UnlinkRequest", &[
-        field("source_entity", "string"),
-        field("source_id", "UUID"),
-        field("target_entity", "string"),
-        field("target_id", "UUID"),
-        field("relation", "string"),
-    ]));
+    out.push_str(&interface(
+        "UnlinkRequest",
+        &[
+            field("source_entity", "string"),
+            field("source_id", "UUID"),
+            field("target_entity", "string"),
+            field("target_id", "UUID"),
+            field("relation", "string"),
+        ],
+    ));
 
-    out.push_str(&interface("LookupRequest", &[
-        field("source_entity", "string"),
-        field("source_id", "UUID"),
-        field("relation", "string"),
-        field("target_field", "string"),
-    ]));
+    out.push_str(&interface(
+        "LookupRequest",
+        &[
+            field("source_entity", "string"),
+            field("source_id", "UUID"),
+            field("relation", "string"),
+            field("target_field", "string"),
+        ],
+    ));
 
-    out.push_str(&enum_union("RollupFunction", &["count", "sum", "avg", "min", "max", "concat"]));
+    out.push_str(&enum_union(
+        "RollupFunction",
+        &["count", "sum", "avg", "min", "max", "concat"],
+    ));
 
-    out.push_str(&interface("RollupRequest", &[
-        field("source_entity", "string"),
-        field("source_id", "UUID"),
-        field("relation", "string"),
-        field("target_field", "string"),
-        field("function", "RollupFunction"),
-    ]));
+    out.push_str(&interface(
+        "RollupRequest",
+        &[
+            field("source_entity", "string"),
+            field("source_id", "UUID"),
+            field("relation", "string"),
+            field("target_field", "string"),
+            field("function", "RollupFunction"),
+        ],
+    ));
 
     // ── Aggregation ───────────────────────────────────────────────
-    out.push_str(&enum_union("AggregateFunction", &["count", "sum", "avg", "min", "max", "count_distinct"]));
+    out.push_str(&enum_union(
+        "AggregateFunction",
+        &["count", "sum", "avg", "min", "max", "count_distinct"],
+    ));
 
-    out.push_str(&interface("AggregateMeasure", &[
-        field("field", "string"),
-        field("function", "AggregateFunction"),
-    ]));
+    out.push_str(&interface(
+        "AggregateMeasure",
+        &[
+            field("field", "string"),
+            field("function", "AggregateFunction"),
+        ],
+    ));
 
-    out.push_str(&interface("AggregateRequest", &[
-        field("entity_type", "string"),
-        field("measures", "AggregateMeasure[]"),
-        field_opt("group_by", "string[]"),
-        field_opt("filters", "FilterClause[]"),
-        field_opt("having", "FilterClause[]"),
-        field_opt("order_by", "SortClause[]"),
-        field_opt("limit", "number"),
-    ]));
+    out.push_str(&interface(
+        "AggregateRequest",
+        &[
+            field("entity_type", "string"),
+            field("measures", "AggregateMeasure[]"),
+            field_opt("group_by", "string[]"),
+            field_opt("filters", "FilterClause[]"),
+            field_opt("having", "FilterClause[]"),
+            field_opt("order_by", "SortClause[]"),
+            field_opt("limit", "number"),
+        ],
+    ));
 
-    out.push_str(&interface("AggregateResponse", &[
-        field("data", "Record<string, JsonValue>[]"),
-        field("meta", "{ group_count: number; total_rows: number; duration_ms: number }"),
-    ]));
+    out.push_str(&interface(
+        "AggregateResponse",
+        &[
+            field("data", "Record<string, JsonValue>[]"),
+            field(
+                "meta",
+                "{ group_count: number; total_rows: number; duration_ms: number }",
+            ),
+        ],
+    ));
 
-    out.push_str(&interface("SummaryRequest", &[
-        field("entity_type", "string"),
-        field_opt("fields", "string[]"),
-        field_opt("filters", "FilterClause[]"),
-    ]));
+    out.push_str(&interface(
+        "SummaryRequest",
+        &[
+            field("entity_type", "string"),
+            field_opt("fields", "string[]"),
+            field_opt("filters", "FilterClause[]"),
+        ],
+    ));
 
-    out.push_str(&enum_union("ChartType", &["bar", "line", "pie", "scatter", "area", "histogram"]));
+    out.push_str(&enum_union(
+        "ChartType",
+        &["bar", "line", "pie", "scatter", "area", "histogram"],
+    ));
 
-    out.push_str(&interface("ChartRequest", &[
-        field("entity_type", "string"),
-        field("chart_type", "ChartType"),
-        field_opt("x_field", "string"),
-        field_opt("y_field", "string"),
-        field_opt("measure", "AggregateFunction"),
-        field_opt("group_by", "string"),
-        field_opt("filters", "FilterClause[]"),
-        field_opt("limit", "number"),
-    ]));
+    out.push_str(&interface(
+        "ChartRequest",
+        &[
+            field("entity_type", "string"),
+            field("chart_type", "ChartType"),
+            field_opt("x_field", "string"),
+            field_opt("y_field", "string"),
+            field_opt("measure", "AggregateFunction"),
+            field_opt("group_by", "string"),
+            field_opt("filters", "FilterClause[]"),
+            field_opt("limit", "number"),
+        ],
+    ));
 
     // ── Import / Export ───────────────────────────────────────────
     out.push_str(&enum_union("ImportFormat", &["csv", "json", "jsonl"]));
-    out.push_str(&enum_union("ConflictStrategy", &["skip", "update", "error"]));
+    out.push_str(&enum_union(
+        "ConflictStrategy",
+        &["skip", "update", "error"],
+    ));
 
-    out.push_str(&interface("ImportRequest", &[
-        field("entity_type", "string"),
-        field("format", "ImportFormat"),
-        field_opt("data", "string"),
-        field_opt("on_conflict", "ConflictStrategy"),
-        field_opt("field_mapping", "Record<string, string>"),
-        field_opt("dry_run", "boolean"),
-    ]));
+    out.push_str(&interface(
+        "ImportRequest",
+        &[
+            field("entity_type", "string"),
+            field("format", "ImportFormat"),
+            field_opt("data", "string"),
+            field_opt("on_conflict", "ConflictStrategy"),
+            field_opt("field_mapping", "Record<string, string>"),
+            field_opt("dry_run", "boolean"),
+        ],
+    ));
 
-    out.push_str(&interface("ImportResult", &[
-        field("imported", "number"),
-        field("skipped", "number"),
-        field("errors", "number"),
-        field_opt("error_details", "Array<{ row: number; field: string; message: string }>"),
-        field("duration_ms", "number"),
-        field("dry_run", "boolean"),
-    ]));
+    out.push_str(&interface(
+        "ImportResult",
+        &[
+            field("imported", "number"),
+            field("skipped", "number"),
+            field("errors", "number"),
+            field_opt(
+                "error_details",
+                "Array<{ row: number; field: string; message: string }>",
+            ),
+            field("duration_ms", "number"),
+            field("dry_run", "boolean"),
+        ],
+    ));
 
-    out.push_str(&interface("ExportRequest", &[
-        field("entity_type", "string"),
-        field("format", "ImportFormat"),
-        field_opt("fields", "string[]"),
-        field_opt("filters", "FilterClause[]"),
-        field_opt("view_id", "UUID | null"),
-    ]));
+    out.push_str(&interface(
+        "ExportRequest",
+        &[
+            field("entity_type", "string"),
+            field("format", "ImportFormat"),
+            field_opt("fields", "string[]"),
+            field_opt("filters", "FilterClause[]"),
+            field_opt("view_id", "UUID | null"),
+        ],
+    ));
 
     // ── Collaboration ─────────────────────────────────────────────
     out.push_str(&enum_union("ResourceType", &["view", "table", "record"]));
     out.push_str(&enum_union("SharePermission", &["read", "comment", "edit"]));
-    out.push_str(&enum_union("CollaboratorRole", &["owner", "admin", "editor", "commenter", "viewer"]));
+    out.push_str(&enum_union(
+        "CollaboratorRole",
+        &["owner", "admin", "editor", "commenter", "viewer"],
+    ));
 
-    out.push_str(&interface("ShareLink", &[
-        field("id", "UUID"),
-        field("token", "string"),
-        field("resource_type", "ResourceType"),
-        field("resource_id", "UUID"),
-        field("permission", "SharePermission"),
-        field_opt("expires_at", "DateTime | null"),
-        field("password_protected", "boolean"),
-        field("created_by", "UUID"),
-        field("created_at", "DateTime"),
-    ]));
+    out.push_str(&interface(
+        "ShareLink",
+        &[
+            field("id", "UUID"),
+            field("token", "string"),
+            field("resource_type", "ResourceType"),
+            field("resource_id", "UUID"),
+            field("permission", "SharePermission"),
+            field_opt("expires_at", "DateTime | null"),
+            field("password_protected", "boolean"),
+            field("created_by", "UUID"),
+            field("created_at", "DateTime"),
+        ],
+    ));
 
-    out.push_str(&interface("CreateShareRequest", &[
-        field("resource_type", "ResourceType"),
-        field("resource_id", "UUID"),
-        field_opt("permission", "SharePermission"),
-        field_opt("expires_in_hours", "number | null"),
-        field_opt("password", "string | null"),
-    ]));
+    out.push_str(&interface(
+        "CreateShareRequest",
+        &[
+            field("resource_type", "ResourceType"),
+            field("resource_id", "UUID"),
+            field_opt("permission", "SharePermission"),
+            field_opt("expires_in_hours", "number | null"),
+            field_opt("password", "string | null"),
+        ],
+    ));
 
-    out.push_str(&interface("Collaborator", &[
-        field("id", "UUID"),
-        field("user_id", "UUID"),
-        field("email", "string"),
-        field("role", "CollaboratorRole"),
-        field("workspace_id", "UUID"),
-        field("added_at", "DateTime"),
-    ]));
+    out.push_str(&interface(
+        "Collaborator",
+        &[
+            field("id", "UUID"),
+            field("user_id", "UUID"),
+            field("email", "string"),
+            field("role", "CollaboratorRole"),
+            field("workspace_id", "UUID"),
+            field("added_at", "DateTime"),
+        ],
+    ));
 
-    out.push_str(&interface("AddCollaboratorRequest", &[
-        field("email", "string"),
-        field_opt("role", "CollaboratorRole"),
-        field_opt("workspace_id", "UUID | null"),
-    ]));
+    out.push_str(&interface(
+        "AddCollaboratorRequest",
+        &[
+            field("email", "string"),
+            field_opt("role", "CollaboratorRole"),
+            field_opt("workspace_id", "UUID | null"),
+        ],
+    ));
 
-    out.push_str(&interface("Workspace", &[
-        field("id", "UUID"),
-        field("name", "string"),
-        field_opt("description", "string | null"),
-        field("owner_id", "UUID"),
-        field("member_count", "number"),
-        field("table_count", "number"),
-        field("created_at", "DateTime"),
-        field("updated_at", "DateTime"),
-    ]));
+    out.push_str(&interface(
+        "Workspace",
+        &[
+            field("id", "UUID"),
+            field("name", "string"),
+            field_opt("description", "string | null"),
+            field("owner_id", "UUID"),
+            field("member_count", "number"),
+            field("table_count", "number"),
+            field("created_at", "DateTime"),
+            field("updated_at", "DateTime"),
+        ],
+    ));
 
-    out.push_str(&interface("CreateWorkspaceRequest", &[
-        field("name", "string"),
-        field_opt("description", "string | null"),
-    ]));
+    out.push_str(&interface(
+        "CreateWorkspaceRequest",
+        &[
+            field("name", "string"),
+            field_opt("description", "string | null"),
+        ],
+    ));
 
     // ── Plugins ───────────────────────────────────────────────────
-    out.push_str(&interface("PluginConfig", &[
-        field("id", "UUID"),
-        field("name", "string"),
-        field("version", "string"),
-        field_opt("description", "string | null"),
-        field("enabled", "boolean"),
-        field_opt("config", "Record<string, JsonValue>"),
-        field_opt("permissions", "string[]"),
-        field("installed_at", "DateTime"),
-        field("updated_at", "DateTime"),
-    ]));
+    out.push_str(&interface(
+        "PluginConfig",
+        &[
+            field("id", "UUID"),
+            field("name", "string"),
+            field("version", "string"),
+            field_opt("description", "string | null"),
+            field("enabled", "boolean"),
+            field_opt("config", "Record<string, JsonValue>"),
+            field_opt("permissions", "string[]"),
+            field("installed_at", "DateTime"),
+            field("updated_at", "DateTime"),
+        ],
+    ));
 
-    out.push_str(&interface("PluginConfigureRequest", &[
-        field_opt("enabled", "boolean"),
-        field_opt("config", "Record<string, JsonValue>"),
-    ]));
+    out.push_str(&interface(
+        "PluginConfigureRequest",
+        &[
+            field_opt("enabled", "boolean"),
+            field_opt("config", "Record<string, JsonValue>"),
+        ],
+    ));
 
     // ── Comments ──────────────────────────────────────────────────
-    out.push_str(&interface("Comment", &[
-        field("id", "UUID"),
-        field("entity_type", "string"),
-        field("entity_id", "UUID"),
-        field_opt("parent_id", "UUID | null"),
-        field("body", "string"),
-        field("author_id", "UUID"),
-        field_opt("author_email", "string"),
-        field_opt("mentions", "UUID[]"),
-        field("created_at", "DateTime"),
-        field("updated_at", "DateTime"),
-    ]));
+    out.push_str(&interface(
+        "Comment",
+        &[
+            field("id", "UUID"),
+            field("entity_type", "string"),
+            field("entity_id", "UUID"),
+            field_opt("parent_id", "UUID | null"),
+            field("body", "string"),
+            field("author_id", "UUID"),
+            field_opt("author_email", "string"),
+            field_opt("mentions", "UUID[]"),
+            field("created_at", "DateTime"),
+            field("updated_at", "DateTime"),
+        ],
+    ));
 
-    out.push_str(&interface("CreateCommentRequest", &[
-        field("entity_type", "string"),
-        field("entity_id", "UUID"),
-        field_opt("parent_id", "UUID | null"),
-        field("body", "string"),
-        field_opt("mentions", "UUID[]"),
-    ]));
+    out.push_str(&interface(
+        "CreateCommentRequest",
+        &[
+            field("entity_type", "string"),
+            field("entity_id", "UUID"),
+            field_opt("parent_id", "UUID | null"),
+            field("body", "string"),
+            field_opt("mentions", "UUID[]"),
+        ],
+    ));
 
     // ── Activity / Notifications ──────────────────────────────────
-    out.push_str(&enum_union("ActivityAction", &[
-        "create", "update", "delete", "link", "unlink", "comment",
-        "share", "import", "export", "automation_run", "login", "logout",
-    ]));
+    out.push_str(&enum_union(
+        "ActivityAction",
+        &[
+            "create",
+            "update",
+            "delete",
+            "link",
+            "unlink",
+            "comment",
+            "share",
+            "import",
+            "export",
+            "automation_run",
+            "login",
+            "logout",
+        ],
+    ));
 
-    out.push_str(&interface("ActivityEntry", &[
-        field("id", "UUID"),
-        field("action", "ActivityAction"),
-        field("entity_type", "string"),
-        field("entity_id", "UUID"),
-        field("user_id", "UUID"),
-        field_opt("changes", "Record<string, JsonValue>"),
-        field_opt("metadata", "Record<string, JsonValue>"),
-        field("timestamp", "DateTime"),
-    ]));
+    out.push_str(&interface(
+        "ActivityEntry",
+        &[
+            field("id", "UUID"),
+            field("action", "ActivityAction"),
+            field("entity_type", "string"),
+            field("entity_id", "UUID"),
+            field("user_id", "UUID"),
+            field_opt("changes", "Record<string, JsonValue>"),
+            field_opt("metadata", "Record<string, JsonValue>"),
+            field("timestamp", "DateTime"),
+        ],
+    ));
 
-    out.push_str(&enum_union("NotificationType", &[
-        "mention", "comment", "share", "automation", "system",
-    ]));
+    out.push_str(&enum_union(
+        "NotificationType",
+        &["mention", "comment", "share", "automation", "system"],
+    ));
 
-    out.push_str(&interface("Notification", &[
-        field("id", "UUID"),
-        field("type", "NotificationType"),
-        field("title", "string"),
-        field("body", "string"),
-        field_opt("resource_type", "string | null"),
-        field_opt("resource_id", "UUID | null"),
-        field("read", "boolean"),
-        field("created_at", "DateTime"),
-    ]));
+    out.push_str(&interface(
+        "Notification",
+        &[
+            field("id", "UUID"),
+            field("type", "NotificationType"),
+            field("title", "string"),
+            field("body", "string"),
+            field_opt("resource_type", "string | null"),
+            field_opt("resource_id", "UUID | null"),
+            field("read", "boolean"),
+            field("created_at", "DateTime"),
+        ],
+    ));
 
     // ── History ───────────────────────────────────────────────────
-    out.push_str(&enum_union("VersionOperation", &["insert", "update", "retract"]));
+    out.push_str(&enum_union(
+        "VersionOperation",
+        &["insert", "update", "retract"],
+    ));
 
-    out.push_str(&interface("VersionEntry", &[
-        field("tx_id", "number"),
-        field("entity_id", "UUID"),
-        field("attribute", "string"),
-        field_opt("old_value", "JsonValue | null"),
-        field_opt("new_value", "JsonValue | null"),
-        field("operation", "VersionOperation"),
-        field("user_id", "UUID"),
-        field("timestamp", "DateTime"),
-    ]));
+    out.push_str(&interface(
+        "VersionEntry",
+        &[
+            field("tx_id", "number"),
+            field("entity_id", "UUID"),
+            field("attribute", "string"),
+            field_opt("old_value", "JsonValue | null"),
+            field_opt("new_value", "JsonValue | null"),
+            field("operation", "VersionOperation"),
+            field("user_id", "UUID"),
+            field("timestamp", "DateTime"),
+        ],
+    ));
 
-    out.push_str(&interface("Snapshot", &[
-        field("id", "UUID"),
-        field("name", "string"),
-        field_opt("description", "string | null"),
-        field("tx_id", "number"),
-        field("entity_count", "number"),
-        field("created_by", "UUID"),
-        field("created_at", "DateTime"),
-    ]));
+    out.push_str(&interface(
+        "Snapshot",
+        &[
+            field("id", "UUID"),
+            field("name", "string"),
+            field_opt("description", "string | null"),
+            field("tx_id", "number"),
+            field("entity_count", "number"),
+            field("created_by", "UUID"),
+            field("created_at", "DateTime"),
+        ],
+    ));
 
     // ── Webhooks ──────────────────────────────────────────────────
-    out.push_str(&interface("WebhookConfig", &[
-        field("id", "UUID"),
-        field("name", "string"),
-        field("url", "string"),
-        field("events", "string[]"),
-        field_opt("secret", "string"),
-        field_opt("headers", "Record<string, string>"),
-        field("enabled", "boolean"),
-        field_opt("retry_count", "number"),
-        field("created_at", "DateTime"),
-        field("updated_at", "DateTime"),
-    ]));
+    out.push_str(&interface(
+        "WebhookConfig",
+        &[
+            field("id", "UUID"),
+            field("name", "string"),
+            field("url", "string"),
+            field("events", "string[]"),
+            field_opt("secret", "string"),
+            field_opt("headers", "Record<string, string>"),
+            field("enabled", "boolean"),
+            field_opt("retry_count", "number"),
+            field("created_at", "DateTime"),
+            field("updated_at", "DateTime"),
+        ],
+    ));
 
-    out.push_str(&interface("CreateWebhookRequest", &[
-        field("name", "string"),
-        field("url", "string"),
-        field("events", "string[]"),
-        field_opt("secret", "string | null"),
-        field_opt("headers", "Record<string, string>"),
-        field_opt("enabled", "boolean"),
-        field_opt("retry_count", "number"),
-    ]));
+    out.push_str(&interface(
+        "CreateWebhookRequest",
+        &[
+            field("name", "string"),
+            field("url", "string"),
+            field("events", "string[]"),
+            field_opt("secret", "string | null"),
+            field_opt("headers", "Record<string, string>"),
+            field_opt("enabled", "boolean"),
+            field_opt("retry_count", "number"),
+        ],
+    ));
 
-    out.push_str(&enum_union("DeliveryStatus", &["pending", "delivered", "failed"]));
+    out.push_str(&enum_union(
+        "DeliveryStatus",
+        &["pending", "delivered", "failed"],
+    ));
 
-    out.push_str(&interface("WebhookDelivery", &[
-        field("id", "UUID"),
-        field("webhook_id", "UUID"),
-        field("event", "string"),
-        field_opt("request_body", "Record<string, JsonValue>"),
-        field_opt("response_status", "number | null"),
-        field_opt("response_body", "string | null"),
-        field("status", "DeliveryStatus"),
-        field("attempt", "number"),
-        field_opt("duration_ms", "number | null"),
-        field_opt("delivered_at", "DateTime | null"),
-        field_opt("next_retry_at", "DateTime | null"),
-    ]));
+    out.push_str(&interface(
+        "WebhookDelivery",
+        &[
+            field("id", "UUID"),
+            field("webhook_id", "UUID"),
+            field("event", "string"),
+            field_opt("request_body", "Record<string, JsonValue>"),
+            field_opt("response_status", "number | null"),
+            field_opt("response_body", "string | null"),
+            field("status", "DeliveryStatus"),
+            field("attempt", "number"),
+            field_opt("duration_ms", "number | null"),
+            field_opt("delivered_at", "DateTime | null"),
+            field_opt("next_retry_at", "DateTime | null"),
+        ],
+    ));
 
     // ── API Keys ──────────────────────────────────────────────────
-    out.push_str(&interface("ApiKeyConfig", &[
-        field("id", "UUID"),
-        field("name", "string"),
-        field("prefix", "string"),
-        field_opt("scopes", "string[]"),
-        field_opt("expires_at", "DateTime | null"),
-        field_opt("last_used_at", "DateTime | null"),
-        field("created_at", "DateTime"),
-    ]));
+    out.push_str(&interface(
+        "ApiKeyConfig",
+        &[
+            field("id", "UUID"),
+            field("name", "string"),
+            field("prefix", "string"),
+            field_opt("scopes", "string[]"),
+            field_opt("expires_at", "DateTime | null"),
+            field_opt("last_used_at", "DateTime | null"),
+            field("created_at", "DateTime"),
+        ],
+    ));
 
-    out.push_str(&interface("CreateApiKeyRequest", &[
-        field("name", "string"),
-        field_opt("scopes", "string[]"),
-        field_opt("expires_in_days", "number | null"),
-    ]));
+    out.push_str(&interface(
+        "CreateApiKeyRequest",
+        &[
+            field("name", "string"),
+            field_opt("scopes", "string[]"),
+            field_opt("expires_in_days", "number | null"),
+        ],
+    ));
 
-    out.push_str(&interface("ApiKeyCreated", &[
-        doc("Returned only at creation time. The full key is never shown again."),
-        field("id", "UUID"),
-        field("key", "string"),
-        field("name", "string"),
-        field_opt("scopes", "string[]"),
-        field_opt("expires_at", "DateTime | null"),
-    ]));
+    out.push_str(&interface(
+        "ApiKeyCreated",
+        &[
+            doc("Returned only at creation time. The full key is never shown again."),
+            field("id", "UUID"),
+            field("key", "string"),
+            field("name", "string"),
+            field_opt("scopes", "string[]"),
+            field_opt("expires_at", "DateTime | null"),
+        ],
+    ));
 
     // ── Storage ───────────────────────────────────────────────────
-    out.push_str(&interface("UploadResponse", &[
-        field("path", "string"),
-        field("size", "number"),
-        field("content_type", "string"),
-        field_opt("signed_url", "string | null"),
-    ]));
+    out.push_str(&interface(
+        "UploadResponse",
+        &[
+            field("path", "string"),
+            field("size", "number"),
+            field("content_type", "string"),
+            field_opt("signed_url", "string | null"),
+        ],
+    ));
 
     // ── Pagination ────────────────────────────────────────────────
-    out.push_str(&interface("PaginationMeta", &[
-        field("count", "number"),
-        field_opt("total", "number | null"),
-        field_opt("cursor", "string | null"),
-        field_opt("has_more", "boolean"),
-        field_opt("duration_ms", "number"),
-    ]));
+    out.push_str(&interface(
+        "PaginationMeta",
+        &[
+            field("count", "number"),
+            field_opt("total", "number | null"),
+            field_opt("cursor", "string | null"),
+            field_opt("has_more", "boolean"),
+            field_opt("duration_ms", "number"),
+        ],
+    ));
 
-    out.push_str(&interface("ListResponse<T>", &[
-        doc("Standard paginated list response envelope."),
-        field("data", "T[]"),
-        field("meta", "PaginationMeta"),
-    ]));
+    out.push_str(&interface(
+        "ListResponse<T>",
+        &[
+            doc("Standard paginated list response envelope."),
+            field("data", "T[]"),
+            field("meta", "PaginationMeta"),
+        ],
+    ));
 
-    out.push_str(&interface("DataResponse<T>", &[
-        doc("Standard single-item response envelope."),
-        field("data", "T"),
-        field_opt("meta", "Record<string, JsonValue>"),
-    ]));
+    out.push_str(&interface(
+        "DataResponse<T>",
+        &[
+            doc("Standard single-item response envelope."),
+            field("data", "T"),
+            field_opt("meta", "Record<string, JsonValue>"),
+        ],
+    ));
 
     // ── Pub/Sub ───────────────────────────────────────────────────
-    out.push_str(&interface("PublishRequest", &[
-        field("channel", "string"),
-        field("event", "string"),
-        field_opt("payload", "JsonValue | null"),
-    ]));
+    out.push_str(&interface(
+        "PublishRequest",
+        &[
+            field("channel", "string"),
+            field("event", "string"),
+            field_opt("payload", "JsonValue | null"),
+        ],
+    ));
 
-    out.push_str(&interface("PublishResponse", &[
-        field("ok", "boolean"),
-        field("channel", "string"),
-        field("event", "string"),
-        field("receivers", "number"),
-    ]));
+    out.push_str(&interface(
+        "PublishResponse",
+        &[
+            field("ok", "boolean"),
+            field("channel", "string"),
+            field("event", "string"),
+            field("receivers", "number"),
+        ],
+    ));
 
     // ── Batch ─────────────────────────────────────────────────────
-    out.push_str(&interface("BatchOperation", &[
-        field("method", "'GET' | 'POST' | 'PATCH' | 'DELETE'"),
-        field("path", "string"),
-        field_opt("body", "Record<string, JsonValue>"),
-    ]));
+    out.push_str(&interface(
+        "BatchOperation",
+        &[
+            field("method", "'GET' | 'POST' | 'PATCH' | 'DELETE'"),
+            field("path", "string"),
+            field_opt("body", "Record<string, JsonValue>"),
+        ],
+    ));
 
-    out.push_str(&interface("BatchRequest", &[
-        field("operations", "BatchOperation[]"),
-    ]));
+    out.push_str(&interface(
+        "BatchRequest",
+        &[field("operations", "BatchOperation[]")],
+    ));
 
-    out.push_str(&interface("BatchResultItem", &[
-        field("status", "number"),
-        field_opt("body", "JsonValue"),
-    ]));
+    out.push_str(&interface(
+        "BatchResultItem",
+        &[field("status", "number"), field_opt("body", "JsonValue")],
+    ));
 
-    out.push_str(&interface("BatchResponse", &[
-        field("results", "BatchResultItem[]"),
-    ]));
+    out.push_str(&interface(
+        "BatchResponse",
+        &[field("results", "BatchResultItem[]")],
+    ));
 
     out
 }
@@ -735,7 +1055,11 @@ pub fn generate_typescript_types() -> String {
 
 enum TsLine {
     Doc(String),
-    Field { name: String, ts_type: String, optional: bool },
+    Field {
+        name: String,
+        ts_type: String,
+        optional: bool,
+    },
 }
 
 fn doc(text: &str) -> TsLine {
@@ -743,11 +1067,19 @@ fn doc(text: &str) -> TsLine {
 }
 
 fn field(name: &str, ts_type: &str) -> TsLine {
-    TsLine::Field { name: name.to_string(), ts_type: ts_type.to_string(), optional: false }
+    TsLine::Field {
+        name: name.to_string(),
+        ts_type: ts_type.to_string(),
+        optional: false,
+    }
 }
 
 fn field_opt(name: &str, ts_type: &str) -> TsLine {
-    TsLine::Field { name: name.to_string(), ts_type: ts_type.to_string(), optional: true }
+    TsLine::Field {
+        name: name.to_string(),
+        ts_type: ts_type.to_string(),
+        optional: true,
+    }
 }
 
 fn interface(name: &str, lines: &[TsLine]) -> String {
@@ -758,7 +1090,11 @@ fn interface(name: &str, lines: &[TsLine]) -> String {
             TsLine::Doc(text) => {
                 out.push_str(&format!("  /** {text} */\n"));
             }
-            TsLine::Field { name, ts_type, optional } => {
+            TsLine::Field {
+                name,
+                ts_type,
+                optional,
+            } => {
                 let opt = if *optional { "?" } else { "" };
                 out.push_str(&format!("  {name}{opt}: {ts_type};\n"));
             }

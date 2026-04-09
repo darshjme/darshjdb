@@ -343,8 +343,7 @@ struct ActivityRow {
 impl ActivityRow {
     fn into_entry(self) -> ActivityEntry {
         let action = Action::from_str_opt(&self.action).unwrap_or(Action::Updated);
-        let changes: Vec<FieldChange> =
-            serde_json::from_value(self.changes).unwrap_or_default();
+        let changes: Vec<FieldChange> = serde_json::from_value(self.changes).unwrap_or_default();
 
         ActivityEntry {
             id: self.id,
@@ -443,10 +442,10 @@ mod tests {
             ("email".into(), json!("old@example.com")),
         ];
         let new = vec![
-            ("name".into(), json!("Alice")),     // unchanged
-            ("age".into(), json!(31)),            // updated
-            ("phone".into(), json!("+1234")),     // added
-            // email removed
+            ("name".into(), json!("Alice")), // unchanged
+            ("age".into(), json!(31)),       // updated
+            ("phone".into(), json!("+1234")), // added
+                                             // email removed
         ];
         let changes = diff_fields(&old, &new);
         assert_eq!(changes.len(), 3);

@@ -17,22 +17,104 @@ use std::borrow::Cow;
 
 /// Keywords recognized by DarshQL for syntax highlighting.
 const KEYWORDS: &[&str] = &[
-    "SELECT", "FROM", "WHERE", "INSERT", "UPDATE", "DELETE", "CREATE",
-    "DROP", "ALTER", "SET", "INTO", "VALUES", "AND", "OR", "NOT",
-    "ORDER", "BY", "LIMIT", "OFFSET", "ASC", "DESC", "GROUP",
-    "HAVING", "JOIN", "LEFT", "RIGHT", "INNER", "OUTER", "ON",
-    "AS", "IN", "IS", "NULL", "TRUE", "FALSE", "LIKE", "BETWEEN",
-    "EXISTS", "DISTINCT", "COUNT", "SUM", "AVG", "MIN", "MAX",
+    "SELECT",
+    "FROM",
+    "WHERE",
+    "INSERT",
+    "UPDATE",
+    "DELETE",
+    "CREATE",
+    "DROP",
+    "ALTER",
+    "SET",
+    "INTO",
+    "VALUES",
+    "AND",
+    "OR",
+    "NOT",
+    "ORDER",
+    "BY",
+    "LIMIT",
+    "OFFSET",
+    "ASC",
+    "DESC",
+    "GROUP",
+    "HAVING",
+    "JOIN",
+    "LEFT",
+    "RIGHT",
+    "INNER",
+    "OUTER",
+    "ON",
+    "AS",
+    "IN",
+    "IS",
+    "NULL",
+    "TRUE",
+    "FALSE",
+    "LIKE",
+    "BETWEEN",
+    "EXISTS",
+    "DISTINCT",
+    "COUNT",
+    "SUM",
+    "AVG",
+    "MIN",
+    "MAX",
     // DarshJDB-specific
-    "DEFINE", "NAMESPACE", "DATABASE", "TABLE", "FIELD", "INDEX",
-    "UNIQUE", "SEARCH", "SEMANTIC", "HYBRID", "RELATE", "CONTENT",
-    "MERGE", "PATCH", "RETURN", "FETCH", "SPLIT", "LET", "BEGIN",
-    "COMMIT", "CANCEL", "IF", "THEN", "ELSE", "END", "FOR",
-    "LIVE", "KILL", "SLEEP", "INFO", "USE", "SHOW", "PERMISSIONS",
-    "TYPE", "ASSERT", "VALUE", "DEFAULT", "READONLY", "FLEXIBLE",
-    "TOKENIZER", "ANALYZER", "FUNCTION", "PARAM", "THROW",
-    "entity_type", "where_clauses", "order", "limit", "offset",
-    "search", "semantic", "hybrid", "nested",
+    "DEFINE",
+    "NAMESPACE",
+    "DATABASE",
+    "TABLE",
+    "FIELD",
+    "INDEX",
+    "UNIQUE",
+    "SEARCH",
+    "SEMANTIC",
+    "HYBRID",
+    "RELATE",
+    "CONTENT",
+    "MERGE",
+    "PATCH",
+    "RETURN",
+    "FETCH",
+    "SPLIT",
+    "LET",
+    "BEGIN",
+    "COMMIT",
+    "CANCEL",
+    "IF",
+    "THEN",
+    "ELSE",
+    "END",
+    "FOR",
+    "LIVE",
+    "KILL",
+    "SLEEP",
+    "INFO",
+    "USE",
+    "SHOW",
+    "PERMISSIONS",
+    "TYPE",
+    "ASSERT",
+    "VALUE",
+    "DEFAULT",
+    "READONLY",
+    "FLEXIBLE",
+    "TOKENIZER",
+    "ANALYZER",
+    "FUNCTION",
+    "PARAM",
+    "THROW",
+    "entity_type",
+    "where_clauses",
+    "order",
+    "limit",
+    "offset",
+    "search",
+    "semantic",
+    "hybrid",
+    "nested",
 ];
 
 /// Simple per-word keyword highlighter for the REPL.
@@ -213,11 +295,7 @@ pub async fn run(
                 Some(t)
             }
             Err(e) => {
-                eprintln!(
-                    "  {} Authentication failed: {}",
-                    "!!!".bright_red(),
-                    e
-                );
+                eprintln!("  {} Authentication failed: {}", "!!!".bright_red(), e);
                 None
             }
         }
@@ -317,7 +395,16 @@ pub async fn run(
                 query_count += 1;
                 let start = std::time::Instant::now();
 
-                match execute_query(&client, &conn, &query, token.as_deref(), ns.as_deref(), db.as_deref()).await {
+                match execute_query(
+                    &client,
+                    &conn,
+                    &query,
+                    token.as_deref(),
+                    ns.as_deref(),
+                    db.as_deref(),
+                )
+                .await
+                {
                     Ok(response) => {
                         let elapsed = start.elapsed();
                         if pretty {
@@ -376,26 +463,10 @@ fn handle_dot_command(cmd: &str) -> DotResult {
             println!();
             println!("  {}", "DarshQL Shell Commands".bright_white().bold());
             println!("  {}", "=".repeat(40).dimmed());
-            println!(
-                "  {}   {}",
-                ".help".bright_cyan(),
-                "Show this help message"
-            );
-            println!(
-                "  {}  {}",
-                ".clear".bright_cyan(),
-                "Clear the multi-line buffer"
-            );
-            println!(
-                "  {} {}",
-                ".status".bright_cyan(),
-                "Show server status"
-            );
-            println!(
-                "  {}   {}",
-                ".quit".bright_cyan(),
-                "Exit the shell"
-            );
+            println!("  {}   Show this help message", ".help".bright_cyan());
+            println!("  {}  Clear the multi-line buffer", ".clear".bright_cyan());
+            println!("  {} Show server status", ".status".bright_cyan());
+            println!("  {}   Exit the shell", ".quit".bright_cyan());
             println!();
             println!("  {}", "Query Syntax".bright_white().bold());
             println!("  {}", "=".repeat(40).dimmed());
@@ -574,7 +645,10 @@ fn print_result_table(value: &serde_json::Value) {
     if columns.is_empty() {
         // Not objects, just print as JSON array
         for row in rows {
-            println!("  {}", serde_json::to_string_pretty(row).unwrap_or_default());
+            println!(
+                "  {}",
+                serde_json::to_string_pretty(row).unwrap_or_default()
+            );
         }
         return;
     }
@@ -624,11 +698,7 @@ fn print_result_table(value: &serde_json::Value) {
     for line in table.to_string().lines() {
         println!("  {line}");
     }
-    println!(
-        "\n  {} {} row(s) returned",
-        "---".dimmed(),
-        rows.len()
-    );
+    println!("\n  {} {} row(s) returned", "---".dimmed(), rows.len());
 }
 
 /// Format a JSON value for display in a table cell.

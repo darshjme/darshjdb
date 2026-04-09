@@ -6,7 +6,7 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
-use crate::error::{DarshJError, Result};
+use crate::error::Result;
 use crate::formulas::parser::{self, Expr};
 
 /// A node in the dependency graph representing a formula field.
@@ -75,11 +75,7 @@ impl DependencyGraph {
     }
 
     /// Register a formula field from a pre-parsed expression.
-    pub fn add_formula_field_expr(
-        &mut self,
-        field_id: impl Into<String>,
-        expr: Expr,
-    ) {
+    pub fn add_formula_field_expr(&mut self, field_id: impl Into<String>, expr: Expr) {
         let field_id = field_id.into();
         let deps = parser::extract_field_refs(&expr);
 
@@ -178,12 +174,12 @@ impl DependencyGraph {
             order.push(field.clone());
             if let Some(deps) = self.dependents.get(&field) {
                 for dep in deps {
-                    if affected.contains(dep) {
-                        if let Some(deg) = in_degree.get_mut(dep) {
-                            *deg = deg.saturating_sub(1);
-                            if *deg == 0 {
-                                ready.push_back(dep.clone());
-                            }
+                    if affected.contains(dep)
+                        && let Some(deg) = in_degree.get_mut(dep)
+                    {
+                        *deg = deg.saturating_sub(1);
+                        if *deg == 0 {
+                            ready.push_back(dep.clone());
                         }
                     }
                 }
@@ -206,12 +202,11 @@ impl DependencyGraph {
         let mut path: Vec<String> = Vec::new();
 
         for field_id in self.nodes.keys() {
-            if !visited.contains(field_id) {
-                if let Some(cycle) =
+            if !visited.contains(field_id)
+                && let Some(cycle) =
                     self.dfs_cycle(field_id, &mut visited, &mut on_stack, &mut path)
-                {
-                    return Some(cycle);
-                }
+            {
+                return Some(cycle);
             }
         }
         None

@@ -174,9 +174,7 @@ fn tokenize(input: &str) -> Result<Vec<Token>> {
             }
             i += 1; // closing }
             if name.is_empty() {
-                return Err(DarshJError::InvalidQuery(
-                    "empty field reference".into(),
-                ));
+                return Err(DarshJError::InvalidQuery("empty field reference".into()));
             }
             tokens.push(Token::FieldRef(name));
             continue;
@@ -644,8 +642,7 @@ mod tests {
 
     #[test]
     fn test_complex_formula() {
-        let expr =
-            parse(r#"IF(AND({Status} = "Done", {Priority} > 3), "High", "Low")"#).unwrap();
+        let expr = parse(r#"IF(AND({Status} = "Done", {Priority} > 3), "High", "Low")"#).unwrap();
         match expr {
             Expr::If(cond, then_br, else_br) => {
                 assert!(matches!(*cond, Expr::FunctionCall(ref n, _) if n == "AND"));
@@ -722,8 +719,7 @@ mod tests {
 
     #[test]
     fn test_extract_field_refs() {
-        let expr =
-            parse(r#"IF({Status} = "Done", {Score} * 2, {Score} + {Bonus})"#).unwrap();
+        let expr = parse(r#"IF({Status} = "Done", {Score} * 2, {Score} + {Bonus})"#).unwrap();
         let refs = extract_field_refs(&expr);
         assert_eq!(refs, vec!["Bonus", "Score", "Status"]);
     }

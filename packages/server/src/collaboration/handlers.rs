@@ -22,7 +22,7 @@ use axum::routing::{delete, get, patch, post};
 use axum::{Extension, Json, Router};
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use uuid::Uuid;
 
 use super::collaborator::{self, CollaboratorRole, InviteStatus};
@@ -45,7 +45,10 @@ pub fn collaboration_router() -> Router<AppState> {
         .route("/share/{token}", get(access_share))
         .route("/share/{id}", delete(revoke_share))
         // Collaborators
-        .route("/collaborators", post(invite_collaborator).get(list_collaborators))
+        .route(
+            "/collaborators",
+            post(invite_collaborator).get(list_collaborators),
+        )
         .route(
             "/collaborators/{id}",
             patch(update_collaborator_role).delete(remove_collaborator),
@@ -160,14 +163,17 @@ async fn access_share(
 
     let config = match config {
         Some(c) => c,
-        None => return Err(ApiError::not_found("Share link not found, expired, or revoked")),
+        None => {
+            return Err(ApiError::not_found(
+                "Share link not found, expired, or revoked",
+            ));
+        }
     };
 
     // Verify password if the share is password-protected.
     if let Some(ref hash) = config.password_hash {
         let provided = query.password.as_deref().unwrap_or("");
-        let valid = crate::auth::PasswordProvider::verify_password(provided, hash)
-            .unwrap_or(false);
+        let valid = crate::auth::PasswordProvider::verify_password(provided, hash).unwrap_or(false);
         if !valid {
             return Err(ApiError::new(
                 crate::api::error::ErrorCode::Unauthenticated,
@@ -405,14 +411,10 @@ async fn create_workspace(
     Extension(ctx): Extension<AuthContext>,
     Json(body): Json<CreateWorkspaceRequest>,
 ) -> Result<Response, ApiError> {
-    let ws = workspace::create_workspace(
-        &state.triple_store,
-        &body.name,
-        ctx.user_id,
-        body.settings,
-    )
-    .await
-    .map_err(|e| ApiError::internal(format!("workspace creation failed: {e}")))?;
+    let ws =
+        workspace::create_workspace(&state.triple_store, &body.name, ctx.user_id, body.settings)
+            .await
+            .map_err(|e| ApiError::internal(format!("workspace creation failed: {e}")))?;
 
     Ok((StatusCode::CREATED, Json(json!(ws))).into_response())
 }

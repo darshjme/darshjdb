@@ -18,7 +18,9 @@ use super::engine::{AggFn, AggregateQuery};
 /// Allows alphanumeric, underscore, forward slash, colon, hyphen, and dot.
 fn sanitize_attr(attr: &str) -> String {
     attr.chars()
-        .filter(|c| c.is_alphanumeric() || *c == '_' || *c == '/' || *c == ':' || *c == '-' || *c == '.')
+        .filter(|c| {
+            c.is_alphanumeric() || *c == '_' || *c == '/' || *c == ':' || *c == '-' || *c == '.'
+        })
         .collect()
 }
 
@@ -41,7 +43,9 @@ fn agg_fn_sql(func: &AggFn, col_expr: &str) -> String {
         AggFn::StdDev => format!("STDDEV_POP(({col_expr}#>>'{{{{}}}}')::numeric)"),
         AggFn::Variance => format!("VAR_POP(({col_expr}#>>'{{{{}}}}')::numeric)"),
         AggFn::Median => {
-            format!("PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY ({col_expr}#>>'{{{{}}}}')::numeric)")
+            format!(
+                "PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY ({col_expr}#>>'{{{{}}}}')::numeric)"
+            )
         }
         AggFn::Percentile(p) => {
             format!(
@@ -141,9 +145,7 @@ pub fn build_aggregate_sql(query: &AggregateQuery) -> (String, Vec<Value>) {
     for attr in &pivot_attrs {
         let alias = attr_to_alias(attr);
         let safe_attr = sanitize_attr(attr);
-        sql.push_str(&format!(
-            ",\n    {alias}.value AS {alias}_val"
-        ));
+        sql.push_str(&format!(",\n    {alias}.value AS {alias}_val"));
         // We'll add the joins below; just declare the select columns here.
         let _ = safe_attr; // used in the FROM clause below
     }
@@ -279,8 +281,9 @@ fn where_op_sql(op: &crate::query::WhereOp) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    use super::super::engine::Aggregation;
     use super::*;
-    use crate::query::WhereOp;
+    use crate::query::{WhereClause, WhereOp};
 
     fn make_query(
         entity_type: &str,
@@ -305,7 +308,11 @@ mod tests {
 
     #[test]
     fn basic_sql_has_cte_structure() {
-        let q = make_query("Order", vec!["status"], vec![("amount", AggFn::Sum, "total")]);
+        let q = make_query(
+            "Order",
+            vec!["status"],
+            vec![("amount", AggFn::Sum, "total")],
+        );
         let (sql, params) = build_aggregate_sql(&q);
 
         assert!(sql.contains("WITH entity_ids AS"));
@@ -358,7 +365,11 @@ mod tests {
 
     #[test]
     fn having_clause_generates_sql() {
-        let mut q = make_query("Order", vec!["status"], vec![("amount", AggFn::Sum, "total")]);
+        let mut q = make_query(
+            "Order",
+            vec!["status"],
+            vec![("amount", AggFn::Sum, "total")],
+        );
         q.having = Some(super::super::engine::HavingClause {
             alias: "total".into(),
             op: super::super::engine::HavingOp::Gt,

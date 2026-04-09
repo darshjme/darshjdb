@@ -48,12 +48,12 @@ use crate::auth::{
 use crate::cache::{self, QueryCache};
 use crate::functions::registry::FunctionRegistry;
 use crate::functions::runtime::FunctionRuntime;
+use crate::graph::{Edge, EdgeInput, GraphEngine, RecordId, TraversalConfig};
 use crate::query::{self, QueryResultRow};
 use crate::rules::RuleEngine;
 use crate::storage::{LocalFsBackend, StorageEngine, StorageError};
 use crate::sync::broadcaster::ChangeEvent;
 use crate::sync::pubsub::{PubSubEngine, PubSubEvent};
-use crate::graph::{Edge, EdgeInput, GraphEngine, RecordId, TraversalConfig};
 use crate::triple_store::{PgTripleStore, TripleInput, TripleStore};
 
 // ---------------------------------------------------------------------------
@@ -662,14 +662,29 @@ pub fn build_router(state: AppState) -> Router {
         .route("/graph/neighbors/{table}/{id}", get(graph_neighbors))
         .route("/graph/outgoing/{table}/{id}", get(graph_outgoing))
         .route("/graph/incoming/{table}/{id}", get(graph_incoming))
-        .route("/graph/edge/{edge_id}", axum::routing::delete(graph_delete_edge))
+        .route(
+            "/graph/edge/{edge_id}",
+            axum::routing::delete(graph_delete_edge),
+        )
         // -- Schema management (DEFINE TABLE / FIELD / INDEX) ---------------
-        .route("/schema/tables", get(schema_list_tables).post(schema_define_table))
-        .route("/schema/tables/{table}", axum::routing::delete(schema_remove_table))
+        .route(
+            "/schema/tables",
+            get(schema_list_tables).post(schema_define_table),
+        )
+        .route(
+            "/schema/tables/{table}",
+            axum::routing::delete(schema_remove_table),
+        )
         .route("/schema/tables/{table}/fields", post(schema_define_field))
-        .route("/schema/tables/{table}/fields/{field}", axum::routing::delete(schema_remove_field))
+        .route(
+            "/schema/tables/{table}/fields/{field}",
+            axum::routing::delete(schema_remove_field),
+        )
         .route("/schema/tables/{table}/indexes", post(schema_define_index))
-        .route("/schema/tables/{table}/migrations", get(schema_migration_history))
+        .route(
+            "/schema/tables/{table}/migrations",
+            get(schema_migration_history),
+        )
         // -- Batch / Pipeline ---------------------------------------------
         .route("/batch", post(super::batch::batch_handler))
         .route(
@@ -705,10 +720,7 @@ pub fn build_router(state: AppState) -> Router {
             "/data/{entity}/{id}/activity",
             get(crate::activity::handlers::activity_for_record),
         )
-        .route(
-            "/activity",
-            get(crate::activity::handlers::activity_query),
-        )
+        .route("/activity", get(crate::activity::handlers::activity_query))
         .route(
             "/notifications",
             get(crate::activity::handlers::notifications_list),
@@ -812,9 +824,9 @@ pub fn build_router(state: AppState) -> Router {
             crate::webhooks::handlers::webhook_routes().with_state(
                 crate::webhooks::handlers::WebhookState {
                     pool: state.pool.clone(),
-                    sender: std::sync::Arc::new(
-                        crate::webhooks::WebhookSender::new(state.pool.clone()),
-                    ),
+                    sender: std::sync::Arc::new(crate::webhooks::WebhookSender::new(
+                        state.pool.clone(),
+                    )),
                 },
             ),
         )
@@ -840,15 +852,11 @@ pub fn build_router(state: AppState) -> Router {
     let plugin_routes: Router = Router::new()
         .nest(
             "/plugins",
-            crate::plugins::handlers::plugin_routes(
-                crate::plugins::handlers::PluginApiState {
-                    registry: std::sync::Arc::new(
-                        crate::plugins::registry::PluginRegistry::new(
-                            std::sync::Arc::new(crate::plugins::hooks::HookRegistry::new()),
-                        ),
-                    ),
-                },
-            ),
+            crate::plugins::handlers::plugin_routes(crate::plugins::handlers::PluginApiState {
+                registry: std::sync::Arc::new(crate::plugins::registry::PluginRegistry::new(
+                    std::sync::Arc::new(crate::plugins::hooks::HookRegistry::new()),
+                )),
+            }),
         )
         .layer(middleware::from_fn_with_state(
             state.clone(),
@@ -1894,27 +1902,26 @@ async fn mutate(
     // ── Schema validation for batch mutations ─────────────────────
     if let Some(ref registry) = state.schema_registry {
         for (i, m) in body.mutations.iter().enumerate() {
-            if let Some(data) = &m.data {
-                if let Some(obj) = data.as_object() {
-                    if let Some(schema) = registry.get(&m.entity) {
-                        let doc: std::collections::HashMap<String, Value> = obj
-                            .iter()
-                            .filter(|(k, _)| !k.starts_with('$'))
-                            .map(|(k, v)| (k.clone(), v.clone()))
-                            .collect();
-                        let is_update = matches!(m.op, MutationOp::Update | MutationOp::Upsert);
-                        let result = if is_update {
-                            crate::schema::validator::SchemaValidator::validate_update(&schema, &doc)
-                        } else {
-                            crate::schema::validator::SchemaValidator::validate_insert(&schema, &doc)
-                        };
-                        if !result.is_valid() {
-                            return Err(ApiError::bad_request(format!(
-                                "Mutation {i}: schema validation failed: {}",
-                                result.error_message()
-                            )));
-                        }
-                    }
+            if let Some(data) = &m.data
+                && let Some(obj) = data.as_object()
+                && let Some(schema) = registry.get(&m.entity)
+            {
+                let doc: std::collections::HashMap<String, Value> = obj
+                    .iter()
+                    .filter(|(k, _)| !k.starts_with('$'))
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect();
+                let is_update = matches!(m.op, MutationOp::Update | MutationOp::Upsert);
+                let result = if is_update {
+                    crate::schema::validator::SchemaValidator::validate_update(&schema, &doc)
+                } else {
+                    crate::schema::validator::SchemaValidator::validate_insert(&schema, &doc)
+                };
+                if !result.is_valid() {
+                    return Err(ApiError::bad_request(format!(
+                        "Mutation {i}: schema validation failed: {}",
+                        result.error_message()
+                    )));
                 }
             }
         }
@@ -3277,12 +3284,7 @@ async fn admin_storage_list(
     let files: Vec<serde_json::Value> = objects
         .iter()
         .map(|obj| {
-            let name = obj
-                .path
-                .rsplit('/')
-                .next()
-                .unwrap_or(&obj.path)
-                .to_string();
+            let name = obj.path.rsplit('/').next().unwrap_or(&obj.path).to_string();
             serde_json::json!({
                 "id": obj.etag,
                 "name": name,
@@ -4228,7 +4230,8 @@ async fn schema_remove_field(
         .await
         .map_err(|e| ApiError::internal(format!("Failed to remove field: {e}")))?;
 
-    let response = serde_json::json!({ "status": "ok", "table": table, "field": field, "action": "removed" });
+    let response =
+        serde_json::json!({ "status": "ok", "table": table, "field": field, "action": "removed" });
     Ok(negotiate_response(&headers, &response))
 }
 
@@ -4705,8 +4708,8 @@ mod tests {
     /// Helper: build a fake JWT with the given claims payload (header.payload.sig).
     fn fake_jwt(claims: &serde_json::Value) -> String {
         let header = data_encoding::BASE64URL_NOPAD.encode(b"{\"alg\":\"HS256\"}");
-        let payload =
-            data_encoding::BASE64URL_NOPAD.encode(serde_json::to_string(claims).unwrap().as_bytes());
+        let payload = data_encoding::BASE64URL_NOPAD
+            .encode(serde_json::to_string(claims).unwrap().as_bytes());
         let sig = data_encoding::BASE64URL_NOPAD.encode(b"fake-signature-bytes");
         format!("{header}.{payload}.{sig}")
     }

@@ -4,17 +4,15 @@
 //! duplicating, and inspecting tables. All responses follow the standard
 //! DarshJDB JSON envelope pattern.
 
+use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
-use axum::Json;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use super::{
-    FieldId, PgTableStore, TableConfig, TableId, TableSettings, TableStore, slugify,
-};
 use super::templates;
+use super::{FieldId, PgTableStore, TableConfig, TableId, TableSettings, TableStore, slugify};
 use crate::api::error::ApiError;
 use crate::api::rest::negotiate_response_pub;
 use crate::triple_store::{PgTripleStore, TripleStore};
@@ -125,14 +123,10 @@ pub async fn create_table(
     // If a template is specified, delegate to template creation.
     if let Some(ref template_name) = body.template {
         let pool = state.table_store.pool();
-        let config = templates::create_from_template(
-            pool,
-            &state.table_store,
-            template_name,
-            &body.name,
-        )
-        .await
-        .map_err(|e| ApiError::internal(format!("Failed to create from template: {e}")))?;
+        let config =
+            templates::create_from_template(pool, &state.table_store, template_name, &body.name)
+                .await
+                .map_err(|e| ApiError::internal(format!("Failed to create from template: {e}")))?;
 
         let response = serde_json::json!({
             "table": config,
@@ -355,10 +349,7 @@ pub async fn duplicate_table(
     // Optionally copy data.
     if body.include_data {
         // Find all records of source table by querying :db/type = source.slug
-        let record_triples = state
-            .table_store
-            .pool()
-            .clone();
+        let record_triples = state.table_store.pool().clone();
 
         let ts = PgTripleStore::new_lazy(record_triples);
         let source_records = ts

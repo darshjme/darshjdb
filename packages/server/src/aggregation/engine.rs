@@ -240,8 +240,7 @@ impl AggregationEngine {
 
     /// Quick summary: count, sum, avg for all numeric fields of an entity type.
     pub async fn summary(&self, entity_type: &str) -> Result<AggregateResult> {
-        let sql = format!(
-            r#"
+        let sql = r#"
             WITH entity_ids AS (
                 SELECT DISTINCT entity_id
                 FROM triples
@@ -265,17 +264,16 @@ impl AggregationEngine {
                     'count_distinct', COUNT(DISTINCT value),
                     'count_empty', COUNT(*) FILTER (WHERE value = 'null'::jsonb OR value = '""'::jsonb),
                     'count_filled', COUNT(*) FILTER (WHERE value != 'null'::jsonb AND value != '""'::jsonb),
-                    'sum', CASE WHEN bool_and(value_type IN (1,2)) THEN SUM((value#>>'{{}}')::numeric) ELSE NULL END,
-                    'avg', CASE WHEN bool_and(value_type IN (1,2)) THEN AVG((value#>>'{{}}')::numeric) ELSE NULL END,
-                    'min', CASE WHEN bool_and(value_type IN (1,2)) THEN MIN((value#>>'{{}}')::numeric) ELSE NULL END,
-                    'max', CASE WHEN bool_and(value_type IN (1,2)) THEN MAX((value#>>'{{}}')::numeric) ELSE NULL END
+                    'sum', CASE WHEN bool_and(value_type IN (1,2)) THEN SUM((value#>>'{}')::numeric) ELSE NULL END,
+                    'avg', CASE WHEN bool_and(value_type IN (1,2)) THEN AVG((value#>>'{}')::numeric) ELSE NULL END,
+                    'min', CASE WHEN bool_and(value_type IN (1,2)) THEN MIN((value#>>'{}')::numeric) ELSE NULL END,
+                    'max', CASE WHEN bool_and(value_type IN (1,2)) THEN MAX((value#>>'{}')::numeric) ELSE NULL END
                 ) AS agg_values,
                 COUNT(*) AS group_count
             FROM vals
             GROUP BY attribute
             ORDER BY attribute
-            "#
-        );
+            "#.to_string();
 
         let rows: Vec<RawAggRow> = sqlx::query_as(&sql)
             .bind(entity_type)
@@ -286,7 +284,10 @@ impl AggregationEngine {
             .iter()
             .map(|row| {
                 let mut key = HashMap::new();
-                key.insert("attribute".to_string(), Value::String(row.group_key.clone()));
+                key.insert(
+                    "attribute".to_string(),
+                    Value::String(row.group_key.clone()),
+                );
                 let values: HashMap<String, Value> = match &row.agg_values {
                     Value::Object(map) => map.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
                     _ => HashMap::new(),
@@ -306,10 +307,7 @@ impl AggregationEngine {
     }
 
     /// Compute grand totals (aggregations without GROUP BY).
-    async fn compute_totals(
-        &self,
-        query: &AggregateQuery,
-    ) -> Result<HashMap<String, Value>> {
+    async fn compute_totals(&self, query: &AggregateQuery) -> Result<HashMap<String, Value>> {
         let mut totals_query = query.clone();
         totals_query.group_by.clear();
         totals_query.having = None;

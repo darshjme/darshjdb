@@ -423,13 +423,9 @@ impl ScopeManager {
         }
 
         // Fetch custom claim fields.
-        let custom_claims = if !scope.custom_claim_fields.is_empty() {
-            self.fetch_custom_claims(
-                &scope.auth_table,
-                user_id,
-                &scope.custom_claim_fields,
-            )
-            .await?
+        let _custom_claims = if !scope.custom_claim_fields.is_empty() {
+            self.fetch_custom_claims(&scope.auth_table, user_id, &scope.custom_claim_fields)
+                .await?
         } else {
             HashMap::new()
         };
@@ -506,7 +502,10 @@ impl ScopeManager {
         let safe_fields: Vec<String> = fields
             .iter()
             .map(|f| {
-                let safe: String = f.chars().filter(|c| c.is_alphanumeric() || *c == '_').collect();
+                let safe: String = f
+                    .chars()
+                    .filter(|c| c.is_alphanumeric() || *c == '_')
+                    .collect();
                 format!("\"{safe}\"")
             })
             .collect();
@@ -518,12 +517,10 @@ impl ScopeManager {
         );
 
         let row: Option<serde_json::Value> =
-            sqlx::query_scalar(&format!(
-                "SELECT row_to_json(t) FROM ({query}) t",
-            ))
-            .bind(user_id)
-            .fetch_optional(&self.pool)
-            .await?;
+            sqlx::query_scalar(&format!("SELECT row_to_json(t) FROM ({query}) t",))
+                .bind(user_id)
+                .fetch_optional(&self.pool)
+                .await?;
 
         match row {
             Some(serde_json::Value::Object(map)) => {
@@ -629,14 +626,20 @@ impl ScopeManager {
     ) -> Result<(AuthContext, String), AuthError> {
         let key_hash = hex_sha256(api_key.as_bytes());
 
-        let row: Option<(Uuid, Uuid, String, bool, Option<chrono::DateTime<Utc>>, serde_json::Value)> =
-            sqlx::query_as(
-                "SELECT key_id, owner_id, scope, revoked, expires_at, roles
+        let row: Option<(
+            Uuid,
+            Uuid,
+            String,
+            bool,
+            Option<chrono::DateTime<Utc>>,
+            serde_json::Value,
+        )> = sqlx::query_as(
+            "SELECT key_id, owner_id, scope, revoked, expires_at, roles
                  FROM _api_keys WHERE key_hash = $1",
-            )
-            .bind(&key_hash)
-            .fetch_optional(&self.pool)
-            .await?;
+        )
+        .bind(&key_hash)
+        .fetch_optional(&self.pool)
+        .await?;
 
         let (key_id, owner_id, scope, revoked, expires_at, roles_json) =
             row.ok_or(AuthError::InvalidCredentials)?;
@@ -645,10 +648,10 @@ impl ScopeManager {
             return Err(AuthError::TokenInvalid("API key revoked".into()));
         }
 
-        if let Some(exp) = expires_at {
-            if Utc::now() > exp {
-                return Err(AuthError::TokenInvalid("API key expired".into()));
-            }
+        if let Some(exp) = expires_at
+            && Utc::now() > exp
+        {
+            return Err(AuthError::TokenInvalid("API key expired".into()));
         }
 
         // Update last_used_at (fire-and-forget, non-blocking).
@@ -780,12 +783,10 @@ impl ScopeManager {
         .await?;
 
         // Fetch current roles.
-        let mut roles: Vec<String> = sqlx::query_scalar(
-            &format!(
-                "SELECT roles FROM {} WHERE id = $1",
-                sanitize_table_name(&scope.auth_table),
-            ),
-        )
+        let mut roles: Vec<String> = sqlx::query_scalar(&format!(
+            "SELECT roles FROM {} WHERE id = $1",
+            sanitize_table_name(&scope.auth_table),
+        ))
         .bind(user_id)
         .fetch_optional(&self.pool)
         .await?
@@ -1052,6 +1053,9 @@ mod tests {
         };
 
         let json = serde_json::to_value(&claims).expect("serialize");
-        assert!(json.get("ext").is_none(), "empty custom claims should be omitted");
+        assert!(
+            json.get("ext").is_none(),
+            "empty custom claims should be omitted"
+        );
     }
 }

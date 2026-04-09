@@ -189,10 +189,7 @@ mod tests {
             PluginCapability::ApiExtension("analytics".into()).kind(),
             "api_extension"
         );
-        assert_eq!(
-            PluginCapability::Webhook("stripe".into()).kind(),
-            "webhook"
-        );
+        assert_eq!(PluginCapability::Webhook("stripe".into()).kind(), "webhook");
     }
 
     #[test]

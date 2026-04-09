@@ -345,10 +345,7 @@ pub async fn create_share(
 ///
 /// Returns `None` if the token is unknown, expired, revoked, or has
 /// exceeded its maximum use count.
-pub async fn resolve_share(
-    store: &PgTripleStore,
-    token: &str,
-) -> Result<Option<ShareConfig>> {
+pub async fn resolve_share(store: &PgTripleStore, token: &str) -> Result<Option<ShareConfig>> {
     // Look up the share_id via the reverse lookup entity.
     let token_entity = token_to_lookup_uuid(token);
     let lookup_triples = store.get_entity(token_entity).await?;
@@ -442,20 +439,20 @@ pub async fn resolve_share_by_id(
         .map(|dt| dt.with_timezone(&Utc));
 
     // Check expiry.
-    if let Some(exp) = expires_at {
-        if Utc::now() > exp {
-            return Ok(None);
-        }
+    if let Some(exp) = expires_at
+        && Utc::now() > exp
+    {
+        return Ok(None);
     }
 
     let max_uses = get_u32("share/max_uses");
     let use_count = get_u32("share/use_count").unwrap_or(0);
 
     // Check max uses.
-    if let Some(max) = max_uses {
-        if use_count >= max {
-            return Ok(None);
-        }
+    if let Some(max) = max_uses
+        && use_count >= max
+    {
+        return Ok(None);
     }
 
     let password_hash = get_str("share/password_hash");
@@ -569,7 +566,11 @@ mod tests {
 
     #[test]
     fn resource_type_roundtrip() {
-        for rt in [ResourceType::Table, ResourceType::View, ResourceType::Record] {
+        for rt in [
+            ResourceType::Table,
+            ResourceType::View,
+            ResourceType::Record,
+        ] {
             let s = rt.to_string();
             let parsed: ResourceType = s.parse().unwrap();
             assert_eq!(parsed, rt);
@@ -585,7 +586,10 @@ mod tests {
     #[test]
     fn share_id_entity_key_format() {
         let id = ShareId(Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap());
-        assert_eq!(id.entity_key(), "share:550e8400-e29b-41d4-a716-446655440000");
+        assert_eq!(
+            id.entity_key(),
+            "share:550e8400-e29b-41d4-a716-446655440000"
+        );
     }
 
     #[test]

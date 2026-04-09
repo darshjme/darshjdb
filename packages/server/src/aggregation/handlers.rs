@@ -1,10 +1,10 @@
 //! API endpoints for aggregation, summary, and chart queries.
 
+use crate::api::error::ApiError;
 use axum::extract::State;
 use axum::response::IntoResponse;
 use axum::routing::post;
 use axum::{Json, Router};
-use crate::api::error::ApiError;
 
 use super::chart::{self, ChartQuery};
 use super::engine::{AggregateQuery, AggregationEngine};
@@ -63,11 +63,7 @@ async fn aggregate_handler(
     State(state): State<AggregationState>,
     Json(query): Json<AggregateQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let result = state
-        .engine
-        .execute(&query)
-        .await
-        .map_err(ApiError::from)?;
+    let result = state.engine.execute(&query).await.map_err(ApiError::from)?;
 
     Ok(Json(result))
 }
@@ -155,7 +151,9 @@ struct SummaryRequest {
 
 #[cfg(test)]
 mod tests {
+    use super::super::engine::AggregateResult;
     use super::*;
+    use serde_json::Value;
 
     #[test]
     fn summary_request_deserializes() {

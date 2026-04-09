@@ -290,7 +290,11 @@ impl BuiltinExecutor {
         let entity_type = config.config["entity_type"]
             .as_str()
             .ok_or_else(|| DarshJError::InvalidQuery("CreateRecord: missing entity_type".into()))?;
-        let data = config.config.get("data").cloned().unwrap_or(Value::Object(Default::default()));
+        let data = config
+            .config
+            .get("data")
+            .cloned()
+            .unwrap_or(Value::Object(Default::default()));
         let entity_id = Uuid::new_v4();
 
         info!(
@@ -317,7 +321,11 @@ impl BuiltinExecutor {
             .as_str()
             .or_else(|| context.entity_id.map(|_| "from_context"))
             .ok_or_else(|| DarshJError::InvalidQuery("UpdateRecord: missing entity_id".into()))?;
-        let data = config.config.get("data").cloned().unwrap_or(Value::Object(Default::default()));
+        let data = config
+            .config
+            .get("data")
+            .cloned()
+            .unwrap_or(Value::Object(Default::default()));
 
         info!(entity_id = entity_id, "automation: updating record");
 
@@ -393,9 +401,10 @@ impl BuiltinExecutor {
             }
         }
 
-        let response = request.send().await.map_err(|e| {
-            DarshJError::Internal(format!("webhook request failed: {e}"))
-        })?;
+        let response = request
+            .send()
+            .await
+            .map_err(|e| DarshJError::Internal(format!("webhook request failed: {e}")))?;
 
         let status = response.status().as_u16();
         let response_body = response.text().await.unwrap_or_default();
@@ -421,7 +430,9 @@ impl BuiltinExecutor {
         let to = config.config["to"]
             .as_str()
             .ok_or_else(|| DarshJError::InvalidQuery("SendEmail: missing 'to'".into()))?;
-        let subject = config.config["subject"].as_str().unwrap_or("DarshJDB Notification");
+        let subject = config.config["subject"]
+            .as_str()
+            .unwrap_or("DarshJDB Notification");
         let body = config.config["body"].as_str().unwrap_or("");
 
         info!(to = to, subject = subject, "automation: email queued");
@@ -442,10 +453,14 @@ impl BuiltinExecutor {
         config: &ActionConfig,
         context: &ActionContext,
     ) -> Result<Value> {
-        let function_name = config.config["function_name"]
-            .as_str()
-            .ok_or_else(|| DarshJError::InvalidQuery("RunFunction: missing function_name".into()))?;
-        let args = config.config.get("args").cloned().unwrap_or(Value::Object(Default::default()));
+        let function_name = config.config["function_name"].as_str().ok_or_else(|| {
+            DarshJError::InvalidQuery("RunFunction: missing function_name".into())
+        })?;
+        let args = config
+            .config
+            .get("args")
+            .cloned()
+            .unwrap_or(Value::Object(Default::default()));
 
         info!(
             function_name = function_name,
@@ -471,9 +486,9 @@ impl BuiltinExecutor {
             .as_str()
             .ok_or_else(|| DarshJError::InvalidQuery("SetFieldValue: missing field".into()))?;
         let value = config.config.get("value").cloned().unwrap_or(Value::Null);
-        let entity_id = context
-            .entity_id
-            .ok_or_else(|| DarshJError::InvalidQuery("SetFieldValue: no entity in context".into()))?;
+        let entity_id = context.entity_id.ok_or_else(|| {
+            DarshJError::InvalidQuery("SetFieldValue: no entity in context".into())
+        })?;
 
         info!(
             entity_id = %entity_id,
@@ -508,19 +523,16 @@ impl BuiltinExecutor {
         }))
     }
 
-    async fn exec_notify(
-        &self,
-        config: &ActionConfig,
-        _context: &ActionContext,
-    ) -> Result<Value> {
+    async fn exec_notify(&self, config: &ActionConfig, _context: &ActionContext) -> Result<Value> {
         let channel = config.config["channel"].as_str().unwrap_or("default");
         let message = config.config["message"].as_str().unwrap_or("");
-        let recipients = config.config.get("recipients").cloned().unwrap_or(Value::Array(vec![]));
+        let recipients = config
+            .config
+            .get("recipients")
+            .cloned()
+            .unwrap_or(Value::Array(vec![]));
 
-        info!(
-            channel = channel,
-            "automation: notification queued"
-        );
+        info!(channel = channel, "automation: notification queued");
 
         Ok(serde_json::json!({
             "action": "notify",

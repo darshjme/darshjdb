@@ -27,7 +27,7 @@ pub mod link;
 pub mod lookup;
 pub mod rollup;
 
-pub use cascade::{cascade_delete, cascade_update, CascadeEvent};
+pub use cascade::{CascadeEvent, cascade_delete, cascade_update};
 pub use link::{LinkConfig, Relationship, add_link, create_link, get_linked, remove_link};
 pub use lookup::{LookupConfig, LookupField, resolve_lookup};
 pub use rollup::{RollupConfig, RollupFn, compute_rollup};

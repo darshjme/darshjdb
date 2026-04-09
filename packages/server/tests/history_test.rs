@@ -8,9 +8,9 @@
 //!     cargo test --test history_test
 //! ```
 
-use ddb_server::history::versions::{self, ChangeType};
 use ddb_server::history::restore;
 use ddb_server::history::snapshots;
+use ddb_server::history::versions::{self, ChangeType};
 use ddb_server::triple_store::{PgTripleStore, TripleInput, TripleStore};
 use serde_json::json;
 use sqlx::PgPool;
@@ -87,7 +87,10 @@ async fn test_history_three_versions() {
         .expect("v1");
 
     // Version 2: update email.
-    store.retract(eid, "user/email").await.expect("retract old email");
+    store
+        .retract(eid, "user/email")
+        .await
+        .expect("retract old email");
     store
         .set_triples(&[TripleInput {
             entity_id: eid,
@@ -126,11 +129,17 @@ async fn test_history_three_versions() {
     let v1 = &history[0];
     assert_eq!(v1.version_number, 1);
     assert_eq!(v1.snapshot.get("user/name"), Some(&json!("Alice")));
-    assert_eq!(v1.snapshot.get("user/email"), Some(&json!("alice@test.com")));
+    assert_eq!(
+        v1.snapshot.get("user/email"),
+        Some(&json!("alice@test.com"))
+    );
 
     // Check that one of the later versions has the updated email.
     let last = history.last().unwrap();
-    assert_eq!(last.snapshot.get("user/email"), Some(&json!("alice@new.com")));
+    assert_eq!(
+        last.snapshot.get("user/email"),
+        Some(&json!("alice@new.com"))
+    );
     assert_eq!(last.snapshot.get("user/age"), Some(&json!(30)));
 
     // Verify change types are populated.
@@ -141,10 +150,7 @@ async fn test_history_three_versions() {
         .filter(|ct| *ct == ChangeType::Added)
         .map(|_| "added")
         .collect();
-    assert!(
-        !v1_changes.is_empty(),
-        "v1 should have Added changes"
-    );
+    assert!(!v1_changes.is_empty(), "v1 should have Added changes");
 
     cleanup_entities(&pool, &[eid]).await;
 }
@@ -187,15 +193,11 @@ async fn test_history_get_version() {
         .expect("v2");
 
     // Get version 1 state.
-    let v1_state = versions::get_version(&pool, eid, 1)
-        .await
-        .expect("get v1");
+    let v1_state = versions::get_version(&pool, eid, 1).await.expect("get v1");
     assert_eq!(v1_state.get("item/name"), Some(&json!("Alpha")));
 
     // Get latest version state.
-    let history = versions::get_history(&pool, eid, 0)
-        .await
-        .expect("history");
+    let history = versions::get_history(&pool, eid, 0).await.expect("history");
     let latest_version = history.last().unwrap().version_number;
     let latest_state = versions::get_version(&pool, eid, latest_version)
         .await
@@ -247,8 +249,14 @@ async fn test_history_restore_version() {
         .expect("v1");
 
     // v2: name = "Modified", color retracted.
-    store.retract(eid, "record/name").await.expect("retract name");
-    store.retract(eid, "record/color").await.expect("retract color");
+    store
+        .retract(eid, "record/name")
+        .await
+        .expect("retract name");
+    store
+        .retract(eid, "record/color")
+        .await
+        .expect("retract color");
     store
         .set_triples(&[TripleInput {
             entity_id: eid,
@@ -265,10 +273,7 @@ async fn test_history_restore_version() {
     let current_name = current
         .iter()
         .find(|t| t.attribute == "record/name" && !t.retracted);
-    assert_eq!(
-        current_name.map(|t| &t.value),
-        Some(&json!("Modified"))
-    );
+    assert_eq!(current_name.map(|t| &t.value), Some(&json!("Modified")));
 
     // Restore to version 1.
     let restore_tx = restore::restore_version(&pool, eid, 1)
@@ -337,9 +342,7 @@ async fn test_history_undo_last() {
         .expect("v2");
 
     // Undo -> should revert to "first".
-    let undo_tx = restore::undo_last(&pool, eid)
-        .await
-        .expect("undo");
+    let undo_tx = restore::undo_last(&pool, eid).await.expect("undo");
     assert!(undo_tx > 0);
 
     let state = store.get_entity(eid).await.expect("after undo");
@@ -483,15 +486,10 @@ async fn test_snapshot_create_and_list() {
     }
 
     // Create a snapshot.
-    let snapshot = snapshots::create_snapshot(
-        &pool,
-        "Widget",
-        "v1-checkpoint",
-        "Before changes",
-        None,
-    )
-    .await
-    .expect("create snapshot");
+    let snapshot =
+        snapshots::create_snapshot(&pool, "Widget", "v1-checkpoint", "Before changes", None)
+            .await
+            .expect("create snapshot");
 
     assert_eq!(snapshot.entity_type, "Widget");
     assert_eq!(snapshot.name, "v1-checkpoint");
@@ -539,15 +537,9 @@ async fn test_snapshot_diff() {
         .expect("create order");
 
     // Create snapshot.
-    let snapshot = snapshots::create_snapshot(
-        &pool,
-        "Order",
-        "pre-changes",
-        "",
-        None,
-    )
-    .await
-    .expect("snapshot");
+    let snapshot = snapshots::create_snapshot(&pool, "Order", "pre-changes", "", None)
+        .await
+        .expect("snapshot");
 
     // Make changes after snapshot: update existing and add new.
     store.retract(eid1, "order/total").await.expect("retract");
@@ -639,7 +631,10 @@ async fn test_restore_deleted_record() {
     assert!(!before.is_empty());
 
     // Soft-delete: retract all triples.
-    store.retract(eid, "deleted/name").await.expect("retract name");
+    store
+        .retract(eid, "deleted/name")
+        .await
+        .expect("retract name");
     store
         .retract(eid, "deleted/value")
         .await

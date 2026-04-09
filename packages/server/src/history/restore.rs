@@ -104,11 +104,7 @@ async fn apply_state_diff(
 /// record back to that version's state.
 ///
 /// Returns the new transaction id of the restore operation.
-pub async fn restore_version(
-    pool: &PgPool,
-    entity_id: Uuid,
-    version: u32,
-) -> Result<i64> {
+pub async fn restore_version(pool: &PgPool, entity_id: Uuid, version: u32) -> Result<i64> {
     let target = super::versions::get_version(pool, entity_id, version).await?;
     let current = current_state(pool, entity_id).await?;
 
@@ -149,12 +145,11 @@ pub async fn undo_last(pool: &PgPool, entity_id: Uuid) -> Result<i64> {
 /// Returns the new transaction id of the restore operation.
 pub async fn restore_deleted(pool: &PgPool, entity_id: Uuid) -> Result<i64> {
     // Check that the entity is actually deleted (all triples retracted).
-    let active_count: (i64,) = sqlx::query_as(
-        "SELECT COUNT(*) FROM triples WHERE entity_id = $1 AND NOT retracted",
-    )
-    .bind(entity_id)
-    .fetch_one(pool)
-    .await?;
+    let active_count: (i64,) =
+        sqlx::query_as("SELECT COUNT(*) FROM triples WHERE entity_id = $1 AND NOT retracted")
+            .bind(entity_id)
+            .fetch_one(pool)
+            .await?;
 
     if active_count.0 > 0 {
         return Err(DarshJError::InvalidQuery(
@@ -163,12 +158,11 @@ pub async fn restore_deleted(pool: &PgPool, entity_id: Uuid) -> Result<i64> {
     }
 
     // Check that retracted triples exist at all.
-    let retracted_count: (i64,) = sqlx::query_as(
-        "SELECT COUNT(*) FROM triples WHERE entity_id = $1 AND retracted",
-    )
-    .bind(entity_id)
-    .fetch_one(pool)
-    .await?;
+    let retracted_count: (i64,) =
+        sqlx::query_as("SELECT COUNT(*) FROM triples WHERE entity_id = $1 AND retracted")
+            .bind(entity_id)
+            .fetch_one(pool)
+            .await?;
 
     if retracted_count.0 == 0 {
         return Err(DarshJError::EntityNotFound(entity_id));
@@ -195,9 +189,7 @@ pub async fn restore_deleted(pool: &PgPool, entity_id: Uuid) -> Result<i64> {
         .iter()
         .rev()
         .find(|v| !v.snapshot.is_empty())
-        .ok_or_else(|| {
-            DarshJError::InvalidQuery("no recoverable state found for entity".into())
-        })?;
+        .ok_or_else(|| DarshJError::InvalidQuery("no recoverable state found for entity".into()))?;
 
     let target = last_populated.snapshot.clone();
     let current = HashMap::new(); // All retracted, so current state is empty.
@@ -212,12 +204,12 @@ mod tests {
     #[test]
     fn test_current_state_and_diff_logic() {
         // Test the diff logic in isolation (no DB needed).
-        let mut current = HashMap::new();
+        let mut current: HashMap<String, serde_json::Value> = HashMap::new();
         current.insert("name".into(), serde_json::json!("Alice"));
         current.insert("email".into(), serde_json::json!("a@old.com"));
         current.insert("temp".into(), serde_json::json!("remove_me"));
 
-        let mut target = HashMap::new();
+        let mut target: HashMap<String, serde_json::Value> = HashMap::new();
         target.insert("name".into(), serde_json::json!("Alice")); // unchanged
         target.insert("email".into(), serde_json::json!("a@new.com")); // modified
         target.insert("age".into(), serde_json::json!(30)); // added

@@ -4,18 +4,17 @@
 //! `HeaderMap` for content negotiation, `Path`/`Query` extractors, and
 //! `Result<Response, ApiError>` return types.
 
-use std::sync::Arc;
 use std::time::Instant;
 
 use axum::extract::{Path, Query, State};
 use axum::http::HeaderMap;
-use axum::response::{IntoResponse, Response};
+use axum::response::Response;
 use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::api::error::ApiError;
-use crate::api::rest::{negotiate_response_pub as negotiate_response, AppState};
-use crate::auth::{AuthContext, Operation};
+use crate::api::rest::{AppState, negotiate_response_pub as negotiate_response};
+use crate::auth::AuthContext;
 use crate::query::{self, QueryResultRow};
 use crate::views::query::{apply_view_to_query, project_fields};
 use crate::views::{CreateViewRequest, PgViewStore, ViewStore, ViewUpdate};
@@ -71,9 +70,9 @@ fn extract_auth(headers: &HeaderMap, state: &AppState) -> Result<AuthContext, Ap
 
 /// Build a `PgViewStore` from the shared application state.
 fn view_store(state: &AppState) -> PgViewStore {
-    PgViewStore::new(
-        crate::triple_store::PgTripleStore::new_lazy(state.pool.clone()),
-    )
+    PgViewStore::new(crate::triple_store::PgTripleStore::new_lazy(
+        state.pool.clone(),
+    ))
 }
 
 // ── Handlers ───────────────────────────────────────────────────────
@@ -122,7 +121,10 @@ pub async fn list_views(
         .as_deref()
         .ok_or_else(|| ApiError::bad_request("query parameter 'type' is required"))?;
 
-    let views = store.list_views(entity_type).await.map_err(ApiError::from)?;
+    let views = store
+        .list_views(entity_type)
+        .await
+        .map_err(ApiError::from)?;
 
     let response = serde_json::json!({
         "data": views,

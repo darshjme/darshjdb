@@ -11,7 +11,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sqlx::PgPool;
-use tracing::{debug, error};
+use tracing::debug;
 use uuid::Uuid;
 
 use super::{DdbEvent, EventKind};
@@ -55,7 +55,12 @@ pub struct KBEntry {
 }
 
 impl KBEntry {
-    fn new(pattern_type: PatternType, description: String, evidence: Value, confidence: f64) -> Self {
+    fn new(
+        pattern_type: PatternType,
+        description: String,
+        evidence: Value,
+        confidence: f64,
+    ) -> Self {
         Self {
             id: Uuid::new_v4(),
             pattern_type,
@@ -103,7 +108,10 @@ pub fn extract_patterns(events: &[DdbEvent]) -> Vec<KBEntry> {
 }
 
 /// Analyze with custom configuration thresholds.
-pub fn extract_patterns_with_config(events: &[DdbEvent], config: &ExtractionConfig) -> Vec<KBEntry> {
+pub fn extract_patterns_with_config(
+    events: &[DdbEvent],
+    config: &ExtractionConfig,
+) -> Vec<KBEntry> {
     if events.is_empty() {
         return Vec::new();
     }
@@ -249,14 +257,17 @@ fn detect_usage_spikes(events: &[DdbEvent], config: &ExtractionConfig) -> Vec<KB
 
     if !type_counts.is_empty() {
         let type_avg = events.len() as f64 / type_counts.len().max(1) as f64;
-        let type_threshold = (type_avg * config.usage_spike_ratio).max(config.usage_spike_min_count as f64);
+        let type_threshold =
+            (type_avg * config.usage_spike_ratio).max(config.usage_spike_min_count as f64);
 
         for (et, count) in &type_counts {
             if *count as f64 >= type_threshold {
                 let ratio = *count as f64 / type_avg;
                 entries.push(KBEntry::new(
                     PatternType::UsageSpike,
-                    format!("Entity type '{et}' spiked with {count} events ({ratio:.1}x above average)"),
+                    format!(
+                        "Entity type '{et}' spiked with {count} events ({ratio:.1}x above average)"
+                    ),
                     serde_json::json!({
                         "entity_type": et,
                         "count": count,
@@ -282,9 +293,8 @@ fn detect_performance_anomalies(events: &[DdbEvent], config: &ExtractionConfig) 
     sorted.sort_by_key(|e| e.timestamp);
 
     let mut entries = Vec::new();
-    let gap_threshold = chrono::Duration::milliseconds(
-        (config.performance_anomaly_gap_secs * 1000.0) as i64,
-    );
+    let gap_threshold =
+        chrono::Duration::milliseconds((config.performance_anomaly_gap_secs * 1000.0) as i64);
 
     for window in sorted.windows(2) {
         let prev = window[0];
@@ -370,9 +380,7 @@ fn detect_error_patterns(events: &[DdbEvent]) -> Vec<KBEntry> {
         let confidence = (rollback_count as f64 / events.len() as f64 * 10.0).min(1.0);
         entries.push(KBEntry::new(
             PatternType::ErrorPattern,
-            format!(
-                "Detected {rollback_count} create-then-delete patterns (possible rollbacks)"
-            ),
+            format!("Detected {rollback_count} create-then-delete patterns (possible rollbacks)"),
             serde_json::json!({
                 "rollback_count": rollback_count,
                 "sample_pairs": evidence_pairs,
@@ -470,7 +478,9 @@ mod tests {
     use super::*;
 
     fn make_event(kind: EventKind, entity_type: &str, entity_id: Uuid, tx_id: i64) -> DdbEvent {
-        DdbEvent::new(kind, tx_id).with_entity_type(entity_type).with_entity_id(entity_id)
+        DdbEvent::new(kind, tx_id)
+            .with_entity_type(entity_type)
+            .with_entity_id(entity_id)
     }
 
     fn make_event_at(
@@ -502,7 +512,12 @@ mod tests {
         }
         // 5 mutations on other entities.
         for i in 20..25 {
-            events.push(make_event(EventKind::RecordUpdated, "Counter", Uuid::new_v4(), i));
+            events.push(make_event(
+                EventKind::RecordUpdated,
+                "Counter",
+                Uuid::new_v4(),
+                i,
+            ));
         }
 
         let patterns = extract_patterns(&events);
@@ -546,12 +561,9 @@ mod tests {
             .filter(|p| p.pattern_type == PatternType::FrequentMutation)
             .collect::<Vec<_>>();
 
-        let has_status = freq.iter().any(|p| {
-            p.evidence
-                .get("attribute")
-                .and_then(|v| v.as_str())
-                == Some("status")
-        });
+        let has_status = freq
+            .iter()
+            .any(|p| p.evidence.get("attribute").and_then(|v| v.as_str()) == Some("status"));
         assert!(has_status, "should detect frequently mutated attribute");
     }
 
@@ -582,12 +594,9 @@ mod tests {
             .collect();
 
         assert!(!spikes.is_empty(), "should detect usage spike");
-        let has_login_spike = spikes.iter().any(|p| {
-            p.evidence
-                .get("kind")
-                .and_then(|v| v.as_str())
-                == Some("AuthLogin")
-        });
+        let has_login_spike = spikes
+            .iter()
+            .any(|p| p.evidence.get("kind").and_then(|v| v.as_str()) == Some("AuthLogin"));
         assert!(has_login_spike, "AuthLogin should be flagged as spike");
     }
 
@@ -689,7 +698,10 @@ mod tests {
             .filter(|p| p.pattern_type == PatternType::ErrorPattern)
             .collect();
 
-        assert!(errors.is_empty(), "should not flag normal deletion as error");
+        assert!(
+            errors.is_empty(),
+            "should not flag normal deletion as error"
+        );
     }
 
     #[test]

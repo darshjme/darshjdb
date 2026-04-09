@@ -10,9 +10,7 @@
 
 use ddb_server::fields::conversion::{convert_field_type, summarise};
 use ddb_server::fields::validation::validate_value;
-use ddb_server::fields::{
-    FieldConfig, FieldId, FieldOptions, FieldType, SelectChoice,
-};
+use ddb_server::fields::{FieldConfig, FieldId, FieldOptions, FieldType, SelectChoice};
 use ddb_server::triple_store::{PgTripleStore, TripleInput, TripleStore};
 use serde_json::json;
 use sqlx::PgPool;
@@ -85,8 +83,7 @@ async fn test_field_create_and_persist() {
 
     // Persist the field config as triples.
     let eid = field.entity_id();
-    let config_json =
-        serde_json::to_value(&field).expect("serialize field config");
+    let config_json = serde_json::to_value(&field).expect("serialize field config");
 
     let tx = store
         .set_triples(&[
@@ -267,7 +264,7 @@ async fn test_field_validation_number() {
 
     // String that parses as number.
     let v = validate_value(&field, &json!("42.5")).expect("coerce");
-    assert!(v.as_f64().unwrap() - 42.5 < f64::EPSILON);
+    assert!((v.as_f64().unwrap() - 42.5).abs() < f64::EPSILON);
 
     // Non-numeric string rejected.
     let err = validate_value(&field, &json!("not a number"));
@@ -333,8 +330,7 @@ async fn test_field_required_with_data() {
 
     // Simulate setting a record with the required field.
     let eid = Uuid::new_v4();
-    let validated =
-        validate_value(&field, &json!("darshan")).expect("valid value");
+    let validated = validate_value(&field, &json!("darshan")).expect("valid value");
     let tx = store
         .set_triples(&[TripleInput {
             entity_id: eid,
@@ -398,11 +394,7 @@ async fn test_computed_field_rejects_input() {
 async fn test_field_conversion_text_to_number() {
     let values = vec![json!("42"), json!("3.14"), json!("abc"), json!(null)];
 
-    let results = convert_field_type(
-        &values,
-        FieldType::SingleLineText,
-        FieldType::Number,
-    );
+    let results = convert_field_type(&values, FieldType::SingleLineText, FieldType::Number);
 
     let summary = summarise(&results);
     assert_eq!(summary.total, 4);
@@ -424,11 +416,7 @@ async fn test_field_conversion_text_to_number() {
 async fn test_field_conversion_number_to_text() {
     let values = vec![json!(42), json!(3.14), json!(0), json!(null)];
 
-    let results = convert_field_type(
-        &values,
-        FieldType::Number,
-        FieldType::SingleLineText,
-    );
+    let results = convert_field_type(&values, FieldType::Number, FieldType::SingleLineText);
 
     let summary = summarise(&results);
     // Number to text is always lossless.
@@ -468,11 +456,7 @@ async fn test_field_conversion_identity() {
 async fn test_field_conversion_checkbox_to_text() {
     let values = vec![json!(true), json!(false)];
 
-    let results = convert_field_type(
-        &values,
-        FieldType::Checkbox,
-        FieldType::SingleLineText,
-    );
+    let results = convert_field_type(&values, FieldType::Checkbox, FieldType::SingleLineText);
 
     let summary = summarise(&results);
     assert_eq!(summary.success, 2);
@@ -549,7 +533,6 @@ async fn test_field_config_serde_roundtrip() {
     };
 
     let json = serde_json::to_string(&config).expect("serialize");
-    let restored: FieldConfig =
-        serde_json::from_str(&json).expect("deserialize");
+    let restored: FieldConfig = serde_json::from_str(&json).expect("deserialize");
     assert_eq!(config, restored);
 }

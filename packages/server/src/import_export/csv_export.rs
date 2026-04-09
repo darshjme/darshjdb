@@ -154,9 +154,9 @@ pub async fn export_csv(
                     row.push(String::new());
                 }
             }
-            writer
-                .write_record(&row)
-                .map_err(|e| crate::error::DarshJError::Internal(format!("CSV write error: {e}")))?;
+            writer.write_record(&row).map_err(|e| {
+                crate::error::DarshJError::Internal(format!("CSV write error: {e}"))
+            })?;
             entities_exported += 1;
         }
     }
@@ -226,9 +226,6 @@ mod tests {
         assert_eq!(value_to_string(&Value::Bool(true)), "true");
         assert_eq!(value_to_string(&Value::Number(42.into())), "42");
         assert_eq!(value_to_string(&Value::Null), "");
-        assert_eq!(
-            value_to_string(&serde_json::json!({"a": 1})),
-            r#"{"a":1}"#
-        );
+        assert_eq!(value_to_string(&serde_json::json!({"a": 1})), r#"{"a":1}"#);
     }
 }

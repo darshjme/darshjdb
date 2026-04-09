@@ -67,7 +67,7 @@ impl ApiKeyScope {
             Self::Read => operation == "read",
             Self::Write => matches!(operation, "read" | "write"),
             Self::Tables(tables) => {
-                table.map_or(false, |t| tables.iter().any(|allowed| allowed == t))
+                table.is_some_and(|t| tables.iter().any(|allowed| allowed == t))
             }
             Self::Custom(_) => false, // custom scopes require explicit checks
         }
@@ -247,11 +247,11 @@ pub async fn validate_api_key(pool: &PgPool, key: &str) -> Option<ApiKeyAuth> {
         return None;
     }
 
-    if let Some(exp) = expires_at {
-        if Utc::now() > exp {
-            warn!(key_id = %id, "rejected expired API key");
-            return None;
-        }
+    if let Some(exp) = expires_at
+        && Utc::now() > exp
+    {
+        warn!(key_id = %id, "rejected expired API key");
+        return None;
     }
 
     let scopes: Vec<ApiKeyScope> = serde_json::from_value(scopes_json).unwrap_or_default();
@@ -277,10 +277,11 @@ pub async fn validate_api_key(pool: &PgPool, key: &str) -> Option<ApiKeyAuth> {
 
 /// Revoke an API key by ID.
 pub async fn revoke_api_key(pool: &PgPool, key_id: ApiKeyId) -> Result<bool, sqlx::Error> {
-    let result = sqlx::query("UPDATE api_keys SET revoked = true WHERE id = $1 AND revoked = false")
-        .bind(key_id)
-        .execute(pool)
-        .await?;
+    let result =
+        sqlx::query("UPDATE api_keys SET revoked = true WHERE id = $1 AND revoked = false")
+            .bind(key_id)
+            .execute(pool)
+            .await?;
     Ok(result.rows_affected() > 0)
 }
 
@@ -293,14 +294,20 @@ pub async fn rotate_api_key(
     key_id: ApiKeyId,
 ) -> Result<Option<(ApiKeyId, String)>, sqlx::Error> {
     // Fetch old key metadata.
-    let row: Option<(String, serde_json::Value, Option<i32>, Option<DateTime<Utc>>, Uuid, bool)> =
-        sqlx::query_as(
-            "SELECT name, scopes, rate_limit, expires_at, created_by, revoked
+    let row: Option<(
+        String,
+        serde_json::Value,
+        Option<i32>,
+        Option<DateTime<Utc>>,
+        Uuid,
+        bool,
+    )> = sqlx::query_as(
+        "SELECT name, scopes, rate_limit, expires_at, created_by, revoked
              FROM api_keys WHERE id = $1",
-        )
-        .bind(key_id)
-        .fetch_optional(pool)
-        .await?;
+    )
+    .bind(key_id)
+    .fetch_optional(pool)
+    .await?;
 
     let (name, scopes_json, rate_limit, expires_at, created_by, revoked) = match row {
         Some(r) => r,
@@ -542,7 +549,10 @@ mod tests {
         };
 
         let json = serde_json::to_string(&key).expect("serialize");
-        assert!(!json.contains("deadbeef"), "key_hash must not appear in JSON");
+        assert!(
+            !json.contains("deadbeef"),
+            "key_hash must not appear in JSON"
+        );
         assert!(json.contains("test-key"));
         assert!(json.contains("ddb_key_a1b2c3d4"));
     }
