@@ -58,7 +58,9 @@ use tokio::sync::mpsc;
 use tokio::time::timeout;
 use tracing::{debug, info};
 
+use crate::cache::QueryCache;
 use crate::query;
+use crate::rules::RuleEngine;
 use crate::sync::broadcaster::{ChangeEvent, OutboundDiff};
 use crate::sync::change_feed::ChangeFeed;
 use crate::sync::live_query::{LiveAction, LiveQueryId, LiveQueryManager};
@@ -107,6 +109,13 @@ pub struct WsState {
     pub live_queries: Arc<LiveQueryManager>,
     /// Change feed for mutation logging and cursor-based replay.
     pub change_feed: Arc<ChangeFeed>,
+    /// Optional forward-chaining rule engine — when present, mutations fire
+    /// inference inside the same DB transaction so derived triples are atomic
+    /// with the user's writes. Mirrors the REST mutation path for parity.
+    pub rule_engine: Option<Arc<RuleEngine>>,
+    /// Hot query cache shared with the REST handler. Mutations invalidate
+    /// touched entity types post-commit so subsequent reads see fresh data.
+    pub query_cache: Arc<QueryCache>,
 }
 
 /// Inbound client message (deserialized from JSON or MessagePack).
@@ -951,6 +960,36 @@ async fn handle_mutation(
         .await;
         return;
     }
+
+    // Forward-chaining rule engine: implied triples are written in the same
+    // transaction so the user's mutation + inferred facts commit atomically.
+    // Mirrors the REST mutation path to keep WS clients and REST clients in
+    // parity with respect to derived knowledge. Dropping `db_tx` on the
+    // error path causes an implicit rollback of the user writes above.
+    let mut implied_triples: Vec<TripleInput> = Vec::new();
+    if !all_triples.is_empty()
+        && let Some(ref rule_engine) = state.rule_engine
+    {
+        match rule_engine
+            .evaluate_and_write_in_tx(&mut db_tx, &all_triples, tx_id)
+            .await
+        {
+            Ok(implied) => implied_triples = implied,
+            Err(e) => {
+                let _ = send_message(
+                    socket,
+                    &ServerMessage::MutErr {
+                        id: req_id,
+                        error: format!("rule engine: {e}"),
+                    },
+                    codec,
+                )
+                .await;
+                return;
+            }
+        }
+    }
+
     if let Err(e) = db_tx.commit().await {
         let _ = send_message(
             socket,
@@ -964,11 +1003,26 @@ async fn handle_mutation(
         return;
     }
 
-    let attrs: Vec<String> = all_triples.iter().map(|t| t.attribute.clone()).collect();
+    // Invalidate hot cache for every entity type touched by this mutation so
+    // subsequent reads on those types recompute against fresh triples.
+    for et in &entity_types {
+        state.query_cache.invalidate_by_entity_type(et);
+    }
+
+    // Collect attributes touched (including rule-implied) for the change
+    // notification so live queries see the full effect of the transaction.
+    let mut touched_attributes: Vec<String> = all_triples
+        .iter()
+        .chain(implied_triples.iter())
+        .map(|t| t.attribute.clone())
+        .collect();
+    touched_attributes.sort();
+    touched_attributes.dedup();
+
     let change_event = ChangeEvent {
         tx_id,
         entity_ids: entity_ids.clone(),
-        attributes: attrs,
+        attributes: touched_attributes,
         entity_type: entity_types.into_iter().next(),
         actor_id: None,
     };
