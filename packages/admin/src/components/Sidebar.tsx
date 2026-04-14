@@ -2,6 +2,7 @@ import { NavLink } from "react-router-dom";
 import {
   Database,
   GitBranch,
+  Network,
   Zap,
   Users,
   HardDrive,
@@ -16,6 +17,7 @@ import { cn } from "../lib/utils";
 const navItems = [
   { to: "/", icon: Database, label: "Data Explorer" },
   { to: "/schema", icon: GitBranch, label: "Schema" },
+  { to: "/graph", icon: Network, label: "Graph" },
   { to: "/functions", icon: Zap, label: "Functions" },
   { to: "/auth", icon: Users, label: "Auth & Users" },
   { to: "/storage", icon: HardDrive, label: "Storage" },
