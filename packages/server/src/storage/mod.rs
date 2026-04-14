@@ -50,6 +50,7 @@ pub mod engine;
 pub mod memory;
 pub mod postgres;
 pub mod traits;
+pub mod transforms;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

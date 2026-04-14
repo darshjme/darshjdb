@@ -48,3 +48,6 @@ aws-credential-types.workspace = true
 aws-types.workspace = true
 async-trait.workspace = true
 csv.workspace = true
+
+# Phase 7.2 (slice 26/30) — Image transform pipeline for /api/storage/*path.
+image.workspace = true
