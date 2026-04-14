@@ -50,6 +50,7 @@ pub mod graph;
 pub mod history;
 pub mod import_export;
 pub mod mcp;
+pub mod observability;
 pub mod plugins;
 pub mod query;
 pub mod relations;

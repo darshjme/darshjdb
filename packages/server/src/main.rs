@@ -54,15 +54,25 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // -- Tracing / Logging ----------------------------------------------------
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
-        .init();
+    // -- Tracing / Logging (Phase 10: JSON + request_id) ----------------------
+    ddb_server::observability::init_json_logging()
+        .map_err(|e| ddb_server::error::DarshJError::Internal(format!("tracing init failed: {e}")))?;
 
-    tracing::info!("DarshJDB server starting");
+    tracing::info!(
+        version = env!("CARGO_PKG_VERSION"),
+        author = "Darshankumar Joshi",
+        "DarshJDB server starting"
+    );
+
+    // -- Prometheus recorder (Phase 10) ---------------------------------------
+    let (metrics_handle, metrics_allow_list) =
+        ddb_server::observability::init_prometheus().map_err(|e| {
+            ddb_server::error::DarshJError::Internal(format!("prometheus init failed: {e}"))
+        })?;
+    tracing::info!(
+        allow_list = ?metrics_allow_list,
+        "Prometheus recorder installed"
+    );
 
     // -- Configuration from environment ---------------------------------------
     //
@@ -900,16 +910,29 @@ async fn main() -> Result<()> {
         .unwrap_or((0,));
     tracing::info!(triples = triple_count.0, "triple store stats");
 
-    // -- Shared state for health endpoints ------------------------------------
+    // -- Shared state for legacy health endpoints -----------------------------
     let server_started_at = Instant::now();
-    let health_pool = pool.clone();
     let health_pool_ready = pool.clone();
-    let health_ws_sessions = sync_sessions.clone();
     let health_ws_sessions_ready = sync_sessions.clone();
-    let health_pool_stats = app_state.pool_stats.clone();
+    let legacy_health_pool = pool.clone();
+    let legacy_ws_sessions = sync_sessions.clone();
+    let legacy_pool_stats = app_state.pool_stats.clone();
 
     // -- Router Assembly ------------------------------------------------------
     let api_router = build_router(app_state);
+
+    // Phase 10 observability router: /health, /ready, /live — mounted BEFORE
+    // auth middleware so load balancers and orchestrators can probe without a
+    // token. Rendered by `ddb_server::observability::health`.
+    let health_state = ddb_server::observability::HealthState::new(pool.clone());
+    let phase10_health = ddb_server::observability::health_router(health_state);
+
+    // Phase 10 metrics router: /metrics (Prometheus text exposition, IP
+    // allow-list enforced via DDB_METRICS_ALLOWED_IPS).
+    let phase10_metrics = ddb_server::observability::metrics_router(
+        metrics_handle.clone(),
+        metrics_allow_list.clone(),
+    );
 
     let app = axum::Router::new()
         // REST API routes under /api
@@ -921,19 +944,24 @@ async fn main() -> Result<()> {
         .merge(admin_router())
         // WebSocket route at /ws
         .merge(ws_routes(ws_state))
-        // Health check at root
+        // Phase 10: /health /ready /live — mounted before auth middleware.
+        .merge(phase10_health)
+        // Phase 10: /metrics (Prometheus text exposition).
+        .merge(phase10_metrics)
+        // Legacy rich health shape at /health/full for dashboards that still
+        // want pool/ws/triple counts.
         .route(
-            "/health",
+            "/health/full",
             axum::routing::get(move || {
                 health_check(
-                    health_pool.clone(),
-                    health_ws_sessions.clone(),
+                    legacy_health_pool.clone(),
+                    legacy_ws_sessions.clone(),
                     server_started_at,
-                    health_pool_stats.clone(),
+                    legacy_pool_stats.clone(),
                 )
             }),
         )
-        // Readiness probe for K8s
+        // Legacy readiness probe for K8s
         .route(
             "/health/ready",
             axum::routing::get(move || {
@@ -949,7 +977,15 @@ async fn main() -> Result<()> {
             }),
         )
         // -- Middleware stack (outermost = runs first) -------------------------
-        // Structured request logging
+        // Phase 10: HTTP Prometheus counter + histogram observer.
+        .layer(axum::middleware::from_fn(
+            ddb_server::observability::http_metrics_middleware,
+        ))
+        // Phase 10: request_id + JSON span per request.
+        .layer(axum::middleware::from_fn(
+            ddb_server::observability::request_id_middleware,
+        ))
+        // Structured request logging (legacy)
         .layer(middleware::from_fn(request_logging_middleware))
         // Catch panics in handlers -> 500
         .layer(CatchPanicLayer::custom(handle_panic))

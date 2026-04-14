@@ -49,6 +49,10 @@ aws-types.workspace = true
 async-trait.workspace = true
 csv.workspace = true
 
+# Phase 10 — Observability (slice 29/30): Prometheus metrics + JSON logging + request_id.
+metrics.workspace = true
+metrics-exporter-prometheus.workspace = true
+
 # Slice 19/30 — embedded admin dashboard (Vite dist baked via include_dir!).
 include_dir.workspace = true
 mime_guess.workspace = true
