@@ -58,7 +58,12 @@ async fn main() -> Result<()> {
     // `init_json_logging` honors `RUST_LOG`; seed it from `cfg.server.log_level`
     // when the env var is unset so the typed config still wins by default.
     if std::env::var("RUST_LOG").is_err() && !cfg.server.log_level.is_empty() {
-        // Safe: called before any threads are spawned and only when unset.
+        // SAFETY: called during startup, before any code that reads
+        // RUST_LOG concurrently. The tokio runtime has already started
+        // its worker threads by the time `main` executes, but no worker
+        // task inspects RUST_LOG until `init_json_logging` runs a few
+        // lines below. This remains non-racy as long as no Rust 2024
+        // lint-gated callsite is added earlier in main().
         unsafe { std::env::set_var("RUST_LOG", &cfg.server.log_level); }
     }
     ddb_server::observability::init_json_logging().map_err(|e| {

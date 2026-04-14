@@ -661,8 +661,14 @@ fn apply_legacy_env_shim() {
     fn copy_if_unset(new_key: &str, old_key: &str) {
         if std::env::var_os(new_key).is_none() {
             if let Ok(val) = std::env::var(old_key) {
-                // SAFETY: std::env::set_var is safe in single-threaded startup.
-                // We are invoked from `main` before any tasks spawn.
+                // SAFETY: called during startup, before any downstream
+                // subsystem spawns a reader for DDB__* / DARSH__* env
+                // vars. `load_config` runs inside `#[tokio::main]`'s
+                // runtime (so worker threads do exist), but no task
+                // reads these variables until observability + typed
+                // config assembly complete later in main(). This
+                // remains non-racy as long as no Rust 2024 lint-gated
+                // callsite is added earlier in main().
                 unsafe {
                     std::env::set_var(new_key, val);
                 }
@@ -698,7 +704,8 @@ fn apply_legacy_env_shim() {
     if std::env::var_os("DDB__DEV__MODE").is_none() {
         if let Ok(val) = std::env::var("DDB_DEV") {
             let as_bool = matches!(val.as_str(), "1" | "true" | "TRUE" | "yes");
-            // SAFETY: single-threaded startup.
+            // SAFETY: called before any downstream reader spawns — see
+            // the `copy_if_unset` safety note above.
             unsafe {
                 std::env::set_var("DDB__DEV__MODE", if as_bool { "true" } else { "false" });
             }
@@ -718,7 +725,8 @@ fn apply_legacy_env_shim() {
                 .collect::<Vec<_>>()
                 .join(",");
             if !normalised.is_empty() {
-                // SAFETY: single-threaded startup.
+                // SAFETY: called before any downstream reader spawns —
+                // see the `copy_if_unset` safety note above.
                 unsafe {
                     std::env::set_var("DDB__CORS__ORIGINS", normalised);
                 }
