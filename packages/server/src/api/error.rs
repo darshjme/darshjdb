@@ -187,7 +187,8 @@ impl From<AuthError> for ApiError {
             AuthError::TokenInvalid(_)
             | AuthError::TokenAlreadyUsed
             | AuthError::DeviceMismatch
-            | AuthError::SessionRevoked => ErrorCode::Unauthenticated,
+            | AuthError::SessionRevoked
+            | AuthError::SessionExpired => ErrorCode::Unauthenticated,
             AuthError::PermissionDenied(_) => ErrorCode::PermissionDenied,
             AuthError::RateLimited { retry_after_secs } => {
                 return ApiError {

@@ -612,6 +612,7 @@ async fn test_session_create_validate() {
     assert_eq!(tp.token_type, "Bearer");
     let ctx = sm
         .validate_token(&tp.access_token, "127.0.0.1", "agent", "fp")
+        .await
         .expect("validate");
     assert_eq!(ctx.user_id, uid);
     cleanup_user(&pool, &email).await;
@@ -637,6 +638,7 @@ async fn test_session_refresh_rotation() {
     assert_ne!(orig.access_token, fresh.access_token);
     assert_eq!(
         sm.validate_token(&fresh.access_token, "127.0.0.1", "a", "fp")
+            .await
             .expect("v")
             .user_id,
         uid
@@ -658,6 +660,7 @@ async fn test_session_signout() {
         .expect("c");
     let ctx = sm
         .validate_token(&tp.access_token, "127.0.0.1", "a", "fp")
+        .await
         .expect("v");
     sm.revoke_session(ctx.session_id).await.expect("revoke");
     assert!(sm.refresh_session(&tp.refresh_token, "fp").await.is_err());
@@ -721,6 +724,7 @@ async fn test_session_list_filters_revoked() {
         .expect("s2");
     let ctx = sm
         .validate_token(&tp1.access_token, "127.0.0.1", "a1", "f1")
+        .await
         .expect("v");
     sm.revoke_session(ctx.session_id).await.expect("revoke");
     assert_eq!(sm.list_sessions(uid).await.expect("list").len(), 1);
@@ -739,6 +743,188 @@ async fn test_session_empty_fields() {
         .await
         .expect("c");
     assert!(!tp.access_token.is_empty());
+    cleanup_user(&pool, &email).await;
+}
+
+// ── Phase 0.4 hardening: overflow eviction, absolute timeout, revoke ─────
+
+/// When a sixth session is created for the same user, the oldest active
+/// session is auto-revoked with reason `overflow` so the cap stays at 5.
+#[tokio::test]
+async fn test_session_overflow_eviction_caps_at_five() {
+    let Some(pool) = setup_pool().await else {
+        return;
+    };
+    let (uid, email) = create_test_user(&pool).await;
+    let sm = create_session_manager(pool.clone());
+
+    // Five distinct devices fill the quota.
+    let mut tokens = Vec::new();
+    for i in 0..5 {
+        let tp = sm
+            .create_session(
+                uid,
+                vec!["user".into()],
+                "127.0.0.1",
+                "agent",
+                &format!("device-{i}"),
+            )
+            .await
+            .expect("create");
+        tokens.push(tp);
+        // Tiny gap so created_at is deterministically ordered for the
+        // ORDER BY created_at ASC eviction order.
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    assert_eq!(sm.list_sessions(uid).await.expect("list").len(), 5);
+
+    // Sixth session evicts the oldest.
+    let _tp6 = sm
+        .create_session(
+            uid,
+            vec!["user".into()],
+            "127.0.0.1",
+            "agent",
+            "device-5",
+        )
+        .await
+        .expect("create overflow");
+    let active = sm.list_sessions(uid).await.expect("list");
+    assert_eq!(active.len(), 5, "overflow cap must hold at 5");
+
+    // The evicted row(s) must carry reason 'overflow'.
+    let overflow_count: (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM sessions
+          WHERE user_id = $1
+            AND revoke_reason = 'overflow'
+            AND revoked_at IS NOT NULL",
+    )
+    .bind(uid)
+    .fetch_one(&pool)
+    .await
+    .expect("count");
+    assert!(
+        overflow_count.0 >= 1,
+        "expected at least one overflow eviction, got {}",
+        overflow_count.0
+    );
+
+    // The first device's access token must now be rejected: its session
+    // was revoked as the oldest entry.
+    let validate = sm
+        .validate_token(&tokens[0].access_token, "127.0.0.1", "agent", "device-0")
+        .await;
+    assert!(
+        matches!(
+            validate,
+            Err(ddb_server::auth::AuthError::SessionRevoked)
+                | Err(ddb_server::auth::AuthError::TokenInvalid(_))
+        ),
+        "evicted session must be rejected, got {validate:?}"
+    );
+
+    cleanup_user(&pool, &email).await;
+}
+
+/// Once a session is past its `absolute_expires_at` cutoff, validate_token
+/// must auto-revoke it with reason `absolute_timeout` and return SessionExpired.
+#[tokio::test]
+async fn test_session_absolute_timeout_auto_revoke() {
+    let Some(pool) = setup_pool().await else {
+        return;
+    };
+    let (uid, email) = create_test_user(&pool).await;
+    let sm = create_session_manager(pool.clone());
+    let tp = sm
+        .create_session(uid, vec!["user".into()], "127.0.0.1", "agent", "fp-abs")
+        .await
+        .expect("create");
+
+    // Fast-forward the absolute cutoff into the past.
+    sqlx::query(
+        "UPDATE sessions
+            SET absolute_expires_at = now() - INTERVAL '1 second'
+          WHERE user_id = $1",
+    )
+    .bind(uid)
+    .execute(&pool)
+    .await
+    .expect("force expiry");
+
+    let result = sm
+        .validate_token(&tp.access_token, "127.0.0.1", "agent", "fp-abs")
+        .await;
+    assert!(
+        matches!(result, Err(ddb_server::auth::AuthError::SessionExpired)),
+        "expected SessionExpired, got {result:?}"
+    );
+
+    // The row must now show the structured revocation.
+    let row: Option<(Option<chrono::DateTime<chrono::Utc>>, Option<String>)> = sqlx::query_as(
+        "SELECT revoked_at, revoke_reason FROM sessions WHERE user_id = $1",
+    )
+    .bind(uid)
+    .fetch_optional(&pool)
+    .await
+    .expect("fetch");
+    let (revoked_at, reason) = row.expect("row");
+    assert!(revoked_at.is_some(), "revoked_at must be set");
+    assert_eq!(reason.as_deref(), Some("absolute_timeout"));
+
+    // A subsequent validate must return SessionRevoked (not SessionExpired)
+    // because the row is now structurally revoked.
+    let second = sm
+        .validate_token(&tp.access_token, "127.0.0.1", "agent", "fp-abs")
+        .await;
+    assert!(matches!(
+        second,
+        Err(ddb_server::auth::AuthError::SessionRevoked)
+    ));
+
+    cleanup_user(&pool, &email).await;
+}
+
+/// Manually revoking a session must cause subsequent validate_token calls
+/// to fail with SessionRevoked, even though the JWT signature is still valid
+/// and the absolute cutoff has not been reached.
+#[tokio::test]
+async fn test_session_revoked_rejected_on_validate() {
+    let Some(pool) = setup_pool().await else {
+        return;
+    };
+    let (uid, email) = create_test_user(&pool).await;
+    let sm = create_session_manager(pool.clone());
+    let tp = sm
+        .create_session(uid, vec!["user".into()], "127.0.0.1", "agent", "fp-rev")
+        .await
+        .expect("create");
+
+    // Confirm baseline validation works.
+    let ctx = sm
+        .validate_token(&tp.access_token, "127.0.0.1", "agent", "fp-rev")
+        .await
+        .expect("baseline ok");
+    sm.revoke_session(ctx.session_id).await.expect("revoke");
+
+    let result = sm
+        .validate_token(&tp.access_token, "127.0.0.1", "agent", "fp-rev")
+        .await;
+    assert!(
+        matches!(result, Err(ddb_server::auth::AuthError::SessionRevoked)),
+        "expected SessionRevoked after revoke, got {result:?}"
+    );
+
+    // The legacy boolean must also be flipped for back-compat consumers.
+    let row: (bool, Option<String>) = sqlx::query_as(
+        "SELECT revoked, revoke_reason FROM sessions WHERE session_id = $1",
+    )
+    .bind(ctx.session_id)
+    .fetch_one(&pool)
+    .await
+    .expect("fetch");
+    assert!(row.0, "legacy revoked flag must be true");
+    assert_eq!(row.1.as_deref(), Some("logout"));
+
     cleanup_user(&pool, &email).await;
 }
 
@@ -1842,6 +2028,7 @@ async fn test_lifecycle_session_full() {
         .expect("create");
     let ctx = sm
         .validate_token(&tp.access_token, "10.0.0.1", "chrome", "fp1")
+        .await
         .expect("validate");
     assert_eq!(ctx.user_id, uid);
     let sessions = sm.list_sessions(uid).await.expect("list");
