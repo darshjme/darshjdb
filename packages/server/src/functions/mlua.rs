@@ -94,7 +94,7 @@ use std::time::Instant;
 
 use mlua::{ChunkMode, Function, Lua, LuaSerdeExt, Nil, Table, Value as LuaValue};
 use serde_json::Value;
-use tokio::sync::{Mutex, Semaphore};
+use tokio::sync::Mutex;
 use tracing::{debug, error, info, instrument, warn};
 
 use super::registry::FunctionDef;
@@ -112,32 +112,43 @@ use super::runtime::{
 /// Holds a single [`mlua::Lua`] instance per worker, behind a `Mutex`
 /// because `Lua` is `!Sync`. Each [`MluaRuntime::execute`] call:
 ///
-/// 1. Acquires a concurrency permit from the semaphore.
-/// 2. Locks the shared Lua VM.
-/// 3. Loads the user function file from disk (if not already registered).
-/// 4. Calls the requested export with the JSON-serialized arguments.
+/// 1. Locks the shared Lua VM.
+/// 2. Builds a fresh per-invocation env (see [`build_per_call_env`]).
+/// 3. Loads the user function file from disk.
+/// 4. Calls the requested export with the JSON-serialized arguments,
+///    wrapped in `tokio::time::timeout` for wall-clock bounding.
 /// 5. Maps the Lua return value back through `serde` into DDB's [`Value`].
 ///
-/// A single shared VM keeps memory footprint predictable; all user code
-/// runs inside the sandbox installed by [`install_sandbox`].
+/// **Concurrency contract**: this implementation is single-VM-serialized
+/// — every invocation locks the same `Mutex<Lua>` and effective
+/// concurrency is 1. A `Pool<Lua>` for real concurrency (one VM per
+/// worker, round-robined or checked-out) is scoped for v0.4. A
+/// per-invocation semaphore was considered and rejected: it admitted N
+/// permits but every admitted task then locked the one `Mutex<Lua>`, so
+/// the permit cap was theatre (MJ-02).
 pub struct MluaRuntime {
     /// Base directory containing user function files (`.lua`).
     functions_dir: PathBuf,
 
     /// Shared Lua VM. `Mutex` because `mlua::Lua` is `!Sync`.
+    ///
+    /// NB: single shared VM serializes all invocations. A `Pool<Lua>`
+    /// for real concurrency is tracked for v0.4. See MJ-02.
     lua: Arc<Mutex<Lua>>,
-
-    /// Concurrency semaphore bounding simultaneously-live invocations.
-    semaphore: Arc<Semaphore>,
 }
 
 impl MluaRuntime {
     /// Construct a new embedded Lua runtime rooted at `functions_dir`.
     ///
-    /// Creates the Lua VM, installs the sandbox, and registers the `ddb.*`
-    /// API table. Returns a [`RuntimeError`] if sandbox installation or
-    /// API registration fails.
-    pub fn new(functions_dir: PathBuf, max_concurrency: usize) -> RuntimeResult<Self> {
+    /// Creates the Lua VM, installs the sandbox, registers the `ddb.*`
+    /// API table, and freezes the safe-globals snapshot. Returns a
+    /// [`RuntimeError`] if any step fails.
+    ///
+    /// The `_max_concurrency` parameter is accepted for call-site
+    /// compatibility but ignored: the single `Mutex<Lua>` already
+    /// serializes every invocation to one in-flight call. See the
+    /// type-level doc for the v0.4 pool plan.
+    pub fn new(functions_dir: PathBuf, _max_concurrency: usize) -> RuntimeResult<Self> {
         let lua = Lua::new();
         install_sandbox(&lua)
             .map_err(|e| RuntimeError::Internal(format!("sandbox install failed: {e}")))?;
@@ -150,7 +161,6 @@ impl MluaRuntime {
         Ok(Self {
             functions_dir,
             lua: Arc::new(Mutex::new(lua)),
-            semaphore: Arc::new(Semaphore::new(max_concurrency)),
         })
     }
 
@@ -257,15 +267,9 @@ impl RuntimeBackend for MluaRuntime {
         let context = context.clone();
         let functions_dir = self.functions_dir.clone();
         let lua = self.lua.clone();
-        let semaphore = self.semaphore.clone();
         let wall_clock_cap = std::time::Duration::from_millis(limits.cpu_time_ms.max(1));
 
         Box::pin(async move {
-            let _permit = semaphore
-                .acquire_owned()
-                .await
-                .map_err(|e| RuntimeError::Internal(format!("semaphore closed: {e}")))?;
-
             let started = Instant::now();
 
             debug!(
