@@ -5,6 +5,7 @@ members = [
     "packages/cli",
     "packages/cache",
     "packages/cache-server",
+    "packages/agent-memory",
 ]
 
 [workspace.package]
