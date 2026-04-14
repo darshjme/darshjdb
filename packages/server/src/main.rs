@@ -139,11 +139,6 @@ async fn main() -> Result<()> {
     // -- Database Pool --------------------------------------------------------
     tracing::info!(database_url = %mask_url(&database_url), "connecting to database");
 
-    // Max connection lifetime — conservative 30 min to recycle pooled
-    // conns in front of pgBouncer (transaction pooling mode drops
-    // server-side state between txs, but SQL-level caches drift).
-    const POOL_MAX_LIFETIME_SECS: u64 = 1800;
-
     // NOTE: `max_connections` should be set to **at least 2x** the
     // number of concurrent HTTP workers you expect. Each in-flight
     // request may hold one connection across awaits (query + fanout),
@@ -152,13 +147,17 @@ async fn main() -> Result<()> {
     // `POOL_HIGH_WATER_MARK` warning log firing and eventual
     // `acquire_timeout` errors under load. Scale horizontally via
     // pgBouncer + multiple replicas (see docs/HORIZONTAL_SCALING.md).
+    //
+    // `max_lifetime` is read from `cfg.database.max_lifetime_sec`
+    // (default 1800s) so operator overrides flow through to both
+    // PgPoolOptions and the log line below — see WR-01.
     tracing::info!(
         target: "ddb_server::pool",
         db_pool_min = min_connections,
         db_pool_max = max_connections,
         db_pool_acquire_timeout_secs = acquire_timeout_secs,
         db_pool_idle_timeout_secs = idle_timeout_secs,
-        db_pool_max_lifetime_secs = POOL_MAX_LIFETIME_SECS,
+        db_pool_max_lifetime_secs = max_lifetime_sec,
         "effective database pool configuration \
          (db.pool.min={} db.pool.max={} db.pool.acquire_timeout={}s \
           db.pool.idle_timeout={}s db.pool.max_lifetime={}s)",
@@ -166,7 +165,7 @@ async fn main() -> Result<()> {
         max_connections,
         acquire_timeout_secs,
         idle_timeout_secs,
-        POOL_MAX_LIFETIME_SECS,
+        max_lifetime_sec,
     );
 
     let pool = PgPoolOptions::new()
