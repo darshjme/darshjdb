@@ -5,8 +5,11 @@
 //! that join across the `triples` table, caching plan shapes in an LRU.
 
 pub mod darshql;
+pub mod dialect;
 pub mod parallel;
 pub mod reactive;
+
+pub use dialect::{ParamKind, PgDialect, SqlDialect, SqliteDialect};
 
 use lru::LruCache;
 use serde::{Deserialize, Serialize};
