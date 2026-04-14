@@ -34,6 +34,7 @@ pub mod auth;
 pub mod automations;
 pub mod cache;
 pub mod collaboration;
+pub mod config;
 pub mod connectors;
 pub mod embeddings;
 pub mod error;

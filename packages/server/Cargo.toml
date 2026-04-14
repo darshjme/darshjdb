@@ -48,3 +48,5 @@ aws-credential-types.workspace = true
 aws-types.workspace = true
 async-trait.workspace = true
 csv.workspace = true
+config.workspace = true
+dotenvy.workspace = true
