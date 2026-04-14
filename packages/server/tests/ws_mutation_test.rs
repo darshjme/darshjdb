@@ -82,6 +82,7 @@ fn build_ws_state(pool: PgPool) -> WsState {
             std::time::Duration::from_secs(5),
             true,
         )),
+        subscription_snapshots: Arc::new(dashmap::DashMap::new()),
     }
 }
 
