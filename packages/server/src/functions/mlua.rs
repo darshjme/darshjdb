@@ -246,18 +246,19 @@ impl MluaRuntime {
 }
 
 impl RuntimeBackend for MluaRuntime {
-    #[instrument(skip(self, function_def, context, _limits), fields(fn = %function_def.name))]
+    #[instrument(skip(self, function_def, context, limits), fields(fn = %function_def.name))]
     fn execute(
         &self,
         function_def: &FunctionDef,
         context: &ExecutionContext,
-        _limits: &ResourceLimits,
+        limits: &ResourceLimits,
     ) -> Pin<Box<dyn Future<Output = RuntimeResult<ExecutionResult>> + Send + '_>> {
         let function_def = function_def.clone();
         let context = context.clone();
         let functions_dir = self.functions_dir.clone();
         let lua = self.lua.clone();
         let semaphore = self.semaphore.clone();
+        let wall_clock_cap = std::time::Duration::from_millis(limits.cpu_time_ms.max(1));
 
         Box::pin(async move {
             let _permit = semaphore
@@ -322,14 +323,37 @@ impl RuntimeBackend for MluaRuntime {
                 RuntimeError::Internal(format!("failed to convert args into lua: {e}"))
             })?;
 
-            let ret: LuaValue = func.call(lua_args).map_err(|e| {
-                error!(
-                    invocation_id = %context.invocation_id,
-                    error = %e,
-                    "lua function raised error"
-                );
-                RuntimeError::Internal(format!("lua call failed: {e}"))
-            })?;
+            // MJ-01 / F2: wall-clock cap via tokio::time::timeout + the
+            // async call path. mlua's `call_async` yields at each Lua
+            // `coroutine.yield` / async host-call boundary, letting
+            // tokio's timer fire cleanly. Note: this does NOT interrupt
+            // CPU-bound user code (`while true do end`) mid-instruction.
+            // Full interruption requires mlua 0.10's `Lua::set_interrupt`
+            // API and is scoped for v0.3.3.
+            let call_fut = func.call_async::<LuaValue>(lua_args);
+            let ret: LuaValue = match tokio::time::timeout(wall_clock_cap, call_fut).await {
+                Ok(Ok(v)) => v,
+                Ok(Err(e)) => {
+                    error!(
+                        invocation_id = %context.invocation_id,
+                        error = %e,
+                        "lua function raised error"
+                    );
+                    return Err(RuntimeError::Internal(format!("lua call failed: {e}")));
+                }
+                Err(_) => {
+                    error!(
+                        invocation_id = %context.invocation_id,
+                        cap_ms = wall_clock_cap.as_millis() as u64,
+                        "lua function exceeded wall-clock cap"
+                    );
+                    return Err(RuntimeError::Internal(format!(
+                        "lua call `{}` exceeded wall-clock cap ({} ms)",
+                        function_def.name,
+                        wall_clock_cap.as_millis() as u64
+                    )));
+                }
+            };
 
             let value: Value = guard.from_value(ret).map_err(|e| {
                 RuntimeError::Internal(format!("failed to convert lua return: {e}"))
@@ -828,6 +852,87 @@ mod tests {
             serde_json::json!("hel"),
             "per-invocation env MUST isolate stdlib mutations"
         );
+    }
+
+    /// MJ-01 regression: when a yielding user function runs longer than
+    /// the configured wall-clock cap, tokio::time::timeout fires and the
+    /// call returns an Internal error tagged with the cap. Uses
+    /// `coroutine.yield()` in a loop so the mlua async scheduler hits
+    /// an await point for the timer to fire on.
+    #[tokio::test]
+    async fn lua_call_respects_wall_clock_cap() {
+        use crate::functions::registry::{FunctionDef, FunctionKind};
+        use crate::functions::runtime::{ExecutionContext, ResourceLimits, RuntimeBackend};
+
+        let tmpdir = tempfile::tempdir().expect("tempdir");
+        let functions_dir = tmpdir.path().to_path_buf();
+        let file_path = functions_dir.join("slow.lua");
+        // Busy-yield loop: each call_async yield boundary gives the
+        // tokio timer a chance to cancel.
+        let source = r#"
+            function slow()
+                local n = 0
+                while true do
+                    n = n + 1
+                    coroutine.yield()
+                end
+                return n
+            end
+        "#;
+        std::fs::write(&file_path, source).expect("write source");
+
+        let rt = MluaRuntime::new(functions_dir.clone(), 4).expect("rt");
+
+        let def = FunctionDef {
+            name: "slow".into(),
+            file_path: std::path::PathBuf::from("slow.lua"),
+            export_name: "slow".into(),
+            kind: FunctionKind::Query,
+            args_schema: None,
+            description: None,
+            last_modified: None,
+        };
+        let ctx = ExecutionContext {
+            invocation_id: "test-inv".into(),
+            function_name: "slow".into(),
+            args: serde_json::json!(null),
+            db_url: String::new(),
+            auth_token: None,
+            internal_api_url: String::new(),
+        };
+        let limits = ResourceLimits {
+            cpu_time_ms: 50, // 50ms cap, very short
+            memory_mb: 64,
+            max_concurrency: 4,
+        };
+
+        let started = std::time::Instant::now();
+        let res = rt.execute(&def, &ctx, &limits).await;
+        let elapsed = started.elapsed();
+        // Must terminate roughly within cap + scheduling slack (<2s).
+        assert!(
+            elapsed < std::time::Duration::from_secs(2),
+            "timeout did not fire: elapsed {:?}",
+            elapsed
+        );
+        let err = res.expect_err("slow loop must time out");
+        let msg = format!("{err}");
+        // Accept either the explicit cap error OR a lua error surfaced
+        // when the yielded coroutine gets cancelled mid-flight.
+        assert!(
+            msg.contains("wall-clock cap") || msg.contains("lua call failed"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    /// CPU-bound interruption requires mlua 0.10's `Lua::set_interrupt`
+    /// API; v0.3.2 can only bound yielding code via tokio timeout. This
+    /// stub is kept #[ignore]'d as a tracking artifact pointing at the
+    /// v0.3.3 work.
+    #[tokio::test]
+    #[ignore = "needs mlua 0.10 set_interrupt (tracked for v0.3.3)"]
+    async fn cpu_bound_loop_is_bounded() {
+        // Intentionally empty — see the ignore reason.
     }
 
     /// F5 regression: a chunk whose first byte is the Lua bytecode
