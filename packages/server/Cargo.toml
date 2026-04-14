@@ -96,6 +96,10 @@ ddb-agent-memory = { path = "../agent-memory" }
 pg_embed = { workspace = true, optional = true }
 portpicker = { workspace = true, optional = true }
 
+# v0.3.1 — SQLite backend stub. Gated behind the `sqlite-store` feature so
+# default builds stay Postgres-only. See packages/server/src/store/sqlite.rs.
+rusqlite = { version = "0.31", optional = true, features = ["bundled"] }
+
 [features]
 default = []
 # Enable IPFS-backed audit anchoring via `ipfs-api-backend-hyper`.
@@ -105,6 +109,10 @@ anchor-eth = ["dep:ethers-core"]
 # Zero-dep dev mode: run DarshJDB with a bundled Postgres 16 instance.
 # Usage: `cargo run --features embedded-db`
 embedded-db = ["dep:pg_embed", "dep:portpicker"]
+# v0.3.1 — compile-time SQLite backend stub (trait boundary verification
+# only — every method returns NotYetImplemented). Full backend: v0.3.2.
+# Usage: `cargo check -p ddb-server --features sqlite-store`
+sqlite-store = ["dep:rusqlite"]
 
 [dev-dependencies]
 tokio-tungstenite = "0.28"

@@ -57,6 +57,9 @@ pub mod relations;
 pub mod rules;
 pub mod schema;
 pub mod storage;
+// v0.3.1 — backend-agnostic Store trait + Postgres adapter + SQLite
+// stub (behind the `sqlite-store` feature). See store/mod.rs.
+pub mod store;
 pub mod sync;
 pub mod tables;
 pub mod triple_store;
