@@ -195,10 +195,7 @@ pub async fn ensure_anchor_schema(pool: &PgPool) -> Result<(), sqlx::Error> {
 /// Returns `(batch_root_hex, tx_ids)` where `tx_ids` is the ordered
 /// list of transaction ids that participated in the batch (handy for
 /// logging and for future partial re-verification).
-pub async fn compute_batch_root(
-    pool: &PgPool,
-    last_n: u64,
-) -> AnchorResult<(String, Vec<i64>)> {
+pub async fn compute_batch_root(pool: &PgPool, last_n: u64) -> AnchorResult<(String, Vec<i64>)> {
     // Pull the newest `last_n` rows by tx_id DESC, then flip them to
     // ascending order before hashing so the output is stable regardless
     // of how Postgres orders tied rows internally.
@@ -504,7 +501,17 @@ pub async fn list_receipts(
     Ok(rows
         .into_iter()
         .map(
-            |(id, batch_root, chain, tx_hash, ipfs_cid, anchored_at, status, tx_count, created_at)| {
+            |(
+                id,
+                batch_root,
+                chain,
+                tx_hash,
+                ipfs_cid,
+                anchored_at,
+                status,
+                tx_count,
+                created_at,
+            )| {
                 AnchorReceipt {
                     id,
                     batch_root,
@@ -588,11 +595,7 @@ mod tests {
 
     #[test]
     fn compute_batch_root_is_deterministic() {
-        let roots = vec![
-            vec![0x01u8; 64],
-            vec![0x02u8; 64],
-            vec![0x03u8; 64],
-        ];
+        let roots = vec![vec![0x01u8; 64], vec![0x02u8; 64], vec![0x03u8; 64]];
         let a = compute_batch_root_from_bytes(&roots);
         let b = compute_batch_root_from_bytes(&roots);
         assert_eq!(a, b, "hash must be stable for identical inputs");

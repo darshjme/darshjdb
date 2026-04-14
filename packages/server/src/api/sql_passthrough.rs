@@ -382,10 +382,7 @@ mod tests {
             classify("WITH cte AS (SELECT 1) SELECT * FROM cte"),
             StatementClass::Read
         );
-        assert_eq!(
-            classify("INSERT INTO t VALUES (1)"),
-            StatementClass::Write
-        );
+        assert_eq!(classify("INSERT INTO t VALUES (1)"), StatementClass::Write);
         assert_eq!(classify("UPDATE t SET x = 1"), StatementClass::Write);
         assert_eq!(classify("DELETE FROM t"), StatementClass::Write);
     }

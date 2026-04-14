@@ -296,10 +296,10 @@ mod tests {
 
     #[test]
     fn number_to_text() {
-        let values = vec![json!(42), json!(3.14)];
+        let values = vec![json!(42), json!(3.25)];
         let results = convert_field_type(&values, FieldType::Number, FieldType::SingleLineText);
         assert_eq!(results[0].value.as_ref().unwrap(), &json!("42"));
-        assert_eq!(results[1].value.as_ref().unwrap(), &json!("3.14"));
+        assert_eq!(results[1].value.as_ref().unwrap(), &json!("3.25"));
     }
 
     #[test]

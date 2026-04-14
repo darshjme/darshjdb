@@ -373,8 +373,7 @@ async fn search_hybrid_returns_merged_ranking() {
     .await;
 
     // Run both sides at the SQL level...
-    let semantic_rows =
-        run_semantic_search(&pool, &query_vec, "HybridTestDoc", "body", 20).await;
+    let semantic_rows = run_semantic_search(&pool, &query_vec, "HybridTestDoc", "body", 20).await;
     let text_rows = run_text_search(&pool, "darshjdb hybrid search", "HybridTestDoc", 20).await;
 
     // ...and fuse them with the same RRF formula the handler uses.

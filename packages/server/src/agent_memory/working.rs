@@ -93,8 +93,8 @@ impl WorkingMemory {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::types::MemoryRole;
+    use super::*;
     use chrono::Utc;
     use serde_json::json;
 

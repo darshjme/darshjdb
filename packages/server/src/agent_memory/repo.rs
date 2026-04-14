@@ -306,8 +306,12 @@ impl AgentMemoryRepo {
             episodic_messages: episodic,
             semantic_messages: semantic,
             total_tokens,
-            created_at: session_row.try_get("created_at").unwrap_or_else(|_| Utc::now()),
-            updated_at: session_row.try_get("updated_at").unwrap_or_else(|_| Utc::now()),
+            created_at: session_row
+                .try_get("created_at")
+                .unwrap_or_else(|_| Utc::now()),
+            updated_at: session_row
+                .try_get("updated_at")
+                .unwrap_or_else(|_| Utc::now()),
         }))
     }
 
@@ -386,8 +390,9 @@ impl AgentMemoryRepo {
 // ---------------------------------------------------------------------------
 
 fn row_to_session(row: &sqlx::postgres::PgRow) -> AgentSession {
-    let metadata: SqlxJson<Value> =
-        row.try_get("metadata").unwrap_or_else(|_| SqlxJson(json!({})));
+    let metadata: SqlxJson<Value> = row
+        .try_get("metadata")
+        .unwrap_or_else(|_| SqlxJson(json!({})));
     AgentSession {
         id: row.try_get("id").unwrap_or_else(|_| Uuid::nil()),
         user_id: row.try_get("user_id").unwrap_or_else(|_| Uuid::nil()),
@@ -401,8 +406,9 @@ fn row_to_session(row: &sqlx::postgres::PgRow) -> AgentSession {
 }
 
 fn row_to_entry(row: &sqlx::postgres::PgRow) -> MemoryEntry {
-    let metadata: SqlxJson<Value> =
-        row.try_get("metadata").unwrap_or_else(|_| SqlxJson(json!({})));
+    let metadata: SqlxJson<Value> = row
+        .try_get("metadata")
+        .unwrap_or_else(|_| SqlxJson(json!({})));
     let tier_str: String = row.try_get("tier").unwrap_or_default();
     let role_str: String = row.try_get("role").unwrap_or_default();
     MemoryEntry {

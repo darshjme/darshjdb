@@ -29,19 +29,19 @@
 //! Aggregation buckets detect `undefined_function` (SQLSTATE `42883`)
 //! and retry with `date_trunc`.
 
+use axum::Router;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
 use axum::routing::{get, post};
-use axum::Router;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sqlx::postgres::PgRow;
 use sqlx::{PgPool, Row};
 use uuid::Uuid;
 
 use super::error::ApiError;
-use super::rest::{negotiate_response_pub, AppState};
+use super::rest::{AppState, negotiate_response_pub};
 
 // ---------------------------------------------------------------------------
 // Router
@@ -315,7 +315,8 @@ async fn ts_range(
 
 /// Helper: serialize a `time_series` row to JSON.
 fn row_to_json(row: &PgRow) -> Value {
-    let time: chrono::DateTime<chrono::Utc> = row.try_get("time").unwrap_or_else(|_| chrono::Utc::now());
+    let time: chrono::DateTime<chrono::Utc> =
+        row.try_get("time").unwrap_or_else(|_| chrono::Utc::now());
     let entity_id: Uuid = row.try_get("entity_id").unwrap_or_else(|_| Uuid::nil());
     let entity_type: String = row.try_get("entity_type").unwrap_or_default();
     let attribute: String = row.try_get("attribute").unwrap_or_default();
@@ -558,9 +559,7 @@ async fn ts_aggregate(
     let data: Vec<AggRow> = rows
         .iter()
         .map(|row| AggRow {
-            bucket: row
-                .try_get("bucket")
-                .unwrap_or_else(|_| chrono::Utc::now()),
+            bucket: row.try_get("bucket").unwrap_or_else(|_| chrono::Utc::now()),
             value: row.try_get("value").ok().flatten(),
             count: row.try_get("count").unwrap_or(0),
         })

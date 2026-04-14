@@ -106,13 +106,25 @@ pub async fn embedding_worker(pool: PgPool, provider: Arc<dyn EmbeddingProvider>
             warn!(error = %e, "failed to refresh embedding pending gauges");
         }
 
-        if let Err(e) =
-            process_table(&pool, provider.as_ref(), &provider_label, &bpe, TableKind::Memory).await
+        if let Err(e) = process_table(
+            &pool,
+            provider.as_ref(),
+            &provider_label,
+            &bpe,
+            TableKind::Memory,
+        )
+        .await
         {
             warn!(error = %e, "embedding tick failed for memory_entries");
         }
-        if let Err(e) =
-            process_table(&pool, provider.as_ref(), &provider_label, &bpe, TableKind::Facts).await
+        if let Err(e) = process_table(
+            &pool,
+            provider.as_ref(),
+            &provider_label,
+            &bpe,
+            TableKind::Facts,
+        )
+        .await
         {
             warn!(error = %e, "embedding tick failed for agent_facts");
         }

@@ -118,9 +118,7 @@ pub async fn ready_handler(State(state): State<HealthState>) -> Response {
             });
             (StatusCode::OK, Json(body)).into_response()
         }
-        Ok(Err(e)) => {
-            service_unavailable(&format!("pool acquire failed: {e}"))
-        }
+        Ok(Err(e)) => service_unavailable(&format!("pool acquire failed: {e}")),
         Err(_) => service_unavailable("pool acquire timed out after 500ms"),
     }
 }

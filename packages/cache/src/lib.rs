@@ -31,6 +31,4 @@ pub use unified::DdbUnifiedCache;
 
 // Slice 11 RESP3 + HTTP cache engine: this is the process-wide `DdbCache`
 // the server's `/api/cache/*` router and the RESP3 dispatcher both share.
-pub use ddb_cache::{
-    DdbCache, DdbCacheStats, KeyType, PubSubMessage, StreamEntry, glob_match,
-};
+pub use ddb_cache::{DdbCache, DdbCacheStats, KeyType, PubSubMessage, StreamEntry, glob_match};

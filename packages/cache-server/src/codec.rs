@@ -239,9 +239,15 @@ fn parse_bulk(src: &[u8]) -> io::Result<Option<(RespFrame, usize)>> {
     }
     let data = src[header_n..header_n + len].to_vec();
     if &src[header_n + len..header_n + len + 2] != b"\r\n" {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "missing bulk CRLF"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "missing bulk CRLF",
+        ));
     }
-    Ok(Some((RespFrame::BulkString(Some(data)), header_n + len + 2)))
+    Ok(Some((
+        RespFrame::BulkString(Some(data)),
+        header_n + len + 2,
+    )))
 }
 
 fn parse_array(src: &[u8], kind: u8) -> io::Result<Option<(RespFrame, usize)>> {
@@ -266,7 +272,11 @@ fn parse_array(src: &[u8], kind: u8) -> io::Result<Option<(RespFrame, usize)>> {
             None => return Ok(None),
         }
     }
-    let frame = if kind == b'~' { RespFrame::Set(items) } else { RespFrame::Array(Some(items)) };
+    let frame = if kind == b'~' {
+        RespFrame::Set(items)
+    } else {
+        RespFrame::Array(Some(items))
+    };
     Ok(Some((frame, cursor)))
 }
 
@@ -278,15 +288,22 @@ fn parse_map(src: &[u8]) -> io::Result<Option<(RespFrame, usize)>> {
         .parse()
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "bad map length"))?;
     if len < 0 {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "map cannot be null"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "map cannot be null",
+        ));
     }
     let len = len as usize;
     let mut pairs = Vec::with_capacity(len);
     let mut cursor = header_n;
     for _ in 0..len {
-        let Some((k, kn)) = parse_frame(&src[cursor..])? else { return Ok(None) };
+        let Some((k, kn)) = parse_frame(&src[cursor..])? else {
+            return Ok(None);
+        };
         cursor += kn;
-        let Some((v, vn)) = parse_frame(&src[cursor..])? else { return Ok(None) };
+        let Some((v, vn)) = parse_frame(&src[cursor..])? else {
+            return Ok(None);
+        };
         cursor += vn;
         pairs.push((k, v));
     }
@@ -324,7 +341,8 @@ mod tests {
     fn encode_bulk_string() {
         let mut buf = BytesMut::new();
         let mut c = RESP3Codec;
-        c.encode(RespFrame::bulk(b"PONG".to_vec()), &mut buf).unwrap();
+        c.encode(RespFrame::bulk(b"PONG".to_vec()), &mut buf)
+            .unwrap();
         assert_eq!(&buf[..], b"$4\r\nPONG\r\n");
     }
 
@@ -368,7 +386,7 @@ mod tests {
         let mut c = RESP3Codec;
         let frame = RespFrame::Map(vec![(
             RespFrame::SimpleString("pi".into()),
-            RespFrame::Double(3.14),
+            RespFrame::Double(3.25),
         )]);
         c.encode(frame.clone(), &mut buf).unwrap();
         let decoded = c.decode(&mut buf).unwrap().unwrap();

@@ -187,8 +187,7 @@ impl L1Cache {
             self.used_bytes
                 .fetch_sub(prev.size_bytes, AtomicOrdering::Relaxed);
         }
-        self.used_bytes
-            .fetch_add(new_size, AtomicOrdering::Relaxed);
+        self.used_bytes.fetch_add(new_size, AtomicOrdering::Relaxed);
         self.maybe_evict();
     }
 
@@ -516,7 +515,11 @@ impl L1Cache {
             return Ok(Vec::new());
         }
         let norm = |i: i64| -> i64 {
-            if i < 0 { (len + i).max(0) } else { i.min(len - 1) }
+            if i < 0 {
+                (len + i).max(0)
+            } else {
+                i.min(len - 1)
+            }
         };
         let s = norm(start);
         let e = norm(stop);
@@ -552,10 +555,12 @@ impl L1Cache {
     }
 
     fn store_zset(&self, key: &str, mut zset: Vec<(f64, String)>) {
-        zset.sort_by(|a, b| match a.0.partial_cmp(&b.0).unwrap_or(Ordering::Equal) {
-            Ordering::Equal => a.1.cmp(&b.1),
-            ord => ord,
-        });
+        zset.sort_by(
+            |a, b| match a.0.partial_cmp(&b.0).unwrap_or(Ordering::Equal) {
+                Ordering::Equal => a.1.cmp(&b.1),
+                ord => ord,
+            },
+        );
         if zset.is_empty() {
             self.remove_entry(key);
             return;
@@ -602,7 +607,11 @@ impl L1Cache {
             return Ok(Vec::new());
         }
         let norm = |i: i64| -> i64 {
-            if i < 0 { (len + i).max(0) } else { i.min(len - 1) }
+            if i < 0 {
+                (len + i).max(0)
+            } else {
+                i.min(len - 1)
+            }
         };
         let s = norm(start);
         let e = norm(stop);
@@ -762,8 +771,7 @@ impl std::error::Error for CacheError {}
 
 fn base64_encode(bytes: &[u8]) -> String {
     // Tiny, dependency-free base64 encode (standard alphabet).
-    const ALPHABET: &[u8; 64] =
-        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
     let mut i = 0;
     while i + 3 <= bytes.len() {

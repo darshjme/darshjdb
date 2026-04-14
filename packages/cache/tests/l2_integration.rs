@@ -89,8 +89,14 @@ async fn l2_hash_ops(pool: PgPool) {
     // overwrite is not "new"
     assert!(!c.hset("user:42", "name", "darshan").await.unwrap());
 
-    assert_eq!(c.hget("user:42", "name").await.unwrap().as_deref(), Some("darshan"));
-    assert_eq!(c.hget("user:42", "role").await.unwrap().as_deref(), Some("founder"));
+    assert_eq!(
+        c.hget("user:42", "name").await.unwrap().as_deref(),
+        Some("darshan")
+    );
+    assert_eq!(
+        c.hget("user:42", "role").await.unwrap().as_deref(),
+        Some("founder")
+    );
     assert_eq!(c.hget("user:42", "missing").await.unwrap(), None);
 
     let all = c.hgetall("user:42").await.unwrap();
@@ -150,7 +156,10 @@ async fn l2_stream_xadd_xrange_xlen(pool: PgPool) {
     assert_eq!(all.len(), 2);
     assert_eq!(all[0].id, id1);
     assert_eq!(all[1].id, id2);
-    assert_eq!(all[0].fields.get("event").map(String::as_str), Some("login"));
+    assert_eq!(
+        all[0].fields.get("event").map(String::as_str),
+        Some("login")
+    );
 }
 
 #[sqlx::test(migrations = "../server/migrations")]
@@ -195,7 +204,9 @@ async fn l2_sweep_expired_once(pool: PgPool) {
     .unwrap();
 
     // And one that is still alive.
-    c.set("alive", b"v", Some(Duration::from_secs(3600))).await.unwrap();
+    c.set("alive", b"v", Some(Duration::from_secs(3600)))
+        .await
+        .unwrap();
 
     let removed = c.sweep_expired_once(1000).await.unwrap();
     assert!(removed >= 1);

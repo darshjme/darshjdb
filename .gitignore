@@ -69,3 +69,4 @@ sdks/python/.venv/
 # PHP SDK artifacts
 sdks/php/vendor/
 .claude/
+.gstack/

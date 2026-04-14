@@ -117,10 +117,7 @@ impl ApiError {
     /// response body alongside the standard `error` envelope so
     /// clients can consume them without pattern-matching on
     /// stringified messages.
-    pub fn validation_with_payload(
-        message: impl Into<String>,
-        payload: serde_json::Value,
-    ) -> Self {
+    pub fn validation_with_payload(message: impl Into<String>, payload: serde_json::Value) -> Self {
         Self {
             code: ErrorCode::ValidationFailed,
             message: message.into(),
@@ -435,10 +432,9 @@ mod tests {
 
         // Read the body and confirm both the envelope AND the
         // top-level `errors` key are present (slice 9.1 contract).
-        let bytes = futures::executor::block_on(to_bytes(resp.into_body(), 4096))
-            .expect("read body");
-        let body: serde_json::Value =
-            serde_json::from_slice(&bytes).expect("parse body");
+        let bytes =
+            futures::executor::block_on(to_bytes(resp.into_body(), 4096)).expect("read body");
+        let body: serde_json::Value = serde_json::from_slice(&bytes).expect("parse body");
         assert_eq!(body["error"]["code"], "VALIDATION_FAILED");
         assert_eq!(body["error"]["status"], 422);
         let errors = body

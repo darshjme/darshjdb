@@ -55,8 +55,9 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 #[tokio::main]
 async fn main() -> Result<()> {
     // -- Tracing / Logging (Phase 10: JSON + request_id) ----------------------
-    ddb_server::observability::init_json_logging()
-        .map_err(|e| ddb_server::error::DarshJError::Internal(format!("tracing init failed: {e}")))?;
+    ddb_server::observability::init_json_logging().map_err(|e| {
+        ddb_server::error::DarshJError::Internal(format!("tracing init failed: {e}"))
+    })?;
 
     tracing::info!(
         version = env!("CARGO_PKG_VERSION"),
@@ -65,8 +66,8 @@ async fn main() -> Result<()> {
     );
 
     // -- Prometheus recorder (Phase 10) ---------------------------------------
-    let (metrics_handle, metrics_allow_list) =
-        ddb_server::observability::init_prometheus().map_err(|e| {
+    let (metrics_handle, metrics_allow_list) = ddb_server::observability::init_prometheus()
+        .map_err(|e| {
             ddb_server::error::DarshJError::Internal(format!("prometheus init failed: {e}"))
         })?;
     tracing::info!(
@@ -328,8 +329,8 @@ async fn main() -> Result<()> {
     // `skipped` rows on a timer, which wastes SQL round-trips for no
     // operational benefit.
     {
-        let anchor_chain = std::env::var("DARSH_BLOCKCHAIN_ANCHOR")
-            .unwrap_or_else(|_| "none".to_string());
+        let anchor_chain =
+            std::env::var("DARSH_BLOCKCHAIN_ANCHOR").unwrap_or_else(|_| "none".to_string());
         let every_n: u64 = std::env::var("DARSH_ANCHOR_EVERY_N_TX")
             .ok()
             .and_then(|v| v.parse().ok())
@@ -448,9 +449,7 @@ async fn main() -> Result<()> {
     {
         let cleanup_pool = pool.clone();
         ddb_server::api::chunked_upload::spawn_cleanup_task(cleanup_pool);
-        tracing::info!(
-            "chunked upload cleanup task started (5min interval, 24h stale threshold)"
-        );
+        tracing::info!("chunked upload cleanup task started (5min interval, 24h stale threshold)");
     }
 
     // -- Postgres LISTEN/NOTIFY for multi-process sync -------------------------

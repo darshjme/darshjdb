@@ -234,9 +234,7 @@ impl EmbeddingProvider for OllamaEmbeddingProvider {
             let status = response.status();
             if !status.is_success() {
                 let body = response.text().await.unwrap_or_default();
-                return Err(anyhow!(
-                    "Ollama embeddings error (status {status}): {body}"
-                ));
+                return Err(anyhow!("Ollama embeddings error (status {status}): {body}"));
             }
 
             let body: OllamaResponse = response
@@ -346,7 +344,10 @@ impl Default for NoneProvider {
 #[async_trait]
 impl EmbeddingProvider for NoneProvider {
     async fn embed(&self, texts: Vec<String>) -> Result<Vec<Vec<f32>>> {
-        Ok(texts.iter().map(|_| vec![0.0_f32; self.dimensions]).collect())
+        Ok(texts
+            .iter()
+            .map(|_| vec![0.0_f32; self.dimensions])
+            .collect())
     }
 
     fn model(&self) -> &str {
@@ -407,8 +408,8 @@ pub fn from_env() -> Box<dyn EmbeddingProvider> {
                 );
                 return Box::new(NoneProvider::new());
             }
-            let model = std::env::var("DARSH_EMBEDDING_MODEL")
-                .unwrap_or_else(|_| "voyage-3".to_string());
+            let model =
+                std::env::var("DARSH_EMBEDDING_MODEL").unwrap_or_else(|_| "voyage-3".to_string());
             let dims = std::env::var("DARSH_EMBEDDING_DIMENSIONS")
                 .ok()
                 .and_then(|s| s.parse::<usize>().ok())
@@ -441,7 +442,11 @@ mod tests {
         assert_eq!(provider.model(), "none-zero");
 
         let out = provider
-            .embed(vec!["one".to_string(), "two".to_string(), "three".to_string()])
+            .embed(vec![
+                "one".to_string(),
+                "two".to_string(),
+                "three".to_string(),
+            ])
             .await
             .expect("none provider never errors");
 

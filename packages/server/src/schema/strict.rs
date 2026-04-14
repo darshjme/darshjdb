@@ -264,16 +264,14 @@ impl StrictSchemaEnforcer {
 
     /// Return the cached definitions for a collection, if any.
     pub fn get(&self, collection: &str) -> Option<HashMap<String, StrictFieldDef>> {
-        self.by_collection.get(collection).map(|r| r.value().clone())
+        self.by_collection
+            .get(collection)
+            .map(|r| r.value().clone())
     }
 
     /// List every known collection name (alphabetical).
     pub fn collections(&self) -> Vec<String> {
-        let mut names: Vec<String> = self
-            .by_collection
-            .iter()
-            .map(|r| r.key().clone())
-            .collect();
+        let mut names: Vec<String> = self.by_collection.iter().map(|r| r.key().clone()).collect();
         names.sort();
         names
     }
@@ -344,14 +342,13 @@ impl StrictSchemaEnforcer {
 
     /// Delete a single attribute definition.
     pub async fn delete_attribute(&self, collection: &str, attribute: &str) -> Result<bool> {
-        let result = sqlx::query(
-            "DELETE FROM schema_definitions WHERE collection = $1 AND attribute = $2",
-        )
-        .bind(collection)
-        .bind(attribute)
-        .execute(&self.pool)
-        .await
-        .map_err(DarshJError::Database)?;
+        let result =
+            sqlx::query("DELETE FROM schema_definitions WHERE collection = $1 AND attribute = $2")
+                .bind(collection)
+                .bind(attribute)
+                .execute(&self.pool)
+                .await
+                .map_err(DarshJError::Database)?;
         self.reload().await?;
         Ok(result.rows_affected() > 0)
     }
@@ -410,11 +407,7 @@ impl StrictSchemaEnforcer {
                         if !parsed_type.matches(&v) {
                             errors.push(
                                 StrictValidationError::new(attr, "TYPE_MISMATCH").with_message(
-                                    format!(
-                                        "expected {}, got {}",
-                                        def.value_type,
-                                        value_kind(&v)
-                                    ),
+                                    format!("expected {}, got {}", def.value_type, value_kind(&v)),
                                 ),
                             );
                         }
@@ -422,9 +415,8 @@ impl StrictSchemaEnforcer {
                         // Unknown type in the schema row itself — flag
                         // it loudly so the admin fixes the definition.
                         errors.push(
-                            StrictValidationError::new(attr, "SCHEMA_CORRUPT").with_message(
-                                format!("unknown value_type '{}'", def.value_type),
-                            ),
+                            StrictValidationError::new(attr, "SCHEMA_CORRUPT")
+                                .with_message(format!("unknown value_type '{}'", def.value_type)),
                         );
                     }
                 }

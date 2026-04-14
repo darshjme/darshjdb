@@ -8,13 +8,13 @@
 //!
 //! Created by Darshankumar Joshi.
 
-use axum::body::{to_bytes, Body};
+use axum::Router;
+use axum::body::{Body, to_bytes};
 use axum::extract::connect_info::MockConnectInfo;
 use axum::http::{Request, StatusCode};
-use axum::Router;
 use ddb_server::observability::{
-    health_router, init_prometheus, live_handler, metrics_router, ready_handler, HealthState,
-    MetricsIpAllowList,
+    HealthState, MetricsIpAllowList, health_router, init_prometheus, live_handler, metrics_router,
+    ready_handler,
 };
 use serde_json::Value;
 use std::net::SocketAddr;
@@ -42,7 +42,12 @@ async fn health_endpoint_returns_ok_with_author() {
     let state = HealthState::degraded();
     let app: Router = health_router(state);
     let response = app
-        .oneshot(Request::builder().uri("/health").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/health")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
 
@@ -72,7 +77,12 @@ async fn ready_returns_503_when_pool_absent() {
     let state = HealthState::degraded();
     let app: Router = health_router(state);
     let response = app
-        .oneshot(Request::builder().uri("/ready").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/ready")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
 
@@ -96,13 +106,16 @@ async fn ready_via_handler_direct() {
 async fn metrics_returns_prometheus_text_format_for_allowed_ip() {
     let handle = ensure_prometheus();
     let allow = MetricsIpAllowList::parse("127.0.0.1,::1");
-    let router = metrics_router(handle, allow).layer(MockConnectInfo(SocketAddr::from((
-        [127, 0, 0, 1],
-        12345,
-    ))));
+    let router = metrics_router(handle, allow)
+        .layer(MockConnectInfo(SocketAddr::from(([127, 0, 0, 1], 12345))));
 
     let response = router
-        .oneshot(Request::builder().uri("/metrics").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/metrics")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
 
@@ -140,13 +153,16 @@ async fn metrics_returns_prometheus_text_format_for_allowed_ip() {
 async fn metrics_rejects_disallowed_ip() {
     let handle = ensure_prometheus();
     let allow = MetricsIpAllowList::parse("127.0.0.1");
-    let router = metrics_router(handle, allow).layer(MockConnectInfo(SocketAddr::from((
-        [10, 0, 0, 42],
-        12345,
-    ))));
+    let router = metrics_router(handle, allow)
+        .layer(MockConnectInfo(SocketAddr::from(([10, 0, 0, 42], 12345))));
 
     let response = router
-        .oneshot(Request::builder().uri("/metrics").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/metrics")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
@@ -156,13 +172,16 @@ async fn metrics_rejects_disallowed_ip() {
 async fn metrics_wildcard_allow_list_permits_all() {
     let handle = ensure_prometheus();
     let allow = MetricsIpAllowList::parse("*");
-    let router = metrics_router(handle, allow).layer(MockConnectInfo(SocketAddr::from((
-        [8, 8, 8, 8],
-        4242,
-    ))));
+    let router = metrics_router(handle, allow)
+        .layer(MockConnectInfo(SocketAddr::from(([8, 8, 8, 8], 4242))));
 
     let response = router
-        .oneshot(Request::builder().uri("/metrics").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/metrics")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);

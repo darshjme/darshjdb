@@ -135,7 +135,10 @@ impl Dispatcher {
         }
         session.resp3 = want_resp3;
         let pairs: Vec<(RespFrame, RespFrame)> = vec![
-            (RespFrame::SimpleString("server".into()), RespFrame::bulk(b"ddb-cache-server".to_vec())),
+            (
+                RespFrame::SimpleString("server".into()),
+                RespFrame::bulk(b"ddb-cache-server".to_vec()),
+            ),
             (
                 RespFrame::SimpleString("version".into()),
                 RespFrame::bulk(env!("CARGO_PKG_VERSION").as_bytes().to_vec()),
@@ -194,7 +197,9 @@ impl Dispatcher {
             let opt = String::from_utf8_lossy(args[i]).to_ascii_uppercase();
             match opt.as_str() {
                 "EX" => {
-                    let Some(n) = args.get(i + 1).and_then(|a| std::str::from_utf8(a).ok()?.parse::<u64>().ok())
+                    let Some(n) = args
+                        .get(i + 1)
+                        .and_then(|a| std::str::from_utf8(a).ok()?.parse::<u64>().ok())
                     else {
                         return RespFrame::err("ERR invalid EX value");
                     };
@@ -202,7 +207,9 @@ impl Dispatcher {
                     i += 2;
                 }
                 "PX" => {
-                    let Some(n) = args.get(i + 1).and_then(|a| std::str::from_utf8(a).ok()?.parse::<u64>().ok())
+                    let Some(n) = args
+                        .get(i + 1)
+                        .and_then(|a| std::str::from_utf8(a).ok()?.parse::<u64>().ok())
                     else {
                         return RespFrame::err("ERR invalid PX value");
                     };
@@ -244,11 +251,17 @@ impl Dispatcher {
         let Some(key) = args.first().and_then(|a| std::str::from_utf8(a).ok()) else {
             return RespFrame::err("ERR wrong number of arguments for 'expire'");
         };
-        let Some(secs) = args.get(1).and_then(|a| std::str::from_utf8(a).ok()?.parse::<u64>().ok())
+        let Some(secs) = args
+            .get(1)
+            .and_then(|a| std::str::from_utf8(a).ok()?.parse::<u64>().ok())
         else {
             return RespFrame::err("ERR invalid expire value");
         };
-        RespFrame::Integer(if self.cache.expire(key, Duration::from_secs(secs)) { 1 } else { 0 })
+        RespFrame::Integer(if self.cache.expire(key, Duration::from_secs(secs)) {
+            1
+        } else {
+            0
+        })
     }
 
     fn ttl(&self, args: &[&[u8]]) -> RespFrame {
@@ -285,7 +298,10 @@ impl Dispatcher {
         let mut i = 1;
         while i + 1 < args.len() {
             if let Ok(field) = std::str::from_utf8(args[i]) {
-                if self.cache.hset(key, field.to_string(), args[i + 1].to_vec()) {
+                if self
+                    .cache
+                    .hset(key, field.to_string(), args[i + 1].to_vec())
+                {
                     added += 1;
                 }
             }
@@ -397,11 +413,15 @@ impl Dispatcher {
         let Some(key) = std::str::from_utf8(args[0]).ok() else {
             return RespFrame::err("ERR invalid key");
         };
-        let Some(start) = std::str::from_utf8(args[1]).ok().and_then(|s| s.parse::<i64>().ok())
+        let Some(start) = std::str::from_utf8(args[1])
+            .ok()
+            .and_then(|s| s.parse::<i64>().ok())
         else {
             return RespFrame::err("ERR invalid start");
         };
-        let Some(stop) = std::str::from_utf8(args[2]).ok().and_then(|s| s.parse::<i64>().ok())
+        let Some(stop) = std::str::from_utf8(args[2])
+            .ok()
+            .and_then(|s| s.parse::<i64>().ok())
         else {
             return RespFrame::err("ERR invalid stop");
         };
@@ -426,7 +446,9 @@ impl Dispatcher {
         let mut added = 0i64;
         let mut i = 1;
         while i + 1 < args.len() {
-            let Some(score) = std::str::from_utf8(args[i]).ok().and_then(|s| s.parse::<f64>().ok())
+            let Some(score) = std::str::from_utf8(args[i])
+                .ok()
+                .and_then(|s| s.parse::<f64>().ok())
             else {
                 return RespFrame::err("ERR invalid score");
             };
@@ -446,17 +468,23 @@ impl Dispatcher {
         let Some(key) = std::str::from_utf8(args[0]).ok() else {
             return RespFrame::err("ERR invalid key");
         };
-        let Some(start) = std::str::from_utf8(args[1]).ok().and_then(|s| s.parse::<i64>().ok())
+        let Some(start) = std::str::from_utf8(args[1])
+            .ok()
+            .and_then(|s| s.parse::<i64>().ok())
         else {
             return RespFrame::err("ERR invalid start");
         };
-        let Some(stop) = std::str::from_utf8(args[2]).ok().and_then(|s| s.parse::<i64>().ok())
+        let Some(stop) = std::str::from_utf8(args[2])
+            .ok()
+            .and_then(|s| s.parse::<i64>().ok())
         else {
             return RespFrame::err("ERR invalid stop");
         };
-        let with_scores = args
-            .iter()
-            .any(|a| std::str::from_utf8(a).map(|s| s.eq_ignore_ascii_case("WITHSCORES")).unwrap_or(false));
+        let with_scores = args.iter().any(|a| {
+            std::str::from_utf8(a)
+                .map(|s| s.eq_ignore_ascii_case("WITHSCORES"))
+                .unwrap_or(false)
+        });
         let r = self.cache.zrange(key, start, stop);
         let mut items = Vec::new();
         for (m, s) in r {
@@ -475,16 +503,23 @@ impl Dispatcher {
         let Some(key) = std::str::from_utf8(args[0]).ok() else {
             return RespFrame::err("ERR invalid key");
         };
-        let Some(min) = std::str::from_utf8(args[1]).ok().and_then(|s| s.parse::<f64>().ok())
+        let Some(min) = std::str::from_utf8(args[1])
+            .ok()
+            .and_then(|s| s.parse::<f64>().ok())
         else {
             return RespFrame::err("ERR invalid min");
         };
-        let Some(max) = std::str::from_utf8(args[2]).ok().and_then(|s| s.parse::<f64>().ok())
+        let Some(max) = std::str::from_utf8(args[2])
+            .ok()
+            .and_then(|s| s.parse::<f64>().ok())
         else {
             return RespFrame::err("ERR invalid max");
         };
         let r = self.cache.zrangebyscore(key, min, max);
-        let items: Vec<RespFrame> = r.into_iter().map(|(m, _)| RespFrame::bulk(m.into_bytes())).collect();
+        let items: Vec<RespFrame> = r
+            .into_iter()
+            .map(|(m, _)| RespFrame::bulk(m.into_bytes()))
+            .collect();
         RespFrame::Array(Some(items))
     }
 
@@ -538,7 +573,9 @@ impl Dispatcher {
         RespFrame::Array(Some(vec![
             RespFrame::bulk(b"subscribe".to_vec()),
             RespFrame::bulk(
-                args.first().map(|a| a.to_vec()).unwrap_or_else(|| b"".to_vec()),
+                args.first()
+                    .map(|a| a.to_vec())
+                    .unwrap_or_else(|| b"".to_vec()),
             ),
             RespFrame::Integer(session.subscriptions.len() as i64),
         ]))
@@ -657,7 +694,11 @@ impl Dispatcher {
             return RespFrame::err("ERR wrong number of arguments for 'bfadd'");
         }
         let key = String::from_utf8_lossy(args[0]).to_string();
-        RespFrame::Integer(if self.cache.bfadd(&key, args[1]).await { 1 } else { 0 })
+        RespFrame::Integer(if self.cache.bfadd(&key, args[1]).await {
+            1
+        } else {
+            0
+        })
     }
 
     async fn bfexists(&self, args: &[&[u8]]) -> RespFrame {
@@ -665,7 +706,11 @@ impl Dispatcher {
             return RespFrame::err("ERR wrong number of arguments for 'bfexists'");
         }
         let key = String::from_utf8_lossy(args[0]).to_string();
-        RespFrame::Integer(if self.cache.bfexists(&key, args[1]).await { 1 } else { 0 })
+        RespFrame::Integer(if self.cache.bfexists(&key, args[1]).await {
+            1
+        } else {
+            0
+        })
     }
 
     async fn pfadd(&self, args: &[&[u8]]) -> RespFrame {

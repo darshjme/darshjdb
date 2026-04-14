@@ -18,17 +18,17 @@
 use std::sync::{Arc, OnceLock};
 
 use async_openai::{
+    Client as OpenAiSdkClient,
     config::OpenAIConfig,
     types::chat::{
         ChatCompletionRequestMessage, ChatCompletionRequestSystemMessageArgs,
         ChatCompletionRequestUserMessageArgs, CreateChatCompletionRequestArgs,
     },
-    Client as OpenAiSdkClient,
 };
 use async_trait::async_trait;
 use sqlx::PgPool;
 use thiserror::Error;
-use tiktoken_rs::{cl100k_base, CoreBPE};
+use tiktoken_rs::{CoreBPE, cl100k_base};
 use uuid::Uuid;
 
 // ── Threshold constants ─────────────────────────────────────────────────
@@ -48,8 +48,7 @@ pub const SUMMARISER_IMPORTANCE: f64 = 0.9;
 pub const SUMMARISER_THRESHOLDS: [i64; 3] = [50, 100, 200];
 
 /// System prompt used for all summarisation calls.
-pub const SUMMARISER_SYSTEM_PROMPT: &str =
-    "Summarise this conversation segment in 3-5 sentences, preserving all \
+pub const SUMMARISER_SYSTEM_PROMPT: &str = "Summarise this conversation segment in 3-5 sentences, preserving all \
      factual details, decisions, and key outcomes. Focus on what would be \
      most useful to remember later.";
 
@@ -131,11 +130,8 @@ impl OpenAiClient {
     pub fn from_env() -> Result<Self, LlmError> {
         let api_key = std::env::var("DARSH_LLM_API_KEY")
             .or_else(|_| std::env::var("OPENAI_API_KEY"))
-            .map_err(|_| {
-                LlmError::Config("DARSH_LLM_API_KEY / OPENAI_API_KEY not set".into())
-            })?;
-        let model =
-            std::env::var("DARSH_LLM_MODEL").unwrap_or_else(|_| "gpt-4o-mini".to_string());
+            .map_err(|_| LlmError::Config("DARSH_LLM_API_KEY / OPENAI_API_KEY not set".into()))?;
+        let model = std::env::var("DARSH_LLM_MODEL").unwrap_or_else(|_| "gpt-4o-mini".to_string());
 
         let mut config = OpenAIConfig::new().with_api_key(api_key);
         if let Ok(base) = std::env::var("DARSH_LLM_BASE_URL") {
@@ -196,9 +192,7 @@ impl AnthropicClient {
         let api_key = std::env::var("DARSH_LLM_API_KEY")
             .or_else(|_| std::env::var("ANTHROPIC_API_KEY"))
             .map_err(|_| {
-                LlmError::Config(
-                    "DARSH_LLM_API_KEY / ANTHROPIC_API_KEY not set".into(),
-                )
+                LlmError::Config("DARSH_LLM_API_KEY / ANTHROPIC_API_KEY not set".into())
             })?;
         let model = std::env::var("DARSH_LLM_MODEL")
             .unwrap_or_else(|_| "claude-3-5-haiku-latest".to_string());
@@ -450,12 +444,11 @@ pub async fn summarise_oldest_episodic(
 
     // 4. Resolve the owning agent_id via agent_sessions so the summary
     //    row is linked the same way the source rows were.
-    let agent_id: String = sqlx::query_scalar(
-        "SELECT agent_id FROM agent_sessions WHERE session_id = $1",
-    )
-    .bind(session_id)
-    .fetch_one(&mut *tx)
-    .await?;
+    let agent_id: String =
+        sqlx::query_scalar("SELECT agent_id FROM agent_sessions WHERE session_id = $1")
+            .bind(session_id)
+            .fetch_one(&mut *tx)
+            .await?;
 
     // 5. INSERT the summary row on the semantic tier.
     let new_id = Uuid::new_v4();
@@ -531,10 +524,7 @@ mod tests {
     async fn none_client_returns_fallback_text() {
         let client = NoneClient;
         let out = client
-            .complete(
-                vec![LlmMessage::system("x"), LlmMessage::user("y")],
-                128,
-            )
+            .complete(vec![LlmMessage::system("x"), LlmMessage::user("y")], 128)
             .await
             .expect("none client never errors");
         assert_eq!(out, NO_LLM_FALLBACK_TEXT);

@@ -16,7 +16,10 @@ async fn spawn_server() -> std::net::SocketAddr {
     let addr = listener.local_addr().unwrap();
     drop(listener);
 
-    let config = ServerConfig { addr, password: None };
+    let config = ServerConfig {
+        addr,
+        password: None,
+    };
     let cache = Arc::new(DdbCache::new());
     tokio::spawn(async move {
         let _ = serve(config, cache).await;

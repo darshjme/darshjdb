@@ -32,9 +32,18 @@ fn make_entry(role: MemoryRole, content: &str) -> MemoryEntry {
 fn working_memory_evicts_oldest_when_full() {
     let wm = WorkingMemory::with_capacity(3);
     let sid = Uuid::new_v4();
-    assert!(wm.push(sid, make_entry(MemoryRole::User, "first")).is_none());
-    assert!(wm.push(sid, make_entry(MemoryRole::Assistant, "second")).is_none());
-    assert!(wm.push(sid, make_entry(MemoryRole::User, "third")).is_none());
+    assert!(
+        wm.push(sid, make_entry(MemoryRole::User, "first"))
+            .is_none()
+    );
+    assert!(
+        wm.push(sid, make_entry(MemoryRole::Assistant, "second"))
+            .is_none()
+    );
+    assert!(
+        wm.push(sid, make_entry(MemoryRole::User, "third"))
+            .is_none()
+    );
 
     let evicted = wm
         .push(sid, make_entry(MemoryRole::Assistant, "fourth"))
@@ -52,7 +61,10 @@ fn working_memory_total_tokens_matches_sum() {
     let wm = WorkingMemory::with_capacity(5);
     let sid = Uuid::new_v4();
     wm.push(sid, make_entry(MemoryRole::User, "alpha beta"));
-    wm.push(sid, make_entry(MemoryRole::Assistant, "gamma delta epsilon"));
+    wm.push(
+        sid,
+        make_entry(MemoryRole::Assistant, "gamma delta epsilon"),
+    );
 
     let snap = wm.snapshot(sid);
     let expected: i64 = snap.iter().map(|m| m.token_count as i64).sum();
@@ -62,7 +74,11 @@ fn working_memory_total_tokens_matches_sum() {
 
 #[test]
 fn tier_and_role_round_trip_strings() {
-    for tier in [MemoryTier::Working, MemoryTier::Episodic, MemoryTier::Semantic] {
+    for tier in [
+        MemoryTier::Working,
+        MemoryTier::Episodic,
+        MemoryTier::Semantic,
+    ] {
         let s = tier.as_str();
         assert_eq!(MemoryTier::parse(s), Some(tier));
     }
@@ -118,7 +134,10 @@ fn pack_within_budget(entries: &[MemoryEntry], budget: usize) -> (Vec<&MemoryEnt
 fn budget_packing_respects_max_tokens() {
     let entries = vec![
         make_entry(MemoryRole::User, "first message"),
-        make_entry(MemoryRole::Assistant, "second message a bit longer than the first"),
+        make_entry(
+            MemoryRole::Assistant,
+            "second message a bit longer than the first",
+        ),
         make_entry(MemoryRole::User, "third"),
     ];
 

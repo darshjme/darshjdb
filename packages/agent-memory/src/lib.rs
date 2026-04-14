@@ -28,20 +28,20 @@ pub mod worker;
 /// Episodic-to-semantic summariser with pluggable LLM clients (Slice 15).
 pub mod summariser;
 
+pub use embedder::{
+    AnthropicEmbeddingProvider, EmbeddingProvider, NoneProvider, OllamaEmbeddingProvider,
+    OpenAIEmbeddingProvider, from_env,
+};
 pub use summariser::{
+    AnthropicClient, LlmClient, LlmError, LlmMessage, NO_LLM_FALLBACK_TEXT, NoneClient,
+    OpenAiClient, SUMMARISER_BATCH_SIZE, SUMMARISER_IMPORTANCE, SUMMARISER_MAX_TOKENS,
+    SUMMARISER_SYSTEM_PROMPT, SUMMARISER_THRESHOLDS, SummariserError,
     build_llm_client_for_provider, build_llm_client_from_env, count_tokens, format_transcript,
-    is_threshold_crossed, maybe_summarise_session, summarise_oldest_episodic, AnthropicClient,
-    LlmClient, LlmError, LlmMessage, NoneClient, OpenAiClient, SummariserError,
-    NO_LLM_FALLBACK_TEXT, SUMMARISER_BATCH_SIZE, SUMMARISER_IMPORTANCE, SUMMARISER_MAX_TOKENS,
-    SUMMARISER_SYSTEM_PROMPT, SUMMARISER_THRESHOLDS,
+    is_threshold_crossed, maybe_summarise_session, summarise_oldest_episodic,
 };
 pub use tiers::{
     ARCHIVAL_BOTTOM_FRACTION, EPISODIC_CAPACITY, MemoryEntry, MemoryRole, MemoryTier,
     PromotionReport, SEMANTIC_BOTTOM_FRACTION, WORKING_CAPACITY, WorkingTier, score_entry,
     update_importance,
-};
-pub use embedder::{
-    AnthropicEmbeddingProvider, EmbeddingProvider, NoneProvider, OllamaEmbeddingProvider,
-    OpenAIEmbeddingProvider, from_env,
 };
 pub use worker::{EmbeddingWorkerHandle, embedding_worker, spawn_embedding_worker};

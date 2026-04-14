@@ -78,8 +78,8 @@ fn encode(payload: &[u8]) -> L2Result<Vec<u8>> {
         out.extend_from_slice(&compressed);
         Ok(out)
     } else {
-        let compressed =
-            zstd::stream::encode_all(payload, ZSTD_LEVEL).map_err(|e| L2Error::Compression(e.to_string()))?;
+        let compressed = zstd::stream::encode_all(payload, ZSTD_LEVEL)
+            .map_err(|e| L2Error::Compression(e.to_string()))?;
         let mut out = Vec::with_capacity(compressed.len() + 1);
         out.push(TAG_ZSTD);
         out.extend_from_slice(&compressed);
@@ -97,7 +97,9 @@ fn decode(blob: &[u8]) -> L2Result<Vec<u8>> {
         TAG_RAW => Ok(body.to_vec()),
         TAG_LZ4 => lz4_flex::decompress_size_prepended(body)
             .map_err(|e| L2Error::Decompression(e.to_string())),
-        TAG_ZSTD => zstd::stream::decode_all(body).map_err(|e| L2Error::Decompression(e.to_string())),
+        TAG_ZSTD => {
+            zstd::stream::decode_all(body).map_err(|e| L2Error::Decompression(e.to_string()))
+        }
         other => Err(L2Error::InvalidTag(other)),
     }
 }
@@ -147,7 +149,10 @@ impl L2Cache {
     // ── Internal helpers ───────────────────────────────────────────────────
 
     fn expires_at(ttl: Option<Duration>) -> Option<DateTime<Utc>> {
-        ttl.map(|d| Utc::now() + chrono::Duration::from_std(d).unwrap_or_else(|_| chrono::Duration::seconds(0)))
+        ttl.map(|d| {
+            Utc::now()
+                + chrono::Duration::from_std(d).unwrap_or_else(|_| chrono::Duration::seconds(0))
+        })
     }
 
     async fn upsert(
@@ -212,7 +217,8 @@ impl L2Cache {
     // ── Generic key ops ────────────────────────────────────────────────────
 
     pub async fn set(&self, key: &str, value: &[u8], ttl: Option<Duration>) -> L2Result<()> {
-        self.upsert(key, KIND_STRING, value, Self::expires_at(ttl)).await
+        self.upsert(key, KIND_STRING, value, Self::expires_at(ttl))
+            .await
     }
 
     pub async fn get(&self, key: &str) -> L2Result<Option<Vec<u8>>> {
@@ -250,13 +256,12 @@ impl L2Cache {
     pub async fn expire(&self, key: &str, ttl: Duration) -> L2Result<bool> {
         let new_expiry = Utc::now()
             + chrono::Duration::from_std(ttl).unwrap_or_else(|_| chrono::Duration::seconds(0));
-        let res = sqlx::query(
-            "UPDATE kv_store SET expires_at = $2, updated_at = now() WHERE key = $1",
-        )
-        .bind(key)
-        .bind(new_expiry)
-        .execute(&*self.pool)
-        .await?;
+        let res =
+            sqlx::query("UPDATE kv_store SET expires_at = $2, updated_at = now() WHERE key = $1")
+                .bind(key)
+                .bind(new_expiry)
+                .execute(&*self.pool)
+                .await?;
         Ok(res.rows_affected() > 0)
     }
 
@@ -391,13 +396,16 @@ impl L2Cache {
 
     // ── List ops (LPUSH / RPUSH / LRANGE) ──────────────────────────────────
 
-    async fn list_load(&self, key: &str, tx: &mut sqlx::Transaction<'_, sqlx::Postgres>) -> L2Result<Vec<String>> {
-        let row: Option<PgRow> = sqlx::query(
-            r#"SELECT value, kind FROM kv_store WHERE key = $1 FOR UPDATE"#,
-        )
-        .bind(key)
-        .fetch_optional(&mut **tx)
-        .await?;
+    async fn list_load(
+        &self,
+        key: &str,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    ) -> L2Result<Vec<String>> {
+        let row: Option<PgRow> =
+            sqlx::query(r#"SELECT value, kind FROM kv_store WHERE key = $1 FOR UPDATE"#)
+                .bind(key)
+                .fetch_optional(&mut **tx)
+                .await?;
 
         match row {
             None => Ok(Vec::new()),
@@ -479,7 +487,11 @@ impl L2Cache {
             return Ok(Vec::new());
         }
         let norm = |i: i64| -> i64 {
-            if i < 0 { (len + i).max(0) } else { i.min(len - 1) }
+            if i < 0 {
+                (len + i).max(0)
+            } else {
+                i.min(len - 1)
+            }
         };
         let s = norm(start);
         let e = norm(stop);
@@ -495,12 +507,11 @@ impl L2Cache {
 
     pub async fn zadd(&self, key: &str, score: f64, member: &str) -> L2Result<bool> {
         let mut tx = self.pool.begin().await?;
-        let row: Option<PgRow> = sqlx::query(
-            r#"SELECT value, kind FROM kv_store WHERE key = $1 FOR UPDATE"#,
-        )
-        .bind(key)
-        .fetch_optional(&mut *tx)
-        .await?;
+        let row: Option<PgRow> =
+            sqlx::query(r#"SELECT value, kind FROM kv_store WHERE key = $1 FOR UPDATE"#)
+                .bind(key)
+                .fetch_optional(&mut *tx)
+                .await?;
 
         let mut zset: Vec<(f64, String)> = match row {
             Some(r) => {
@@ -563,7 +574,11 @@ impl L2Cache {
             return Ok(Vec::new());
         }
         let norm = |i: i64| -> i64 {
-            if i < 0 { (len + i).max(0) } else { i.min(len - 1) }
+            if i < 0 {
+                (len + i).max(0)
+            } else {
+                i.min(len - 1)
+            }
         };
         let s = norm(start);
         let e = norm(stop);
@@ -579,7 +594,11 @@ impl L2Cache {
     // ── Stream ops (XADD / XREAD / XRANGE / XLEN) ──────────────────────────
 
     /// XADD — appends a new entry. Returns the assigned `<ms>-<seq>` id.
-    pub async fn xadd(&self, stream_key: &str, fields: &HashMap<String, String>) -> L2Result<String> {
+    pub async fn xadd(
+        &self,
+        stream_key: &str,
+        fields: &HashMap<String, String>,
+    ) -> L2Result<String> {
         let unix_ms = Utc::now().timestamp_millis().max(0) as u64;
         let seq = self.seq.fetch_add(1, Ordering::SeqCst);
         let entry_id = format!("{}-{}", unix_ms, seq);
@@ -601,12 +620,10 @@ impl L2Cache {
 
     /// XLEN — total entry count for a stream.
     pub async fn xlen(&self, stream_key: &str) -> L2Result<i64> {
-        let row = sqlx::query(
-            "SELECT COUNT(*)::BIGINT AS n FROM kv_streams WHERE stream_key = $1",
-        )
-        .bind(stream_key)
-        .fetch_one(&*self.pool)
-        .await?;
+        let row = sqlx::query("SELECT COUNT(*)::BIGINT AS n FROM kv_streams WHERE stream_key = $1")
+            .bind(stream_key)
+            .fetch_one(&*self.pool)
+            .await?;
         Ok(row.try_get::<i64, _>("n")?)
     }
 
@@ -678,7 +695,8 @@ impl L2Cache {
         for row in rows {
             let id: String = row.try_get("entry_id")?;
             let fields_json: JsonValue = row.try_get("fields")?;
-            let fields: HashMap<String, String> = serde_json::from_value(fields_json).unwrap_or_default();
+            let fields: HashMap<String, String> =
+                serde_json::from_value(fields_json).unwrap_or_default();
             out.push(StreamEntry { id, fields });
         }
         Ok(out)
@@ -715,7 +733,8 @@ impl L2Cache {
         for row in rows {
             let id: String = row.try_get("entry_id")?;
             let fields_json: JsonValue = row.try_get("fields")?;
-            let fields: HashMap<String, String> = serde_json::from_value(fields_json).unwrap_or_default();
+            let fields: HashMap<String, String> =
+                serde_json::from_value(fields_json).unwrap_or_default();
             out.push(StreamEntry { id, fields });
         }
         Ok(out)
@@ -736,7 +755,9 @@ impl L2Cache {
                 ticker.tick().await;
                 match this.sweep_expired_once(1000).await {
                     Ok(0) => debug!(target: "ddb_cache::l2", "expiry sweep: 0 rows"),
-                    Ok(n) => info!(target: "ddb_cache::l2", removed = n, "expiry sweep deleted rows"),
+                    Ok(n) => {
+                        info!(target: "ddb_cache::l2", removed = n, "expiry sweep deleted rows")
+                    }
                     Err(e) => {
                         error!(target: "ddb_cache::l2", error = %e, "expiry sweep failed");
                         // Brief backoff so a flapping DB doesn't burn the loop.

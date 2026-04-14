@@ -616,8 +616,7 @@ async fn test_login_attempts_allow_first_four() {
     // The first 5 failed attempts (0..4 prior failures) must all be allowed
     // through the gate — throttling only kicks in starting with attempt #6.
     for i in 0..5 {
-        let result =
-            ddb_server::api::rest::record_login_attempt_and_check(&pool, &email, ip).await;
+        let result = ddb_server::api::rest::record_login_attempt_and_check(&pool, &email, ip).await;
         assert!(
             result.is_ok(),
             "attempt #{} should pass the gate: {:?}",
@@ -720,23 +719,21 @@ async fn test_login_attempts_success_marks_row() {
         .expect("first attempt should pass");
 
     // Row should exist with success=false.
-    let before: bool =
-        sqlx::query_scalar("SELECT success FROM login_attempts WHERE id = $1")
-            .bind(gate.attempt_id)
-            .fetch_one(&pool)
-            .await
-            .expect("row exists");
+    let before: bool = sqlx::query_scalar("SELECT success FROM login_attempts WHERE id = $1")
+        .bind(gate.attempt_id)
+        .fetch_one(&pool)
+        .await
+        .expect("row exists");
     assert!(!before, "row should start with success=false");
 
     // Flip to success.
     ddb_server::api::rest::mark_login_attempt_success(&pool, gate.attempt_id).await;
 
-    let after: bool =
-        sqlx::query_scalar("SELECT success FROM login_attempts WHERE id = $1")
-            .bind(gate.attempt_id)
-            .fetch_one(&pool)
-            .await
-            .expect("row still exists");
+    let after: bool = sqlx::query_scalar("SELECT success FROM login_attempts WHERE id = $1")
+        .bind(gate.attempt_id)
+        .fetch_one(&pool)
+        .await
+        .expect("row still exists");
     assert!(after, "row should be flipped to success=true");
 
     cleanup_login_attempts(&pool, &email).await;
@@ -966,13 +963,7 @@ async fn test_session_overflow_eviction_caps_at_five() {
 
     // Sixth session evicts the oldest.
     let _tp6 = sm
-        .create_session(
-            uid,
-            vec!["user".into()],
-            "127.0.0.1",
-            "agent",
-            "device-5",
-        )
+        .create_session(uid, vec!["user".into()], "127.0.0.1", "agent", "device-5")
         .await
         .expect("create overflow");
     let active = sm.list_sessions(uid).await.expect("list");
@@ -1046,13 +1037,12 @@ async fn test_session_absolute_timeout_auto_revoke() {
     );
 
     // The row must now show the structured revocation.
-    let row: Option<(Option<chrono::DateTime<chrono::Utc>>, Option<String>)> = sqlx::query_as(
-        "SELECT revoked_at, revoke_reason FROM sessions WHERE user_id = $1",
-    )
-    .bind(uid)
-    .fetch_optional(&pool)
-    .await
-    .expect("fetch");
+    let row: Option<(Option<chrono::DateTime<chrono::Utc>>, Option<String>)> =
+        sqlx::query_as("SELECT revoked_at, revoke_reason FROM sessions WHERE user_id = $1")
+            .bind(uid)
+            .fetch_optional(&pool)
+            .await
+            .expect("fetch");
     let (revoked_at, reason) = row.expect("row");
     assert!(revoked_at.is_some(), "revoked_at must be set");
     assert_eq!(reason.as_deref(), Some("absolute_timeout"));
@@ -1101,13 +1091,12 @@ async fn test_session_revoked_rejected_on_validate() {
     );
 
     // The legacy boolean must also be flipped for back-compat consumers.
-    let row: (bool, Option<String>) = sqlx::query_as(
-        "SELECT revoked, revoke_reason FROM sessions WHERE session_id = $1",
-    )
-    .bind(ctx.session_id)
-    .fetch_one(&pool)
-    .await
-    .expect("fetch");
+    let row: (bool, Option<String>) =
+        sqlx::query_as("SELECT revoked, revoke_reason FROM sessions WHERE session_id = $1")
+            .bind(ctx.session_id)
+            .fetch_one(&pool)
+            .await
+            .expect("fetch");
     assert!(row.0, "legacy revoked flag must be true");
     assert_eq!(row.1.as_deref(), Some("logout"));
 

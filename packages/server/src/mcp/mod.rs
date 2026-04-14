@@ -1146,8 +1146,7 @@ pub async fn mcp_handler(
     let req: JsonRpcRequest = match serde_json::from_value(body.0) {
         Ok(r) => r,
         Err(e) => {
-            let resp =
-                JsonRpcResponse::error(Value::Null, -32700, format!("Parse error: {e}"));
+            let resp = JsonRpcResponse::error(Value::Null, -32700, format!("Parse error: {e}"));
             return axum::Json(resp).into_response();
         }
     };
@@ -1218,9 +1217,7 @@ pub async fn agent_stream_handler(
                     "done": true,
                     "error": err,
                 });
-                let _ = tx
-                    .send(Ok(Event::default().data(frame.to_string())))
-                    .await;
+                let _ = tx.send(Ok(Event::default().data(frame.to_string()))).await;
             }
         }
     });
@@ -1246,9 +1243,7 @@ async fn stream_rows(
             "total": 0,
             "done": true
         });
-        let _ = tx
-            .send(Ok(Event::default().data(frame.to_string())))
-            .await;
+        let _ = tx.send(Ok(Event::default().data(frame.to_string()))).await;
         return;
     }
 
@@ -1313,11 +1308,7 @@ mod tests {
     fn mcp_tools_list_has_at_least_ten_entries() {
         let catalog = tool_catalog();
         let arr = catalog.as_array().expect("catalog must be an array");
-        assert!(
-            arr.len() >= 10,
-            "expected >=10 tools, got {}",
-            arr.len()
-        );
+        assert!(arr.len() >= 10, "expected >=10 tools, got {}", arr.len());
 
         // Make sure every entry has the MCP-required fields.
         for tool in arr {
@@ -1376,8 +1367,7 @@ mod tests {
                 .await;
             return;
         }
-        let chunks: Vec<&[crate::query::QueryResultRow]> =
-            rows.chunks(STREAM_CHUNK_SIZE).collect();
+        let chunks: Vec<&[crate::query::QueryResultRow]> = rows.chunks(STREAM_CHUNK_SIZE).collect();
         let last = chunks.len() - 1;
         for (i, chunk) in chunks.iter().enumerate() {
             let _ = tx
@@ -1432,11 +1422,7 @@ mod tests {
             assert_eq!(frame.get("total").and_then(|v| v.as_u64()), Some(60));
         }
         assert_eq!(
-            frames
-                .last()
-                .unwrap()
-                .get("done")
-                .and_then(|v| v.as_bool()),
+            frames.last().unwrap().get("done").and_then(|v| v.as_bool()),
             Some(true)
         );
         // Intermediate frames must not be marked done.

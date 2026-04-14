@@ -169,10 +169,7 @@ impl WorkingTier {
 
     /// Number of entries currently held for a session (0 if unknown).
     pub fn len(&self, session_id: Uuid) -> usize {
-        self.inner
-            .get(&session_id)
-            .map(|b| b.len())
-            .unwrap_or(0)
+        self.inner.get(&session_id).map(|b| b.len()).unwrap_or(0)
     }
 
     /// Returns `true` when the session has no working-tier rows.
@@ -220,11 +217,7 @@ pub fn score_entry(entry: &MemoryEntry, now: DateTime<Utc>) -> f64 {
 ///   user clicked "pin this"). It is clamped to `[-0.5, 0.5]` before
 ///   being added so a single call cannot saturate the importance.
 /// * Final importance is clamped to `[0.0, 1.0]`.
-pub fn update_importance(
-    entry: &MemoryEntry,
-    now: DateTime<Utc>,
-    feedback_delta: f64,
-) -> f64 {
+pub fn update_importance(entry: &MemoryEntry, now: DateTime<Utc>, feedback_delta: f64) -> f64 {
     let idle = entry.idle_hours(now).max(0.0);
     let decay = (-IMPORTANCE_DECAY_PER_HOUR * idle).exp();
     let freq_boost = 0.05 * (1.0 + entry.access_count.max(0) as f64).ln();
@@ -408,12 +401,11 @@ pub async fn promote_demote(
             // Compress content, then UPDATE the row with the compressed
             // bytes stored as base64 text so the existing TEXT column
             // stays strict-UTF8-safe without another schema change.
-            let existing: Option<String> = sqlx::query_scalar(
-                "SELECT content FROM memory_entries WHERE id = $1",
-            )
-            .bind(id)
-            .fetch_optional(&mut *tx)
-            .await?;
+            let existing: Option<String> =
+                sqlx::query_scalar("SELECT content FROM memory_entries WHERE id = $1")
+                    .bind(id)
+                    .fetch_optional(&mut *tx)
+                    .await?;
             if let Some(content) = existing {
                 let compressed = compress_archival(&content);
                 // base64 keeps it TEXT-compatible. Decompression happens
@@ -436,8 +428,7 @@ pub async fn promote_demote(
         tx.commit().await?;
     }
 
-    metrics::counter!("ddb_agent_memory_working_flushed")
-        .increment(report.working_flushed as u64);
+    metrics::counter!("ddb_agent_memory_working_flushed").increment(report.working_flushed as u64);
     metrics::counter!("ddb_agent_memory_demoted_semantic")
         .increment(report.demoted_to_semantic as u64);
     metrics::counter!("ddb_agent_memory_demoted_archival")
@@ -449,8 +440,7 @@ pub async fn promote_demote(
 /// Minimal base64 encoder so we don't drag in the full `base64` crate for
 /// a single call site. Standard alphabet, no padding stripping.
 fn base64_encode(bytes: &[u8]) -> String {
-    const ALPHABET: &[u8; 64] =
-        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity((bytes.len() + 2) / 3 * 4);
     let mut i = 0;
     while i + 3 <= bytes.len() {
@@ -563,7 +553,12 @@ mod tests {
         // Access term should lift by exactly 0.3 * ln(101).
         let diff = hot_score - cold_score;
         let expected = ACCESS_COUNT_WEIGHT * 101f64.ln();
-        assert!((diff - expected).abs() < 1e-9, "got {} want {}", diff, expected);
+        assert!(
+            (diff - expected).abs() < 1e-9,
+            "got {} want {}",
+            diff,
+            expected
+        );
     }
 
     #[test]

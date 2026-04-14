@@ -316,9 +316,7 @@ fn parse_op(key: &str, val: &str) -> Result<Op, TransformError> {
                 .parse::<u8>()
                 .map_err(|_| TransformError::Parse(format!("quality: bad value '{val}'")))?;
             if !(1..=100).contains(&q) {
-                return Err(TransformError::Parse(
-                    "quality: must be in 1..=100".into(),
-                ));
+                return Err(TransformError::Parse("quality: must be in 1..=100".into()));
             }
             Ok(Op::Quality(q))
         }
@@ -460,8 +458,7 @@ mod tests {
         {
             let mut cursor = Cursor::new(&mut jpeg_bytes);
             let rgb = img.to_rgb8();
-            let encoder =
-                image::codecs::jpeg::JpegEncoder::new_with_quality(&mut cursor, 85);
+            let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut cursor, 85);
             encoder
                 .write_image(
                     rgb.as_raw(),
@@ -512,7 +509,12 @@ mod tests {
     fn byte_cache_set_and_get() {
         cache_clear();
         let key = "img:foo:bar".to_string();
-        cache_set(key.clone(), vec![1, 2, 3], "image/png", Duration::from_secs(60));
+        cache_set(
+            key.clone(),
+            vec![1, 2, 3],
+            "image/png",
+            Duration::from_secs(60),
+        );
         let hit = cache_get(&key).expect("hit");
         assert_eq!(hit.0, vec![1, 2, 3]);
         assert_eq!(hit.1, "image/png");

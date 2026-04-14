@@ -50,7 +50,10 @@ impl TiktokenCounter {
         } else if normalised.starts_with("davinci") || normalised.starts_with("curie") {
             r50k_base().ok()
         } else {
-            warn!(model, "unknown model for tiktoken — defaulting to cl100k_base");
+            warn!(
+                model,
+                "unknown model for tiktoken — defaulting to cl100k_base"
+            );
             cl100k_base().ok()
         };
 

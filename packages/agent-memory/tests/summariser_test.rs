@@ -12,9 +12,9 @@
 //   4. Asserts exactly 1 summary row exists (tier='semantic',
 //      role='summary') and that the 20 source entries are gone.
 
-use ddb_agent_memory::summariser::{summarise_oldest_episodic, NoneClient};
-use sqlx::postgres::PgPoolOptions;
+use ddb_agent_memory::summariser::{NoneClient, summarise_oldest_episodic};
 use sqlx::Row;
+use sqlx::postgres::PgPoolOptions;
 use uuid::Uuid;
 
 #[tokio::test]

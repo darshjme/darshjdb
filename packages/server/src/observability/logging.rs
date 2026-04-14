@@ -64,9 +64,7 @@ pub fn init_json_logging() -> Result<(), String> {
             // A subscriber is already installed — we do not treat this as a
             // hard error because production startup and tests should both
             // succeed. We log to stderr so the operator still sees the hint.
-            eprintln!(
-                "observability: json logging already initialized ({e}); continuing"
-            );
+            eprintln!("observability: json logging already initialized ({e}); continuing");
             Ok(())
         }
     }
@@ -116,7 +114,9 @@ pub async fn request_id_middleware(mut req: Request<Body>, next: Next) -> Respon
     );
 
     let start = Instant::now();
-    let mut response = async move { next.run(req).await }.instrument(span.clone()).await;
+    let mut response = async move { next.run(req).await }
+        .instrument(span.clone())
+        .await;
     let duration_ms = start.elapsed().as_millis() as u64;
     let status = response.status().as_u16();
 
@@ -131,7 +131,9 @@ pub async fn request_id_middleware(mut req: Request<Body>, next: Next) -> Respon
     );
 
     if let Ok(header_value) = HeaderValue::from_str(&request_id) {
-        response.headers_mut().insert(REQUEST_ID_HEADER, header_value);
+        response
+            .headers_mut()
+            .insert(REQUEST_ID_HEADER, header_value);
     }
 
     response
@@ -140,11 +142,11 @@ pub async fn request_id_middleware(mut req: Request<Body>, next: Next) -> Respon
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::Router;
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use axum::middleware::from_fn;
     use axum::routing::get;
-    use axum::Router;
     use tower::util::ServiceExt;
 
     async fn noop() -> StatusCode {

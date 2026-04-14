@@ -965,9 +965,7 @@ pub fn build_router(state: AppState) -> Router {
     // Uses a process-local `DdbCache` shared across requests; the RESP3
     // protocol server (packages/cache-server binary) can be wired to the
     // same instance when embedded in-process in a later slice.
-    let cache_http_routes = ddb_cache_server::cache_http_router(
-        ddb_cache_http_handle().clone(),
-    );
+    let cache_http_routes = ddb_cache_server::cache_http_router(ddb_cache_http_handle().clone());
 
     // -- Agent memory (slice 12/13/14) --------------------------------------
     // Sub-router with its own AgentMemoryState; auth-gated like the other
@@ -2295,8 +2293,7 @@ async fn admin_strict_schema_get(
     })?;
 
     let defs = enforcer.get(&collection).unwrap_or_default();
-    let mut definitions: Vec<crate::schema::strict::StrictFieldDef> =
-        defs.into_values().collect();
+    let mut definitions: Vec<crate::schema::strict::StrictFieldDef> = defs.into_values().collect();
     definitions.sort_by(|a, b| a.attribute.cmp(&b.attribute));
 
     let response = serde_json::json!({
@@ -2349,9 +2346,7 @@ async fn admin_strict_schema_post(
     })?;
 
     if body.definitions.is_empty() {
-        return Err(ApiError::bad_request(
-            "at least one definition is required",
-        ));
+        return Err(ApiError::bad_request("at least one definition is required"));
     }
 
     let defs: Vec<crate::schema::strict::StrictFieldDef> = body
@@ -2855,9 +2850,8 @@ async fn data_create(
     // definition, validate the document before persisting triples.
     let obj = if let Some(ref registry) = state.schema_registry {
         if let Some(schema) = registry.get(&entity) {
-            let doc: std::collections::HashMap<String, Value> = coerced_from_strict
-                .clone()
-                .unwrap_or_else(|| {
+            let doc: std::collections::HashMap<String, Value> =
+                coerced_from_strict.clone().unwrap_or_else(|| {
                     obj.iter()
                         .filter(|(k, _)| !k.starts_with('$'))
                         .map(|(k, v)| (k.clone(), v.clone()))
@@ -2884,8 +2878,7 @@ async fn data_create(
         } else if let Some(coerced) = coerced_from_strict.clone() {
             // Strict enforcement injected defaults — promote those back
             // onto the original Map, preserving $-meta keys.
-            let mut merged: serde_json::Map<String, Value> =
-                coerced.into_iter().collect();
+            let mut merged: serde_json::Map<String, Value> = coerced.into_iter().collect();
             for (k, v) in obj.iter() {
                 if k.starts_with('$') {
                     merged.insert(k.clone(), v.clone());
@@ -3837,9 +3830,9 @@ fn json_contains(a: &Value, b: &Value) -> bool {
         (Value::Object(am), Value::Object(bm)) => bm
             .iter()
             .all(|(k, bv)| am.get(k).is_some_and(|av| json_contains(av, bv))),
-        (Value::Array(aa), Value::Array(ba)) => {
-            ba.iter().all(|bv| aa.iter().any(|av| json_contains(av, bv)))
-        }
+        (Value::Array(aa), Value::Array(ba)) => ba
+            .iter()
+            .all(|bv| aa.iter().any(|av| json_contains(av, bv))),
         _ => a == b,
     }
 }
@@ -6381,8 +6374,7 @@ mod tests {
     /// common token-confusion attack surface — must also be rejected.
     #[tokio::test]
     async fn require_admin_auth_rejects_token_signed_by_other_key() {
-        let (state, _km_server) =
-            make_state_with_secret(b"server-real-secret-key-32-bytes!!aa");
+        let (state, _km_server) = make_state_with_secret(b"server-real-secret-key-32-bytes!!aa");
         let attacker_km = KeyManager::from_secret(b"attacker-other-secret-key-32byt!!b");
         let attacker_token = sign_access_token(&attacker_km, vec!["admin"]);
         let headers = bearer_headers(&attacker_token);
@@ -6541,10 +6533,7 @@ mod tests {
     #[test]
     fn json_contains_handles_objects_and_arrays() {
         let haystack = serde_json::json!({"a": 1, "b": {"c": 2}});
-        assert!(json_contains(
-            &haystack,
-            &serde_json::json!({"a": 1})
-        ));
+        assert!(json_contains(&haystack, &serde_json::json!({"a": 1})));
         assert!(json_contains(
             &haystack,
             &serde_json::json!({"b": {"c": 2}})

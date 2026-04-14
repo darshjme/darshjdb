@@ -58,16 +58,10 @@ pub fn cache_http_router(cache: Arc<DdbCache>) -> Router {
         )
         .route("/api/cache/{key}/ttl", get(get_ttl))
         .route("/api/cache/{key}/expire", post(post_expire))
-        .route(
-            "/api/cache/hash/{key}",
-            post(hash_set).get(hash_get_all),
-        )
+        .route("/api/cache/hash/{key}", post(hash_set).get(hash_get_all))
         .route("/api/cache/list/{key}/push", post(list_push))
         .route("/api/cache/list/{key}", get(list_range))
-        .route(
-            "/api/cache/zset/{key}",
-            post(zset_add).get(zset_range),
-        )
+        .route("/api/cache/zset/{key}", post(zset_add).get(zset_range))
         // Register delete/put aliases redundantly for clarity in tests.
         .route("/api/cache/{key}/delete", delete(delete_value))
         .with_state(state)
@@ -116,7 +110,10 @@ async fn delete_value(
     Path(key): Path<String>,
 ) -> impl IntoResponse {
     let removed = state.cache.del(&key);
-    (StatusCode::OK, Json(json!({ "key": key, "removed": removed })))
+    (
+        StatusCode::OK,
+        Json(json!({ "key": key, "removed": removed })),
+    )
 }
 
 async fn get_ttl(
@@ -124,7 +121,10 @@ async fn get_ttl(
     Path(key): Path<String>,
 ) -> impl IntoResponse {
     let ttl = state.cache.ttl(&key);
-    (StatusCode::OK, Json(json!({ "key": key, "ttl_seconds": ttl })))
+    (
+        StatusCode::OK,
+        Json(json!({ "key": key, "ttl_seconds": ttl })),
+    )
 }
 
 #[derive(Debug, Deserialize)]
@@ -137,7 +137,9 @@ async fn post_expire(
     Path(key): Path<String>,
     Json(body): Json<ExpireBody>,
 ) -> impl IntoResponse {
-    let ok = state.cache.expire(&key, Duration::from_secs(body.ttl_seconds));
+    let ok = state
+        .cache
+        .expire(&key, Duration::from_secs(body.ttl_seconds));
     (StatusCode::OK, Json(json!({ "key": key, "applied": ok })))
 }
 
@@ -152,7 +154,10 @@ async fn list_keys(
 ) -> impl IntoResponse {
     let pattern = q.pattern.unwrap_or_else(|| "*".into());
     let keys = state.cache.keys(&pattern);
-    (StatusCode::OK, Json(json!({ "pattern": pattern, "keys": keys })))
+    (
+        StatusCode::OK,
+        Json(json!({ "pattern": pattern, "keys": keys })),
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -247,7 +252,10 @@ async fn list_range(
                 .unwrap_or_else(|_| Value::String(String::from_utf8_lossy(&v).to_string()))
         })
         .collect();
-    (StatusCode::OK, Json(json!({ "key": key, "values": values })))
+    (
+        StatusCode::OK,
+        Json(json!({ "key": key, "values": values })),
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -286,9 +294,15 @@ async fn zset_range(
         .cache
         .zrange(&key, 0, -1)
         .into_iter()
-        .map(|(m, s)| ZSetMemberView { member: m, score: s })
+        .map(|(m, s)| ZSetMemberView {
+            member: m,
+            score: s,
+        })
         .collect();
-    (StatusCode::OK, Json(json!({ "key": key, "members": items })))
+    (
+        StatusCode::OK,
+        Json(json!({ "key": key, "members": items })),
+    )
 }
 
 // ---------------------------------------------------------------------------

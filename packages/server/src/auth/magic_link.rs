@@ -268,8 +268,8 @@ impl MagicLinkProvider {
         .fetch_optional(pool)
         .await?;
 
-        let (user_id, expires_at, used_at) = row
-            .ok_or_else(|| AuthError::TokenInvalid("unknown magic link token".into()))?;
+        let (user_id, expires_at, used_at) =
+            row.ok_or_else(|| AuthError::TokenInvalid("unknown magic link token".into()))?;
 
         if used_at.is_some() {
             return Err(AuthError::TokenAlreadyUsed);

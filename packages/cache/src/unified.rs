@@ -112,10 +112,9 @@ impl DdbUnifiedCache {
         let k2 = key.to_string();
         let v1 = value.clone();
         let v2 = value;
-        let (_, _) = tokio::join!(
-            async move { l1.set(&k1, v1).await },
-            async move { l2.set(&k2, v2).await },
-        );
+        let (_, _) = tokio::join!(async move { l1.set(&k1, v1).await }, async move {
+            l2.set(&k2, v2).await
+        },);
         self.record_memory();
     }
 
@@ -126,10 +125,9 @@ impl DdbUnifiedCache {
         let l2 = self.l2.clone();
         let k1 = key.to_string();
         let k2 = key.to_string();
-        let (d1, d2) = tokio::join!(
-            async move { l1.delete(&k1).await },
-            async move { l2.delete(&k2).await },
-        );
+        let (d1, d2) = tokio::join!(async move { l1.delete(&k1).await }, async move {
+            l2.delete(&k2).await
+        },);
         self.record_memory();
         d1 || d2
     }
@@ -210,7 +208,10 @@ mod tests {
         let cache = DdbUnifiedCache::new(l1.clone(), l2.clone(), PubSubEngine::new_default());
 
         cache.set("k", b("v")).await;
-        assert!(cache.delete("k").await, "delete must report previous presence");
+        assert!(
+            cache.delete("k").await,
+            "delete must report previous presence"
+        );
         assert!(l1.get("k").await.is_none());
         assert!(l2.get("k").await.is_none());
 

@@ -139,13 +139,11 @@ async fn put_chunk(
     token: &str,
     data: Vec<u8>,
 ) -> (StatusCode, Value) {
-    let req = Request::put(format!(
-        "/api/storage/upload/{upload_id}/chunk/{index}"
-    ))
-    .header(header::AUTHORIZATION, format!("Bearer {token}"))
-    .header(header::CONTENT_TYPE, "application/octet-stream")
-    .body(Body::from(data))
-    .unwrap();
+    let req = Request::put(format!("/api/storage/upload/{upload_id}/chunk/{index}"))
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .header(header::CONTENT_TYPE, "application/octet-stream")
+        .body(Body::from(data))
+        .unwrap();
     let resp = router.oneshot(req).await.expect("router oneshot");
     let status = resp.status();
     let bytes = to_bytes(resp.into_body(), usize::MAX).await.expect("bytes");
@@ -153,11 +151,7 @@ async fn put_chunk(
     (status, body)
 }
 
-async fn get_status(
-    router: axum::Router,
-    upload_id: Uuid,
-    token: &str,
-) -> (StatusCode, Value) {
+async fn get_status(router: axum::Router, upload_id: Uuid, token: &str) -> (StatusCode, Value) {
     let req = Request::get(format!("/api/storage/upload/{upload_id}/status"))
         .header(header::AUTHORIZATION, format!("Bearer {token}"))
         .body(Body::empty())
@@ -197,8 +191,7 @@ async fn test_happy_path_four_chunk_upload() {
     let (uid, email) = insert_user(&pool).await;
     let token = issue_token(&sm, uid).await;
 
-    let tmp_root =
-        format!("/tmp/darshjdb-chunk-happy-{}", Uuid::new_v4().simple());
+    let tmp_root = format!("/tmp/darshjdb-chunk-happy-{}", Uuid::new_v4().simple());
     let state = make_app_state(pool.clone(), sm, &tmp_root);
     let app = axum::Router::new().nest("/api", build_router(state));
 
@@ -220,9 +213,7 @@ async fn test_happy_path_four_chunk_upload() {
     let upload_id: Uuid = body["upload_id"].as_str().unwrap().parse().unwrap();
 
     // 2. Upload 4 chunks in order.
-    let chunks: Vec<Vec<u8>> = (0..4u8)
-        .map(|i| vec![i, i + 10, i + 20, i + 30])
-        .collect();
+    let chunks: Vec<Vec<u8>> = (0..4u8).map(|i| vec![i, i + 10, i + 20, i + 30]).collect();
     for (idx, c) in chunks.iter().enumerate() {
         let (st, _b) = put_chunk(app.clone(), upload_id, idx, &token, c.clone()).await;
         assert_eq!(st, StatusCode::OK, "chunk {idx} failed");
@@ -254,8 +245,7 @@ async fn test_out_of_order_chunks_assemble_correctly() {
     let (uid, email) = insert_user(&pool).await;
     let token = issue_token(&sm, uid).await;
 
-    let tmp_root =
-        format!("/tmp/darshjdb-chunk-ooo-{}", Uuid::new_v4().simple());
+    let tmp_root = format!("/tmp/darshjdb-chunk-ooo-{}", Uuid::new_v4().simple());
     let state = make_app_state(pool.clone(), sm, &tmp_root);
     let app = axum::Router::new().nest("/api", build_router(state));
 
@@ -303,8 +293,7 @@ async fn test_duplicate_chunk_is_idempotent() {
     let (uid, email) = insert_user(&pool).await;
     let token = issue_token(&sm, uid).await;
 
-    let tmp_root =
-        format!("/tmp/darshjdb-chunk-dup-{}", Uuid::new_v4().simple());
+    let tmp_root = format!("/tmp/darshjdb-chunk-dup-{}", Uuid::new_v4().simple());
     let state = make_app_state(pool.clone(), sm, &tmp_root);
     let app = axum::Router::new().nest("/api", build_router(state));
 
@@ -358,8 +347,7 @@ async fn test_init_rejects_path_traversal() {
     let (uid, email) = insert_user(&pool).await;
     let token = issue_token(&sm, uid).await;
 
-    let tmp_root =
-        format!("/tmp/darshjdb-chunk-trav-{}", Uuid::new_v4().simple());
+    let tmp_root = format!("/tmp/darshjdb-chunk-trav-{}", Uuid::new_v4().simple());
     let state = make_app_state(pool.clone(), sm, &tmp_root);
     let app = axum::Router::new().nest("/api", build_router(state));
 
@@ -419,12 +407,11 @@ async fn test_cleanup_stale_uploads_removes_old_in_progress_rows() {
     );
 
     // Verify row is gone.
-    let exists: Option<Uuid> = sqlx::query_scalar(
-        "SELECT upload_id FROM chunked_uploads WHERE upload_id = $1",
-    )
-    .bind(upload_id)
-    .fetch_optional(&pool)
-    .await
-    .unwrap();
+    let exists: Option<Uuid> =
+        sqlx::query_scalar("SELECT upload_id FROM chunked_uploads WHERE upload_id = $1")
+            .bind(upload_id)
+            .fetch_optional(&pool)
+            .await
+            .unwrap();
     assert!(exists.is_none(), "stale row must have been deleted");
 }

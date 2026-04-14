@@ -198,10 +198,7 @@ pub struct CloseSessionRequest {
 fn require_auth(auth: Option<Extension<AuthContext>>) -> Result<AuthContext, Response> {
     match auth {
         Some(Extension(ctx)) => Ok(ctx),
-        None => Err(reject(
-            StatusCode::UNAUTHORIZED,
-            "authentication required",
-        )),
+        None => Err(reject(StatusCode::UNAUTHORIZED, "authentication required")),
     }
 }
 
@@ -254,10 +251,17 @@ async fn create_session(
 
     match state
         .repo
-        .create_session(auth.user_id, &body.agent_id, body.model.as_deref(), metadata)
+        .create_session(
+            auth.user_id,
+            &body.agent_id,
+            body.model.as_deref(),
+            metadata,
+        )
         .await
     {
-        Ok(session) => (StatusCode::CREATED, Json(CreateSessionResponse { session })).into_response(),
+        Ok(session) => {
+            (StatusCode::CREATED, Json(CreateSessionResponse { session })).into_response()
+        }
         Err(e) => db_err(e),
     }
 }
@@ -361,7 +365,12 @@ async fn get_context(
     };
 
     let counter = counter_for(session.model.as_deref());
-    let mut builder = ContextBuilder::new(session_id, counter, state.repo.clone(), state.working.clone());
+    let mut builder = ContextBuilder::new(
+        session_id,
+        counter,
+        state.repo.clone(),
+        state.working.clone(),
+    );
 
     let opts = ContextBuildOptions {
         max_tokens: params.max_tokens.unwrap_or(4096),
@@ -404,7 +413,13 @@ async fn export_context(
 
     let timeline = match state
         .repo
-        .timeline(session_id, &TimelineFilter { limit: Some(1000), ..Default::default() })
+        .timeline(
+            session_id,
+            &TimelineFilter {
+                limit: Some(1000),
+                ..Default::default()
+            },
+        )
         .await
     {
         Ok(t) => t,
@@ -412,11 +427,13 @@ async fn export_context(
     };
 
     let counter = counter_for(session.model.as_deref());
-    let mut builder = ContextBuilder::new(session_id, counter, state.repo.clone(), state.working.clone());
-    let bundle = match builder
-        .build(&ContextBuildOptions::default())
-        .await
-    {
+    let mut builder = ContextBuilder::new(
+        session_id,
+        counter,
+        state.repo.clone(),
+        state.working.clone(),
+    );
+    let bundle = match builder.build(&ContextBuildOptions::default()).await {
         Ok(b) => b,
         Err(e) => return db_err(e),
     };
@@ -576,7 +593,11 @@ fn build_auto_summary(state: &AgentMemoryState, session_id: Uuid) -> String {
         .iter()
         .map(|m| format!("- {}: {}", m.role.as_str(), preview(&m.content, 120)))
         .collect();
-    format!("Auto-summary of last {} messages:\n{}", snap.len(), lines.join("\n"))
+    format!(
+        "Auto-summary of last {} messages:\n{}",
+        snap.len(),
+        lines.join("\n")
+    )
 }
 
 fn preview(s: &str, max: usize) -> String {

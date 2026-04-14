@@ -105,7 +105,10 @@ impl ZSetEntry {
     }
 
     fn score(&self, member: &str) -> Option<f64> {
-        self.members.iter().find(|m| m.member == member).map(|m| m.score)
+        self.members
+            .iter()
+            .find(|m| m.member == member)
+            .map(|m| m.score)
     }
 
     fn range(&self, start: i64, stop: i64) -> Vec<(String, f64)> {
@@ -114,7 +117,11 @@ impl ZSetEntry {
             return Vec::new();
         }
         let norm = |i: i64| -> i64 {
-            if i < 0 { (len + i).max(0) } else { i.min(len - 1) }
+            if i < 0 {
+                (len + i).max(0)
+            } else {
+                i.min(len - 1)
+            }
         };
         let s = norm(start);
         let e = norm(stop);
@@ -172,7 +179,11 @@ struct BloomFilter {
 
 impl BloomFilter {
     fn new() -> Self {
-        Self { bits: vec![0u64; 8192], k: 4, m: 8192 * 64 }
+        Self {
+            bits: vec![0u64; 8192],
+            k: 4,
+            m: 8192 * 64,
+        }
     }
 
     fn hashes(&self, item: &[u8]) -> [usize; 4] {
@@ -294,7 +305,10 @@ impl DdbCache {
         let expires_at = ttl.map(|d| Instant::now() + d);
         self.inner.strings.insert(
             key.into(),
-            StringEntry { value: value.into(), expires_at },
+            StringEntry {
+                value: value.into(),
+                expires_at,
+            },
         );
     }
 
@@ -367,7 +381,11 @@ impl DdbCache {
             Some(entry) => match entry.expires_at {
                 Some(deadline) => {
                     let now = Instant::now();
-                    if deadline <= now { -2 } else { (deadline - now).as_secs() as i64 }
+                    if deadline <= now {
+                        -2
+                    } else {
+                        (deadline - now).as_secs() as i64
+                    }
                 }
                 None => -1,
             },
@@ -393,7 +411,10 @@ impl DdbCache {
     }
 
     pub fn hget(&self, key: &str, field: &str) -> Option<Vec<u8>> {
-        self.inner.hashes.get(key).and_then(|m| m.get(field).cloned())
+        self.inner
+            .hashes
+            .get(key)
+            .and_then(|m| m.get(field).cloned())
     }
 
     pub fn hgetall(&self, key: &str) -> Vec<(String, Vec<u8>)> {
@@ -430,7 +451,10 @@ impl DdbCache {
     }
 
     pub fn lpop(&self, key: &str) -> Option<Vec<u8>> {
-        self.inner.lists.get_mut(key).and_then(|mut q| q.pop_front())
+        self.inner
+            .lists
+            .get_mut(key)
+            .and_then(|mut q| q.pop_front())
     }
 
     pub fn rpop(&self, key: &str) -> Option<Vec<u8>> {
@@ -438,13 +462,19 @@ impl DdbCache {
     }
 
     pub fn lrange(&self, key: &str, start: i64, stop: i64) -> Vec<Vec<u8>> {
-        let Some(list) = self.inner.lists.get(key) else { return Vec::new() };
+        let Some(list) = self.inner.lists.get(key) else {
+            return Vec::new();
+        };
         let len = list.len() as i64;
         if len == 0 {
             return Vec::new();
         }
         let norm = |i: i64| -> i64 {
-            if i < 0 { (len + i).max(0) } else { i.min(len - 1) }
+            if i < 0 {
+                (len + i).max(0)
+            } else {
+                i.min(len - 1)
+            }
         };
         let s = norm(start);
         let e = norm(stop);
@@ -481,11 +511,19 @@ impl DdbCache {
     }
 
     pub fn zrange(&self, key: &str, start: i64, stop: i64) -> Vec<(String, f64)> {
-        self.inner.zsets.get(key).map(|z| z.range(start, stop)).unwrap_or_default()
+        self.inner
+            .zsets
+            .get(key)
+            .map(|z| z.range(start, stop))
+            .unwrap_or_default()
     }
 
     pub fn zrangebyscore(&self, key: &str, min: f64, max: f64) -> Vec<(String, f64)> {
-        self.inner.zsets.get(key).map(|z| z.range_by_score(min, max)).unwrap_or_default()
+        self.inner
+            .zsets
+            .get(key)
+            .map(|z| z.range_by_score(min, max))
+            .unwrap_or_default()
     }
 
     // ── STREAM ─────────────────────────────────────────────────────────
@@ -493,12 +531,17 @@ impl DdbCache {
     pub fn xadd(&self, key: &str, fields: Vec<(String, String)>) -> String {
         let mut entry = self.inner.streams.entry(key.to_string()).or_default();
         let id = entry.next_id();
-        entry.entries.push(StreamEntry { id: id.clone(), fields });
+        entry.entries.push(StreamEntry {
+            id: id.clone(),
+            fields,
+        });
         id
     }
 
     pub fn xrange(&self, key: &str, start: &str, end: &str) -> Vec<StreamEntry> {
-        let Some(stream) = self.inner.streams.get(key) else { return Vec::new() };
+        let Some(stream) = self.inner.streams.get(key) else {
+            return Vec::new();
+        };
         stream
             .entries
             .iter()
@@ -512,15 +555,25 @@ impl DdbCache {
     }
 
     pub fn xread(&self, key: &str, after_id: &str) -> Vec<StreamEntry> {
-        let Some(stream) = self.inner.streams.get(key) else { return Vec::new() };
-        stream.entries.iter().filter(|e| e.id.as_str() > after_id).cloned().collect()
+        let Some(stream) = self.inner.streams.get(key) else {
+            return Vec::new();
+        };
+        stream
+            .entries
+            .iter()
+            .filter(|e| e.id.as_str() > after_id)
+            .cloned()
+            .collect()
     }
 
     // ── BLOOM ──────────────────────────────────────────────────────────
 
     pub async fn bfadd(&self, key: &str, item: &[u8]) -> bool {
         let mut guard = self.inner.blooms.lock().await;
-        guard.entry(key.to_string()).or_insert_with(BloomFilter::new).add(item)
+        guard
+            .entry(key.to_string())
+            .or_insert_with(BloomFilter::new)
+            .add(item)
     }
 
     pub async fn bfexists(&self, key: &str, item: &[u8]) -> bool {
@@ -554,7 +607,10 @@ impl DdbCache {
     pub fn publish(&self, channel: &str, payload: impl Into<Vec<u8>>) -> usize {
         match self.inner.channels.get(channel) {
             Some(sender) => {
-                let msg = PubSubMessage { channel: channel.to_string(), payload: payload.into() };
+                let msg = PubSubMessage {
+                    channel: channel.to_string(),
+                    payload: payload.into(),
+                };
                 sender.send(msg).unwrap_or(0)
             }
             None => 0,
@@ -590,7 +646,10 @@ impl DdbCache {
     pub fn info(&self) -> String {
         let s = self.stats();
         let mut out = String::new();
-        out.push_str(&format!("ddb_cache_version:{}\n", env!("CARGO_PKG_VERSION")));
+        out.push_str(&format!(
+            "ddb_cache_version:{}\n",
+            env!("CARGO_PKG_VERSION")
+        ));
         out.push_str(&format!("strings:{}\n", s.strings));
         out.push_str(&format!("hashes:{}\n", s.hashes));
         out.push_str(&format!("lists:{}\n", s.lists));

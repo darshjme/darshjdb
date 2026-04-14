@@ -19,8 +19,8 @@ pub mod health;
 pub mod logging;
 pub mod metrics;
 
-pub use health::{health_router, live_handler, ready_handler, HealthState};
+pub use health::{HealthState, health_router, live_handler, ready_handler};
 pub use logging::{init_json_logging, request_id_middleware};
 pub use metrics::{
-    http_metrics_middleware, init_prometheus, metrics_router, MetricsHandle, MetricsIpAllowList,
+    MetricsHandle, MetricsIpAllowList, http_metrics_middleware, init_prometheus, metrics_router,
 };

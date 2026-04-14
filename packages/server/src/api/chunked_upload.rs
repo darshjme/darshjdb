@@ -141,9 +141,7 @@ pub fn sanitize_storage_path(raw: &str) -> Result<String, ApiError> {
     }
     // Reject absolute paths — both Unix `/foo` and Windows `C:\foo`.
     if raw.starts_with('/') || raw.starts_with('\\') {
-        return Err(ApiError::bad_request(
-            "storage path must not be absolute",
-        ));
+        return Err(ApiError::bad_request("storage path must not be absolute"));
     }
     if raw.len() >= 2 && raw.as_bytes()[1] == b':' {
         return Err(ApiError::bad_request(
@@ -357,13 +355,12 @@ pub async fn put_chunk(
     .map_err(|e| ApiError::internal(format!("failed to record chunk: {e}")))?;
 
     // --- re-read to see if we're done --------------------------------
-    let received: Vec<i32> = sqlx::query_scalar(
-        "SELECT received_chunks FROM chunked_uploads WHERE upload_id = $1",
-    )
-    .bind(upload_id)
-    .fetch_one(&state.pool)
-    .await
-    .map_err(|e| ApiError::internal(format!("failed to re-read chunks: {e}")))?;
+    let received: Vec<i32> =
+        sqlx::query_scalar("SELECT received_chunks FROM chunked_uploads WHERE upload_id = $1")
+            .bind(upload_id)
+            .fetch_one(&state.pool)
+            .await
+            .map_err(|e| ApiError::internal(format!("failed to re-read chunks: {e}")))?;
 
     let mut assembled: Option<Vec<u8>> = None;
     if received.len() as i32 >= total_chunks {
@@ -374,9 +371,7 @@ pub async fn put_chunk(
         for idx in sorted {
             let chunk_path = upload_dir.join(format!("{idx}.part"));
             let bytes = fs::read(&chunk_path).await.map_err(|e| {
-                ApiError::internal(format!(
-                    "failed to read chunk {idx} for assembly: {e}"
-                ))
+                ApiError::internal(format!("failed to read chunk {idx} for assembly: {e}"))
             })?;
             buf.extend_from_slice(&bytes);
         }
@@ -387,16 +382,9 @@ pub async fn put_chunk(
         // --- push to the storage backend ----------------------------
         state
             .storage_engine
-            .upload(
-                &path,
-                &buf,
-                &content_type,
-                std::collections::HashMap::new(),
-            )
+            .upload(&path, &buf, &content_type, std::collections::HashMap::new())
             .await
-            .map_err(|e| {
-                ApiError::internal(format!("failed to upload assembled file: {e}"))
-            })?;
+            .map_err(|e| ApiError::internal(format!("failed to upload assembled file: {e}")))?;
 
         // --- best-effort tmp cleanup --------------------------------
         if let Err(e) = fs::remove_dir_all(&upload_dir).await {
