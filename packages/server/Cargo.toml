@@ -48,3 +48,6 @@ aws-credential-types.workspace = true
 aws-types.workspace = true
 async-trait.workspace = true
 csv.workspace = true
+
+# Unified cache layer (Slice 10)
+ddb-cache = { path = "../cache" }

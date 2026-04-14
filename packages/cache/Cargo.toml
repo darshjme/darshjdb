@@ -1,0 +1,23 @@
+# DarshJDB — created by Darshankumar Joshi (github.com/darshjme)
+# ddb-cache: unified L1 + L2 cache with read-through / write-through semantics.
+[package]
+name = "ddb-cache"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "DarshJDB unified cache layer — L1 (DashMap) + L2 (Postgres) + pub/sub + Prometheus metrics"
+authors = ["Darshankumar Joshi <github.com/darshjme>"]
+
+[lib]
+name = "ddb_cache"
+path = "src/lib.rs"
+
+[dependencies]
+tokio = { workspace = true }
+dashmap = { workspace = true }
+bytes = { workspace = true }
+tracing = { workspace = true }
+metrics = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
