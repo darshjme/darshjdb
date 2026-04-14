@@ -1,0 +1,32 @@
+# DarshJDB — created by Darshankumar Joshi (github.com/darshjme)
+# ddb-cache: tiered cache primitives for the DarshJDB engine.
+# Slice 9 scope: L2 Postgres-backed persistent tier (with kv_streams).
+[package]
+name = "ddb-cache"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "DarshJDB cache crate — L1 (in-memory, scaffolded) + L2 Postgres persistent tier with streams"
+authors = ["Darshankumar Joshi <github.com/darshjme>"]
+
+[lib]
+name = "ddb_cache"
+path = "src/lib.rs"
+
+[dependencies]
+tokio = { workspace = true }
+sqlx = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+async-trait = { workspace = true }
+bytes = { workspace = true }
+zstd = { workspace = true }
+lz4_flex = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+sqlx = { workspace = true, features = ["runtime-tokio", "postgres", "uuid", "json", "chrono", "macros", "migrate"] }
+tokio = { workspace = true }
