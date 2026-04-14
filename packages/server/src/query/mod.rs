@@ -382,10 +382,16 @@ pub fn plan_query_with_dialect(
                 "  AND {}\n",
                 dialect.compare_triple_value(&alias, "<=", &jsonb_param)
             ),
-            WhereOp::Contains => format!(
-                "  AND {}\n",
-                dialect.jsonb_contains(&alias, &jsonb_param)
-            ),
+            WhereOp::Contains => {
+                if !dialect.supports_jsonb_contains() {
+                    return Err(DarshJError::InvalidQuery(format!(
+                        "$where Contains (JSONB containment) is not supported on the \
+                         {} dialect; use Eq for exact match or wait for v0.4 portable IR",
+                        dialect.name()
+                    )));
+                }
+                format!("  AND {}\n", dialect.jsonb_contains(&alias, &jsonb_param))
+            }
             WhereOp::Like => {
                 let like_param = dialect.placeholder(param_idx);
                 format!("  AND {}\n", dialect.text_ilike(&alias, &like_param))
@@ -2055,6 +2061,8 @@ mod tests {
 
     #[test]
     fn parity_where_all_operators() {
+        // Contains is excluded here because SQLite refuses it at plan
+        // time (see M-1 / parity_pg_accepts_contains_sqlite_refuses).
         for op in [
             WhereOp::Eq,
             WhereOp::Neq,
@@ -2062,7 +2070,6 @@ mod tests {
             WhereOp::Gte,
             WhereOp::Lt,
             WhereOp::Lte,
-            WhereOp::Contains,
             WhereOp::Like,
         ] {
             let ast = QueryAST {
@@ -2084,7 +2091,12 @@ mod tests {
     }
 
     #[test]
-    fn parity_where_contains_containment() {
+    fn parity_pg_accepts_contains_sqlite_refuses() {
+        // M-1 regression test: Postgres accepts WhereOp::Contains and
+        // emits the native `@>` operator. SQLite refuses at plan time
+        // with InvalidQuery, because the only available fallback
+        // (instr()) is unsound (substring match on JSON text, wrong on
+        // scalar-prefix collision and key reordering).
         let ast = QueryAST {
             where_clauses: vec![WhereClause {
                 attribute: "tags".into(),
@@ -2093,15 +2105,42 @@ mod tests {
             }],
             ..bare_ast("Post")
         };
-        let pg = plan_query_with_dialect(&ast, &PgDialect).unwrap();
-        let sq = plan_query_with_dialect(&ast, &SqliteDialect).unwrap();
 
+        let pg = plan_query_with_dialect(&ast, &PgDialect).expect("pg accepts Contains");
         assert!(pg.sql.contains("tw0.value @> $3::jsonb"), "pg SQL:\n{}", pg.sql);
-        assert!(
-            sq.sql.contains("instr(tw0.value, ?3) > 0"),
-            "sqlite SQL:\n{}",
-            sq.sql
-        );
+
+        let err = plan_query_with_dialect(&ast, &SqliteDialect)
+            .expect_err("sqlite must refuse Contains");
+        match err {
+            DarshJError::InvalidQuery(msg) => {
+                assert!(
+                    msg.contains("Contains") && msg.contains("sqlite"),
+                    "msg should mention Contains + sqlite, got: {msg}"
+                );
+            }
+            other => panic!("expected InvalidQuery, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn sqlite_refuses_jsonb_contains() {
+        // M-1 unit-level regression: even with a trivial single
+        // Contains clause, the SQLite planner must surface InvalidQuery
+        // and never call through to the unsound instr() fallback.
+        let ast = QueryAST {
+            where_clauses: vec![WhereClause {
+                attribute: "payload".into(),
+                op: WhereOp::Contains,
+                value: serde_json::json!({"k": "v"}),
+            }],
+            ..bare_ast("T")
+        };
+        let err = plan_query_with_dialect(&ast, &SqliteDialect)
+            .expect_err("sqlite must refuse Contains");
+        let DarshJError::InvalidQuery(msg) = err else {
+            panic!("expected InvalidQuery");
+        };
+        assert!(msg.to_lowercase().contains("contains"), "msg: {msg}");
     }
 
     #[test]
