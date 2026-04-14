@@ -109,7 +109,7 @@ rusqlite = { version = "0.31", optional = true, features = ["bundled"] }
 # the `mlua-runtime` Cargo feature so default builds skip the vendored Lua  # TODO(v0.3.2-sprint-merge):
 # compilation. `vendored` avoids a system Lua dependency; `async` lets Lua   # TODO(v0.3.2-sprint-merge):
 # callbacks await DDB host calls; `serialize` bridges serde_json <-> Lua.   # TODO(v0.3.2-sprint-merge):
-mlua = { version = "0.10", features = ["lua54", "vendored", "async", "serialize"], optional = true } # TODO(v0.3.2-sprint-merge):
+mlua = { version = "0.10", features = ["lua54", "vendored", "async", "serialize", "send"], optional = true } # TODO(v0.3.2-sprint-merge):
 
 [features]
 default = []
