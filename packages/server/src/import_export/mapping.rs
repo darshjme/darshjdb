@@ -235,7 +235,7 @@ mod tests {
         let mapped = auto_map_csv_headers(&headers, &attrs);
         assert_eq!(mapped.get(&0), Some(&"email".to_string()));
         assert_eq!(mapped.get(&1), Some(&"name".to_string()));
-        assert!(mapped.get(&2).is_none());
+        assert!(!mapped.contains_key(&2));
     }
 
     #[test]
@@ -316,6 +316,6 @@ mod tests {
         assert_eq!(preview.len(), 2);
         assert_eq!(preview[0]["user/name"], Value::String("alice".into()));
         assert_eq!(preview[0]["user/age"], Value::Number(30.into()));
-        assert!(preview[0].get("user/active").is_none());
+        assert!(!preview[0].contains_key("user/active"));
     }
 }

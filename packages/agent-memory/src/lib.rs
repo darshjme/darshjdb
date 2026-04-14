@@ -12,6 +12,14 @@
 // plus a log-smoothed access count.
 
 #![cfg_attr(not(test), forbid(unsafe_code))]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::await_holding_lock,
+        clippy::assertions_on_constants,
+        unused_parens
+    )
+)]
 
 //! DarshJDB agent memory — tiered memory store + pluggable embeddings + LLM summariser.
 

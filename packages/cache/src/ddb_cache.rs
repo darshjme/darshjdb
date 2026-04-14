@@ -357,10 +357,10 @@ impl DdbCache {
     }
 
     pub fn exists(&self, key: &str) -> bool {
-        if let Some(entry) = self.inner.strings.get(key) {
-            if !entry.is_expired() {
-                return true;
-            }
+        if let Some(entry) = self.inner.strings.get(key)
+            && !entry.is_expired()
+        {
+            return true;
         }
         self.inner.hashes.contains_key(key)
             || self.inner.lists.contains_key(key)
@@ -663,10 +663,10 @@ impl DdbCache {
     }
 
     pub fn type_of(&self, key: &str) -> KeyType {
-        if let Some(entry) = self.inner.strings.get(key) {
-            if !entry.is_expired() {
-                return KeyType::String;
-            }
+        if let Some(entry) = self.inner.strings.get(key)
+            && !entry.is_expired()
+        {
+            return KeyType::String;
         }
         if self.inner.hashes.contains_key(key) {
             return KeyType::Hash;

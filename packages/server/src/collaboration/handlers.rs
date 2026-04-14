@@ -42,10 +42,7 @@ pub fn collaboration_router() -> Router<AppState> {
     Router::new()
         // Share links
         .route("/share", post(create_share))
-        .route(
-            "/share/{token}",
-            get(access_share).delete(revoke_share),
-        )
+        .route("/share/{token}", get(access_share).delete(revoke_share))
         // Collaborators
         .route(
             "/collaborators",

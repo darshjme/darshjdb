@@ -347,10 +347,10 @@ fn cache() -> &'static DashMap<String, BytesEntry> {
 /// Look up a cached transform result.
 pub fn cache_get(key: &str) -> Option<(Vec<u8>, &'static str)> {
     let c = cache();
-    if let Some(entry) = c.get(key) {
-        if entry.inserted_at.elapsed() < entry.ttl {
-            return Some((entry.bytes.clone(), entry.mime));
-        }
+    if let Some(entry) = c.get(key)
+        && entry.inserted_at.elapsed() < entry.ttl
+    {
+        return Some((entry.bytes.clone(), entry.mime));
     }
     // Lazy expiry cleanup.
     c.remove(key);
