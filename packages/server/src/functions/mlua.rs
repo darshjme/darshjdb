@@ -1013,6 +1013,293 @@ mod tests {
         );
     }
 
+    /// Nyquist R3.3: the whole `debug` table (not just `sethook`) must
+    /// be unreachable. `debug.getregistry()` was the specific escape
+    /// vector: `_LOADED.io.popen("id")` bypasses `io = nil`.
+    #[tokio::test]
+    async fn sandbox_strips_debug_fully() {
+        let rt = new_runtime();
+        rt.load_chunk(
+            r#"
+            function shape()
+                return {
+                    debug_nil    = debug == nil,
+                    getreg_nil   = (debug == nil) or (debug.getregistry == nil),
+                    getupval_nil = (debug == nil) or (debug.getupvalue == nil),
+                    setupval_nil = (debug == nil) or (debug.setupvalue == nil),
+                    getlocal_nil = (debug == nil) or (debug.getlocal == nil),
+                    setlocal_nil = (debug == nil) or (debug.setlocal == nil),
+                    getinfo_nil  = (debug == nil) or (debug.getinfo == nil),
+                    sethook_nil  = (debug == nil) or (debug.sethook == nil),
+                }
+            end
+            "#,
+        )
+        .await
+        .unwrap();
+        let shape = rt
+            .invoke_global("shape", serde_json::json!(null))
+            .await
+            .unwrap();
+        for key in [
+            "debug_nil",
+            "getreg_nil",
+            "getupval_nil",
+            "setupval_nil",
+            "getlocal_nil",
+            "setlocal_nil",
+            "getinfo_nil",
+            "sethook_nil",
+        ] {
+            assert_eq!(
+                shape[key],
+                serde_json::json!(true),
+                "{key} must be stripped"
+            );
+        }
+
+        // Direct-call test: calling debug.getregistry() must raise.
+        rt.load_chunk("function pop() return debug.getregistry() end")
+            .await
+            .unwrap();
+        let err = rt
+            .invoke_global("pop", serde_json::json!(null))
+            .await
+            .unwrap_err();
+        assert!(
+            format!("{err}").contains("lua call failed"),
+            "expected lua error, got {err}"
+        );
+    }
+
+    /// Nyquist R3.4: `require` is a standalone global in Lua 5.4 and
+    /// must be nilled independently of `package`.
+    #[tokio::test]
+    async fn sandbox_strips_require() {
+        let rt = new_runtime();
+        rt.load_chunk("function is_nil() return require == nil end")
+            .await
+            .unwrap();
+        let out = rt
+            .invoke_global("is_nil", serde_json::json!(null))
+            .await
+            .unwrap();
+        assert_eq!(out, serde_json::json!(true));
+
+        rt.load_chunk("function call_it() return require('io') end")
+            .await
+            .unwrap();
+        let err = rt
+            .invoke_global("call_it", serde_json::json!(null))
+            .await
+            .unwrap_err();
+        assert!(
+            format!("{err}").contains("lua call failed"),
+            "expected lua error, got {err}"
+        );
+    }
+
+    /// Nyquist R3.5: `dofile` and `loadfile` must both be nil AND
+    /// calling them must raise.
+    #[tokio::test]
+    async fn sandbox_strips_dofile_and_loadfile() {
+        let rt = new_runtime();
+        rt.load_chunk(
+            r#"
+            function call_dofile() return dofile('/tmp/x') end
+            function call_loadfile() return loadfile('/tmp/x') end
+            "#,
+        )
+        .await
+        .unwrap();
+        for name in ["call_dofile", "call_loadfile"] {
+            let err = rt
+                .invoke_global(name, serde_json::json!(null))
+                .await
+                .unwrap_err();
+            assert!(
+                format!("{err}").contains("lua call failed"),
+                "{name}: expected lua error, got {err}"
+            );
+        }
+    }
+
+    /// Nyquist R3.6: `load` and `loadstring` must both be nil AND
+    /// calling them must raise.
+    #[tokio::test]
+    async fn sandbox_strips_load_and_loadstring() {
+        let rt = new_runtime();
+        rt.load_chunk(
+            r#"
+            function call_load() return load('return 1') end
+            function call_loadstring() return loadstring('return 1') end
+            "#,
+        )
+        .await
+        .unwrap();
+        for name in ["call_load", "call_loadstring"] {
+            let err = rt
+                .invoke_global(name, serde_json::json!(null))
+                .await
+                .unwrap_err();
+            assert!(
+                format!("{err}").contains("lua call failed"),
+                "{name}: expected lua error, got {err}"
+            );
+        }
+    }
+
+    /// CR-03: `string.dump` must be nil so bytecode-injection paths
+    /// are closed.
+    #[tokio::test]
+    async fn sandbox_strips_string_dump() {
+        let rt = new_runtime();
+        rt.load_chunk("function is_nil() return string.dump == nil end")
+            .await
+            .unwrap();
+        let out = rt
+            .invoke_global("is_nil", serde_json::json!(null))
+            .await
+            .unwrap();
+        assert_eq!(out, serde_json::json!(true));
+    }
+
+    /// Raw accessors bypass metamethods that v0.3.3 uses on `ddb` for
+    /// audit-log instrumentation. Must all be nil.
+    #[tokio::test]
+    async fn sandbox_strips_raw_accessors() {
+        let rt = new_runtime();
+        rt.load_chunk(
+            r#"
+            function shape()
+                return {
+                    rawget_nil   = rawget == nil,
+                    rawset_nil   = rawset == nil,
+                    rawequal_nil = rawequal == nil,
+                    rawlen_nil   = rawlen == nil,
+                }
+            end
+            "#,
+        )
+        .await
+        .unwrap();
+        let shape = rt
+            .invoke_global("shape", serde_json::json!(null))
+            .await
+            .unwrap();
+        assert_eq!(shape["rawget_nil"], serde_json::json!(true));
+        assert_eq!(shape["rawset_nil"], serde_json::json!(true));
+        assert_eq!(shape["rawequal_nil"], serde_json::json!(true));
+        assert_eq!(shape["rawlen_nil"], serde_json::json!(true));
+    }
+
+    /// `collectgarbage` leaks memory-layout information and lets user
+    /// code force GC pressure on the shared VM.
+    #[tokio::test]
+    async fn sandbox_strips_collectgarbage() {
+        let rt = new_runtime();
+        rt.load_chunk("function is_nil() return collectgarbage == nil end")
+            .await
+            .unwrap();
+        let out = rt
+            .invoke_global("is_nil", serde_json::json!(null))
+            .await
+            .unwrap();
+        assert_eq!(out, serde_json::json!(true));
+    }
+
+    /// Nyquist: the `os` whitelist must contain exactly `clock`, `date`,
+    /// `time` — not a superset.
+    #[tokio::test]
+    async fn sandbox_os_whitelist_is_exact() {
+        let rt = new_runtime();
+        rt.load_chunk(
+            r#"
+            function keys()
+                local out = {}
+                for k, _ in pairs(os) do
+                    out[#out + 1] = k
+                end
+                table.sort(out)
+                return out
+            end
+            "#,
+        )
+        .await
+        .unwrap();
+        let out = rt
+            .invoke_global("keys", serde_json::json!(null))
+            .await
+            .unwrap();
+        assert_eq!(
+            out,
+            serde_json::json!(["clock", "date", "time"]),
+            "os whitelist must be exact"
+        );
+    }
+
+    /// Every `ddb.*` stub path must raise a Lua error (not panic in
+    /// Rust) when the v0.3.2 user invokes it. Covers query, kv.get,
+    /// kv.set, triples.get, triples.put.
+    #[tokio::test]
+    async fn ddb_stubs_all_raise_lua_error() {
+        let rt = new_runtime();
+        rt.load_chunk(
+            r#"
+            function call_query()       return ddb.query("SELECT 1") end
+            function call_kv_get()      return ddb.kv.get("k") end
+            function call_kv_set()      return ddb.kv.set("k", "v") end
+            function call_triples_get() return ddb.triples.get("s", "p") end
+            function call_triples_put() return ddb.triples.put("s", "p", "o") end
+            "#,
+        )
+        .await
+        .unwrap();
+        for name in [
+            "call_query",
+            "call_kv_get",
+            "call_kv_set",
+            "call_triples_get",
+            "call_triples_put",
+        ] {
+            let err = rt
+                .invoke_global(name, serde_json::json!(null))
+                .await
+                .unwrap_err();
+            let msg = format!("{err}");
+            assert!(
+                msg.contains("NotYetImplemented"),
+                "{name}: expected NotYetImplemented, got {msg}"
+            );
+        }
+    }
+
+    /// `ddb.log.{debug,info,warn,error}` must all route cleanly with
+    /// no Rust panic. We can't easily hook tracing here, so this is a
+    /// smoke test: call each level and assert the function returns ok.
+    #[tokio::test]
+    async fn ddb_log_all_levels_route_ok() {
+        let rt = new_runtime();
+        rt.load_chunk(
+            r#"
+            function go()
+                ddb.log.debug("d")
+                ddb.log.info("i")
+                ddb.log.warn("w")
+                ddb.log.error("e")
+                return "ok"
+            end
+            "#,
+        )
+        .await
+        .unwrap();
+        let out = rt
+            .invoke_global("go", serde_json::json!(null))
+            .await
+            .unwrap();
+        assert_eq!(out, serde_json::json!("ok"));
+    }
+
     /// F6 regression: a FunctionDef whose file_path tries to traverse
     /// out of the functions directory (`../escape.lua`) must be rejected
     /// with a clear error, not silently loaded.
