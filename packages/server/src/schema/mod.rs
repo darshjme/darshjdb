@@ -22,6 +22,9 @@
 //! in-memory via [`SchemaRegistry`].
 
 pub mod migration;
+// Slice 28/30 — Phase 9 SurrealDB parity: strict-mode schema enforcement
+// gated by `DdbConfig.schema.schema_mode == "strict"`.
+pub mod strict;
 pub mod validator;
 
 use serde::{Deserialize, Serialize};

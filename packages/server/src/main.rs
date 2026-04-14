@@ -337,8 +337,13 @@ async fn main() -> Result<()> {
     let (change_feed, _change_feed_rx) = ddb_server::sync::change_feed::ChangeFeed::with_defaults();
 
     // Live query manager for LIVE SELECT subscriptions.
+    // Slice 28/30 — the same Arc is shared between the WS handler and
+    // the REST DarshanQL handler so HTTP `LIVE SELECT` requests with
+    // `X-Subscription-Upgrade` register against the identical
+    // subscription pool that powers the WebSocket channel.
     let (live_query_manager, _live_query_rx) =
         ddb_server::sync::live_query::LiveQueryManager::new(4096);
+    let live_query_manager_for_rest = live_query_manager.clone();
 
     let ws_state = WsState {
         sessions: sync_sessions.clone(),
@@ -568,6 +573,52 @@ async fn main() -> Result<()> {
         Err(e) => {
             tracing::warn!(error = %e, "Failed to initialize schema migration engine");
         }
+    }
+
+    // -- Slice 28/30 — Strict Schema Enforcer (Phase 9 SurrealDB parity) -------
+    // Gated by `DdbConfig.schema.schema_mode`. When the mode is
+    // "strict" the enforcer short-circuits writes that violate
+    // `schema_definitions`; in any other mode it still loads
+    // definitions so the admin routes can manage them, but
+    // validation always passes.
+    // The slice's gating predicate is
+    // `DdbConfig.schema.schema_mode == "strict"`. The v0.2.0 baseline
+    // does not yet thread `DdbConfig` through `main.rs`, so we read
+    // the same value from `DARSH_SCHEMA__SCHEMA_MODE` (the canonical
+    // env var the typed loader would consume) with a `DDB_SCHEMA_MODE`
+    // alias for ergonomic ops use.
+    let schema_mode_env = std::env::var("DARSH_SCHEMA__SCHEMA_MODE")
+        .or_else(|_| std::env::var("DDB_SCHEMA_MODE"))
+        .unwrap_or_else(|_| "flexible".to_string());
+    let strict_mode_active = schema_mode_env.eq_ignore_ascii_case("strict");
+    match ddb_server::schema::strict::StrictSchemaEnforcer::new(pool.clone(), strict_mode_active)
+        .await
+    {
+        Ok(enforcer) => {
+            app_state = app_state.with_strict_schema(enforcer);
+            tracing::info!(
+                strict = strict_mode_active,
+                "Strict schema enforcer initialized (slice 28/30)"
+            );
+        }
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "Failed to initialize strict schema enforcer, continuing without strict mode"
+            );
+        }
+    }
+
+    // Slice 28/30 — share the live-query manager with the REST
+    // DarshanQL handler so `LIVE SELECT` statements submitted over
+    // HTTP (with the `X-Subscription-Upgrade` header) register
+    // against the same `LiveQueryManager` as WebSocket clients.
+    app_state = app_state.with_live_queries(live_query_manager_for_rest);
+
+    // Bootstrap the `admin_audit_log` table so the SQL passthrough
+    // handler can always append audit rows even on fresh installs.
+    if let Err(e) = ddb_server::api::sql_passthrough::ensure_audit_schema(&pool).await {
+        tracing::warn!(error = %e, "Failed to bootstrap admin_audit_log table");
     }
 
     // -- CORS Layer -----------------------------------------------------------
