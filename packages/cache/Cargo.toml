@@ -1,0 +1,33 @@
+# DarshJDB — created by Darshankumar Joshi (github.com/darshjme)
+# ddb-cache: L1 (DashMap) and higher-tier cache primitives for the DarshJDB engine.
+[package]
+name = "ddb-cache"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+homepage.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "DarshJDB cache crate — L1 in-memory DashMap cache with hash/list/zset/bloom/HLL. Created by Darshankumar Joshi."
+publish = true
+
+[lib]
+name = "ddb_cache"
+path = "src/lib.rs"
+
+[dependencies]
+tokio = { workspace = true }
+dashmap = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+bytes = { workspace = true }
+tokio-util = { workspace = true }
+zstd = { workspace = true }
+lz4_flex = { workspace = true }
+probabilistic-collections = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+tracing = { workspace = true }
+metrics = { workspace = true }

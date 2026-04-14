@@ -3,7 +3,13 @@ name = "ddb-server"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "DarshJDB server — triple store, DarshJQL query engine, and reactive tracking"
+authors.workspace = true
+homepage.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "DarshJDB server — triple store, DarshJQL query engine, and reactive tracking. Created by Darshankumar Joshi."
+publish = true
 
 [dependencies]
 tokio.workspace = true
@@ -48,3 +54,43 @@ aws-credential-types.workspace = true
 aws-types.workspace = true
 async-trait.workspace = true
 csv.workspace = true
+config.workspace = true
+dotenvy.workspace = true
+include_dir.workspace = true
+mime_guess.workspace = true
+dirs.workspace = true
+
+# Phase 10 — Observability (slice 29/30): Prometheus metrics + JSON logging + request_id.
+metrics.workspace = true
+metrics-exporter-prometheus.workspace = true
+
+# Phase 5.3 (slice 23/30) — Blockchain anchor Keccak-256 batch roots.
+sha3.workspace = true
+
+# Phase 0.3 (slice 4/30) — Magic link SMTP delivery via lettre.
+# Declared directly (not inherited) so we can disable default features
+# and pull the rustls-backed async transport instead of OpenSSL.
+lettre = { version = "0.11", default-features = false, features = ["smtp-transport", "tokio1-rustls-tls", "builder", "tokio1", "hostname"] }
+
+# Embedded Postgres (slice 17/30) — optional, gated by `embedded-db` feature
+pg_embed = { workspace = true, optional = true }
+portpicker = { workspace = true, optional = true }
+
+# Blockchain anchor backends (slice 23/30) — optional, gated by feature
+# flags so the default build stays dependency-light. When disabled, the
+# anchor module falls back to deterministic mock implementations.
+ipfs-api-backend-hyper = { workspace = true, optional = true }
+ethers-core = { workspace = true, optional = true }
+
+[features]
+default = []
+# Run DarshJDB with a zero-dep embedded Postgres 16 instance.
+# Usage: `cargo run --features embedded-db`
+embedded-db = ["dep:pg_embed", "dep:portpicker"]
+# Enable IPFS-backed audit anchoring via `ipfs-api-backend-hyper`.
+anchor-ipfs = ["dep:ipfs-api-backend-hyper"]
+# Enable Ethereum-backed audit anchoring via `ethers-core`.
+anchor-eth = ["dep:ethers-core"]
+
+[dev-dependencies]
+tempfile = "3"
