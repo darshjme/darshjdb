@@ -1,0 +1,28 @@
+# SPDX-License-Identifier: MIT
+# Author: Darshankumar Joshi
+# Part of DarshJDB — the native multi-model database.
+[package]
+name = "ddb-agent-memory"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "DarshJDB agent memory — tiered memory store + pluggable embedding providers — Darshankumar Joshi"
+
+[dependencies]
+tokio.workspace = true
+sqlx.workspace = true
+uuid.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+chrono.workspace = true
+async-trait.workspace = true
+reqwest.workspace = true
+async-openai = { workspace = true }
+tiktoken-rs = { workspace = true }
+metrics = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

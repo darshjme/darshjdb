@@ -48,3 +48,4 @@ aws-credential-types.workspace = true
 aws-types.workspace = true
 async-trait.workspace = true
 csv.workspace = true
+ddb-agent-memory = { path = "../agent-memory" }

@@ -422,6 +422,33 @@ async fn main() -> Result<()> {
         tracing::info!("embedding pipeline disabled (DDB_EMBEDDING_PROVIDER=none or unset)");
     }
 
+    // -- Agent Memory Embedding Worker (Phase 2.5) ----------------------------
+    // Spawns a background task that fills `embedding`/`content_tokens` on
+    // `memory_entries` and `agent_facts` rows. The schema is assumed to exist
+    // from the Phase 2 migration (slice 12). If it doesn't, the worker logs a
+    // warning on its first tick and keeps retrying — it never crashes the
+    // server.
+    {
+        let provider_kind = std::env::var("DARSH_EMBEDDING_PROVIDER")
+            .unwrap_or_else(|_| "none".to_string())
+            .to_lowercase();
+        if provider_kind != "none" && !provider_kind.is_empty() {
+            let provider: std::sync::Arc<dyn ddb_agent_memory::EmbeddingProvider> =
+                std::sync::Arc::from(ddb_agent_memory::from_env());
+            tracing::info!(
+                provider = %provider_kind,
+                model = provider.model(),
+                dimensions = provider.dimensions(),
+                "agent-memory embedding worker starting"
+            );
+            let _handle = ddb_agent_memory::spawn_embedding_worker(pool.clone(), provider);
+        } else {
+            tracing::info!(
+                "agent-memory embedding worker disabled (DARSH_EMBEDDING_PROVIDER=none or unset)"
+            );
+        }
+    }
+
     // -- Storage Engine -------------------------------------------------------
     let storage_dir =
         std::env::var("DDB_STORAGE_DIR").unwrap_or_else(|_| "./darshan/storage".to_string());
