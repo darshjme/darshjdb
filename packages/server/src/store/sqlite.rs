@@ -192,16 +192,25 @@ impl StoreTx for SqliteStoreTx {
 /// both naive `YYYY-MM-DDTHH:MM:SS.sssZ` (what SQLite's `strftime`
 /// emits for the default column value) and full RFC3339 with offset
 /// (what chrono::DateTime::to_rfc3339 emits on writes).
-fn parse_sqlite_ts(s: &str) -> std::result::Result<DateTime<Utc>, chrono::ParseError> {
-    // Try strict RFC3339 first.
+///
+/// MINOR-4: uses `strip_suffix('Z')` for exact-one-Z matching so
+/// malformed inputs like `2026-04-15T12:34:56ZZ` or a bare
+/// `2026-04-15T12:34:56` (no UTC marker at all) fail loudly instead
+/// of being silently accepted by `trim_end_matches`.
+fn parse_sqlite_ts(s: &str) -> Result<DateTime<Utc>> {
+    // Try strict RFC3339 first (handles `+HH:MM` offsets and `Z`).
     if let Ok(dt) = DateTime::parse_from_rfc3339(s) {
         return Ok(dt.with_timezone(&Utc));
     }
     // Fallback: SQLite's `strftime('%Y-%m-%dT%H:%M:%fZ', 'now')`.
-    // NaiveDateTime::parse_from_str handles the 'Z' suffix via a
-    // manual strip.
-    let trimmed = s.trim_end_matches('Z');
-    let naive = chrono::NaiveDateTime::parse_from_str(trimmed, "%Y-%m-%dT%H:%M:%S%.f")?;
+    // Require exactly one trailing 'Z' — reject anything else.
+    let trimmed = s.strip_suffix('Z').ok_or_else(|| {
+        DarshJError::Internal(format!(
+            "sqlite: timestamp {s:?} carries no UTC marker (expected trailing 'Z' or RFC3339 offset)"
+        ))
+    })?;
+    let naive = chrono::NaiveDateTime::parse_from_str(trimmed, "%Y-%m-%dT%H:%M:%S%.f")
+        .map_err(|e| DarshJError::Internal(format!("sqlite: timestamp parse failed for {s:?}: {e}")))?;
     Ok(DateTime::<Utc>::from_naive_utc_and_offset(naive, Utc))
 }
 
@@ -239,7 +248,7 @@ fn row_to_triple(row: &rusqlite::Row<'_>) -> rusqlite::Result<Triple> {
         rusqlite::Error::FromSqlConversionFailure(
             6,
             rusqlite::types::Type::Text,
-            Box::new(e),
+            Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string())),
         )
     })?;
 
@@ -248,7 +257,7 @@ fn row_to_triple(row: &rusqlite::Row<'_>) -> rusqlite::Result<Triple> {
             rusqlite::Error::FromSqlConversionFailure(
                 8,
                 rusqlite::types::Type::Text,
-                Box::new(e),
+                Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string())),
             )
         })?),
         None => None,
