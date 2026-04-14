@@ -6299,7 +6299,9 @@ mod tests {
         let (state, km) = make_state_with_secret(b"require-admin-auth-test-secret-32!!");
         let token = sign_access_token(&km, vec!["admin"]);
         let headers = bearer_headers(&token);
-        let ctx = require_admin_auth(&headers, &state).expect("admin allowed");
+        let ctx = require_admin_auth(&headers, &state)
+            .await
+            .expect("admin allowed");
         assert!(ctx.roles.iter().any(|r| r == "admin"));
     }
 
@@ -6308,7 +6310,7 @@ mod tests {
         let (state, km) = make_state_with_secret(b"require-admin-auth-test-secret-32!!");
         let token = sign_access_token(&km, vec!["viewer", "developer", "admin"]);
         let headers = bearer_headers(&token);
-        assert!(require_admin_auth(&headers, &state).is_ok());
+        assert!(require_admin_auth(&headers, &state).await.is_ok());
     }
 
     #[tokio::test]
@@ -6316,7 +6318,7 @@ mod tests {
         let (state, km) = make_state_with_secret(b"require-admin-auth-test-secret-32!!");
         let token = sign_access_token(&km, vec!["viewer"]);
         let headers = bearer_headers(&token);
-        let err = require_admin_auth(&headers, &state).unwrap_err();
+        let err = require_admin_auth(&headers, &state).await.unwrap_err();
         assert!(matches!(err.code, ErrorCode::PermissionDenied));
     }
 
@@ -6325,7 +6327,7 @@ mod tests {
         let (state, km) = make_state_with_secret(b"require-admin-auth-test-secret-32!!");
         let token = sign_access_token(&km, vec![]);
         let headers = bearer_headers(&token);
-        let err = require_admin_auth(&headers, &state).unwrap_err();
+        let err = require_admin_auth(&headers, &state).await.unwrap_err();
         assert!(matches!(err.code, ErrorCode::PermissionDenied));
     }
 
@@ -6333,7 +6335,7 @@ mod tests {
     async fn require_admin_auth_rejects_missing_token() {
         let (state, _km) = make_state_with_secret(b"require-admin-auth-test-secret-32!!");
         let headers = HeaderMap::new();
-        let err = require_admin_auth(&headers, &state).unwrap_err();
+        let err = require_admin_auth(&headers, &state).await.unwrap_err();
         assert!(matches!(err.code, ErrorCode::Unauthenticated));
     }
 
@@ -6367,7 +6369,7 @@ mod tests {
         let forged = format!("{header_b64}.{payload_b64}.{sig_b64}");
 
         let headers = bearer_headers(&forged);
-        let err = require_admin_auth(&headers, &state).unwrap_err();
+        let err = require_admin_auth(&headers, &state).await.unwrap_err();
         assert!(
             matches!(err.code, ErrorCode::Unauthenticated),
             "forged signature must be 401, got {:?}",
@@ -6384,7 +6386,7 @@ mod tests {
         let attacker_km = KeyManager::from_secret(b"attacker-other-secret-key-32byt!!b");
         let attacker_token = sign_access_token(&attacker_km, vec!["admin"]);
         let headers = bearer_headers(&attacker_token);
-        let err = require_admin_auth(&headers, &state).unwrap_err();
+        let err = require_admin_auth(&headers, &state).await.unwrap_err();
         assert!(matches!(err.code, ErrorCode::Unauthenticated));
     }
 
