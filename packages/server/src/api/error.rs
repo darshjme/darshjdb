@@ -48,6 +48,11 @@ pub enum ErrorCode {
     TypeMismatch,
     /// Schema migration would cause a conflict.
     SchemaConflict,
+    /// Slice 28/30 — Structured validation failure. Maps to HTTP 422
+    /// and emits a `{"errors":[{"field":"email","code":"REQUIRED"},...]}`
+    /// payload alongside the standard envelope. Used by the strict
+    /// schema enforcer.
+    ValidationFailed,
     /// An internal server error occurred.
     Internal,
 }
@@ -63,6 +68,7 @@ impl ErrorCode {
             Self::Conflict | Self::SchemaConflict => StatusCode::CONFLICT,
             Self::PayloadTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
             Self::RateLimited => StatusCode::TOO_MANY_REQUESTS,
+            Self::ValidationFailed => StatusCode::UNPROCESSABLE_ENTITY,
             Self::Internal => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
@@ -71,7 +77,9 @@ impl ErrorCode {
 /// Top-level API error type.
 ///
 /// Carries a machine-readable [`ErrorCode`], a human-readable message,
-/// and an optional `retry_after_secs` hint for rate-limit errors.
+/// an optional `retry_after_secs` hint for rate-limit errors, and an
+/// optional structured payload merged into the response body for
+/// validation errors.
 #[derive(Debug)]
 pub struct ApiError {
     /// Machine-readable error code.
@@ -80,6 +88,11 @@ pub struct ApiError {
     pub message: String,
     /// Seconds until the client should retry (rate-limit only).
     pub retry_after_secs: Option<u64>,
+    /// Slice 28/30 — structured details merged into the response
+    /// body alongside the standard envelope. Used by validation
+    /// errors so clients receive the canonical
+    /// `{"errors":[{"field":"email","code":"REQUIRED"},...]}` shape.
+    pub details: Option<serde_json::Value>,
 }
 
 impl ApiError {
@@ -89,12 +102,31 @@ impl ApiError {
             code,
             message: message.into(),
             retry_after_secs: None,
+            details: None,
         }
     }
 
     /// Convenience for `400 Bad Request`.
     pub fn bad_request(message: impl Into<String>) -> Self {
         Self::new(ErrorCode::BadRequest, message)
+    }
+
+    /// Slice 28/30 — `422 Unprocessable Entity` carrying a structured
+    /// validation payload. The payload must be a JSON object (e.g.
+    /// `{ "errors": [...] }`) whose keys are merged into the top-level
+    /// response body alongside the standard `error` envelope so
+    /// clients can consume them without pattern-matching on
+    /// stringified messages.
+    pub fn validation_with_payload(
+        message: impl Into<String>,
+        payload: serde_json::Value,
+    ) -> Self {
+        Self {
+            code: ErrorCode::ValidationFailed,
+            message: message.into(),
+            retry_after_secs: None,
+            details: Some(payload),
+        }
     }
 
     /// Convenience for `401 Unauthenticated`.
@@ -118,6 +150,7 @@ impl ApiError {
             code: ErrorCode::RateLimited,
             message: format!("Rate limit exceeded. Retry after {retry_after_secs}s."),
             retry_after_secs: Some(retry_after_secs),
+            details: None,
         }
     }
 
@@ -128,13 +161,21 @@ impl ApiError {
 }
 
 /// JSON envelope for error responses.
+///
+/// Slice 28/30 builds the envelope inline with `serde_json::json!`
+/// inside `IntoResponse` so the validation `details` payload can be
+/// merged into the top level. These structs are retained to keep the
+/// pre-existing test coverage (`error_envelope_json_structure`,
+/// `error_envelope_with_retry_after`) unchanged.
 #[derive(Serialize)]
+#[allow(dead_code)]
 struct ErrorEnvelope {
     error: ErrorBody,
 }
 
 /// Inner body of the error envelope.
 #[derive(Serialize)]
+#[allow(dead_code)]
 struct ErrorBody {
     code: ErrorCode,
     message: String,
@@ -146,13 +187,27 @@ struct ErrorBody {
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let status = self.code.status();
-        let body = ErrorEnvelope {
-            error: ErrorBody {
-                code: self.code,
-                message: self.message,
-                status: status.as_u16(),
-                retry_after_secs: self.retry_after_secs,
-            },
+        let envelope = serde_json::json!({
+            "error": {
+                "code": self.code,
+                "message": self.message,
+                "status": status.as_u16(),
+                "retry_after_secs": self.retry_after_secs,
+            }
+        });
+
+        // Slice 28/30: merge any structured `details` (e.g.
+        // `{"errors": [...]}`) into the top level of the response
+        // body so clients can consume them alongside the envelope
+        // without inspecting message strings.
+        let body = match (envelope, self.details) {
+            (serde_json::Value::Object(mut root), Some(serde_json::Value::Object(extra))) => {
+                for (k, v) in extra {
+                    root.insert(k, v);
+                }
+                serde_json::Value::Object(root)
+            }
+            (envelope, _) => envelope,
         };
 
         let mut response = (status, axum::Json(body)).into_response();
@@ -193,6 +248,7 @@ impl From<AuthError> for ApiError {
                     code: ErrorCode::RateLimited,
                     message: err.to_string(),
                     retry_after_secs: Some(*retry_after_secs),
+                    details: None,
                 };
             }
             AuthError::OAuth2(_) | AuthError::Crypto(_) => ErrorCode::BadRequest,
@@ -344,5 +400,51 @@ mod tests {
         let api_err: ApiError = json_err.into();
         assert!(matches!(api_err.code, ErrorCode::BadRequest));
         assert!(api_err.message.contains("JSON parse error"));
+    }
+
+    #[test]
+    fn slice_28_validation_payload_status_is_422() {
+        let err = ApiError::validation_with_payload(
+            "Schema validation failed",
+            serde_json::json!({
+                "errors": [{ "field": "email", "code": "REQUIRED" }]
+            }),
+        );
+        assert_eq!(err.code.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        assert!(err.details.is_some());
+    }
+
+    #[test]
+    fn slice_28_validation_payload_merges_into_response_body() {
+        use axum::body::to_bytes;
+
+        let err = ApiError::validation_with_payload(
+            "Schema validation failed",
+            serde_json::json!({
+                "errors": [
+                    { "field": "email", "code": "REQUIRED" },
+                    { "field": "age",   "code": "TYPE_MISMATCH" }
+                ]
+            }),
+        );
+
+        let resp = err.into_response();
+        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+        // Read the body and confirm both the envelope AND the
+        // top-level `errors` key are present (slice 9.1 contract).
+        let bytes = futures::executor::block_on(to_bytes(resp.into_body(), 4096))
+            .expect("read body");
+        let body: serde_json::Value =
+            serde_json::from_slice(&bytes).expect("parse body");
+        assert_eq!(body["error"]["code"], "VALIDATION_FAILED");
+        assert_eq!(body["error"]["status"], 422);
+        let errors = body
+            .get("errors")
+            .and_then(|v| v.as_array())
+            .expect("top-level errors array");
+        assert_eq!(errors.len(), 2);
+        assert_eq!(errors[0]["field"], "email");
+        assert_eq!(errors[0]["code"], "REQUIRED");
     }
 }

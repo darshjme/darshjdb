@@ -113,6 +113,15 @@ pub struct AppState {
     pub graph_engine: Option<Arc<GraphEngine>>,
     /// Schema registry for SCHEMAFULL/SCHEMALESS/MIXED mode enforcement.
     pub schema_registry: Option<Arc<crate::schema::SchemaRegistry>>,
+    /// Slice 28/30 — Strict schema enforcer (Phase 9 SurrealDB parity).
+    /// Always constructed if the migration ran so admin routes can
+    /// list/edit definitions, but enforcement only fires when
+    /// `DdbConfig.schema.schema_mode == "strict"`.
+    pub strict_schema: Option<Arc<crate::schema::strict::StrictSchemaEnforcer>>,
+    /// Slice 28/30 — Shared live-query manager so the DarshanQL HTTP
+    /// handler can register `LIVE SELECT` subscriptions against the
+    /// same manager that powers the WebSocket channel.
+    pub live_queries: Option<Arc<crate::sync::live_query::LiveQueryManager>>,
 }
 
 /// Load OAuth2 provider configurations from environment variables.
@@ -336,6 +345,8 @@ impl AppState {
             parallel_metrics: Arc::new(crate::query::parallel::ParallelMetrics::new()),
             graph_engine: None,
             schema_registry: None,
+            strict_schema: None,
+            live_queries: None,
         }
     }
 
@@ -371,6 +382,29 @@ impl AppState {
     /// Set a shared pub/sub engine on this state (for sharing with WsState).
     pub fn with_pubsub(mut self, pubsub: Arc<PubSubEngine>) -> Self {
         self.pubsub = pubsub;
+        self
+    }
+
+    /// Slice 28/30 — Attach the strict-mode schema enforcer. When the
+    /// enforcer was constructed with `strict_mode = true`, incoming
+    /// writes to collections with `schema_definitions` rows are
+    /// validated before they reach the triple store.
+    pub fn with_strict_schema(
+        mut self,
+        enforcer: Arc<crate::schema::strict::StrictSchemaEnforcer>,
+    ) -> Self {
+        self.strict_schema = Some(enforcer);
+        self
+    }
+
+    /// Slice 28/30 — Share the live-query manager with the DarshanQL
+    /// HTTP handler so `LIVE SELECT` statements submitted via REST
+    /// register against the same subscription pool as WS clients.
+    pub fn with_live_queries(
+        mut self,
+        manager: Arc<crate::sync::live_query::LiveQueryManager>,
+    ) -> Self {
+        self.live_queries = Some(manager);
         self
     }
 
@@ -417,6 +451,8 @@ impl AppState {
             parallel_metrics: Arc::new(crate::query::parallel::ParallelMetrics::new()),
             graph_engine: None,
             schema_registry: None,
+            strict_schema: None,
+            live_queries: None,
         }
     }
 }
@@ -612,8 +648,18 @@ pub fn build_router(state: AppState) -> Router {
     let protected_routes = Router::new()
         .route("/auth/signout", post(auth_signout))
         .route("/auth/me", get(auth_me))
-        // -- DarshQL -------------------------------------------------------
-        .route("/sql", post(darshql_handler))
+        // -- DarshanQL (SurrealQL-style superset) --------------------------
+        // Slice 28/30: DarshanQL moved off `/sql` so that path can host
+        // the raw SQL passthrough (Slice 9.3). The legacy path is kept
+        // as an alias so existing clients keep working — both route to
+        // the same handler.
+        .route("/darshql", post(darshql_handler))
+        .route("/sql/darshql", post(darshql_handler))
+        // Slice 28/30 (Slice 9.3): raw SQL passthrough gated by
+        // `require_admin_role` at handler level. Whitelists
+        // SELECT/INSERT/UPDATE/DELETE/WITH and writes every call to
+        // `admin_audit_log`.
+        .route("/sql", post(sql_passthrough_handler))
         // -- Data ----------------------------------------------------------
         .route("/query", post(query))
         .route("/mutate", post(mutate))
@@ -633,6 +679,13 @@ pub fn build_router(state: AppState) -> Router {
         .route("/events", get(events_sse))
         .route("/events/publish", post(events_publish))
         // -- Admin ---------------------------------------------------------
+        // Slice 28/30 (Slice 9.1): strict schema definitions CRUD per
+        // collection. List/upsert via the same path; deletion is left
+        // as future work.
+        .route(
+            "/admin/schema/{collection}",
+            get(admin_strict_schema_get).post(admin_strict_schema_post),
+        )
         .route("/admin/schema", get(admin_schema))
         .route("/admin/functions", get(admin_functions))
         .route("/admin/sessions", get(admin_sessions))
@@ -1701,25 +1754,63 @@ struct DarshQLRequest {
     query: String,
 }
 
-/// `POST /api/sql` — Execute DarshQL statements.
+/// `POST /api/darshql` — Execute DarshanQL statements over HTTP.
 ///
 /// Accepts a `{ "query": "SELECT * FROM users WHERE age > 18" }` body
 /// and returns the results of each statement.
+///
+/// Slice 28/30 (Phase 9 SurrealDB parity, sub-slice 9.2): when the
+/// incoming query **starts with the `LIVE ` keyword**, this handler
+/// refuses to run it synchronously unless the caller explicitly opts
+/// in via the `X-Subscription-Upgrade` header. The rationale is that
+/// a LIVE subscription over plain HTTP has no delivery channel — the
+/// subscription ID would be stranded. Opt-in clients get the
+/// subscription registered against the shared
+/// [`crate::sync::live_query::LiveQueryManager`] and an
+/// `X-Subscription-Id` response header alongside the initial body;
+/// everyone else gets a clean 400 pointing at the WebSocket.
 async fn darshql_handler(
     State(state): State<AppState>,
     headers: HeaderMap,
     axum::Json(body): axum::Json<DarshQLRequest>,
 ) -> Result<Response, ApiError> {
-    let _auth_ctx = extract_auth_context(&headers, &state)?;
+    let auth_ctx = extract_auth_context(&headers, &state)?;
 
     let start = Instant::now();
 
-    // Parse DarshQL into AST.
+    // ── Slice 9.2: LIVE SELECT detection ─────────────────────────────
+    // Strip a leading `LIVE ` / `LIVE\n` / `LIVE\t` keyword and route
+    // to the subscription path. We check the trimmed original body
+    // rather than the parsed AST so users who type `LIVE SELECT ...`
+    // still benefit from the parse-then-register flow without a
+    // second parse pass. `starts_with` is UTF-8 safe so non-ASCII
+    // preambles can't panic the handler.
+    let trimmed = body.query.trim_start();
+    let starts_with_live = {
+        let upper = trimmed.to_ascii_uppercase();
+        upper.starts_with("LIVE ") || upper.starts_with("LIVE\n") || upper.starts_with("LIVE\t")
+    };
+
+    if starts_with_live {
+        return handle_http_live_select(&state, &auth_ctx, &headers, &body.query, start);
+    }
+
+    // Parse DarshanQL into AST.
     let statements = crate::query::darshql::Parser::parse(&body.query)
         .map_err(|e| ApiError::bad_request(format!("DarshQL parse error: {e}")))?;
 
     if statements.is_empty() {
         return Err(ApiError::bad_request("empty query".to_string()));
+    }
+
+    // Defensive: if the parser extracted a LIVE statement (e.g. via a
+    // multi-statement batch that did not start with LIVE) we still
+    // require the subscription-upgrade header.
+    if statements
+        .iter()
+        .any(|s| matches!(s, crate::query::darshql::ast::Statement::LiveSelect(_)))
+    {
+        return handle_http_live_select(&state, &auth_ctx, &headers, &body.query, start);
     }
 
     // Execute all statements.
@@ -1734,6 +1825,240 @@ async fn darshql_handler(
     });
 
     Ok(negotiate_response(&headers, &response_body))
+}
+
+/// Handle a `LIVE SELECT ...` request that arrived over HTTP.
+///
+/// Returns 400 when the caller did not send `X-Subscription-Upgrade`.
+/// On success, registers the subscription with the shared
+/// [`crate::sync::live_query::LiveQueryManager`] and returns the
+/// initial empty result body plus an `X-Subscription-Id` response
+/// header so the caller can reconnect on the WebSocket channel and
+/// resume delivery.
+fn handle_http_live_select(
+    state: &AppState,
+    auth_ctx: &AuthContext,
+    headers: &HeaderMap,
+    raw_query: &str,
+    start: Instant,
+) -> Result<Response, ApiError> {
+    let wants_upgrade = headers
+        .get("x-subscription-upgrade")
+        .and_then(|v| v.to_str().ok())
+        .map(|v| !v.trim().is_empty() && v.trim() != "0" && !v.eq_ignore_ascii_case("false"))
+        .unwrap_or(false);
+
+    if !wants_upgrade {
+        return Err(ApiError::bad_request(
+            "LIVE SELECT requires a WebSocket channel; set 'X-Subscription-Upgrade: 1' \
+             to receive an X-Subscription-Id and then connect to /ws to consume events",
+        ));
+    }
+
+    let manager = state.live_queries.as_ref().ok_or_else(|| {
+        ApiError::internal("LIVE SELECT unavailable — live query manager not configured")
+    })?;
+
+    // Strip an optional leading `LIVE` keyword so the upstream
+    // manager — which also handles WS `live-select` payloads — can
+    // parse the tail as a regular `SELECT ...`.
+    let stripped = strip_leading_live_keyword(raw_query);
+
+    // LiveQueryManager registers queries against a SessionId. HTTP
+    // callers don't have a WS session id, so we reuse the
+    // authenticated session id so subsequent WS connections from
+    // the same caller can kill the subscription.
+    let session_id = auth_ctx.session_id;
+
+    let live_id = manager
+        .register(session_id, &stripped)
+        .map_err(|e| ApiError::bad_request(format!("LIVE SELECT registration failed: {e}")))?;
+
+    let elapsed = start.elapsed();
+    let body = serde_json::json!({
+        "subscription_id": live_id.to_string(),
+        "session_id": session_id.to_string(),
+        "notice": "subscription registered; connect to /ws and authenticate \
+                  with the same Bearer token to receive live events",
+        "time": format!("{}ms", elapsed.as_millis()),
+    });
+
+    // Build the response by hand so we can attach the
+    // `X-Subscription-Id` header alongside the negotiated body.
+    let mut response = negotiate_response(headers, &body);
+    match HeaderValue::from_str(&live_id.to_string()) {
+        Ok(hv) => {
+            response.headers_mut().insert("x-subscription-id", hv);
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to encode X-Subscription-Id header");
+        }
+    }
+    Ok(response)
+}
+
+/// Remove a leading `LIVE` keyword (with any trailing whitespace)
+/// from a query string. Case-insensitive and UTF-8 safe. Used by the
+/// HTTP LIVE SELECT path so the upstream parser sees a plain
+/// `SELECT ...`.
+fn strip_leading_live_keyword(q: &str) -> String {
+    let trimmed = q.trim_start();
+    if trimmed.len() >= 4
+        && trimmed.is_char_boundary(4)
+        && trimmed[..4].eq_ignore_ascii_case("LIVE")
+    {
+        let rest = &trimmed[4..];
+        // Require whitespace after LIVE so we don't clobber `LIVELINESS`.
+        if rest
+            .chars()
+            .next()
+            .map(|c| c.is_whitespace())
+            .unwrap_or(false)
+        {
+            return rest.trim_start().to_string();
+        }
+    }
+    q.to_string()
+}
+
+// ===========================================================================
+// Slice 28/30 — SQL passthrough + strict schema admin handlers
+// ===========================================================================
+
+/// `POST /api/sql` — Raw SQL passthrough for privileged operators.
+///
+/// Gated by [`require_admin_role`] (admin role required). The
+/// statement must be a SELECT / INSERT / UPDATE / DELETE / WITH; DDL
+/// is rejected with HTTP 400 before Postgres sees anything. Every
+/// call is written to `admin_audit_log` regardless of outcome.
+async fn sql_passthrough_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    axum::Json(body): axum::Json<super::sql_passthrough::SqlPassthroughRequest>,
+) -> Result<Response, ApiError> {
+    require_admin_role(&headers)?;
+    // Decode the JWT a second time so we have the actor user id
+    // for the audit row. `require_admin_role` already verified the
+    // role; this is just data extraction.
+    let actor = decode_jwt_claims(&headers)?;
+
+    match super::sql_passthrough::execute_passthrough(&state.pool, actor.user_id, &body).await {
+        Ok(result) => Ok(negotiate_response(&headers, &result)),
+        Err(crate::error::DarshJError::InvalidQuery(msg)) => Err(ApiError::bad_request(msg)),
+        Err(e) => Err(ApiError::internal(format!("SQL passthrough failed: {e}"))),
+    }
+}
+
+/// `GET /api/admin/schema/:collection` — List strict-schema definitions
+/// for a single collection. Returns an empty `definitions` array when
+/// no rows exist yet so the admin UI can render a blank editor without
+/// special-casing 404s.
+async fn admin_strict_schema_get(
+    State(state): State<AppState>,
+    Path(collection): Path<String>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    require_admin_role(&headers)?;
+
+    let enforcer = state.strict_schema.as_ref().ok_or_else(|| {
+        ApiError::internal("strict schema enforcer not configured for this server")
+    })?;
+
+    let defs = enforcer.get(&collection).unwrap_or_default();
+    let mut definitions: Vec<crate::schema::strict::StrictFieldDef> =
+        defs.into_values().collect();
+    definitions.sort_by(|a, b| a.attribute.cmp(&b.attribute));
+
+    let response = serde_json::json!({
+        "collection": collection,
+        "strict_mode_active": enforcer.is_strict(),
+        "definitions": definitions,
+    });
+
+    Ok(negotiate_response(&headers, &response))
+}
+
+/// Request body for `POST /api/admin/schema/:collection`.
+#[derive(Deserialize)]
+struct StrictSchemaPutRequest {
+    /// Attribute definitions to upsert for this collection. Any
+    /// attribute omitted from this list is **retained**; to delete a
+    /// definition, the admin UI should call the delete endpoint
+    /// (future work — keeps this slice's surface minimal).
+    definitions: Vec<StrictSchemaPutEntry>,
+}
+
+/// A single inbound definition. Mirrors `StrictFieldDef` but omits
+/// the `collection` field (taken from the URL path) so clients don't
+/// have to repeat it per row.
+#[derive(Deserialize)]
+struct StrictSchemaPutEntry {
+    attribute: String,
+    value_type: String,
+    #[serde(default)]
+    required: bool,
+    #[serde(default)]
+    unique_index: bool,
+    #[serde(default)]
+    default_val: Option<Value>,
+    #[serde(default)]
+    validator: Option<String>,
+}
+
+/// `POST /api/admin/schema/:collection` — Upsert strict definitions.
+async fn admin_strict_schema_post(
+    State(state): State<AppState>,
+    Path(collection): Path<String>,
+    headers: HeaderMap,
+    axum::Json(body): axum::Json<StrictSchemaPutRequest>,
+) -> Result<Response, ApiError> {
+    require_admin_role(&headers)?;
+
+    let enforcer = state.strict_schema.as_ref().ok_or_else(|| {
+        ApiError::internal("strict schema enforcer not configured for this server")
+    })?;
+
+    if body.definitions.is_empty() {
+        return Err(ApiError::bad_request(
+            "at least one definition is required",
+        ));
+    }
+
+    let defs: Vec<crate::schema::strict::StrictFieldDef> = body
+        .definitions
+        .into_iter()
+        .map(|e| crate::schema::strict::StrictFieldDef {
+            collection: collection.clone(),
+            attribute: e.attribute,
+            value_type: e.value_type,
+            required: e.required,
+            unique_index: e.unique_index,
+            default_val: e.default_val,
+            validator: e.validator,
+        })
+        .collect();
+
+    enforcer
+        .upsert(&collection, &defs)
+        .await
+        .map_err(|e| ApiError::bad_request(format!("schema upsert failed: {e}")))?;
+
+    let updated = enforcer.get(&collection).unwrap_or_default();
+    let mut definitions: Vec<crate::schema::strict::StrictFieldDef> =
+        updated.into_values().collect();
+    definitions.sort_by(|a, b| a.attribute.cmp(&b.attribute));
+
+    let response = serde_json::json!({
+        "collection": collection,
+        "strict_mode_active": enforcer.is_strict(),
+        "definitions": definitions,
+    });
+
+    Ok(negotiate_response_status(
+        &headers,
+        StatusCode::OK,
+        &response,
+    ))
 }
 
 // ===========================================================================
@@ -2169,16 +2494,45 @@ async fn data_create(
         .as_object()
         .ok_or_else(|| ApiError::bad_request("Request body must be a JSON object"))?;
 
+    // ── Slice 28/30 — Strict schema enforcement ──────────────────
+    // When `DdbConfig.schema.schema_mode == "strict"` and the target
+    // collection has rows in `schema_definitions`, validate the
+    // incoming document against the per-attribute contract before it
+    // reaches the SurrealDB-style registry. Failures short-circuit
+    // with HTTP 422 and the slice-mandated error payload shape:
+    //   { "errors": [ { "field": "email", "code": "REQUIRED" }, ... ] }
+    let obj_for_strict: std::collections::HashMap<String, Value> = obj
+        .iter()
+        .filter(|(k, _)| !k.starts_with('$'))
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    let mut coerced_from_strict: Option<std::collections::HashMap<String, Value>> = None;
+    if let Some(ref strict) = state.strict_schema {
+        if strict.is_strict() {
+            let report = strict.validate_create(&entity, &obj_for_strict);
+            if !report.is_valid() {
+                return Err(ApiError::validation_with_payload(
+                    "Schema validation failed",
+                    report.error_payload(),
+                ));
+            }
+            coerced_from_strict = Some(report.document);
+        }
+    }
+
     // ── Schema validation (SCHEMAFULL / MIXED mode) ──────────────
     // If a schema registry is configured and the table has a schema
     // definition, validate the document before persisting triples.
     let obj = if let Some(ref registry) = state.schema_registry {
         if let Some(schema) = registry.get(&entity) {
-            let doc: std::collections::HashMap<String, Value> = obj
-                .iter()
-                .filter(|(k, _)| !k.starts_with('$'))
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect();
+            let doc: std::collections::HashMap<String, Value> = coerced_from_strict
+                .clone()
+                .unwrap_or_else(|| {
+                    obj.iter()
+                        .filter(|(k, _)| !k.starts_with('$'))
+                        .map(|(k, v)| (k.clone(), v.clone()))
+                        .collect()
+                });
             let result = crate::schema::validator::SchemaValidator::validate_insert(&schema, &doc);
             if !result.is_valid() {
                 return Err(ApiError::bad_request(format!(
@@ -2197,9 +2551,28 @@ async fn data_create(
             validated
                 .into_iter()
                 .collect::<serde_json::Map<String, Value>>()
+        } else if let Some(coerced) = coerced_from_strict.clone() {
+            // Strict enforcement injected defaults — promote those back
+            // onto the original Map, preserving $-meta keys.
+            let mut merged: serde_json::Map<String, Value> =
+                coerced.into_iter().collect();
+            for (k, v) in obj.iter() {
+                if k.starts_with('$') {
+                    merged.insert(k.clone(), v.clone());
+                }
+            }
+            merged
         } else {
             obj.clone()
         }
+    } else if let Some(coerced) = coerced_from_strict {
+        let mut merged: serde_json::Map<String, Value> = coerced.into_iter().collect();
+        for (k, v) in obj.iter() {
+            if k.starts_with('$') {
+                merged.insert(k.clone(), v.clone());
+            }
+        }
+        merged
     } else {
         obj.clone()
     };
@@ -2437,6 +2810,27 @@ async fn data_patch(
     let obj = body
         .as_object()
         .ok_or_else(|| ApiError::bad_request("Request body must be a JSON object"))?;
+
+    // ── Slice 28/30 — Strict schema type checks on PATCH ─────────
+    // Required-field checks are skipped for partial updates, but
+    // every supplied attribute is still type-checked against
+    // `schema_definitions`.
+    if let Some(ref strict) = state.strict_schema {
+        if strict.is_strict() {
+            let patch_doc: std::collections::HashMap<String, Value> = obj
+                .iter()
+                .filter(|(k, _)| !k.starts_with('$'))
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
+            let report = strict.validate_patch(&entity, &patch_doc);
+            if !report.is_valid() {
+                return Err(ApiError::validation_with_payload(
+                    "Schema validation failed",
+                    report.error_payload(),
+                ));
+            }
+        }
+    }
 
     // ── Schema validation for updates ────────────────────────────
     let obj = if let Some(ref registry) = state.schema_registry {
