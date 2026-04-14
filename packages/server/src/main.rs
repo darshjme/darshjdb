@@ -1075,11 +1075,29 @@ async fn main() -> Result<()> {
         .layer(cors);
 
     // -- Start Server ---------------------------------------------------------
-    // If DDB_BIND_ADDR is set, use it; else default to 0.0.0.0.
+    // Resolve the bind address from the typed config tree first
+    // (Slice 17, PR #3): in dev mode, `cfg.dev.bind_addr` takes
+    // precedence; otherwise `cfg.server.bind_addr`.  Fall back to the
+    // legacy flat `DDB_BIND_ADDR` env var only if neither typed field
+    // is populated, mirroring the priority pattern used for
+    // `database.url` earlier in main().
+    //
     // Dev mode refuses to bind anything other than loopback so a leaked
     // DDB_DEV=1 env var cannot accidentally expose the bearer-token bypass
     // to a non-local caller.
-    let bind_host = std::env::var("DDB_BIND_ADDR").unwrap_or_else(|_| "0.0.0.0".into());
+    let bind_host: String = if dev_mode {
+        if !cfg.dev.bind_addr.is_empty() {
+            cfg.dev.bind_addr.clone()
+        } else if !cfg.server.bind_addr.is_empty() {
+            cfg.server.bind_addr.clone()
+        } else {
+            std::env::var("DDB_BIND_ADDR").unwrap_or_else(|_| "127.0.0.1".into())
+        }
+    } else if !cfg.server.bind_addr.is_empty() {
+        cfg.server.bind_addr.clone()
+    } else {
+        std::env::var("DDB_BIND_ADDR").unwrap_or_else(|_| "0.0.0.0".into())
+    };
     if dev_mode {
         let is_loopback = matches!(
             bind_host.as_str(),
