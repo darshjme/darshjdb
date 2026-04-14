@@ -28,10 +28,13 @@
 //! # What this does *not* solve
 //!
 //! - `pgvector` cosine distance (`<=>`, `vector` type) — SQLite has
-//!   no native vector type. [`SqliteDialect::cosine_distance`] emits
-//!   `todo!()` at emit-time via `unsupported_vector` so the planner
-//!   surfaces a clear error instead of producing invalid SQL. The
-//!   v0.4 roadmap introduces an in-process vector fallback.
+//!   no native vector type. [`SqliteDialect::cosine_distance`] and
+//!   [`SqliteDialect::vector_literal`] return prepare-time failing
+//!   sentinels (`__SQLITE_VECTOR_UNSUPPORTED__` /
+//!   `__SQLITE_COSINE_DISTANCE_UNSUPPORTED__`) so a missed
+//!   `supports_vector()` gate fails loudly at statement prepare
+//!   time instead of silently returning zero rows. The v0.4 roadmap
+//!   introduces an in-process vector fallback.
 //! - Full-text search (`to_tsvector` / `plainto_tsquery`) — SQLite
 //!   has FTS5 which requires a virtual table, not an expression.
 //!   [`SqliteDialect`] falls back to a `LIKE` expression so the
@@ -419,15 +422,19 @@ impl SqlDialect for SqliteDialect {
     }
 
     fn vector_literal(&self, _values: &[f32]) -> String {
-        // The planner must gate this on supports_vector() first. If
-        // it ever does reach us, emit a syntactically-invalid sentinel
-        // so the failure is visible at execution time rather than
-        // silently returning wrong results.
-        "NULL /* sqlite: vector search unsupported */".to_string()
+        // Intentionally non-SQL. The planner must gate on
+        // `supports_vector()` before ever calling this; returning
+        // a syntactically-valid NULL (as v0.3.2 originally did)
+        // silently produced zero-row results when a caller forgot
+        // the gate. The sentinel below fails at statement prepare
+        // time on any SQL engine, making a missed gate impossible
+        // to miss.
+        "__SQLITE_VECTOR_UNSUPPORTED__".to_string()
     }
 
     fn cosine_distance(&self, _alias: &str, _literal: &str) -> String {
-        "NULL /* sqlite: cosine distance unsupported */".to_string()
+        // See `vector_literal` — non-SQL prepare-time sentinel.
+        "__SQLITE_COSINE_DISTANCE_UNSUPPORTED__".to_string()
     }
 
     fn supports_vector(&self) -> bool {
@@ -590,6 +597,22 @@ mod tests {
     fn sqlite_does_not_support_vector() {
         assert!(!SqliteDialect.supports_vector());
         assert!(PgDialect.supports_vector());
+    }
+
+    #[test]
+    fn sqlite_vector_sentinels_are_non_sql() {
+        // m-3: any caller that forgets the supports_vector() gate
+        // must see a statement-prepare failure, not a silent NULL.
+        // The sentinels below are intentionally non-SQL — the test
+        // pins the exact token so a future refactor can't
+        // accidentally drift them back to a valid NULL expression.
+        let lit = SqliteDialect.vector_literal(&[0.1, 0.2]);
+        assert_eq!(lit, "__SQLITE_VECTOR_UNSUPPORTED__");
+        assert!(!lit.contains("NULL"), "sentinel must not contain NULL");
+
+        let cos = SqliteDialect.cosine_distance("t_emb", &lit);
+        assert_eq!(cos, "__SQLITE_COSINE_DISTANCE_UNSUPPORTED__");
+        assert!(!cos.contains("NULL"), "sentinel must not contain NULL");
     }
 
     // ── Misc ───────────────────────────────────────────────────────
