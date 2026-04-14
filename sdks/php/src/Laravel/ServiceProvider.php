@@ -2,37 +2,37 @@
 
 declare(strict_types=1);
 
-namespace Darshan\Laravel;
+namespace Darshjdb\Laravel;
 
-use Darshan\Client;
+use Darshjdb\Client;
 use Illuminate\Support\ServiceProvider;
 
 /**
- * Laravel service provider for DarshanDB.
+ * Laravel service provider for DarshJDB.
  *
- * Registers the DarshanDB {@see Client} as a singleton in the service container
+ * Registers the DarshJDB {@see Client} as a singleton in the service container
  * and publishes the configuration file.
  *
  * Register in config/app.php or rely on Laravel auto-discovery:
  *   'providers' => [
- *       Darshan\Laravel\DarshanServiceProvider::class,
+ *       Darshjdb\Laravel\ServiceProvider::class,
  *   ],
  */
-class DarshanServiceProvider extends ServiceProvider
+class ServiceProvider extends ServiceProvider
 {
     /**
-     * Register the DarshanDB client singleton.
+     * Register the DarshJDB client singleton.
      */
     public function register(): void
     {
         $this->mergeConfigFrom(
-            __DIR__ . '/../../config/darshan.php',
-            'darshan',
+            __DIR__ . '/../../config/darshjdb.php',
+            'darshjdb',
         );
 
         $this->app->singleton(Client::class, function ($app) {
             /** @var array{server_url: string, api_key: string, timeout: int} $config */
-            $config = $app['config']['darshan'];
+            $config = $app['config']['darshjdb'];
 
             return new Client([
                 'serverUrl' => $config['server_url'],
@@ -41,7 +41,7 @@ class DarshanServiceProvider extends ServiceProvider
             ]);
         });
 
-        $this->app->alias(Client::class, 'darshan');
+        $this->app->alias(Client::class, 'darshjdb');
     }
 
     /**
@@ -51,8 +51,8 @@ class DarshanServiceProvider extends ServiceProvider
     {
         if ($this->app->runningInConsole()) {
             $this->publishes([
-                __DIR__ . '/../../config/darshan.php' => config_path('darshan.php'),
-            ], 'darshan-config');
+                __DIR__ . '/../../config/darshjdb.php' => config_path("darshjdb.php"),
+            ], 'darshjdb-config');
         }
     }
 
@@ -63,6 +63,6 @@ class DarshanServiceProvider extends ServiceProvider
      */
     public function provides(): array
     {
-        return [Client::class, 'darshan'];
+        return [Client::class, 'darshjdb'];
     }
 }

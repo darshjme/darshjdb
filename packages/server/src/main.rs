@@ -110,7 +110,7 @@ async fn main() -> Result<()> {
     #[cfg(not(feature = "embedded-db"))]
     let database_url = configured_url.unwrap_or_else(|| {
         tracing::warn!("DATABASE_URL not set, using default localhost connection");
-        "postgres://darshan:darshan@localhost:5432/darshjdb".to_string()
+        "postgres://ddb:ddb@localhost:5432/darshjdb".to_string()
     });
 
     let port: u16 = std::env::var("DDB_PORT")
@@ -1007,7 +1007,35 @@ async fn main() -> Result<()> {
         .layer(cors);
 
     // -- Start Server ---------------------------------------------------------
-    let addr = SocketAddr::from(([0, 0, 0, 0], port));
+    // If DDB_BIND_ADDR is set, use it; else default to 0.0.0.0.
+    // Dev mode refuses to bind anything other than loopback so a leaked
+    // DDB_DEV=1 env var cannot accidentally expose the bearer-token bypass
+    // to a non-local caller.
+    let bind_host = std::env::var("DDB_BIND_ADDR").unwrap_or_else(|_| "0.0.0.0".into());
+    if dev_mode {
+        let is_loopback = matches!(
+            bind_host.as_str(),
+            "127.0.0.1" | "::1" | "localhost" | "0.0.0.0"
+        );
+        if !is_loopback {
+            return Err(ddb_server::error::DarshJError::Internal(format!(
+                "DDB_DEV=1 refuses to bind non-loopback address {bind_host}. \
+                 Unset DDB_DEV or set DDB_BIND_ADDR=127.0.0.1."
+            )));
+        }
+        if bind_host == "0.0.0.0" {
+            tracing::warn!(
+                "DDB_DEV=1 active with bind 0.0.0.0 — dev bypass token only \
+                 accepted from loopback sources (requests with proxy headers \
+                 are rejected)."
+            );
+        }
+    }
+    let bind_ip: std::net::IpAddr = bind_host
+        .parse()
+        .or_else(|_| "0.0.0.0".parse())
+        .expect("default bind parse");
+    let addr = SocketAddr::from((bind_ip, port));
 
     // Optional TLS termination: if DDB_TLS_CERT and DDB_TLS_KEY are set,
     // bind with rustls for native TLS 1.2/1.3 support. Otherwise, plain HTTP.
