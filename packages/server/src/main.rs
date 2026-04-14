@@ -12,6 +12,7 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
+use ddb_server::admin::static_assets::admin_router;
 use ddb_server::api::rest::{AppState, build_router};
 use ddb_server::api::ws::{WsState, ws_routes};
 use ddb_server::auth::middleware::RateLimiter;
@@ -651,6 +652,11 @@ async fn main() -> Result<()> {
     let app = axum::Router::new()
         // REST API routes under /api
         .nest("/api", api_router)
+        // Embedded admin dashboard (Vite SPA baked into the binary via
+        // include_dir!). Mounted at the top level so /admin/* serves the
+        // dashboard while /api/admin/{schema,functions,...} JSON endpoints
+        // remain reachable inside the build_router. — Slice 19/30
+        .merge(admin_router())
         // WebSocket route at /ws
         .merge(ws_routes(ws_state))
         // Health check at root
