@@ -67,6 +67,9 @@ ddb-cache-server = { path = "../cache-server" }
 # Slice 12/13 — agent memory subsystem (context token counting).
 tiktoken-rs.workspace = true
 
+# Slice 16 — embedder crate (OpenAI-compatible embeddings for semantic tier).
+ddb-agent-memory = { path = "../agent-memory" }
+
 [features]
 default = []
 # Enable IPFS-backed audit anchoring via `ipfs-api-backend-hyper`.

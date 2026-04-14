@@ -1,12 +1,12 @@
 # DarshJDB — created by Darshankumar Joshi (github.com/darshjme)
 # ddb-agent-memory: 4-tier agent memory (working / episodic / semantic / archival)
-# for DarshJDB as an AI-agent backing store. Slice 12/30 of the Grand Transformation.
+# with pluggable embedding providers. Slices 12-16 of the Grand Transformation.
 [package]
 name = "ddb-agent-memory"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "DarshJDB agent memory crate — 4-tier working/episodic/semantic/archival store with importance scoring and pgvector recall"
+description = "DarshJDB agent memory crate — 4-tier working/episodic/semantic/archival store with importance scoring, pgvector recall, and pluggable embedding providers"
 authors = ["Darshankumar Joshi <github.com/darshjme>"]
 
 [lib]
@@ -28,3 +28,9 @@ metrics = { workspace = true }
 zstd = { workspace = true }
 dashmap = { workspace = true }
 thiserror = { workspace = true }
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+reqwest = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

@@ -86,7 +86,9 @@ pgvector = { version = "0.4", features = ["sqlx"] }
 rusqlite = { version = "0.31", features = ["bundled", "serde_json"] }
 pg_embed = { package = "pg-embed", version = "1", default-features = false, features = ["rt_tokio_migrate"] }
 tiktoken-rs = "0.6"
-async-openai = "0.23"
+# Slice 16 upgrades async-openai to 0.34 with the rustls `embedding` feature
+# and opts out of native-tls defaults for cross-platform rustls-only builds.
+async-openai = { version = "0.34", default-features = false, features = ["embedding", "rustls"] }
 image = { version = "0.25", features = ["jpeg", "png", "webp", "avif"] }
 imagesize = "0.13"
 infer = "0.16"
