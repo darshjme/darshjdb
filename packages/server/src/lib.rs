@@ -33,6 +33,7 @@ pub mod audit;
 pub mod auth;
 pub mod automations;
 pub mod cache;
+pub mod cluster;
 pub mod collaboration;
 pub mod connectors;
 pub mod embeddings;
