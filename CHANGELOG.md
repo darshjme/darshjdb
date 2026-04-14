@@ -43,7 +43,10 @@ primitives that v0.3.2 will build on.
   feeds `ChangeEvent` into the local broadcast channel, so WebSocket
   subscribers attached to any replica see mutations from any other.
 - **`/cluster/status` endpoint** alongside `/health` and `/metrics` —
-  no auth required, exposes `node_id`, current leader, held locks.
+  no auth required. Response shape is `{node_id, uptime_secs,
+  leader_for, version}`, where `leader_for` is the list of singleton
+  background tasks for which THIS replica currently holds the advisory
+  lock (per-replica, not cluster-wide).
 - **9 lib tests + 6 integration tests** covering lock acquisition,
   supervisor restart, and notify reconnect.
 
@@ -72,7 +75,10 @@ primitives that v0.3.2 will build on.
   v0.3.2/v0.4 roadmap for the SqliteStore + DarshanQL dialect work.
 - **NOT FOR PRODUCTION** banner on the single-node `docker-compose.yml`.
 - **oauth2 5.0.0 stable** (up from 5.0.0-rc.1); `DDB_WATCH` dev shim
-  removed; `DARSH_CACHE_PASSWORD` now required for the cache server.
+  removed; `DARSH_CACHE_PASSWORD`, when set, enables AUTH enforcement
+  on the cache server (`packages/cache-server/src/server.rs` reads it
+  as optional); `docker-compose.ha.yml` makes it a required
+  substitution for production deployments via `${DARSH_CACHE_PASSWORD:?}`.
 
 ### Fixed
 
