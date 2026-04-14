@@ -3111,8 +3111,7 @@ async fn admin_schema(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
-    let _token = extract_bearer_token(&headers)?;
-    require_admin_role(&headers)?;
+    let _auth = require_admin_auth(&headers, &state)?;
 
     let schema = state
         .triple_store
@@ -3130,8 +3129,7 @@ async fn admin_functions(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
-    let _token = extract_bearer_token(&headers)?;
-    require_admin_role(&headers)?;
+    let _auth = require_admin_auth(&headers, &state)?;
 
     let functions = match state.function_registry.as_ref() {
         Some(registry) => {
@@ -3166,8 +3164,7 @@ async fn admin_sessions(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
-    let _token = extract_bearer_token(&headers)?;
-    require_admin_role(&headers)?;
+    let _auth = require_admin_auth(&headers, &state)?;
 
     let rows: Vec<(
         uuid::Uuid,
@@ -3247,8 +3244,7 @@ async fn admin_cache(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
-    let _token = extract_bearer_token(&headers)?;
-    require_admin_role(&headers)?;
+    let _auth = require_admin_auth(&headers, &state)?;
 
     let stats = state.query_cache.stats();
     let response = serde_json::json!({
@@ -3266,8 +3262,7 @@ async fn admin_storage_list(
     headers: HeaderMap,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<Response, ApiError> {
-    let _token = extract_bearer_token(&headers)?;
-    require_admin_role(&headers)?;
+    let _auth = require_admin_auth(&headers, &state)?;
 
     let limit: usize = params
         .get("limit")
@@ -3317,8 +3312,7 @@ async fn admin_bulk_load(
     headers: HeaderMap,
     axum::Json(body): axum::Json<BulkLoadRequest>,
 ) -> Result<Response, ApiError> {
-    let _token = extract_bearer_token(&headers)?;
-    require_admin_role(&headers)?;
+    let _auth = require_admin_auth(&headers, &state)?;
 
     if body.entities.is_empty() {
         return Err(ApiError::bad_request("At least one entity is required"));
@@ -3436,15 +3430,25 @@ fn extract_bearer_token(headers: &HeaderMap) -> Result<String, ApiError> {
     Ok(token)
 }
 
-/// Verify the authenticated user holds the "admin" role by decoding JWT claims.
-fn require_admin_role(headers: &HeaderMap) -> Result<(), ApiError> {
-    let ctx = decode_jwt_claims(headers)?;
-    if ctx.roles.iter().any(|r| r == "admin") {
-        Ok(())
+/// Authenticate the caller against [`SessionManager`] and require the
+/// "admin" role. This is the extractor guarding every `/api/admin/*`
+/// route — it cryptographically verifies the JWT signature (rejecting
+/// forged tokens) and then enforces role-based authorization.
+///
+/// Returns `Err(ApiError)` with:
+/// - **401 Unauthenticated** if the bearer header is missing, malformed,
+///   or the signature fails validation.
+/// - **403 PermissionDenied** if the token is valid but the caller does
+///   not hold the `admin` role.
+///
+/// On success, the returned [`AuthContext`] is available to admin
+/// handlers if they need the caller's user id or session id.
+fn require_admin_auth(headers: &HeaderMap, state: &AppState) -> Result<AuthContext, ApiError> {
+    let auth_ctx = extract_auth_context(headers, state)?;
+    if auth_ctx.roles.iter().any(|r| r == "admin") {
+        Ok(auth_ctx)
     } else {
-        Err(ApiError::permission_denied(
-            "Admin role required for this endpoint",
-        ))
+        Err(ApiError::permission_denied("admin role required"))
     }
 }
 
@@ -3469,7 +3473,12 @@ fn extract_auth_context(headers: &HeaderMap, state: &AppState) -> Result<AuthCon
         .map_err(|e| ApiError::unauthenticated(format!("Invalid token: {e}")))
 }
 
-/// Decode JWT claims from the Bearer token without full signature verification.
+/// Decode JWT claims from the Bearer token **without** signature
+/// verification. Kept for test-only sanity checks; production code paths
+/// must use `extract_auth_context` or `require_admin_auth`, both of
+/// which route through `SessionManager::validate_token` for real
+/// cryptographic verification.
+#[cfg(test)]
 fn decode_jwt_claims(headers: &HeaderMap) -> Result<AuthContext, ApiError> {
     let token = extract_bearer_token(headers)?;
     let parts: Vec<&str> = token.split('.').collect();
@@ -4704,96 +4713,151 @@ mod tests {
     // -----------------------------------------------------------------------
     // Admin role check
     // -----------------------------------------------------------------------
+    //
+    // These tests exercise `require_admin_auth`, the real extractor
+    // guarding every `/api/admin/*` route. They construct a live
+    // `SessionManager` with a symmetric test key, sign real access
+    // tokens with it, and call the extractor directly — DB-free because
+    // `SessionManager::validate_token` is stateless JWT verification.
+    //
+    // `require_admin_auth_rejects_forged_signature` is the regression
+    // guard: the original stub only decoded claims and accepted any
+    // signature, which was a silent auth bypass.
 
-    /// Helper: build a fake JWT with the given claims payload (header.payload.sig).
-    fn fake_jwt(claims: &serde_json::Value) -> String {
-        let header = data_encoding::BASE64URL_NOPAD.encode(b"{\"alg\":\"HS256\"}");
-        let payload = data_encoding::BASE64URL_NOPAD
-            .encode(serde_json::to_string(claims).unwrap().as_bytes());
-        let sig = data_encoding::BASE64URL_NOPAD.encode(b"fake-signature-bytes");
-        format!("{header}.{payload}.{sig}")
+    use crate::auth::KeyManager;
+    use crate::auth::session::AccessClaims;
+    use chrono::{Duration as ChronoDuration, Utc};
+
+    /// Build a test `AppState` and a matching `KeyManager` so tests
+    /// can sign tokens that the embedded `SessionManager` will accept.
+    fn make_state_with_secret(secret: &[u8]) -> (AppState, KeyManager) {
+        let mut state = AppState::new();
+        let km_for_state = KeyManager::from_secret(secret);
+        state.session_manager = Arc::new(SessionManager::new(state.pool.clone(), km_for_state));
+        let km_for_signing = KeyManager::from_secret(secret);
+        (state, km_for_signing)
     }
 
-    #[test]
-    fn require_admin_role_allows_admin() {
-        let user_id = uuid::Uuid::new_v4();
-        let session_id = uuid::Uuid::new_v4();
-        let claims = serde_json::json!({
-            "sub": user_id.to_string(),
-            "sid": session_id.to_string(),
-            "roles": ["admin"],
-        });
-        let token = fake_jwt(&claims);
+    /// Sign a HS256 access token carrying `roles` using `km`.
+    fn sign_access_token(km: &KeyManager, roles: Vec<&str>) -> String {
+        let now = Utc::now();
+        let claims = AccessClaims {
+            sub: uuid::Uuid::new_v4().to_string(),
+            sid: uuid::Uuid::new_v4().to_string(),
+            roles: roles.into_iter().map(String::from).collect(),
+            iat: now.timestamp(),
+            exp: (now + ChronoDuration::minutes(15)).timestamp(),
+            iss: "darshjdb".into(),
+            aud: Some("darshjdb".into()),
+        };
+        km.sign_access_token(&claims).expect("sign access token")
+    }
+
+    fn bearer_headers(token: &str) -> HeaderMap {
         let mut headers = HeaderMap::new();
         headers.insert(
             http::header::AUTHORIZATION,
             format!("Bearer {token}").parse().unwrap(),
         );
-        assert!(require_admin_role(&headers).is_ok());
+        headers
     }
 
-    #[test]
-    fn require_admin_role_rejects_non_admin() {
-        let user_id = uuid::Uuid::new_v4();
-        let session_id = uuid::Uuid::new_v4();
-        let claims = serde_json::json!({
-            "sub": user_id.to_string(),
-            "sid": session_id.to_string(),
-            "roles": ["viewer"],
-        });
-        let token = fake_jwt(&claims);
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            http::header::AUTHORIZATION,
-            format!("Bearer {token}").parse().unwrap(),
-        );
-        let err = require_admin_role(&headers).unwrap_err();
+    #[tokio::test]
+    async fn require_admin_auth_allows_admin() {
+        let (state, km) = make_state_with_secret(b"require-admin-auth-test-secret-32!!");
+        let token = sign_access_token(&km, vec!["admin"]);
+        let headers = bearer_headers(&token);
+        let ctx = require_admin_auth(&headers, &state).expect("admin allowed");
+        assert!(ctx.roles.iter().any(|r| r == "admin"));
+    }
+
+    #[tokio::test]
+    async fn require_admin_auth_allows_admin_among_multiple_roles() {
+        let (state, km) = make_state_with_secret(b"require-admin-auth-test-secret-32!!");
+        let token = sign_access_token(&km, vec!["viewer", "developer", "admin"]);
+        let headers = bearer_headers(&token);
+        assert!(require_admin_auth(&headers, &state).is_ok());
+    }
+
+    #[tokio::test]
+    async fn require_admin_auth_rejects_non_admin() {
+        let (state, km) = make_state_with_secret(b"require-admin-auth-test-secret-32!!");
+        let token = sign_access_token(&km, vec!["viewer"]);
+        let headers = bearer_headers(&token);
+        let err = require_admin_auth(&headers, &state).unwrap_err();
         assert!(matches!(err.code, ErrorCode::PermissionDenied));
     }
 
-    #[test]
-    fn require_admin_role_rejects_empty_roles() {
-        let user_id = uuid::Uuid::new_v4();
-        let session_id = uuid::Uuid::new_v4();
-        let claims = serde_json::json!({
-            "sub": user_id.to_string(),
-            "sid": session_id.to_string(),
-            "roles": [],
-        });
-        let token = fake_jwt(&claims);
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            http::header::AUTHORIZATION,
-            format!("Bearer {token}").parse().unwrap(),
-        );
-        assert!(require_admin_role(&headers).is_err());
+    #[tokio::test]
+    async fn require_admin_auth_rejects_empty_roles() {
+        let (state, km) = make_state_with_secret(b"require-admin-auth-test-secret-32!!");
+        let token = sign_access_token(&km, vec![]);
+        let headers = bearer_headers(&token);
+        let err = require_admin_auth(&headers, &state).unwrap_err();
+        assert!(matches!(err.code, ErrorCode::PermissionDenied));
     }
 
-    #[test]
-    fn require_admin_role_allows_admin_among_multiple_roles() {
-        let user_id = uuid::Uuid::new_v4();
-        let session_id = uuid::Uuid::new_v4();
-        let claims = serde_json::json!({
-            "sub": user_id.to_string(),
-            "sid": session_id.to_string(),
-            "roles": ["viewer", "developer", "admin"],
-        });
-        let token = fake_jwt(&claims);
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            http::header::AUTHORIZATION,
-            format!("Bearer {token}").parse().unwrap(),
-        );
-        assert!(require_admin_role(&headers).is_ok());
-    }
-
-    #[test]
-    fn require_admin_role_rejects_missing_token() {
+    #[tokio::test]
+    async fn require_admin_auth_rejects_missing_token() {
+        let (state, _km) = make_state_with_secret(b"require-admin-auth-test-secret-32!!");
         let headers = HeaderMap::new();
-        let err = require_admin_role(&headers).unwrap_err();
+        let err = require_admin_auth(&headers, &state).unwrap_err();
         assert!(matches!(err.code, ErrorCode::Unauthenticated));
     }
 
+    /// Regression guard: a JWT with a forged signature claiming the
+    /// admin role **must not** be accepted. The old stub only decoded
+    /// claims, which allowed anyone to craft an admin token. The new
+    /// extractor delegates to `SessionManager::validate_token`, which
+    /// cryptographically verifies the signature against the server's key.
+    #[tokio::test]
+    async fn require_admin_auth_rejects_forged_signature() {
+        let (state, _km) = make_state_with_secret(b"require-admin-auth-test-secret-32!!");
+
+        // Hand-craft a JWT: valid structure, legitimate-looking claims,
+        // but the signature bytes are garbage.
+        let header_b64 =
+            data_encoding::BASE64URL_NOPAD.encode(b"{\"alg\":\"HS256\",\"typ\":\"JWT\"}");
+        let payload_b64 = data_encoding::BASE64URL_NOPAD.encode(
+            serde_json::to_string(&serde_json::json!({
+                "sub": uuid::Uuid::new_v4().to_string(),
+                "sid": uuid::Uuid::new_v4().to_string(),
+                "roles": ["admin"],
+                "iat": 0,
+                "exp": 9_999_999_999_i64,
+                "iss": "darshjdb",
+                "aud": "darshjdb",
+            }))
+            .unwrap()
+            .as_bytes(),
+        );
+        let sig_b64 = data_encoding::BASE64URL_NOPAD.encode(b"forged-signature-bytes");
+        let forged = format!("{header_b64}.{payload_b64}.{sig_b64}");
+
+        let headers = bearer_headers(&forged);
+        let err = require_admin_auth(&headers, &state).unwrap_err();
+        assert!(
+            matches!(err.code, ErrorCode::Unauthenticated),
+            "forged signature must be 401, got {:?}",
+            err.code
+        );
+    }
+
+    /// A JWT signed by a *different* key than the server's — the
+    /// common token-confusion attack surface — must also be rejected.
+    #[tokio::test]
+    async fn require_admin_auth_rejects_token_signed_by_other_key() {
+        let (state, _km_server) =
+            make_state_with_secret(b"server-real-secret-key-32-bytes!!aa");
+        let attacker_km = KeyManager::from_secret(b"attacker-other-secret-key-32byt!!b");
+        let attacker_token = sign_access_token(&attacker_km, vec!["admin"]);
+        let headers = bearer_headers(&attacker_token);
+        let err = require_admin_auth(&headers, &state).unwrap_err();
+        assert!(matches!(err.code, ErrorCode::Unauthenticated));
+    }
+
+    /// Sanity check for `decode_jwt_claims` (still used elsewhere in
+    /// the module for non-critical paths that need the subject id).
     #[test]
     fn decode_jwt_claims_extracts_user_id() {
         let user_id = uuid::Uuid::new_v4();
@@ -4803,7 +4867,13 @@ mod tests {
             "sid": session_id.to_string(),
             "roles": ["developer"],
         });
-        let token = fake_jwt(&claims);
+        // Build a syntactically-valid (unsigned) JWT: the helper is
+        // signature-free by design.
+        let header = data_encoding::BASE64URL_NOPAD.encode(b"{\"alg\":\"HS256\"}");
+        let payload = data_encoding::BASE64URL_NOPAD
+            .encode(serde_json::to_string(&claims).unwrap().as_bytes());
+        let sig = data_encoding::BASE64URL_NOPAD.encode(b"fake-signature-bytes");
+        let token = format!("{header}.{payload}.{sig}");
         let mut headers = HeaderMap::new();
         headers.insert(
             http::header::AUTHORIZATION,
