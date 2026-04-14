@@ -28,3 +28,4 @@ metrics = { workspace = true }
 zstd = { workspace = true }
 dashmap = { workspace = true }
 thiserror = { workspace = true }
+async-trait = { workspace = true }

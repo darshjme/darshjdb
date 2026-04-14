@@ -1288,6 +1288,7 @@ name = "ddb-agent-memory"
 version = "0.2.0"
 dependencies = [
  "async-openai",
+ "async-trait",
  "chrono",
  "dashmap",
  "metrics",
