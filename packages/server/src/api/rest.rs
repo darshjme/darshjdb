@@ -4641,8 +4641,26 @@ const RRF_K: f64 = 60.0;
 /// Mirrors `migrations/20260414003000_pgvector_bootstrap.sql` so unit
 /// tests that bypass external migration tooling still get a usable schema.
 pub async fn ensure_search_schema(pool: &PgPool) -> std::result::Result<(), sqlx::Error> {
+    // ── Part 1: always-safe (full-text search index on triples) ────────────
+    // This works on any stock Postgres, including pg_embed's bundled builds
+    // that do not carry the pgvector extension.
     sqlx::raw_sql(
         r#"
+        CREATE INDEX IF NOT EXISTS idx_triples_fts_text
+            ON triples USING gin (to_tsvector('english', value::text))
+            WHERE value IS NOT NULL;
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    // ── Part 2: vector-dependent (pgvector extension + embeddings table) ───
+    // Best-effort. pg_embed's bundled Postgres 16 on some platforms (darwin
+    // arm64) ships without the `vector` extension; in that case we emit a
+    // warn log, leave the embeddings table absent, and let the semantic
+    // search handlers return a clean 503 / empty result rather than 500ing.
+    // Operators running pgvector-capable Postgres get the full schema.
+    let vector_sql = r#"
         CREATE EXTENSION IF NOT EXISTS vector;
 
         CREATE TABLE IF NOT EXISTS embeddings (
@@ -4685,14 +4703,16 @@ pub async fn ensure_search_schema(pool: &PgPool) -> std::result::Result<(), sqlx
 
         CREATE INDEX IF NOT EXISTS idx_embeddings_entity
             ON embeddings (entity_id, attribute);
+    "#;
+    if let Err(e) = sqlx::raw_sql(vector_sql).execute(pool).await {
+        tracing::warn!(
+            error = %e,
+            "pgvector extension unavailable on this Postgres build; \
+             semantic/hybrid search will return 503 until the database is \
+             upgraded to a pgvector-capable image. FTS search still works."
+        );
+    }
 
-        CREATE INDEX IF NOT EXISTS idx_triples_fts_text
-            ON triples USING gin (to_tsvector('english', value::text))
-            WHERE value IS NOT NULL;
-        "#,
-    )
-    .execute(pool)
-    .await?;
     Ok(())
 }
 
