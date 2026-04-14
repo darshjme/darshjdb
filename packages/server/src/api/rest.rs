@@ -875,6 +875,21 @@ pub fn build_router(state: AppState) -> Router {
             require_auth_middleware,
         ));
 
+    // -- Agent memory (slice 12/13) -----------------------------------------
+    // Sub-router with its own AgentMemoryState; auth-gated like the other
+    // self-stated routers above.
+    let agent_memory_routes: Router = Router::new()
+        .nest(
+            "/agent",
+            crate::agent_memory::agent_memory_routes().with_state(
+                crate::agent_memory::AgentMemoryState::new(state.pool.clone()),
+            ),
+        )
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            require_auth_middleware,
+        ));
+
     // Merge all route groups.
     public_routes
         .merge(protected_routes)
@@ -892,6 +907,7 @@ pub fn build_router(state: AppState) -> Router {
         .merge(api_key_routes)
         .merge(plugin_routes)
         .merge(automation_routes)
+        .merge(agent_memory_routes)
 }
 
 // ===========================================================================

@@ -26,6 +26,7 @@
 //! - [`query`] — DarshJQL parsing, planning, execution, and caching.
 
 pub mod activity;
+pub mod agent_memory;
 pub mod aggregation;
 pub mod api;
 pub mod api_keys;
