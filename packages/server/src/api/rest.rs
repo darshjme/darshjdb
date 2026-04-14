@@ -341,7 +341,7 @@ impl AppState {
             parallel_metrics: Arc::new(crate::query::parallel::ParallelMetrics::new()),
             graph_engine: None,
             schema_registry: None,
-            ddb_cache: DdbCache::in_memory(),
+            ddb_cache: Arc::new(DdbCache::new()),
         }
     }
 
@@ -423,7 +423,7 @@ impl AppState {
             parallel_metrics: Arc::new(crate::query::parallel::ParallelMetrics::new()),
             graph_engine: None,
             schema_registry: None,
-            ddb_cache: DdbCache::in_memory(),
+            ddb_cache: Arc::new(DdbCache::new()),
         }
     }
 }
@@ -887,6 +887,15 @@ pub fn build_router(state: AppState) -> Router {
             require_auth_middleware,
         ));
 
+    // ── Slice 11 — cache HTTP router (RESP3 twin at /api/cache/*) ──────
+    // Self-stated sub-router mounted alongside the other merges below.
+    // Uses a process-local `DdbCache` shared across requests; the RESP3
+    // protocol server (packages/cache-server binary) can be wired to the
+    // same instance when embedded in-process in a later slice.
+    let cache_http_routes = ddb_cache_server::cache_http_router(
+        ddb_cache_http_handle().clone(),
+    );
+
     // Merge all route groups.
     public_routes
         .merge(protected_routes)
@@ -904,6 +913,17 @@ pub fn build_router(state: AppState) -> Router {
         .merge(api_key_routes)
         .merge(plugin_routes)
         .merge(automation_routes)
+        .merge(cache_http_routes)
+}
+
+/// Process-wide [`DdbCache`] shared by the HTTP REST cache API. The RESP3
+/// protocol server is packaged as a separate `ddb-cache-server` binary but
+/// may be embedded in-process in a later slice by pointing it at this same
+/// handle.
+fn ddb_cache_http_handle() -> &'static std::sync::Arc<ddb_cache::DdbCache> {
+    use std::sync::{Arc, OnceLock};
+    static CACHE: OnceLock<Arc<ddb_cache::DdbCache>> = OnceLock::new();
+    CACHE.get_or_init(|| Arc::new(ddb_cache::DdbCache::new()))
 }
 
 // ===========================================================================

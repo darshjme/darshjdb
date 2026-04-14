@@ -1397,6 +1397,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "ddb-cache-server"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "bytes",
+ "ddb-cache",
+ "futures",
+ "http 1.4.0",
+ "metrics",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
+ "tower",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "ddb-cli"
 version = "0.2.0"
 dependencies = [
@@ -1446,6 +1467,7 @@ dependencies = [
  "dashmap",
  "data-encoding",
  "ddb-cache",
+ "ddb-cache-server",
  "ethers-core",
  "futures",
  "futures-util",

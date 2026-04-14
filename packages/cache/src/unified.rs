@@ -1,5 +1,5 @@
 // DarshJDB — created by Darshankumar Joshi (github.com/darshjme)
-// ddb-cache::unified — `DdbCache`: read-through / write-through L1+L2 layer.
+// ddb-cache::unified — `DdbUnifiedCache`: read-through / write-through L1+L2 layer.
 //
 // Slice 10 (Phase 1.3) of the DarshJDB Grand Transformation.
 //
@@ -50,7 +50,7 @@ use crate::pubsub::PubSubEngine;
 /// storage) should hold. The underlying tiers remain accessible via the
 /// public fields for advanced callers that need to bypass one tier.
 #[derive(Debug)]
-pub struct DdbCache {
+pub struct DdbUnifiedCache {
     /// L1 in-memory DashMap tier.
     pub l1: Arc<L1Cache>,
     /// L2 durable (Postgres in production) tier.
@@ -59,7 +59,7 @@ pub struct DdbCache {
     pub pubsub: Arc<PubSubEngine>,
 }
 
-impl DdbCache {
+impl DdbUnifiedCache {
     /// Compose a unified cache from the given tiers.
     pub fn new(l1: Arc<L1Cache>, l2: Arc<L2Cache>, pubsub: Arc<PubSubEngine>) -> Arc<Self> {
         Arc::new(Self { l1, l2, pubsub })
@@ -169,7 +169,7 @@ mod tests {
         let l1 = L1Cache::new();
         let l2 = L2Cache::new_in_memory();
         let pubsub = PubSubEngine::new_default();
-        let cache = DdbCache::new(l1.clone(), l2.clone(), pubsub.clone());
+        let cache = DdbUnifiedCache::new(l1.clone(), l2.clone(), pubsub.clone());
         drop(pubsub);
 
         // Seed L2 only.
@@ -187,7 +187,7 @@ mod tests {
 
     #[tokio::test]
     async fn read_through_total_miss_returns_none() {
-        let cache = DdbCache::in_memory();
+        let cache = DdbUnifiedCache::in_memory();
         assert_eq!(cache.get("nope").await, None);
     }
 
@@ -195,7 +195,7 @@ mod tests {
     async fn write_through_writes_both_tiers() {
         let l1 = L1Cache::new();
         let l2 = L2Cache::new_in_memory();
-        let cache = DdbCache::new(l1.clone(), l2.clone(), PubSubEngine::new_default());
+        let cache = DdbUnifiedCache::new(l1.clone(), l2.clone(), PubSubEngine::new_default());
 
         cache.set("k", b("v")).await;
 
@@ -207,7 +207,7 @@ mod tests {
     async fn delete_removes_from_both_tiers() {
         let l1 = L1Cache::new();
         let l2 = L2Cache::new_in_memory();
-        let cache = DdbCache::new(l1.clone(), l2.clone(), PubSubEngine::new_default());
+        let cache = DdbUnifiedCache::new(l1.clone(), l2.clone(), PubSubEngine::new_default());
 
         cache.set("k", b("v")).await;
         assert!(cache.delete("k").await, "delete must report previous presence");
@@ -222,7 +222,7 @@ mod tests {
     async fn delete_reports_true_when_only_in_l2() {
         let l1 = L1Cache::new();
         let l2 = L2Cache::new_in_memory();
-        let cache = DdbCache::new(l1.clone(), l2.clone(), PubSubEngine::new_default());
+        let cache = DdbUnifiedCache::new(l1.clone(), l2.clone(), PubSubEngine::new_default());
 
         // Key exists only in L2.
         l2.set("ghost", b("x")).await;
@@ -232,7 +232,7 @@ mod tests {
 
     #[tokio::test]
     async fn pubsub_roundtrip_delivers_message() {
-        let cache = DdbCache::in_memory();
+        let cache = DdbUnifiedCache::in_memory();
         let mut rx = cache.pubsub.subscribe("__keyspace__:foo");
 
         let n = cache.notify("__keyspace__:foo", b("set"));
@@ -245,7 +245,7 @@ mod tests {
 
     #[tokio::test]
     async fn get_after_write_through_is_l1_hit() {
-        let cache = DdbCache::in_memory();
+        let cache = DdbUnifiedCache::in_memory();
         cache.set("hot", b("path")).await;
         // Explicitly clear L2 to prove the next read must be served by L1.
         cache.l2.delete("hot").await;
@@ -254,7 +254,7 @@ mod tests {
 
     #[tokio::test]
     async fn unified_serves_concurrent_readers_and_writers() {
-        let cache = DdbCache::in_memory();
+        let cache = DdbUnifiedCache::in_memory();
         let mut handles = Vec::new();
         for i in 0..32u32 {
             let c = cache.clone();

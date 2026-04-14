@@ -1,13 +1,14 @@
 # DarshJDB — created by Darshankumar Joshi (github.com/darshjme)
 # ddb-cache: tiered cache primitives for the DarshJDB engine.
-# L1 DashMap (slice 8) + L2 Postgres persistent tier (slice 9) + unified
-# DdbCache with pub/sub + Prometheus metrics (slice 10).
+# L1 DashMap (slice 8) + L2 Postgres persistent tier (slice 9) +
+# DdbUnifiedCache (slice 10) + slice 11 DdbCache engine backing the
+# RESP3 protocol server and the HTTP REST cache API.
 [package]
 name = "ddb-cache"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "DarshJDB unified cache layer — L1 DashMap + L2 Postgres + pub/sub + Prometheus metrics"
+description = "DarshJDB cache crate — L1 DashMap + L2 Postgres + DdbCache engine (hash/list/zset/stream/bloom/HLL)"
 authors = ["Darshankumar Joshi <github.com/darshjme>"]
 
 [lib]
