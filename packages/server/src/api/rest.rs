@@ -3203,10 +3203,139 @@ struct SubscribeParams {
     q: String,
 }
 
+/// Collapse a list of triples (ordered newest-first per attribute by
+/// `get_entity`) into a single attribute -> latest-value map.
+///
+/// `get_entity` returns triples sorted by `(attribute, tx_id DESC)`, so
+/// the *first* triple for any given attribute is the current value. We
+/// walk the list once and keep the first occurrence of each attribute.
+fn triples_to_attr_map(triples: &[crate::triple_store::Triple]) -> HashMap<String, Value> {
+    let mut out: HashMap<String, Value> = HashMap::with_capacity(triples.len());
+    for t in triples {
+        out.entry(t.attribute.clone())
+            .or_insert_with(|| t.value.clone());
+    }
+    out
+}
+
+/// Evaluate a single DarshJQL `WhereClause` against a materialized
+/// attribute map.
+///
+/// This is a pure, in-memory re-check used by the SSE `subscribe`
+/// handler to drop pub/sub events whose target entity no longer (or
+/// never did) satisfy the query predicate. It mirrors the semantics of
+/// the SQL planner in [`query::plan_query`] for the operators that can
+/// be checked without a database round-trip.
+fn eval_where_clause(clause: &query::WhereClause, attrs: &HashMap<String, Value>) -> bool {
+    let Some(actual) = attrs.get(&clause.attribute) else {
+        // Missing attribute only satisfies explicit `!=` against a
+        // non-null literal; everything else fails closed.
+        return matches!(clause.op, query::WhereOp::Neq) && !clause.value.is_null();
+    };
+    let expected = &clause.value;
+
+    match clause.op {
+        query::WhereOp::Eq => actual == expected,
+        query::WhereOp::Neq => actual != expected,
+        query::WhereOp::Gt => compare_json(actual, expected)
+            .map(|o| o.is_gt())
+            .unwrap_or(false),
+        query::WhereOp::Gte => compare_json(actual, expected)
+            .map(|o| o.is_ge())
+            .unwrap_or(false),
+        query::WhereOp::Lt => compare_json(actual, expected)
+            .map(|o| o.is_lt())
+            .unwrap_or(false),
+        query::WhereOp::Lte => compare_json(actual, expected)
+            .map(|o| o.is_le())
+            .unwrap_or(false),
+        query::WhereOp::Contains => json_contains(actual, expected),
+        query::WhereOp::Like => match (actual.as_str(), expected.as_str()) {
+            (Some(haystack), Some(pattern)) => ilike_match(haystack, pattern),
+            _ => false,
+        },
+    }
+}
+
+/// Evaluate a set of `WhereClause` predicates with AND semantics.
+///
+/// Returns `true` only if every clause matches. An empty list trivially
+/// matches (the query has no WHERE filter at all).
+fn eval_where_clauses(clauses: &[query::WhereClause], attrs: &HashMap<String, Value>) -> bool {
+    clauses.iter().all(|c| eval_where_clause(c, attrs))
+}
+
+/// Compare two JSON values for ordering where that makes sense
+/// (numbers, strings, booleans). Returns `None` for mixed or
+/// unordered types.
+fn compare_json(a: &Value, b: &Value) -> Option<std::cmp::Ordering> {
+    match (a, b) {
+        (Value::Number(x), Value::Number(y)) => {
+            let xf = x.as_f64()?;
+            let yf = y.as_f64()?;
+            xf.partial_cmp(&yf)
+        }
+        (Value::String(x), Value::String(y)) => Some(x.cmp(y)),
+        (Value::Bool(x), Value::Bool(y)) => Some(x.cmp(y)),
+        _ => None,
+    }
+}
+
+/// Minimal JSONB `@>` containment check: `b` is contained in `a` when
+/// every key/value in `b` is present (recursively) in `a`. Scalars
+/// compare by equality. Matches PostgreSQL semantics closely enough
+/// for live-query re-evaluation.
+fn json_contains(a: &Value, b: &Value) -> bool {
+    match (a, b) {
+        (Value::Object(am), Value::Object(bm)) => bm
+            .iter()
+            .all(|(k, bv)| am.get(k).is_some_and(|av| json_contains(av, bv))),
+        (Value::Array(aa), Value::Array(ba)) => {
+            ba.iter().all(|bv| aa.iter().any(|av| json_contains(av, bv)))
+        }
+        _ => a == b,
+    }
+}
+
+/// Tiny SQL-ish ILIKE matcher supporting `%` (any) and `_` (one char),
+/// case-insensitive. Sufficient for the subscribe re-check path.
+fn ilike_match(haystack: &str, pattern: &str) -> bool {
+    let hs: Vec<char> = haystack.to_lowercase().chars().collect();
+    let pt: Vec<char> = pattern.to_lowercase().chars().collect();
+    ilike_inner(&hs, &pt)
+}
+
+fn ilike_inner(hs: &[char], pt: &[char]) -> bool {
+    if pt.is_empty() {
+        return hs.is_empty();
+    }
+    match pt[0] {
+        '%' => {
+            if ilike_inner(hs, &pt[1..]) {
+                return true;
+            }
+            !hs.is_empty() && ilike_inner(&hs[1..], pt)
+        }
+        '_' => !hs.is_empty() && ilike_inner(&hs[1..], &pt[1..]),
+        c => !hs.is_empty() && hs[0] == c && ilike_inner(&hs[1..], &pt[1..]),
+    }
+}
+
 /// `GET /api/subscribe?q=...` — Server-Sent Events for live query updates.
 ///
-/// Authenticates via Bearer token, then streams events for the given query.
-/// A heartbeat comment is sent every 15 seconds to keep the connection alive.
+/// Authenticates via Bearer token, parses the DarshJQL query to extract
+/// the target entity type and any `$where` predicates, then streams
+/// change events from the pub/sub engine with server-side filtering:
+///
+/// 1. Entity-type filter: only events whose `entity_type` matches the
+///    query's target type are considered.
+/// 2. WHERE re-evaluation: for events that carry an `entity_id`, the
+///    handler fetches the current triples for that entity and checks
+///    the parsed `WhereClause` list in memory. Non-matching events are
+///    dropped before they reach the client.
+///
+/// A heartbeat comment is sent every 15 seconds to keep the connection
+/// alive through idle intermediaries.
 async fn subscribe(
     State(state): State<AppState>,
     Query(params): Query<SubscribeParams>,
@@ -3218,25 +3347,79 @@ async fn subscribe(
         return Err(ApiError::bad_request("Query parameter 'q' is required"));
     }
 
-    let rx = state.sse_tx.subscribe();
-    let stream = BroadcastStream::new(rx).filter_map(|msg| match msg {
-        Ok(payload) => {
-            let data = serde_json::to_string(&payload.data).unwrap_or_default();
-            Some(Ok(Event::default()
-                .event("update")
-                .data(data)
-                .id(payload.tx_id.to_string())))
-        }
-        Err(_) => None,
-    });
+    // Parse the DarshJQL query. Clients pass the query as a JSON string
+    // in the `q` query-param; decode it into a `serde_json::Value` and
+    // route through the canonical parser so we inherit all validation.
+    let q_json: Value = serde_json::from_str(&params.q)
+        .map_err(|e| ApiError::bad_request(format!("Query 'q' must be JSON: {e}")))?;
+    let ast = query::parse_darshan_ql(&q_json)
+        .map_err(|e| ApiError::bad_request(format!("Invalid DarshJQL: {e}")))?;
+
+    let target_entity_type = ast.entity_type.clone();
+    let where_clauses = ast.where_clauses.clone();
+    let triple_store = Arc::clone(&state.triple_store);
+
+    // Subscribe to the real change-event bus. Every mutation that
+    // touches a triple flows through `pubsub.subscribe_events()` as a
+    // `PubSubEvent` carrying entity_type/entity_id/tx_id.
+    let rx = state.pubsub.subscribe_events();
+
+    // The `subscribe` filter has to perform an async DB lookup when the
+    // query carries `$where` predicates, so we cannot use the synchronous
+    // `tokio_stream::StreamExt::filter_map` combinator. Instead we
+    // `.then()` each broadcast item into a future producing
+    // `Option<Result<Event, Infallible>>`, then drop the `None`s with a
+    // synchronous `filter_map(|x| x)`.
+    let stream = BroadcastStream::new(rx)
+        .then(move |msg| {
+            let target = target_entity_type.clone();
+            let where_clauses = where_clauses.clone();
+            let triple_store = Arc::clone(&triple_store);
+            async move {
+                let event = match msg {
+                    Ok(ev) => ev,
+                    Err(_) => return None,
+                };
+
+                // (c) Entity-type gate — drop events for any other type.
+                match event.entity_type.as_deref() {
+                    Some(et) if et == target => {}
+                    _ => return None,
+                }
+
+                // (d) WHERE re-evaluation: only when the event carries
+                // a concrete entity_id and the query has predicates.
+                if !where_clauses.is_empty() {
+                    let Some(ref eid_str) = event.entity_id else {
+                        // Collection-level event without an entity id
+                        // cannot be checked against WHERE — drop it to
+                        // avoid false positives.
+                        return None;
+                    };
+                    let Ok(eid) = Uuid::parse_str(eid_str) else {
+                        return None;
+                    };
+                    let triples = match triple_store.get_entity(eid).await {
+                        Ok(t) => t,
+                        Err(_) => return None,
+                    };
+                    let attrs = triples_to_attr_map(&triples);
+                    if !eval_where_clauses(&where_clauses, &attrs) {
+                        return None;
+                    }
+                }
+
+                let data = serde_json::to_string(&event).unwrap_or_default();
+                Some(Ok(Event::default()
+                    .event("update")
+                    .data(data)
+                    .id(event.tx_id.to_string())))
+            }
+        })
+        .filter_map(|opt| opt);
 
     // Use a comment-style keepalive (": heartbeat\n\n") so it does not
-    // trigger client `onmessage` handlers.  Axum's `KeepAlive::text` sends
-    // a data event; using an empty `Event::default().comment("heartbeat")`
-    // equivalent is achieved through the `text` method with a leading colon
-    // is not available, but the standard SSE comment prefix is what the
-    // `KeepAlive` default (no `.text()`) produces.  We omit `.text()` to
-    // get the default SSE comment keepalive behavior.
+    // trigger client `onmessage` handlers.
     Ok(Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15))))
 }
 
@@ -3403,41 +3586,34 @@ async fn admin_functions(
 }
 
 /// `GET /api/admin/sessions` — List active sessions across all users.
-#[allow(clippy::type_complexity)]
+///
+/// Routed through [`SessionManager::list_active`] so the admin view
+/// shares the same query path as the rest of the auth subsystem —
+/// keeping session-schema knowledge out of the HTTP handler.
 async fn admin_sessions(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
     let _auth = require_admin_auth(&headers, &state).await?;
 
-    let rows: Vec<(
-        uuid::Uuid,
-        uuid::Uuid,
-        String,
-        String,
-        String,
-        chrono::DateTime<chrono::Utc>,
-        bool,
-    )> = sqlx::query_as(
-        "SELECT session_id, user_id, device_fingerprint, ip, user_agent, created_at, revoked \
-         FROM sessions WHERE revoked = false AND refresh_expires_at > NOW() \
-         ORDER BY created_at DESC LIMIT 500",
-    )
-    .fetch_all(&state.pool)
-    .await
-    .map_err(|e| ApiError::internal(format!("Failed to query sessions: {e}")))?;
+    let records = state
+        .session_manager
+        .list_active(50)
+        .await
+        .map_err(|e| ApiError::internal(format!("Failed to list sessions: {e}")))?;
 
-    let sessions: Vec<serde_json::Value> = rows
-        .into_iter()
-        .map(|(sid, uid, dfp, ip, ua, created, revoked)| {
+    let sessions: Vec<serde_json::Value> = records
+        .iter()
+        .map(|s| {
             serde_json::json!({
-                "session_id": sid,
-                "user_id": uid,
-                "device_fingerprint": dfp,
-                "ip": ip,
-                "user_agent": ua,
-                "created_at": created.to_rfc3339(),
-                "revoked": revoked,
+                "session_id": s.session_id,
+                "user_id": s.user_id,
+                "device_fingerprint": s.device_fingerprint,
+                "ip": s.ip,
+                "user_agent": s.user_agent,
+                "created_at": s.created_at.to_rfc3339(),
+                "revoked": s.revoked,
+                "refresh_expires_at": s.refresh_expires_at.to_rfc3339(),
             })
         })
         .collect();
@@ -5216,5 +5392,181 @@ mod tests {
             "Bearer not-a-jwt".parse().unwrap(),
         );
         assert!(decode_jwt_claims(&headers).is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // SSE subscribe filter helpers (Phase 0.6)
+    // -----------------------------------------------------------------------
+    //
+    // These tests cover the in-memory pieces the `subscribe` handler uses
+    // to gate change events. Hitting the live BroadcastStream path needs a
+    // running Postgres instance, so we test the pure logic here and rely
+    // on the integration suite for the streaming wiring.
+
+    use crate::query::{WhereClause, WhereOp};
+
+    fn wc(attribute: &str, op: WhereOp, value: serde_json::Value) -> WhereClause {
+        WhereClause {
+            attribute: attribute.to_string(),
+            op,
+            value,
+        }
+    }
+
+    #[test]
+    fn eval_where_eq_matches_when_attribute_present() {
+        let mut attrs = HashMap::new();
+        attrs.insert("status".to_string(), serde_json::json!("active"));
+        let clause = wc("status", WhereOp::Eq, serde_json::json!("active"));
+        assert!(eval_where_clause(&clause, &attrs));
+    }
+
+    #[test]
+    fn eval_where_eq_rejects_when_value_differs() {
+        let mut attrs = HashMap::new();
+        attrs.insert("status".to_string(), serde_json::json!("inactive"));
+        let clause = wc("status", WhereOp::Eq, serde_json::json!("active"));
+        assert!(!eval_where_clause(&clause, &attrs));
+    }
+
+    #[test]
+    fn eval_where_missing_attribute_fails_closed() {
+        let attrs = HashMap::new();
+        let clause = wc("status", WhereOp::Eq, serde_json::json!("active"));
+        assert!(!eval_where_clause(&clause, &attrs));
+    }
+
+    #[test]
+    fn eval_where_neq_against_missing_attribute_passes() {
+        let attrs = HashMap::new();
+        let clause = wc("status", WhereOp::Neq, serde_json::json!("inactive"));
+        // Field absent => "not equal to non-null literal" is true.
+        assert!(eval_where_clause(&clause, &attrs));
+    }
+
+    #[test]
+    fn eval_where_numeric_ordering() {
+        let mut attrs = HashMap::new();
+        attrs.insert("age".to_string(), serde_json::json!(30));
+        assert!(eval_where_clause(
+            &wc("age", WhereOp::Gt, serde_json::json!(25)),
+            &attrs
+        ));
+        assert!(eval_where_clause(
+            &wc("age", WhereOp::Gte, serde_json::json!(30)),
+            &attrs
+        ));
+        assert!(eval_where_clause(
+            &wc("age", WhereOp::Lt, serde_json::json!(40)),
+            &attrs
+        ));
+        assert!(eval_where_clause(
+            &wc("age", WhereOp::Lte, serde_json::json!(30)),
+            &attrs
+        ));
+        assert!(!eval_where_clause(
+            &wc("age", WhereOp::Lt, serde_json::json!(10)),
+            &attrs
+        ));
+    }
+
+    #[test]
+    fn eval_where_clauses_anded_together() {
+        let mut attrs = HashMap::new();
+        attrs.insert("status".to_string(), serde_json::json!("active"));
+        attrs.insert("age".to_string(), serde_json::json!(30));
+
+        let clauses = vec![
+            wc("status", WhereOp::Eq, serde_json::json!("active")),
+            wc("age", WhereOp::Gt, serde_json::json!(18)),
+        ];
+        assert!(eval_where_clauses(&clauses, &attrs));
+
+        let clauses_one_fails = vec![
+            wc("status", WhereOp::Eq, serde_json::json!("active")),
+            wc("age", WhereOp::Gt, serde_json::json!(40)),
+        ];
+        assert!(!eval_where_clauses(&clauses_one_fails, &attrs));
+    }
+
+    #[test]
+    fn eval_where_clauses_empty_list_matches() {
+        let attrs = HashMap::new();
+        assert!(eval_where_clauses(&[], &attrs));
+    }
+
+    #[test]
+    fn ilike_match_handles_wildcards_case_insensitively() {
+        assert!(ilike_match("hello world", "%WORLD%"));
+        assert!(ilike_match("alice@example.com", "%@example.com"));
+        assert!(ilike_match("alice", "a_ice"));
+        assert!(!ilike_match("alice", "bob"));
+    }
+
+    #[test]
+    fn json_contains_handles_objects_and_arrays() {
+        let haystack = serde_json::json!({"a": 1, "b": {"c": 2}});
+        assert!(json_contains(
+            &haystack,
+            &serde_json::json!({"a": 1})
+        ));
+        assert!(json_contains(
+            &haystack,
+            &serde_json::json!({"b": {"c": 2}})
+        ));
+        assert!(!json_contains(
+            &haystack,
+            &serde_json::json!({"b": {"c": 3}})
+        ));
+    }
+
+    #[test]
+    fn pubsub_event_entity_type_filter_matches_target() {
+        // Simulate the gate logic the SSE handler applies before
+        // executing the WHERE re-check. We construct a PubSubEvent and
+        // assert that the entity_type comparison produces the expected
+        // include/drop decision.
+        let target = "users".to_string();
+        let matching = PubSubEvent {
+            channel: "entity:users".into(),
+            event: "updated".into(),
+            entity_type: Some("users".into()),
+            entity_id: Some(uuid::Uuid::new_v4().to_string()),
+            changed: vec!["email".into()],
+            tx_id: 1,
+            payload: None,
+        };
+        let other = PubSubEvent {
+            channel: "entity:orders".into(),
+            event: "updated".into(),
+            entity_type: Some("orders".into()),
+            entity_id: Some(uuid::Uuid::new_v4().to_string()),
+            changed: vec!["total".into()],
+            tx_id: 2,
+            payload: None,
+        };
+
+        let pass = matches!(matching.entity_type.as_deref(), Some(et) if et == target);
+        let drop = matches!(other.entity_type.as_deref(), Some(et) if et == target);
+        assert!(pass, "matching entity_type should pass the gate");
+        assert!(!drop, "non-matching entity_type should be dropped");
+    }
+
+    #[test]
+    fn parse_darshan_ql_extracts_target_entity_type() {
+        // Confirm the shape the subscribe handler relies on: the parsed
+        // QueryAST exposes the target entity_type and an iterable list
+        // of WhereClauses.
+        let q = serde_json::json!({
+            "type": "users",
+            "$where": [
+                { "attribute": "status", "op": "Eq", "value": "active" }
+            ]
+        });
+        let ast = query::parse_darshan_ql(&q).expect("parses");
+        assert_eq!(ast.entity_type, "users");
+        assert_eq!(ast.where_clauses.len(), 1);
+        assert_eq!(ast.where_clauses[0].attribute, "status");
+        assert!(matches!(ast.where_clauses[0].op, WhereOp::Eq));
     }
 }

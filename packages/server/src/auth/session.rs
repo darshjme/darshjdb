@@ -580,6 +580,29 @@ impl SessionManager {
         Ok(sessions)
     }
 
+    /// List active (non-revoked, non-expired) sessions across **all**
+    /// users, most-recent first, up to `limit` rows.
+    ///
+    /// Used by the admin dashboard to surface currently-live sessions
+    /// system-wide. The query is clamped to a reasonable upper bound so
+    /// a malicious or buggy caller cannot scan the entire sessions
+    /// table in one shot.
+    pub async fn list_active(&self, limit: i64) -> Result<Vec<SessionRecord>, AuthError> {
+        let clamped: i64 = limit.clamp(1, 500);
+        let sessions: Vec<SessionRecord> = sqlx::query_as(
+            "SELECT session_id, user_id, device_fingerprint, ip, user_agent,
+                    created_at, revoked, refresh_token_hash, refresh_expires_at
+             FROM sessions
+             WHERE revoked = false AND refresh_expires_at > NOW()
+             ORDER BY created_at DESC
+             LIMIT $1",
+        )
+        .bind(clamped)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(sessions)
+    }
+
     /// Validate an access token and build an [`AuthContext`].
     ///
     /// This is the primary entry point used by middleware. In addition to
