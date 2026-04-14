@@ -842,6 +842,51 @@ mod tests {
         assert_eq!(user.entity_count, 1);
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_set_triples_do_not_deadlock() {
+        // Nyquist audit R1.10: concurrent-access coverage.
+        // Spawn 8 tasks against one SqliteStore (which is Clone via
+        // internal Arc), each committing 20 triples. Join all and
+        // assert 160 rows land. Proves the Mutex<Connection> +
+        // spawn_blocking bridge doesn't deadlock and the IMMEDIATE
+        // transaction serializes cleanly under contention.
+        let store = SqliteStore::open(":memory:").expect("open");
+
+        let mut tasks = Vec::with_capacity(8);
+        for _ in 0..8 {
+            let store = store.clone();
+            tasks.push(tokio::spawn(async move {
+                let tx_id = store.next_tx_id().await.expect("next_tx_id");
+                let entity = Uuid::new_v4();
+                let mut batch = Vec::with_capacity(20);
+                for i in 0..20 {
+                    batch.push(sample_triple(
+                        entity,
+                        &format!("attr/{i}"),
+                        serde_json::json!(format!("v-{i}")),
+                    ));
+                }
+                store.set_triples(tx_id, &batch).await.expect("set_triples");
+                entity
+            }));
+        }
+
+        let mut entities = Vec::with_capacity(8);
+        for t in tasks {
+            entities.push(t.await.expect("task join"));
+        }
+
+        // Verify each of the 8 entities has exactly 20 triples visible,
+        // totalling 160 rows.
+        let mut total = 0usize;
+        for e in &entities {
+            let triples = store.get_entity(*e).await.expect("get_entity");
+            assert_eq!(triples.len(), 20, "entity {e} should have 20 triples");
+            total += triples.len();
+        }
+        assert_eq!(total, 160, "8 tasks * 20 triples = 160 rows");
+    }
+
     #[tokio::test]
     async fn get_schema_infers_entity_types() {
         let store = SqliteStore::open(":memory:").expect("open");
