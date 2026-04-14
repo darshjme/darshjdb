@@ -1627,6 +1627,7 @@ dependencies = [
  "sha3",
  "sqlx",
  "thiserror 2.0.18",
+ "tiktoken-rs",
  "tokio",
  "tokio-stream",
  "tokio-tungstenite",

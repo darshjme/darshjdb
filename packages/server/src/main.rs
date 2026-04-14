@@ -152,6 +152,16 @@ async fn main() -> Result<()> {
         })?;
     tracing::info!("anchor schema ensured (anchor_receipts table)");
 
+    // Slice 14/30 — ensure agent memory tables (sessions + entries + facts)
+    // so the context builder / memory API can write on first request.
+    ddb_server::agent_memory::ensure_agent_memory_schema(&pool)
+        .await
+        .map_err(|e| {
+            tracing::error!("Failed to ensure agent memory schema: {e}");
+            ddb_server::error::DarshJError::Database(e)
+        })?;
+    tracing::info!("agent memory schema ensured (sessions + entries + facts tables)");
+
     sqlx::query("SELECT pg_advisory_unlock(42)")
         .execute(&pool)
         .await

@@ -64,6 +64,9 @@ ethers-core = { workspace = true, optional = true }
 ddb-cache = { path = "../cache" }
 ddb-cache-server = { path = "../cache-server" }
 
+# Slice 12/13 — agent memory subsystem (context token counting).
+tiktoken-rs.workspace = true
+
 [features]
 default = []
 # Enable IPFS-backed audit anchoring via `ipfs-api-backend-hyper`.
