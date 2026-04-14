@@ -351,6 +351,7 @@ async fn main() -> Result<()> {
         pubsub: pubsub_engine.clone(),
         live_queries: live_query_manager,
         change_feed,
+        subscription_snapshots: Arc::new(dashmap::DashMap::new()),
     };
 
     tracing::info!("sync engine initialized");
