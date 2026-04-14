@@ -39,6 +39,58 @@ Five years later, it absorbs ideas from 8 different systems (PostgreSQL, GraphDB
 
 ---
 
+## Agent Memory: Unlimited LLM Context
+
+DarshJDB ships a **4-tier agent memory model** that gives any LLM agent (Claude, GPT, Gemini, open-source) effectively unlimited working memory — without shelling out to Pinecone, Weaviate, Qdrant, or a bespoke MCP memory server.
+
+| Tier    | Storage                               | Purpose                                                     | Latency |
+| ------- | ------------------------------------- | ----------------------------------------------------------- | ------- |
+| **T0**  | In-process DashMap (L1 cache)         | Hot working set — current turn, active scratchpad           | <1ms    |
+| **T1**  | Triple store + tsvector               | Session episodic memory — recent turns, structured facts   | <10ms   |
+| **T2**  | pgvector HNSW (semantic index)        | Long-term semantic recall — embeddings of past interactions | <50ms   |
+| **T3**  | Merkle-chained audit log              | Immutable episode archive — cryptographically verifiable    | <100ms  |
+
+Each tier promotes and demotes automatically based on access frequency, recency, and semantic relevance to the current query. No external services. No per-token pricing. One Rust binary.
+
+```python
+from darshjdb import DarshJDB
+
+db = DarshJDB("http://localhost:7700")
+db.signin(email="agent@example.com", password="...")
+
+# Store a turn — auto-routes to T0, writes through to T1/T2
+db.agent.remember(session="chat-123", role="user", content="Book me a flight to Tokyo next Friday")
+
+# Recall by semantic similarity across all tiers
+memories = db.agent.recall(session="chat-123", query="travel plans", limit=10)
+
+# Audit-verifiable episode log
+episodes = db.agent.episodes(session="chat-123", verify_chain=True)
+```
+
+---
+
+## Redis Replacement
+
+DarshJDB's `ddb-cache` crate provides a **drop-in Redis-compatible key/value + data-structure layer** backed by the same binary. Hashes, lists, sorted sets, bloom filters, HyperLogLog — all native, all persistent, all without running a separate Redis process.
+
+| Operation            | Redis           | DarshJDB (`ddb-cache`)     |
+| -------------------- | --------------- | -------------------------- |
+| `GET` / `SET`        | Yes             | Yes                        |
+| Hashes (`HSET`)      | Yes             | Yes                        |
+| Lists (`LPUSH`)      | Yes             | Yes                        |
+| Sorted sets (`ZADD`) | Yes             | Yes                        |
+| Bloom filters        | RedisBloom mod  | Native                     |
+| HyperLogLog          | Yes             | Native                     |
+| Pub/Sub              | Yes             | Yes (WebSocket + SSE)      |
+| TTL / expiry         | Yes             | Yes (background reaper)    |
+| Persistence          | RDB + AOF       | Postgres write-through     |
+| Process              | Separate daemon | Same binary as the DB      |
+
+One fewer service to run. One fewer service to monitor. One fewer service to secure.
+
+---
+
 ## Quick Start
 
 ```bash

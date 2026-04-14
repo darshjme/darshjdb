@@ -1,0 +1,23 @@
+DarshJDB
+Copyright © 2024–2026 Darshankumar Joshi
+Navsari, Gujarat, India
+
+CEO, GraymatterOnline LLP
+CTO, KnowAI
+https://darshj.ai | https://github.com/darshjme
+
+Licensed under the MIT License. See LICENSE.
+
+This software is the original creation of Darshankumar Joshi.
+The name "DarshJDB", the triple-store architecture over PostgreSQL,
+the DarshanQL query language, the 4-tier agent memory model,
+the Merkle audit chain design, and all associated SDKs are original works.
+
+Third-party dependencies are acknowledged in their respective Cargo.lock
+and package-lock.json files. All dependencies are used under their own
+open-source licenses.
+
+"karmanye vadhikaraste ma phaleshu kadachana" — Bhagavad Gita 2.47
+You have the right to work, but never to the fruit of work.
+Build because building is dharma. Open-source because knowledge locked away
+is knowledge wasted.

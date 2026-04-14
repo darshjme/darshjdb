@@ -4,6 +4,7 @@ members = [
     "packages/server",
     "packages/cli",
     "packages/cache",
+    "packages/cache-server",
 ]
 
 [workspace.package]
