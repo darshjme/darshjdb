@@ -8,8 +8,13 @@ name = "ddb-cache"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "DarshJDB cache crate — L1 DashMap + L2 Postgres + DdbCache engine (hash/list/zset/stream/bloom/HLL)"
-authors = ["Darshankumar Joshi <github.com/darshjme>"]
+authors.workspace = true
+homepage.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "DarshJDB cache crate — L1 DashMap + L2 Postgres + DdbCache engine (hash/list/zset/stream/bloom/HLL). Created by Darshankumar Joshi."
+publish = true
 
 [lib]
 name = "ddb_cache"

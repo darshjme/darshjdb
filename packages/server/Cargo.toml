@@ -3,7 +3,13 @@ name = "ddb-server"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "DarshJDB server — triple store, DarshJQL query engine, and reactive tracking"
+authors.workspace = true
+homepage.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "DarshJDB server — triple store, DarshJQL query engine, and reactive tracking. Created by Darshankumar Joshi."
+publish = true
 
 [dependencies]
 tokio.workspace = true
@@ -48,6 +54,9 @@ aws-credential-types.workspace = true
 aws-types.workspace = true
 async-trait.workspace = true
 csv.workspace = true
+config.workspace = true
+dotenvy.workspace = true
+dirs.workspace = true
 
 # Phase 10 — Observability (slice 29/30): Prometheus metrics + JSON logging + request_id.
 metrics.workspace = true
@@ -84,7 +93,6 @@ ddb-agent-memory = { path = "../agent-memory" }
 
 # Embedded Postgres (slice 18/30) — optional, gated by `embedded-db` feature
 # so default builds don't pull the ~40MB Postgres binary download layer.
-dirs.workspace = true
 pg_embed = { workspace = true, optional = true }
 portpicker = { workspace = true, optional = true }
 
