@@ -298,9 +298,11 @@ impl Store for SqliteStore {
                     .map_err(map_rq)?;
 
                 for t in &owned {
-                    let expires_at = t
-                        .ttl_seconds
-                        .map(|s| (Utc::now() + chrono::Duration::seconds(s)).to_rfc3339());
+                    let expires_at = t.ttl_seconds.map(|s| {
+                        (Utc::now() + chrono::Duration::seconds(s))
+                            .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+                            .to_string()
+                    });
                     let value_str = serde_json::to_string(&t.value)
                         .map_err(DarshJError::Serialization)?;
                     stmt.execute(params![
@@ -693,6 +695,43 @@ mod tests {
         assert!(
             triples.is_empty(),
             "expired TTL triple must be hidden, got {triples:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn ttl_triples_hidden_near_expiry() {
+        // Regression test for MAJOR-1: writer and reader TTL timestamp
+        // formats must agree. With ttl_seconds=1, the triple must be
+        // visible immediately and hidden after a >1s sleep. This would
+        // have failed when the writer emitted `+00:00`-suffixed RFC3339
+        // against a reader comparing `Z`-suffixed strftime output,
+        // because '+' (0x2B) < 'Z' (0x5A) lexicographically.
+        let store = SqliteStore::open(":memory:").expect("open");
+        let entity = Uuid::new_v4();
+        let tx_id = store.next_tx_id().await.unwrap();
+        store
+            .set_triples(
+                tx_id,
+                &[TripleInput {
+                    entity_id: entity,
+                    attribute: "session/token".to_string(),
+                    value: serde_json::json!("live-then-expired"),
+                    value_type: ValueType::String as i16,
+                    ttl_seconds: Some(1),
+                }],
+            )
+            .await
+            .unwrap();
+
+        let before = store.get_entity(entity).await.unwrap();
+        assert_eq!(before.len(), 1, "triple must be visible before TTL expiry");
+
+        tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
+
+        let after = store.get_entity(entity).await.unwrap();
+        assert!(
+            after.is_empty(),
+            "triple must be hidden after TTL expiry, got {after:?}"
         );
     }
 
