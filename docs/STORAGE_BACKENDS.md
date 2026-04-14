@@ -57,7 +57,7 @@ Two adapters are shipped in v0.3.1:
 | Adapter | Path | Status |
 |---|---|---|
 | `PgStore` | `store/pg.rs` | **Production.** Thin wrapper over `PgTripleStore` — delegates every method. Not rewritten. |
-| `SqliteStore` | `store/sqlite.rs` | **Compile-time stub.** Behind `sqlite-store` feature. Every method returns `NotYetImplemented`. Its existence forces the trait boundary to be real. |
+| `SqliteStore` | `store/sqlite.rs` | **Compile-time stub.** Behind `sqlite-store` feature. Every method returns `DarshJError::Internal("... not yet implemented ...")`. Its existence forces the trait boundary to be real. |
 
 Default build: `cargo check -p ddb-server` — Postgres only.
 Trait validation build: `cargo check -p ddb-server --features sqlite-store`.

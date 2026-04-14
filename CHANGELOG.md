@@ -50,14 +50,17 @@ primitives that v0.3.2 will build on.
 ### Added — Architecture wave (PR #6)
 
 - **`Store` trait** at `packages/server/src/store/`: defines the
-  pluggable storage boundary (`get_triple`, `put_triple`, `delete_triple`,
-  `query_pattern`, `bulk_ingest`, ...). `PgStore` is a full delegation
-  adapter around the existing `PgTripleStore` and is the default.
+  pluggable storage boundary (`backend_name`, `set_triples`,
+  `get_entity`, `retract`, `query`, `get_schema`, `next_tx_id`,
+  `begin_tx`). `PgStore` is a full delegation adapter around the
+  existing `PgTripleStore` and is the default.
 - **`SqliteStore` compile-time stub** gated behind `--features
   sqlite-store` (rusqlite 0.31 bundled). Every method returns
-  `StoreError::NotYetImplemented`; the stub exists to verify the trait
-  boundary before v0.3.2 implements the real schema. This is NOT a
-  functional SQLite backend — DarshJDB v0.3.1 still requires PostgreSQL.
+  `DarshJError::Internal("... not yet implemented ...")`
+  (see `packages/server/src/store/sqlite.rs`); the stub exists to
+  verify the trait boundary before v0.3.2 implements the real
+  schema. This is NOT a functional SQLite backend — DarshJDB v0.3.1
+  still requires PostgreSQL.
 - **`docker-compose.ha.yml`** production HA stack: Patroni 3-node +
   etcd + HAProxy + pgBouncer + WAL-G + MinIO + 3 DDB replicas + nginx +
   Prometheus + Grafana. Companion configs under `deploy/ha/`.
