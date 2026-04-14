@@ -5,6 +5,95 @@ All notable changes to DarshJDB will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.1] - 2026-04-15 — Architecture Wave
+
+Three feature branches (PR #3, #5, #6) that spent the v0.3.0 release cycle
+in-flight now land together as the architecture wave. v0.3.1 does not
+change the DDB runtime requirements (PostgreSQL 16 is still mandatory);
+it ships the trait boundaries, typed config surface, and cluster
+primitives that v0.3.2 will build on.
+
+### Added — Slice 17 · Typed `DdbConfig` hierarchy (PR #3)
+
+- **13-subsystem strongly-typed config tree**: `server`, `database`,
+  `auth`, `cors`, `dev`, `cache`, `embedding`, `llm`, `storage`, `schema`,
+  `anchor`, `memory`, `rules` — each with its own Rust struct and
+  defaults.
+- **Layered loading**: defaults → `config.toml` → `DDB__*` / `DARSH__*`
+  env vars, decoded via `config 0.15` with the `convert-case` feature so
+  enum fields deserialise from kebab/camel/snake transparently.
+- **`Secret<T>` wrapper** redacts sensitive fields in `Debug` output
+  (JWT secrets, SMTP passwords, API keys) with `<redacted>`.
+- **Backward compatibility**: legacy flat env vars still work; the typed
+  loader only takes priority when both are set, and `DDB_RULES_FILE`
+  continues to override `cfg.rules.file_path` when present.
+- **8 config unit tests** green; `cfg.server.log_level` seeds `RUST_LOG`
+  before tracing init so log levels land correctly.
+
+### Added — Cluster module · Horizontal scaling baseline (PR #5)
+
+- **`ddb_server::cluster`**: new top-level module holding all
+  multi-replica primitives.
+- **Advisory-lock leader election** via `pg_try_advisory_lock` wrapped
+  in `spawn_singleton_task` + `spawn_singleton_supervisor`: only one
+  replica runs each singleton (e.g. `LOCK_EXPIRY_SWEEPER`) at any time;
+  failover is automatic when the leader's Postgres session drops.
+- **Cross-replica WS fanout** via `LISTEN ddb_changes`: the extracted
+  `notify_listener` task auto-reconnects on listener-session drop and
+  feeds `ChangeEvent` into the local broadcast channel, so WebSocket
+  subscribers attached to any replica see mutations from any other.
+- **`/cluster/status` endpoint** alongside `/health` and `/metrics` —
+  no auth required, exposes `node_id`, current leader, held locks.
+- **9 lib tests + 6 integration tests** covering lock acquisition,
+  supervisor restart, and notify reconnect.
+
+### Added — Architecture wave (PR #6)
+
+- **`Store` trait** at `packages/server/src/store/`: defines the
+  pluggable storage boundary (`get_triple`, `put_triple`, `delete_triple`,
+  `query_pattern`, `bulk_ingest`, ...). `PgStore` is a full delegation
+  adapter around the existing `PgTripleStore` and is the default.
+- **`SqliteStore` compile-time stub** gated behind `--features
+  sqlite-store` (rusqlite 0.31 bundled). Every method returns
+  `StoreError::NotYetImplemented`; the stub exists to verify the trait
+  boundary before v0.3.2 implements the real schema. This is NOT a
+  functional SQLite backend — DarshJDB v0.3.1 still requires PostgreSQL.
+- **`docker-compose.ha.yml`** production HA stack: Patroni 3-node +
+  etcd + HAProxy + pgBouncer + WAL-G + MinIO + 3 DDB replicas + nginx +
+  Prometheus + Grafana. Companion configs under `deploy/ha/`.
+- **`docs/HORIZONTAL_SCALING.md`** full guide: Patroni failover, WAL-G
+  PITR restore runbook, pgBouncer tuning, the cluster module reference
+  (leader election, singleton supervisor, notify fanout), live-readiness
+  checklist.
+- **`docs/STORAGE_BACKENDS.md`**: honest portability assessment and
+  v0.3.2/v0.4 roadmap for the SqliteStore + DarshanQL dialect work.
+- **NOT FOR PRODUCTION** banner on the single-node `docker-compose.yml`.
+- **oauth2 5.0.0 stable** (up from 5.0.0-rc.1); `DDB_WATCH` dev shim
+  removed; `DARSH_CACHE_PASSWORD` now required for the cache server.
+
+### Fixed
+
+- **`notify` platform feature**: the v0.3.0 followup CI fix removed the
+  explicit `macos_fsevent` feature that broke Linux builds. v0.3.1
+  keeps `notify = "7"` with default features so each platform's backend
+  is auto-selected.
+- **Workspace version bumped `0.3.0` → `0.3.1`** across all crates.
+
+### Known limitations — will land in v0.3.2
+
+- **PostgreSQL is still required.** The `Store` trait boundary is in
+  place, but `SqliteStore` is a compile-time stub only.
+- **DarshanQL emits Postgres-specific SQL** (JSONB operators, UUID
+  casts, `DISTINCT ON`, recursive CTEs, `make_interval`). A
+  `SqlDialect` abstraction is required before the SQLite backend can
+  execute real queries.
+- **Function runtime still uses subprocess `ProcessRuntime`** — the
+  embedded Lua / mlua 0.10 runtime is deferred to v0.3.2.
+- **4 `require_admin_auth_*` tests remain `#[ignore]`** pending a
+  real testcontainers harness; 15 pre-existing baseline failures in
+  `views/automations/formulas/graph/plugins/storage/tables` likewise
+  marked `#[ignore]`.
+
 ## [0.3.0] - 2026-04-14 — Grand Transformation
 
 DarshJDB becomes a single self-contained Rust binary that replaces PostgreSQL + Redis + Pinecone + LangChain Memory + MCP simultaneously. 63 commits, 28 parallel slice branches merged under the Vyasa orchestrator dispatch.
