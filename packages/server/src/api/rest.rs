@@ -685,6 +685,8 @@ pub fn build_router(state: AppState) -> Router {
             "/schema/tables/{table}/migrations",
             get(schema_migration_history),
         )
+        // -- Time-series (Phase 5.1, TimescaleDB-backed) -------------------
+        .merge(super::ts::ts_routes())
         // -- Batch / Pipeline ---------------------------------------------
         .route("/batch", post(super::batch::batch_handler))
         .route(

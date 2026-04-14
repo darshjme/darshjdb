@@ -52,9 +52,11 @@ services:
     security_opt:
       - no-new-privileges:true
 
-  # ── PostgreSQL 16 with pgvector ──────────────────────────────────────
+  # ── PostgreSQL 16 with TimescaleDB + pgvector ────────────────────────
+  # Base image: timescale/timescaledb-ha:pg16-latest (ships with timescaledb,
+  # pgvector, postgis and pg_cron preloaded — covers the full DarshJDB stack).
   postgres:
-    image: pgvector/pgvector:pg16
+    image: timescale/timescaledb-ha:pg16-latest
     environment:
       POSTGRES_USER: darshan
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-darshan}
