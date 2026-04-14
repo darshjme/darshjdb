@@ -92,7 +92,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Instant;
 
-use mlua::{Function, Lua, LuaSerdeExt, Nil, Table, Value as LuaValue};
+use mlua::{ChunkMode, Function, Lua, LuaSerdeExt, Nil, Table, Value as LuaValue};
 use serde_json::Value;
 use tokio::sync::{Mutex, Semaphore};
 use tracing::{debug, error, info, instrument, warn};
@@ -159,6 +159,22 @@ impl MluaRuntime {
         let guard = self.lua.lock().await;
         guard
             .load(chunk)
+            .set_mode(ChunkMode::Text)
+            .exec()
+            .map_err(|e| RuntimeError::Internal(format!("lua load failed: {e}")))?;
+        Ok(())
+    }
+
+    /// Test helper: load a raw byte buffer with no ChunkMode restriction.
+    /// Used by `sandbox_rejects_bytecode_chunk` to confirm the production
+    /// path (which always pins `ChunkMode::Text`) refuses bytecode. Not
+    /// exposed outside the test build.
+    #[cfg(test)]
+    async fn load_bytes_as_text(&self, bytes: &[u8]) -> RuntimeResult<()> {
+        let guard = self.lua.lock().await;
+        guard
+            .load(bytes)
+            .set_mode(ChunkMode::Text)
             .exec()
             .map_err(|e| RuntimeError::Internal(format!("lua load failed: {e}")))?;
         Ok(())
@@ -227,9 +243,16 @@ impl RuntimeBackend for MluaRuntime {
             // Load the chunk. Executing it is expected to produce a global
             // with `function_def.export_name`, matching the shape the JS
             // harness uses (`export const foo = () => ...`).
+            //
+            // `ChunkMode::Text` refuses any chunk whose first byte is the
+            // Lua bytecode marker (`\x1bLua`). Without this, crafted
+            // bytecode could bypass every source-level sandbox check and
+            // hit CVE-class vulnerabilities in the unverified bytecode
+            // loader. F5.
             guard
                 .load(source)
                 .set_name(function_def.file_path.to_string_lossy().into_owned())
+                .set_mode(ChunkMode::Text)
                 .exec()
                 .map_err(|e| RuntimeError::Internal(format!("lua load failed: {e}")))?;
 
@@ -626,5 +649,43 @@ mod tests {
     async fn health_check_passes() {
         let rt = new_runtime();
         rt.health_check().await.unwrap();
+    }
+
+    /// F5 regression: a chunk whose first byte is the Lua bytecode
+    /// marker (`\x1bLua`) must be refused at load time when `ChunkMode`
+    /// is pinned to `Text`. Without this, mlua's auto-detection would
+    /// happily execute crafted bytecode and bypass every source-level
+    /// sandbox check.
+    #[tokio::test]
+    async fn sandbox_rejects_bytecode_chunk() {
+        // Produce a real Lua 5.4 bytecode blob by using a fresh,
+        // unsandboxed `Lua` instance and dumping a trivial function.
+        // The dump must start with `\x1bLua`, which is the marker
+        // `ChunkMode::Text` refuses.
+        let scratch = mlua::Lua::new();
+        let func: mlua::Function = scratch
+            .load("return 1")
+            .into_function()
+            .expect("compile ok");
+        let bytecode: Vec<u8> = func.dump(true);
+        assert!(
+            bytecode.starts_with(b"\x1bLua"),
+            "expected bytecode marker, got {:?}",
+            &bytecode[..bytecode.len().min(8)]
+        );
+
+        let rt = new_runtime();
+        let err = rt
+            .load_bytes_as_text(&bytecode)
+            .await
+            .expect_err("bytecode chunk must be rejected");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("attempt to load a binary")
+                || msg.contains("bytecode")
+                || msg.contains("text chunk")
+                || msg.to_lowercase().contains("binary"),
+            "expected bytecode-rejection error, got: {msg}"
+        );
     }
 }
