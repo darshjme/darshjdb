@@ -38,7 +38,7 @@ use super::notifications;
 ///
 /// Delegates to the session manager for JWT validation. Returns an
 /// `ApiError` if the token is missing or invalid.
-fn extract_user_id(headers: &HeaderMap, state: &AppState) -> Result<Uuid, ApiError> {
+async fn extract_user_id(headers: &HeaderMap, state: &AppState) -> Result<Uuid, ApiError> {
     let token = extract_bearer_token(headers)?;
     let ip = headers
         .get("x-forwarded-for")
@@ -55,6 +55,7 @@ fn extract_user_id(headers: &HeaderMap, state: &AppState) -> Result<Uuid, ApiErr
     let auth_ctx = state
         .session_manager
         .validate_token(&token, ip, ua, dfp)
+        .await
         .map_err(|e| ApiError::unauthenticated(format!("Invalid token: {e}")))?;
     Ok(auth_ctx.user_id)
 }
@@ -91,7 +92,7 @@ pub async fn comment_create(
     headers: HeaderMap,
     axum::Json(input): axum::Json<CreateCommentInput>,
 ) -> Result<Response, ApiError> {
-    let user_id = extract_user_id(&headers, &state)?;
+    let user_id = extract_user_id(&headers, &state).await?;
 
     let comment = comments::create_comment(&state.pool, entity_id, user_id, &input)
         .await
@@ -151,7 +152,7 @@ pub async fn comment_list(
     Path((_entity, entity_id)): Path<(String, Uuid)>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
-    let _user_id = extract_user_id(&headers, &state)?;
+    let _user_id = extract_user_id(&headers, &state).await?;
 
     let threads = comments::list_comments(&state.pool, entity_id)
         .await
@@ -167,7 +168,7 @@ pub async fn comment_update(
     headers: HeaderMap,
     axum::Json(input): axum::Json<UpdateCommentInput>,
 ) -> Result<Response, ApiError> {
-    let user_id = extract_user_id(&headers, &state)?;
+    let user_id = extract_user_id(&headers, &state).await?;
 
     let comment = comments::update_comment(&state.pool, comment_id, user_id, &input)
         .await
@@ -190,7 +191,7 @@ pub async fn comment_delete(
     Path(comment_id): Path<Uuid>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
-    let user_id = extract_user_id(&headers, &state)?;
+    let user_id = extract_user_id(&headers, &state).await?;
 
     comments::delete_comment(&state.pool, comment_id, user_id)
         .await
@@ -227,7 +228,7 @@ pub async fn activity_for_record(
     Query(params): Query<ActivityParams>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
-    let _user_id = extract_user_id(&headers, &state)?;
+    let _user_id = extract_user_id(&headers, &state).await?;
     let limit = params.limit.unwrap_or(50).min(500);
 
     let entries = activity::get_activity(&state.pool, entity_id, limit)
@@ -243,7 +244,7 @@ pub async fn activity_query(
     Query(params): Query<ActivityParams>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
-    let auth_user_id = extract_user_id(&headers, &state)?;
+    let auth_user_id = extract_user_id(&headers, &state).await?;
     let limit = params.limit.unwrap_or(50).min(500);
 
     let user_id = params.user.unwrap_or(auth_user_id);
@@ -271,7 +272,7 @@ pub async fn notifications_list(
     Query(params): Query<NotificationParams>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
-    let user_id = extract_user_id(&headers, &state)?;
+    let user_id = extract_user_id(&headers, &state).await?;
     let unread_only = params.unread_only.unwrap_or(false);
 
     let notifs = notifications::get_notifications(&state.pool, user_id, unread_only)
@@ -291,7 +292,7 @@ pub async fn notification_mark_read(
     Path(notification_id): Path<Uuid>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
-    let _user_id = extract_user_id(&headers, &state)?;
+    let _user_id = extract_user_id(&headers, &state).await?;
 
     notifications::mark_read(&state.pool, notification_id)
         .await
@@ -310,7 +311,7 @@ pub async fn notification_mark_all_read(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
-    let user_id = extract_user_id(&headers, &state)?;
+    let user_id = extract_user_id(&headers, &state).await?;
 
     let count = notifications::mark_all_read(&state.pool, user_id)
         .await
@@ -324,7 +325,7 @@ pub async fn notification_unread_count(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
-    let user_id = extract_user_id(&headers, &state)?;
+    let user_id = extract_user_id(&headers, &state).await?;
 
     let count = notifications::unread_count(&state.pool, user_id)
         .await

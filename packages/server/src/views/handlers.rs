@@ -25,7 +25,7 @@ use crate::views::{CreateViewRequest, PgViewStore, ViewStore, ViewUpdate};
 ///
 /// The auth middleware has already validated the JWT and inserted an
 /// `AuthContext` into the request extensions before we reach handlers.
-fn extract_auth(headers: &HeaderMap, state: &AppState) -> Result<AuthContext, ApiError> {
+async fn extract_auth(headers: &HeaderMap, state: &AppState) -> Result<AuthContext, ApiError> {
     let token = headers
         .get(http::header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
@@ -65,6 +65,7 @@ fn extract_auth(headers: &HeaderMap, state: &AppState) -> Result<AuthContext, Ap
     state
         .session_manager
         .validate_token(token, ip, ua, dfp)
+        .await
         .map_err(ApiError::from)
 }
 
@@ -83,7 +84,7 @@ pub async fn create_view(
     headers: HeaderMap,
     axum::Json(body): axum::Json<CreateViewRequest>,
 ) -> Result<Response, ApiError> {
-    let auth = extract_auth(&headers, &state)?;
+    let auth = extract_auth(&headers, &state).await?;
     let store = view_store(&state);
 
     let view = store
@@ -113,7 +114,7 @@ pub async fn list_views(
     headers: HeaderMap,
     Query(params): Query<ListViewsParams>,
 ) -> Result<Response, ApiError> {
-    let _auth = extract_auth(&headers, &state)?;
+    let _auth = extract_auth(&headers, &state).await?;
     let store = view_store(&state);
 
     let entity_type = params
@@ -140,7 +141,7 @@ pub async fn get_view(
     Path(id): Path<Uuid>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
-    let _auth = extract_auth(&headers, &state)?;
+    let _auth = extract_auth(&headers, &state).await?;
     let store = view_store(&state);
 
     let view = store.get_view(id).await.map_err(ApiError::from)?;
@@ -155,7 +156,7 @@ pub async fn update_view(
     headers: HeaderMap,
     axum::Json(body): axum::Json<ViewUpdate>,
 ) -> Result<Response, ApiError> {
-    let _auth = extract_auth(&headers, &state)?;
+    let _auth = extract_auth(&headers, &state).await?;
     let store = view_store(&state);
 
     let view = store.update_view(id, body).await.map_err(ApiError::from)?;
@@ -174,7 +175,7 @@ pub async fn delete_view(
     Path(id): Path<Uuid>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
-    let _auth = extract_auth(&headers, &state)?;
+    let _auth = extract_auth(&headers, &state).await?;
     let store = view_store(&state);
 
     store.delete_view(id).await.map_err(ApiError::from)?;
@@ -208,7 +209,7 @@ pub async fn query_view(
     headers: HeaderMap,
     axum::Json(body): axum::Json<ViewQueryRequest>,
 ) -> Result<Response, ApiError> {
-    let _auth = extract_auth(&headers, &state)?;
+    let _auth = extract_auth(&headers, &state).await?;
     let store = view_store(&state);
     let start = Instant::now();
 

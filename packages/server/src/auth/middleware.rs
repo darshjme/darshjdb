@@ -126,6 +126,7 @@ pub async fn auth_middleware(
         match layer
             .session_manager
             .validate_token(token, &ip, &user_agent, &device_fingerprint)
+            .await
         {
             Ok(ctx) => {
                 request.extensions_mut().insert(ctx);
