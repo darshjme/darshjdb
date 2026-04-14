@@ -55,6 +55,8 @@ use crate::storage::{LocalFsBackend, StorageEngine, StorageError};
 use crate::sync::broadcaster::ChangeEvent;
 use crate::sync::pubsub::{PubSubEngine, PubSubEvent};
 use crate::triple_store::{PgTripleStore, TripleInput, TripleStore};
+// Slice 10: unified DdbCache (L1 DashMap + L2 durable + pub/sub + metrics).
+use ddb_cache::DdbCache;
 
 // ---------------------------------------------------------------------------
 // Application state
@@ -113,6 +115,9 @@ pub struct AppState {
     pub graph_engine: Option<Arc<GraphEngine>>,
     /// Schema registry for SCHEMAFULL/SCHEMALESS/MIXED mode enforcement.
     pub schema_registry: Option<Arc<crate::schema::SchemaRegistry>>,
+    /// Unified two-tier cache (L1 DashMap + L2 durable) with read-through,
+    /// write-through, and Prometheus metrics. Slice 10, Phase 1.3.
+    pub ddb_cache: Arc<DdbCache>,
 }
 
 /// Load OAuth2 provider configurations from environment variables.
@@ -336,6 +341,7 @@ impl AppState {
             parallel_metrics: Arc::new(crate::query::parallel::ParallelMetrics::new()),
             graph_engine: None,
             schema_registry: None,
+            ddb_cache: DdbCache::in_memory(),
         }
     }
 
@@ -417,6 +423,7 @@ impl AppState {
             parallel_metrics: Arc::new(crate::query::parallel::ParallelMetrics::new()),
             graph_engine: None,
             schema_registry: None,
+            ddb_cache: DdbCache::in_memory(),
         }
     }
 }

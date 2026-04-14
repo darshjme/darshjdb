@@ -1445,6 +1445,7 @@ dependencies = [
  "csv",
  "dashmap",
  "data-encoding",
+ "ddb-cache",
  "ethers-core",
  "futures",
  "futures-util",
