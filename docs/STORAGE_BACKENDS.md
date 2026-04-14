@@ -147,3 +147,66 @@ cargo check -p ddb-server --features sqlite-store,embedded-db
 
 If you add a method to `Store` and forget to implement it in *either*
 adapter, the second command fails loudly. That is the point.
+
+---
+
+## SQLite backend status — v0.3.2
+
+As of v0.3.2 the SQLite adapter is **no longer a stub**. The in-tree
+`SqliteStore` (`packages/server/src/store/sqlite.rs`) is a real,
+tested, end-to-end triple store backed by a bundled `rusqlite` build
+with the `json1` extension compiled in. You can now run DarshJDB's
+triple layer without a PostgreSQL server anywhere on the box.
+
+**What ships:**
+
+- **Schema migration** — `SqliteStore::open(path)` applies
+  `migrations/sqlite/001_initial.sql` on every open (idempotent via
+  `CREATE TABLE IF NOT EXISTS` + `INSERT OR IGNORE`). WAL mode is
+  enabled on on-disk databases; `:memory:` is supported for tests.
+- **`set_triples`** — validated, single-transaction batch insert via a
+  prepared statement. Triples are JSON-encoded into a `TEXT` column
+  with a `json_valid()` CHECK constraint so corrupt payloads fail at
+  write time, not read time.
+- **`get_entity`** — `WHERE entity_id = ? AND retracted = 0 AND
+  (expires_at IS NULL OR expires_at > now)`. TTL'd triples disappear
+  from reads without a background sweeper.
+- **`retract`** — logical delete via `UPDATE ... SET retracted = 1`.
+- **`get_schema`** — live schema inference against the triple table,
+  mirroring the Postgres code path. Handles `:db/type` grouping,
+  per-attribute cardinality/required flags, and reference detection.
+- **`next_tx_id`** — monotonic allocation against a single-row
+  `darshan_tx_seq` table using `UPDATE ... RETURNING next_value - 1`
+  (SQLite ≥ 3.35 required — bundled with `rusqlite 0.31`).
+- **`begin_tx`** — stateless marker handle, matching `PgStoreTx`.
+  Real multi-statement `StoreTx` is still deferred (see below).
+
+**What is deliberately NOT in v0.3.2:**
+
+- **`query`** — returns `InvalidQuery` with a clear message pointing
+  at the v0.4 portable IR. DarshanQL still emits Postgres-specific
+  SQL (JSONB operators, `::uuid` casts, `DISTINCT ON`). The SQLite
+  adapter refuses rather than silently returning wrong results.
+- **FTS5** — `migrations/sqlite/001_initial.sql` documents the
+  intended `triples_fts` virtual table layout in a trailing `TODO`
+  block. Deferred to v0.4 with sync triggers.
+- **sqlite-vec** — vector search extension load is v0.4 work.
+- **Multi-statement `StoreTx`** — mirror of the Postgres adapter's
+  stance. Object-safe live transactions across multiple `Store`
+  calls need an owned-connection primitive that's still pending.
+
+**Verification:**
+
+```bash
+# Compiles.
+cargo check -p ddb-server --features sqlite-store
+
+# All 9 sqlite unit tests pass.
+cargo test -p ddb-server --features sqlite-store --lib -- store::sqlite
+```
+
+The test suite covers: in-memory open + migration, single-triple
+round-trip, retraction visibility, 500-triple bulk ingest, TTL
+expiry, input validation, `query` refusal, `begin_tx` marker
+lifecycle, and schema inference across two entities of the same
+type. See `packages/server/src/store/sqlite.rs#tests`.
