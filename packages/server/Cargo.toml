@@ -48,3 +48,17 @@ aws-credential-types.workspace = true
 aws-types.workspace = true
 async-trait.workspace = true
 csv.workspace = true
+dirs.workspace = true
+
+# Embedded Postgres (slice 17/30) — optional, gated by `embedded-db` feature
+pg_embed = { workspace = true, optional = true }
+portpicker = { workspace = true, optional = true }
+
+[features]
+default = []
+# Zero-dep dev mode: run DarshJDB with a bundled Postgres 16 instance.
+# Usage: `cargo run --features embedded-db`
+embedded-db = ["dep:pg_embed", "dep:portpicker"]
+
+[dev-dependencies]
+tempfile = "3"
