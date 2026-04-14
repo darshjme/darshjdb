@@ -19,19 +19,45 @@
 //!
 //! # Security — sandbox
 //!
-//! Before user code runs, [`install_sandbox`] strips the dangerous Lua
-//! globals:
+//! Before user code runs, [`install_sandbox`] strips every known
+//! sandbox-escape path from the Lua environment:
 //!
 //! - `io` — removed entirely (no filesystem).
 //! - `os` — replaced with a whitelisted stub exposing only `time`, `date`,
 //!   `clock`. `os.execute`, `os.exit`, `os.remove`, `os.rename`,
-//!   `os.getenv`, `os.setenv` are unreachable.
-//! - `package` — removed (disables `require`).
+//!   `os.getenv`, `os.setenv` are unreachable. The original `os` table is
+//!   not retained anywhere after install.
+//! - `package` — removed (disables `require` via loader).
+//! - `require` — removed separately (it is a standalone global in 5.4).
+//! - `debug` — removed entirely. `debug.getregistry()._LOADED.io.popen`
+//!   would otherwise reach the original io table despite `globals.io = nil`.
+//!   `getupvalue`/`setupvalue`/`getlocal`/`setlocal` are also banned.
 //! - `dofile`, `loadfile`, `load`, `loadstring` — set to `nil`.
-//! - `debug.sethook` — removed (blocks hook-based VM escapes).
+//! - `string.dump` — set to `nil` (serializes to bytecode, enables
+//!   bytecode-injection attacks).
+//! - `collectgarbage` — removed.
+//! - `rawget`, `rawset`, `rawequal`, `rawlen` — removed so metamethod
+//!   instrumentation cannot be bypassed.
 //!
-//! A sandbox regression test in this module's `tests` submodule asserts
-//! that `os.execute` is unreachable from user code.
+//! Load calls additionally pin [`mlua::ChunkMode::Text`] so crafted
+//! bytecode chunks are refused at load time. User functions execute in a
+//! per-invocation environment table whose `__index` falls through to a
+//! frozen `safe_globals` snapshot held in the Lua registry — mutations
+//! like `string.sub = function() end` land in the fresh env table and are
+//! dropped when the call returns, so they cannot leak cross-tenant.
+//!
+//! # Resource caps
+//!
+//! Each invocation is wrapped in [`tokio::time::timeout`] with a
+//! configurable wall-clock cap (default 5 seconds, sourced from
+//! [`ResourceLimits::cpu_time_ms`]) and dispatches through
+//! [`mlua::Function::call_async`] so yielding user code is cancelled
+//! cleanly. CPU-bound interruption of non-yielding loops still needs
+//! mlua 0.10's `set_interrupt` API and is tracked for v0.3.3.
+//!
+//! NB: the current implementation is single-VM-serialized on one
+//! `Mutex<Lua>` — effective concurrency is 1. A `Pool<Lua>` for real
+//! concurrency is scoped for v0.4.
 //!
 //! # The `ddb.*` API
 //!
@@ -66,7 +92,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Instant;
 
-use mlua::{Lua, LuaSerdeExt, Nil, Table, Value as LuaValue};
+use mlua::{Function, Lua, LuaSerdeExt, Nil, Table, Value as LuaValue};
 use serde_json::Value;
 use tokio::sync::{Mutex, Semaphore};
 use tracing::{debug, error, info, instrument, warn};
@@ -284,38 +310,60 @@ pub fn install_sandbox(lua: &Lua) -> mlua::Result<()> {
     let globals = lua.globals();
 
     // Build a whitelisted `os` table before nuking the original, so the
-    // three safe helpers remain callable.
+    // three safe helpers remain callable. The original `os` table is NOT
+    // retained anywhere after this function returns.
     let safe_os = lua.create_table()?;
     if let Ok(orig_os) = globals.get::<Table>("os") {
-        if let Ok(f) = orig_os.get::<mlua::Function>("time") {
+        if let Ok(f) = orig_os.get::<Function>("time") {
             safe_os.set("time", f)?;
         }
-        if let Ok(f) = orig_os.get::<mlua::Function>("date") {
+        if let Ok(f) = orig_os.get::<Function>("date") {
             safe_os.set("date", f)?;
         }
-        if let Ok(f) = orig_os.get::<mlua::Function>("clock") {
+        if let Ok(f) = orig_os.get::<Function>("clock") {
             safe_os.set("clock", f)?;
         }
     }
     globals.set("os", safe_os)?;
 
-    // Full filesystem I/O — no user code should touch this.
+    // Libraries: fully nil. Do NOT leave any field reachable. CR-01/CR-02.
     globals.set("io", Nil)?;
-
-    // Disable `require` and friends by removing the loader table.
     globals.set("package", Nil)?;
+    // `require` is a SEPARATE global in Lua 5.4 — nilling `package` alone
+    // does not remove it. CR-02.
+    globals.set("require", Nil)?;
+    // Nuke the WHOLE `debug` table. `debug.getregistry()._LOADED.io.popen`
+    // reaches the original io table the registry still holds; `getupvalue`
+    // / `setupvalue` / `getlocal` / `setlocal` allow cross-frame state
+    // mutation. CR-01.
+    globals.set("debug", Nil)?;
 
-    // Kill raw code-loading primitives.
+    // Raw code-loading primitives (also reachable via 5.1-compat shims in
+    // some builds).
     globals.set("dofile", Nil)?;
     globals.set("loadfile", Nil)?;
     globals.set("load", Nil)?;
     globals.set("loadstring", Nil)?;
 
-    // `debug.sethook` is a well-known escape hatch; strip it but leave
-    // the rest of `debug` alone (tracebacks are still useful).
-    if let Ok(debug_tbl) = globals.get::<Table>("debug") {
-        debug_tbl.set("sethook", Nil)?;
+    // `string.dump` serializes a function to bytecode, which combined with
+    // a reconstructed `load()` bypasses the source-level sandbox and can
+    // hit Lua 5.4 CVE-class vulnerabilities in the unverified bytecode
+    // loader. CR-03.
+    if let Ok(string_tbl) = globals.get::<Table>("string") {
+        string_tbl.set("dump", Nil)?;
     }
+
+    // GC introspection leaks memory layout and lets user code force
+    // pressure on the shared VM.
+    globals.set("collectgarbage", Nil)?;
+
+    // Raw accessors bypass __index / __newindex metamethods, which v0.3.3
+    // plans to use on the `ddb` table for audit-log instrumentation. Strip
+    // pre-emptively so the audit hook cannot be side-stepped.
+    globals.set("rawget", Nil)?;
+    globals.set("rawset", Nil)?;
+    globals.set("rawequal", Nil)?;
+    globals.set("rawlen", Nil)?;
 
     Ok(())
 }
