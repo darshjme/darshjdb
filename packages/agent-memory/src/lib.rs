@@ -11,7 +11,7 @@
 // by `tiers::score_entry` using an Ebbinghaus-style forgetting curve
 // plus a log-smoothed access count.
 
-#![forbid(unsafe_code)]
+#![cfg_attr(not(test), forbid(unsafe_code))]
 
 //! DarshJDB agent memory — tiered memory store + pluggable embeddings + LLM summariser.
 
