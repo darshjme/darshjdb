@@ -565,6 +565,30 @@ fn build_per_call_env(lua: &Lua) -> mlua::Result<Table> {
 // ddb.* API stubs
 // ---------------------------------------------------------------------------
 
+/// Hard cap on a single user-log message. `string.rep("x", 100_000_000)` in
+/// a user chunk must not OOM the log pipeline. 64 KiB is ample for human
+/// logs and still bounded.
+const MAX_LOG_MSG_BYTES: usize = 65_536;
+
+/// Truncate a user-supplied log message to [`MAX_LOG_MSG_BYTES`] on a UTF-8
+/// boundary and append an explicit `…[truncated]` marker so consumers can
+/// tell the difference from a legitimately long message. Used by every
+/// `ddb.log.*` registration.
+fn truncate_log(msg: String) -> String {
+    if msg.len() <= MAX_LOG_MSG_BYTES {
+        return msg;
+    }
+    // Walk back to the previous char boundary so we never split a UTF-8
+    // sequence mid-byte.
+    let mut cut = MAX_LOG_MSG_BYTES;
+    while cut > 0 && !msg.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    let mut out = msg[..cut].to_string();
+    out.push_str("…[truncated]");
+    out
+}
+
 /// Register the `ddb` global table exposing the DDB host API to user Lua
 /// code. v0.3.2 ships the **shape** — every function is present and
 /// callable — but most implementations return Lua errors tagged
@@ -606,32 +630,42 @@ pub fn install_ddb_api(lua: &Lua) -> mlua::Result<()> {
     ddb.set("kv", kv)?;
 
     // ddb.log.* — fully live, forwards into tracing.
+    //
+    // MJ-03 + MN-01: user text is passed as a structured `message` field
+    // (not as a captured format identifier) so any embedded newlines are
+    // escaped by the log formatter instead of injecting fake log lines.
+    // All four levels truncate at [`MAX_LOG_MSG_BYTES`] so a malicious
+    // `string.rep("x", 100_000_000)` cannot OOM the log pipeline.
     let log = lua.create_table()?;
     log.set(
         "debug",
         lua.create_function(|_, msg: String| -> mlua::Result<()> {
-            debug!(target: "ddb_functions::mlua::user", "{msg}");
+            let msg = truncate_log(msg);
+            debug!(target: "ddb_functions::mlua::user", message = %msg, "user log");
             Ok(())
         })?,
     )?;
     log.set(
         "info",
         lua.create_function(|_, msg: String| -> mlua::Result<()> {
-            info!(target: "ddb_functions::mlua::user", "{msg}");
+            let msg = truncate_log(msg);
+            info!(target: "ddb_functions::mlua::user", message = %msg, "user log");
             Ok(())
         })?,
     )?;
     log.set(
         "warn",
         lua.create_function(|_, msg: String| -> mlua::Result<()> {
-            warn!(target: "ddb_functions::mlua::user", "{msg}");
+            let msg = truncate_log(msg);
+            warn!(target: "ddb_functions::mlua::user", message = %msg, "user log");
             Ok(())
         })?,
     )?;
     log.set(
         "error",
         lua.create_function(|_, msg: String| -> mlua::Result<()> {
-            error!(target: "ddb_functions::mlua::user", "{msg}");
+            let msg = truncate_log(msg);
+            error!(target: "ddb_functions::mlua::user", message = %msg, "user log");
             Ok(())
         })?,
     )?;
