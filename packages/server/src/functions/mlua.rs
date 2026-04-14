@@ -102,6 +102,43 @@ use super::runtime::{
     ExecutionContext, ExecutionResult, LogEntry, ResourceLimits, RuntimeBackend, RuntimeError,
     RuntimeResult,
 };
+use crate::query::dialect::SqlDialect;
+use crate::query::{parse_darshan_ql, plan_query_with_dialect};
+use crate::store::Store;
+use crate::triple_store::TripleInput;
+
+// ---------------------------------------------------------------------------
+// MluaContext — DDB host handles exposed to user Lua code
+// ---------------------------------------------------------------------------
+
+/// Runtime-side handles the `ddb.*` API uses to reach DarshJDB internals.
+///
+/// Construction of this struct is the moment a Lua function file gains
+/// the ability to call the host store and planner. Without a context,
+/// the `ddb.query`, `ddb.triples.{get,put}`, and `ddb.kv.{get,set}` shims
+/// stay stubbed — that is the safe default for unit tests.
+///
+/// The fields are reference-counted because `install_ddb_api` registers
+/// async closures that capture a clone per host call, and those closures
+/// outlive any single invocation.
+#[derive(Clone)]
+pub struct MluaContext {
+    /// Backend-agnostic triple store used by `ddb.triples.*` and `ddb.query`.
+    pub store: Arc<dyn Store + Send + Sync>,
+
+    /// SQL dialect used by `ddb.query` to plan parser ASTs into the
+    /// matching backend's SQL flavour.
+    pub dialect: Arc<dyn SqlDialect + Send + Sync>,
+}
+
+impl std::fmt::Debug for MluaContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MluaContext")
+            .field("store_backend", &self.store.backend_name())
+            .field("dialect", &self.dialect.name())
+            .finish()
+    }
+}
 
 // ---------------------------------------------------------------------------
 // MluaRuntime
@@ -138,6 +175,16 @@ pub struct MluaRuntime {
     /// NB: single shared VM serializes all invocations. A `Pool<Lua>`
     /// for real concurrency is tracked for v0.4. See MJ-02.
     lua: Arc<Mutex<Lua>>,
+
+    /// Optional host context. When `Some`, the `ddb.query`,
+    /// `ddb.triples.{get,put}` shims are wired live against the store
+    /// and dialect carried in the context. When `None` (test default,
+    /// or production runs that haven't yet provisioned a context), the
+    /// shims raise `NotYetImplemented`.
+    ///
+    /// Carried for diagnostics — the live closures captured a clone at
+    /// `new()` time and do not consult this field after install.
+    _ctx: Option<MluaContext>,
 }
 
 impl MluaRuntime {
@@ -151,7 +198,22 @@ impl MluaRuntime {
     /// compatibility but ignored: the single `Mutex<Lua>` already
     /// serializes every invocation to one in-flight call. See the
     /// type-level doc for the v0.4 pool plan.
-    pub fn new(functions_dir: PathBuf, _max_concurrency: usize) -> RuntimeResult<Self> {
+    pub fn new(functions_dir: PathBuf, max_concurrency: usize) -> RuntimeResult<Self> {
+        Self::new_with_context(functions_dir, max_concurrency, None)
+    }
+
+    /// Construct an embedded Lua runtime with an optional host context.
+    ///
+    /// When `ctx` is `Some`, the `ddb.query`, `ddb.triples.{get,put}`
+    /// shims are wired against the store and dialect in the context.
+    /// When `ctx` is `None`, the shims keep raising `NotYetImplemented`
+    /// — this is the safe default for unit tests that never need to
+    /// reach a real backend.
+    pub fn new_with_context(
+        functions_dir: PathBuf,
+        _max_concurrency: usize,
+        ctx: Option<MluaContext>,
+    ) -> RuntimeResult<Self> {
         // MN-03 + F6: canonicalize and validate the functions directory
         // at construction time. Misconfiguration surfaces immediately at
         // boot instead of as a cryptic per-call error on first invoke.
@@ -177,15 +239,15 @@ impl MluaRuntime {
         let lua = Lua::new();
         install_sandbox(&lua)
             .map_err(|e| RuntimeError::Internal(format!("sandbox install failed: {e}")))?;
-        install_ddb_api(&lua)
+        install_ddb_api(&lua, ctx.as_ref())
             .map_err(|e| RuntimeError::Internal(format!("ddb api install failed: {e}")))?;
-        freeze_safe_globals(&lua).map_err(|e| {
-            RuntimeError::Internal(format!("safe_globals freeze failed: {e}"))
-        })?;
+        freeze_safe_globals(&lua)
+            .map_err(|e| RuntimeError::Internal(format!("safe_globals freeze failed: {e}")))?;
 
         Ok(Self {
             functions_dir,
             lua: Arc::new(Mutex::new(lua)),
+            _ctx: ctx,
         })
     }
 
@@ -243,9 +305,9 @@ impl MluaRuntime {
             .exec()
             .map_err(|e| RuntimeError::Internal(format!("lua load failed: {e}")))?;
 
-        let func: mlua::Function = env.get(export_name).map_err(|e| {
-            RuntimeError::Internal(format!("export `{export_name}` missing: {e}"))
-        })?;
+        let func: mlua::Function = env
+            .get(export_name)
+            .map_err(|e| RuntimeError::Internal(format!("export `{export_name}` missing: {e}")))?;
         let lua_args: LuaValue = guard
             .to_value(&args)
             .map_err(|e| RuntimeError::Internal(format!("args -> lua: {e}")))?;
@@ -260,6 +322,11 @@ impl MluaRuntime {
 
     /// Invoke a global Lua function by name with JSON-serialized args and
     /// return its result converted back to [`Value`]. Test helper.
+    ///
+    /// Uses `call_async` so async host functions registered via
+    /// `create_async_function` (for example the wired `ddb.triples.put`)
+    /// can yield without tripping the "yield from outside a coroutine"
+    /// guard that fires on plain `func.call`.
     #[cfg(test)]
     async fn invoke_global(&self, name: &str, args: Value) -> RuntimeResult<Value> {
         let guard = self.lua.lock().await;
@@ -271,7 +338,8 @@ impl MluaRuntime {
             .to_value(&args)
             .map_err(|e| RuntimeError::Internal(format!("args -> lua failed: {e}")))?;
         let ret: LuaValue = func
-            .call(lua_args)
+            .call_async(lua_args)
+            .await
             .map_err(|e| RuntimeError::Internal(format!("lua call failed: {e}")))?;
         let out: Value = guard
             .from_value(ret)
@@ -339,9 +407,8 @@ impl RuntimeBackend for MluaRuntime {
             // `string.sub = function() end` land on the proxy and are
             // dropped when the call returns; the shared `_G` and the
             // frozen `safe_globals` snapshot are never touched.
-            let env = build_per_call_env(&guard).map_err(|e| {
-                RuntimeError::Internal(format!("per-call env build failed: {e}"))
-            })?;
+            let env = build_per_call_env(&guard)
+                .map_err(|e| RuntimeError::Internal(format!("per-call env build failed: {e}")))?;
 
             // Load the chunk. Executing it is expected to produce a
             // global (in the per-call env) with `function_def.export_name`,
@@ -635,32 +702,85 @@ fn truncate_log(msg: String) -> String {
 }
 
 /// Register the `ddb` global table exposing the DDB host API to user Lua
-/// code. v0.3.2 ships the **shape** — every function is present and
-/// callable — but most implementations return Lua errors tagged
-/// `NotYetImplemented`. Full wiring lands in v0.3.3.
+/// code.
 ///
-/// The only live bindings are `ddb.log.info` / `ddb.log.warn` /
-/// `ddb.log.error` / `ddb.log.debug`, which forward into `tracing`.
-pub fn install_ddb_api(lua: &Lua) -> mlua::Result<()> {
+/// **With an [`MluaContext`]** (production server boot):
+/// - `ddb.query(json_ast)` parses a DarshJQL JSON AST, plans it through
+///   the runtime-selected [`SqlDialect`], dispatches via [`Store::query`],
+///   and returns the row list as a Lua table.
+/// - `ddb.triples.get(entity_id_uuid)` calls [`Store::get_entity`] and
+///   returns the active triples as a Lua array.
+/// - `ddb.triples.put(entity_id_uuid, attribute, value)` allocates a
+///   new tx id via [`Store::next_tx_id`] and calls [`Store::set_triples`]
+///   with a single-triple batch.
+/// - `ddb.kv.{get,set}` stay `NotYetImplemented`. The cache-server
+///   boundary is not exposed to the function runtime in v0.3.2; tracking
+///   for v0.3.2.1.
+///
+/// **Without an [`MluaContext`]** (tests, or runtime constructed before
+/// the host wiring lands): every host call raises a Lua
+/// `NotYetImplemented` runtime error. `ddb.log.*` is always live.
+pub fn install_ddb_api(lua: &Lua, ctx: Option<&MluaContext>) -> mlua::Result<()> {
     let ddb = lua.create_table()?;
 
-    // ddb.query(darshanql_string) -> rows
-    ddb.set(
-        "query",
-        lua.create_function(|_, _q: String| -> mlua::Result<LuaValue> {
-            Err(mlua::Error::RuntimeError(
-                "ddb.query: NotYetImplemented — wires up in v0.3.3".into(),
-            ))
-        })?,
-    )?;
+    // ddb.query(json_ast) -> rows
+    //
+    // Async closure because Store::query is async. mlua's `async`
+    // feature delivers `create_async_function` which the runtime's
+    // `call_async` execute path will await alongside the user code.
+    if let Some(ctx) = ctx {
+        let store = Arc::clone(&ctx.store);
+        let dialect = Arc::clone(&ctx.dialect);
+        ddb.set(
+            "query",
+            lua.create_async_function(move |lua, ast_value: LuaValue| {
+                let store = Arc::clone(&store);
+                let dialect = Arc::clone(&dialect);
+                async move {
+                    // Lua → serde_json::Value (DarshJQL AST input shape).
+                    let ast_json: serde_json::Value = lua.from_value(ast_value).map_err(|e| {
+                        mlua::Error::RuntimeError(format!(
+                            "ddb.query: argument must be a DarshJQL JSON AST table: {e}"
+                        ))
+                    })?;
+                    let ast = parse_darshan_ql(&ast_json).map_err(|e| {
+                        mlua::Error::RuntimeError(format!("ddb.query: parse failed: {e}"))
+                    })?;
+                    let plan = plan_query_with_dialect(&ast, dialect.as_ref()).map_err(|e| {
+                        mlua::Error::RuntimeError(format!("ddb.query: plan failed: {e}"))
+                    })?;
+                    let rows = store.query(&plan).await.map_err(|e| {
+                        mlua::Error::RuntimeError(format!("ddb.query: execute failed: {e}"))
+                    })?;
+                    // serde_json::Value (array of row objects) → Lua.
+                    let rows_value = serde_json::Value::Array(rows);
+                    lua.to_value(&rows_value)
+                }
+            })?,
+        )?;
+    } else {
+        ddb.set(
+            "query",
+            lua.create_function(|_, _q: LuaValue| -> mlua::Result<LuaValue> {
+                Err(mlua::Error::RuntimeError(
+                    "ddb.query: NotYetImplemented — runtime constructed without MluaContext".into(),
+                ))
+            })?,
+        )?;
+    }
 
-    // ddb.kv.{get,set}
+    // ddb.kv.{get,set} — NotYetImplemented in v0.3.2.
+    //
+    // Rationale: the cache layer (DdbCache, slice 10) is keyed on the
+    // HTTP request boundary and is not exposed to the function runtime
+    // yet. Wiring it through requires a tenant-scoped cache handle
+    // which lands in v0.3.2.1.
     let kv = lua.create_table()?;
     kv.set(
         "get",
         lua.create_function(|_, _key: String| -> mlua::Result<LuaValue> {
             Err(mlua::Error::RuntimeError(
-                "ddb.kv.get: NotYetImplemented — wires up in v0.3.3".into(),
+                "ddb.kv.get: NotYetImplemented — cache boundary not exposed to mlua runtime yet, tracked for v0.3.2.1".into(),
             ))
         })?,
     )?;
@@ -668,7 +788,7 @@ pub fn install_ddb_api(lua: &Lua) -> mlua::Result<()> {
         "set",
         lua.create_function(|_, (_key, _val): (String, LuaValue)| -> mlua::Result<()> {
             Err(mlua::Error::RuntimeError(
-                "ddb.kv.set: NotYetImplemented — wires up in v0.3.3".into(),
+                "ddb.kv.set: NotYetImplemented — cache boundary not exposed to mlua runtime yet, tracked for v0.3.2.1".into(),
             ))
         })?,
     )?;
@@ -718,26 +838,96 @@ pub fn install_ddb_api(lua: &Lua) -> mlua::Result<()> {
 
     // ddb.triples.{get,put}
     let triples = lua.create_table()?;
-    triples.set(
-        "get",
-        lua.create_function(
-            |_, (_s, _p): (String, String)| -> mlua::Result<LuaValue> {
+    if let Some(ctx) = ctx {
+        // ddb.triples.get(entity_id_uuid_string) -> [{attribute, value}, ...]
+        let get_store = Arc::clone(&ctx.store);
+        triples.set(
+            "get",
+            lua.create_async_function(move |lua, entity_id_str: String| {
+                let store = Arc::clone(&get_store);
+                async move {
+                    let entity_id = uuid::Uuid::parse_str(&entity_id_str).map_err(|e| {
+                        mlua::Error::RuntimeError(format!(
+                            "ddb.triples.get: entity_id must be a UUID string: {e}"
+                        ))
+                    })?;
+                    let triples = store
+                        .get_entity(entity_id)
+                        .await
+                        .map_err(|e| mlua::Error::RuntimeError(format!("ddb.triples.get: {e}")))?;
+                    let json = serde_json::to_value(&triples).map_err(|e| {
+                        mlua::Error::RuntimeError(format!("ddb.triples.get: serialize failed: {e}"))
+                    })?;
+                    lua.to_value(&json)
+                }
+            })?,
+        )?;
+
+        // ddb.triples.put(entity_id_uuid_string, attribute, value) -> nil
+        //
+        // Allocates a fresh tx_id per call so the write is auditable in
+        // the same darshan_tx_seq the rest of the server uses.
+        let put_store = Arc::clone(&ctx.store);
+        triples.set(
+            "put",
+            lua.create_async_function(
+                move |lua, (entity_id_str, attribute, value): (String, String, LuaValue)| {
+                    let store = Arc::clone(&put_store);
+                    async move {
+                        let entity_id = uuid::Uuid::parse_str(&entity_id_str).map_err(|e| {
+                            mlua::Error::RuntimeError(format!(
+                                "ddb.triples.put: entity_id must be a UUID string: {e}"
+                            ))
+                        })?;
+                        let value_json: serde_json::Value = lua.from_value(value).map_err(|e| {
+                            mlua::Error::RuntimeError(format!(
+                                "ddb.triples.put: value must be JSON-coercible: {e}"
+                            ))
+                        })?;
+                        let tx_id = store.next_tx_id().await.map_err(|e| {
+                            mlua::Error::RuntimeError(format!("ddb.triples.put: next_tx_id: {e}"))
+                        })?;
+                        let input = TripleInput {
+                            entity_id,
+                            attribute,
+                            value: value_json,
+                            value_type: 0,
+                            ttl_seconds: None,
+                        };
+                        store
+                            .set_triples(tx_id, std::slice::from_ref(&input))
+                            .await
+                            .map_err(|e| {
+                                mlua::Error::RuntimeError(format!(
+                                    "ddb.triples.put: set_triples: {e}"
+                                ))
+                            })?;
+                        Ok(())
+                    }
+                },
+            )?,
+        )?;
+    } else {
+        triples.set(
+            "get",
+            lua.create_function(|_, (_s, _p): (String, String)| -> mlua::Result<LuaValue> {
                 Err(mlua::Error::RuntimeError(
-                    "ddb.triples.get: NotYetImplemented — wires up in v0.3.3".into(),
+                    "ddb.triples.get: NotYetImplemented — runtime constructed without MluaContext"
+                        .into(),
                 ))
-            },
-        )?,
-    )?;
-    triples.set(
-        "put",
-        lua.create_function(
-            |_, (_s, _p, _o): (String, String, LuaValue)| -> mlua::Result<()> {
-                Err(mlua::Error::RuntimeError(
-                    "ddb.triples.put: NotYetImplemented — wires up in v0.3.3".into(),
-                ))
-            },
-        )?,
-    )?;
+            })?,
+        )?;
+        triples.set(
+            "put",
+            lua.create_function(
+                |_, (_s, _p, _o): (String, String, LuaValue)| -> mlua::Result<()> {
+                    Err(mlua::Error::RuntimeError(
+                        "ddb.triples.put: NotYetImplemented — runtime constructed without MluaContext".into(),
+                    ))
+                },
+            )?,
+        )?;
+    }
     ddb.set("triples", triples)?;
 
     lua.globals().set("ddb", ddb)?;
@@ -869,7 +1059,10 @@ mod tests {
         )
         .await
         .unwrap();
-        let out = rt.invoke_global("go", serde_json::json!(null)).await.unwrap();
+        let out = rt
+            .invoke_global("go", serde_json::json!(null))
+            .await
+            .unwrap();
         assert_eq!(out, serde_json::json!("ok"));
     }
 
@@ -1317,8 +1510,7 @@ mod tests {
         let functions_dir = parent.path().join("functions");
         std::fs::create_dir(&functions_dir).expect("mkdir functions");
         let escape = parent.path().join("escape.lua");
-        std::fs::write(&escape, "function hacked() return 'pwn' end")
-            .expect("write escape.lua");
+        std::fs::write(&escape, "function hacked() return 'pwn' end").expect("write escape.lua");
 
         let rt = MluaRuntime::new(functions_dir.clone(), 4).expect("rt");
 
@@ -1416,6 +1608,132 @@ mod tests {
                 || msg.contains("text chunk")
                 || msg.to_lowercase().contains("binary"),
             "expected bytecode-rejection error, got: {msg}"
+        );
+    }
+
+    // ── Wired ddb.* host API tests ────────────────────────────────
+    //
+    // These tests exercise the live-context path of `install_ddb_api`.
+    // They are gated on `sqlite-store` because they need a real Store
+    // to point the context at; SqliteStore::open(":memory:") gives a
+    // self-contained backend with no external deps.
+    //
+    // ddb.query is NOT exercised end-to-end here: SqliteStore::query
+    // currently returns InvalidQuery (the executor rewire is deferred
+    // to v0.3.2.1 — see CHANGELOG). The wiring path itself is exercised
+    // by `ddb_query_with_context_returns_invalid_query_from_sqlite`,
+    // which proves the parse → plan → store.query chain reaches the
+    // backend with the dialect attached.
+
+    #[cfg(feature = "sqlite-store")]
+    fn new_runtime_with_sqlite_context() -> MluaRuntime {
+        use crate::query::dialect::SqliteDialect;
+        use crate::store::sqlite::SqliteStore;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.keep();
+        let sqlite = SqliteStore::open(":memory:").expect("open sqlite :memory:");
+        let ctx = MluaContext {
+            store: Arc::new(sqlite),
+            dialect: Arc::new(SqliteDialect),
+        };
+        MluaRuntime::new_with_context(path, 4, Some(ctx))
+            .expect("mlua runtime with context must construct")
+    }
+
+    #[cfg(feature = "sqlite-store")]
+    #[tokio::test]
+    async fn ddb_triples_put_and_get_roundtrip_via_sqlite() {
+        let rt = new_runtime_with_sqlite_context();
+        rt.load_chunk(
+            r#"
+            function go()
+                local eid = "11111111-2222-3333-4444-555555555555"
+                ddb.triples.put(eid, "name", "Alice")
+                ddb.triples.put(eid, "age", 30)
+                local rows = ddb.triples.get(eid)
+                local out = {}
+                for _, r in ipairs(rows) do
+                    out[r.attribute] = r.value
+                end
+                return out
+            end
+            "#,
+        )
+        .await
+        .unwrap();
+        let out = rt
+            .invoke_global("go", serde_json::json!(null))
+            .await
+            .expect("triples roundtrip must succeed");
+        assert_eq!(out["name"], serde_json::json!("Alice"));
+        assert_eq!(out["age"], serde_json::json!(30));
+    }
+
+    #[cfg(feature = "sqlite-store")]
+    #[tokio::test]
+    async fn ddb_query_with_context_returns_invalid_query_from_sqlite() {
+        // Proves the wiring chain reaches the backend: parse_darshan_ql
+        // accepts the AST, plan_query_with_dialect plans against
+        // SqliteDialect, and SqliteStore::query rejects with the
+        // documented "DarshanQL emits Postgres-specific SQL" message.
+        // When the executor rewire lands in v0.3.2.1 this test will be
+        // upgraded to assert against real rows.
+        let rt = new_runtime_with_sqlite_context();
+        rt.load_chunk(
+            r#"
+            function go()
+                local ok, err = pcall(function()
+                    return ddb.query({ type = "user" })
+                end)
+                if ok then return "unexpectedly-ok" end
+                return tostring(err)
+            end
+            "#,
+        )
+        .await
+        .unwrap();
+        let out = rt
+            .invoke_global("go", serde_json::json!(null))
+            .await
+            .expect("pcall wrapper must return a string");
+        let msg = out.as_str().unwrap_or("");
+        assert!(
+            msg.contains("ddb.query")
+                && (msg.contains("SqliteStore")
+                    || msg.contains("InvalidQuery")
+                    || msg.contains("not yet supported")),
+            "expected ddb.query error to surface SqliteStore InvalidQuery, got: {msg}"
+        );
+    }
+
+    #[cfg(feature = "sqlite-store")]
+    #[tokio::test]
+    async fn ddb_kv_stays_stubbed_with_context() {
+        // ddb.kv.* is intentionally unwired in v0.3.2 — assert the
+        // tracking message is honest about the v0.3.2.1 deferral.
+        let rt = new_runtime_with_sqlite_context();
+        rt.load_chunk(
+            r#"
+            function go()
+                local ok, err = pcall(function()
+                    return ddb.kv.get("k")
+                end)
+                if ok then return "unexpectedly-ok" end
+                return tostring(err)
+            end
+            "#,
+        )
+        .await
+        .unwrap();
+        let out = rt
+            .invoke_global("go", serde_json::json!(null))
+            .await
+            .expect("pcall wrapper must return a string");
+        let msg = out.as_str().unwrap_or("");
+        assert!(
+            msg.contains("v0.3.2.1") && msg.contains("cache boundary"),
+            "expected ddb.kv.get to surface v0.3.2.1 deferral message, got: {msg}"
         );
     }
 }

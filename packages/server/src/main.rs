@@ -17,10 +17,8 @@ use ddb_server::api::rest::{AppState, build_router};
 use ddb_server::api::ws::{WsState, ws_routes};
 use ddb_server::auth::middleware::RateLimiter;
 use ddb_server::auth::session::{KeyManager, SessionManager};
-use ddb_server::cluster::{
-    self, ClusterState, LOCK_EXPIRY_SWEEPER, NodeId, spawn_singleton_task,
-};
 use ddb_server::cluster::status::{ClusterStatusState, router as cluster_status_router};
+use ddb_server::cluster::{self, ClusterState, LOCK_EXPIRY_SWEEPER, NodeId, spawn_singleton_task};
 use ddb_server::config::{DdbConfig, load_config};
 use ddb_server::error::Result;
 use ddb_server::sync::presence::PresenceManager;
@@ -64,7 +62,9 @@ async fn main() -> Result<()> {
         // task inspects RUST_LOG until `init_json_logging` runs a few
         // lines below. This remains non-racy as long as no Rust 2024
         // lint-gated callsite is added earlier in main().
-        unsafe { std::env::set_var("RUST_LOG", &cfg.server.log_level); }
+        unsafe {
+            std::env::set_var("RUST_LOG", &cfg.server.log_level);
+        }
     }
     ddb_server::observability::init_json_logging().map_err(|e| {
         ddb_server::error::DarshJError::Internal(format!("tracing init failed: {e}"))
@@ -126,6 +126,28 @@ async fn main() -> Result<()> {
         "postgres://ddb:ddb@localhost:5432/darshjdb".to_string()
     });
 
+    // v0.3.2 — backend dispatch on DATABASE_URL scheme.
+    //
+    // The library backends (`SqliteStore`, gated on `--features
+    // sqlite-store`) are wired into the `Store` trait and exercised by
+    // the embedded function runtime (`ddb.triples.*` from Lua), but
+    // the HTTP server's auth/anchor/search/agent_memory/chunked_uploads
+    // bootstraps still call Postgres-specific schema migrations. A full
+    // SQLite-only HTTP boot path lands in v0.3.3. For now we refuse
+    // `sqlite:` URLs at the front door so misconfiguration surfaces
+    // immediately instead of as a cryptic `pg_advisory_lock` panic.
+    if database_url.starts_with("sqlite:") {
+        return Err(ddb_server::error::DarshJError::Internal(
+            "sqlite: URLs are accepted by the SqliteStore library backend \
+             but the HTTP server's auth/anchor/search/agent_memory bootstraps \
+             are still Postgres-only. Use a postgres:// URL for the HTTP \
+             server in v0.3.2; sqlite-only HTTP boot lands in v0.3.3. \
+             SqliteStore is exercised end-to-end by the embedded mlua \
+             function runtime today (see ddb.triples.* in Lua functions)."
+                .into(),
+        ));
+    }
+
     let port: u16 = cfg.server.port;
     let max_connections: u32 = cfg.database.pool_max;
     let min_connections: u32 = cfg.database.pool_min;
@@ -133,11 +155,7 @@ async fn main() -> Result<()> {
     let idle_timeout_secs: u64 = cfg.database.idle_timeout_secs;
     let max_lifetime_sec: u64 = cfg.database.max_lifetime_sec;
 
-    let jwt_secret: Option<String> = cfg
-        .auth
-        .jwt_secret
-        .as_ref()
-        .map(|s| s.expose().clone());
+    let jwt_secret: Option<String> = cfg.auth.jwt_secret.as_ref().map(|s| s.expose().clone());
     let jwt_private_key_path: Option<String> = cfg.auth.jwt_private_key_path.clone();
     let jwt_public_key_path: Option<String> = cfg.auth.jwt_public_key_path.clone();
 
@@ -313,6 +331,32 @@ async fn main() -> Result<()> {
         tokio::sync::broadcast::channel::<ddb_server::sync::ChangeEvent>(4096);
 
     let triple_store_arc = Arc::new(triple_store);
+
+    // v0.3.2 — backend-agnostic Store + SqlDialect handles.
+    //
+    // These wrap the existing PgTripleStore + PgPool path through the
+    // object-safe Store trait so the embedded function runtime (mlua)
+    // and any other component that wants to live above the
+    // Postgres-specific surface can hold dyn references without
+    // reaching for the concrete pool. The HTTP request path is
+    // unchanged — it still uses the Pg pool directly.
+    //
+    // When v0.3.3 lands the sqlite: URL boot path, this construction
+    // moves into the URL-scheme dispatch branch so the same
+    // `Arc<dyn Store>` flows out of either backend. The dialect is
+    // pinned to PgDialect today because that's what the HTTP planner
+    // emits; the SqliteDialect path is exercised by the SqliteStore
+    // unit tests and is the v0.3.3 target.
+    let store_dyn: Arc<dyn ddb_server::store::Store + Send + Sync> = Arc::new(
+        ddb_server::store::pg::PgStore::new((*triple_store_arc).clone()),
+    );
+    let dialect_dyn: Arc<dyn ddb_server::query::dialect::SqlDialect + Send + Sync> =
+        Arc::new(ddb_server::query::dialect::PgDialect);
+    tracing::info!(
+        backend = store_dyn.backend_name(),
+        dialect = dialect_dyn.name(),
+        "v0.3.2 Store + SqlDialect handles initialized"
+    );
 
     // -- Cluster state (v0.3.1 horizontal scaling) ----------------------------
     // A stable per-process node id (random UUID) and a shared set describing
@@ -552,13 +596,11 @@ async fn main() -> Result<()> {
     //    transaction as user writes, matching the REST mutation path).
     //    Path comes from typed DdbConfig (Slice 17), falling back to the
     //    legacy DDB_RULES_FILE env var for backward compatibility.
-    let rules_path = std::path::PathBuf::from(
-        if !cfg.rules.file_path.is_empty() {
-            cfg.rules.file_path.clone()
-        } else {
-            std::env::var("DDB_RULES_FILE").unwrap_or_else(|_| "./darshan/rules.json".to_string())
-        },
-    );
+    let rules_path = std::path::PathBuf::from(if !cfg.rules.file_path.is_empty() {
+        cfg.rules.file_path.clone()
+    } else {
+        std::env::var("DDB_RULES_FILE").unwrap_or_else(|_| "./darshan/rules.json".to_string())
+    });
     let rules = ddb_server::rules::load_rules_from_file(&rules_path).unwrap_or_else(|e| {
         tracing::error!(error = %e, "failed to load rules, continuing without rule engine");
         Vec::new()
@@ -692,8 +734,7 @@ async fn main() -> Result<()> {
     // -- Storage Engine -------------------------------------------------------
     // `storage.path` is the typed setting; `DDB_STORAGE_DIR` stays as an
     // escape hatch until the storage subsystem is migrated.
-    let storage_dir =
-        std::env::var("DDB_STORAGE_DIR").unwrap_or_else(|_| cfg.storage.path.clone());
+    let storage_dir = std::env::var("DDB_STORAGE_DIR").unwrap_or_else(|_| cfg.storage.path.clone());
     let storage_backend = Arc::new(
         ddb_server::storage::LocalFsBackend::new(&storage_dir).unwrap_or_else(|e| {
             tracing::warn!("Failed to create storage backend at {storage_dir}: {e}, using /tmp");
@@ -737,54 +778,107 @@ async fn main() -> Result<()> {
                         "function registry initialized"
                     );
 
-                    // VYASA — pick the V8 embedded runtime if the operator
-                    // asked for it via DDB_FUNCTION_RUNTIME=v8 AND the `v8`
-                    // feature was compiled in. Otherwise keep the subprocess
-                    // default. Darshankumar Joshi (github.com/darshjme).
-                    let want_v8 = std::env::var("DDB_FUNCTION_RUNTIME")
-                        .map(|v| v.eq_ignore_ascii_case("v8"))
-                        .unwrap_or(false);
+                    // Function runtime backend selection.
+                    //
+                    // DDB_FUNCTION_RUNTIME picks one of:
+                    //   - "v8"  : embedded V8 isolate (requires --features v8)
+                    //   - "mlua": embedded Lua 5.4 VM   (requires --features mlua-runtime)
+                    //   - default / unset / unknown: subprocess (Deno or Node) — the
+                    //     production-safe path that has always been the v0.3.x
+                    //     default.
+                    //
+                    // VYASA (V8) was the v0.3.1 contribution from
+                    // Darshankumar Joshi. mlua landed in v0.3.2 and ships
+                    // the embedded Lua 5.4 path with a hardened sandbox
+                    // and the wired `ddb.triples.*` host API.
+                    let runtime_choice = std::env::var("DDB_FUNCTION_RUNTIME")
+                        .map(|v| v.to_ascii_lowercase())
+                        .unwrap_or_default();
+                    let want_v8 = runtime_choice == "v8";
+                    let want_mlua = runtime_choice == "mlua";
 
                     let default_limits = ddb_server::functions::ResourceLimits::default();
                     let max_conc = default_limits.max_concurrency;
 
-                    #[cfg(feature = "v8")]
-                    let backend: Box<
-                        dyn ddb_server::functions::RuntimeBackend,
-                    > = if want_v8 {
-                        tracing::info!(
-                            backend = "v8-embedded",
-                            "VYASA: using embedded V8 isolate runtime for server functions"
-                        );
-                        Box::new(ddb_server::functions::V8Runtime::new(
-                            functions_dir_path.clone(),
-                            max_conc,
-                        ))
-                    } else {
-                        Box::new(ddb_server::functions::runtime::ProcessRuntime::new(
-                            ddb_server::functions::runtime::ProcessKind::Node,
-                            harness_path.clone(),
-                            functions_dir_path.clone(),
-                            max_conc,
-                        ))
-                    };
-
-                    #[cfg(not(feature = "v8"))]
-                    let backend: Box<
-                        dyn ddb_server::functions::RuntimeBackend,
-                    > = {
-                        if want_v8 {
-                            tracing::warn!(
-                                "DDB_FUNCTION_RUNTIME=v8 requested but binary was built without --features v8; falling back to subprocess"
-                            );
+                    let backend: Box<dyn ddb_server::functions::RuntimeBackend> = {
+                        // mlua path — gated on the cargo feature.
+                        #[cfg(feature = "mlua-runtime")]
+                        {
+                            if want_mlua {
+                                tracing::info!(
+                                    backend = "mlua-embedded",
+                                    "v0.3.2: using embedded Lua 5.4 runtime for server functions \
+                                     (ddb.triples.* wired against {}, dialect={})",
+                                    store_dyn.backend_name(),
+                                    dialect_dyn.name()
+                                );
+                                let mlua_ctx = ddb_server::functions::mlua::MluaContext {
+                                    store: store_dyn.clone(),
+                                    dialect: dialect_dyn.clone(),
+                                };
+                                Some(Box::new(
+                                    ddb_server::functions::MluaRuntime::new_with_context(
+                                        functions_dir_path.clone(),
+                                        max_conc,
+                                        Some(mlua_ctx),
+                                    )
+                                    .map_err(|e| {
+                                        ddb_server::error::DarshJError::Internal(format!(
+                                            "MluaRuntime construction failed: {e}"
+                                        ))
+                                    })?,
+                                )
+                                    as Box<dyn ddb_server::functions::RuntimeBackend>)
+                            } else {
+                                None
+                            }
                         }
+                        #[cfg(not(feature = "mlua-runtime"))]
+                        {
+                            if want_mlua {
+                                tracing::warn!(
+                                    "DDB_FUNCTION_RUNTIME=mlua requested but binary was built without --features mlua-runtime; falling back to subprocess"
+                                );
+                            }
+                            None::<Box<dyn ddb_server::functions::RuntimeBackend>>
+                        }
+                    }
+                    .or_else(|| {
+                        // v8 path — gated on the cargo feature.
+                        #[cfg(feature = "v8")]
+                        {
+                            if want_v8 {
+                                tracing::info!(
+                                    backend = "v8-embedded",
+                                    "VYASA: using embedded V8 isolate runtime for server functions"
+                                );
+                                return Some(Box::new(ddb_server::functions::V8Runtime::new(
+                                    functions_dir_path.clone(),
+                                    max_conc,
+                                ))
+                                    as Box<dyn ddb_server::functions::RuntimeBackend>);
+                            }
+                            None
+                        }
+                        #[cfg(not(feature = "v8"))]
+                        {
+                            if want_v8 {
+                                tracing::warn!(
+                                    "DDB_FUNCTION_RUNTIME=v8 requested but binary was built without --features v8; falling back to subprocess"
+                                );
+                            }
+                            None::<Box<dyn ddb_server::functions::RuntimeBackend>>
+                        }
+                    })
+                    .unwrap_or_else(|| {
+                        // Default: subprocess.
                         Box::new(ddb_server::functions::runtime::ProcessRuntime::new(
                             ddb_server::functions::runtime::ProcessKind::Node,
                             harness_path.clone(),
                             functions_dir_path.clone(),
                             max_conc,
                         ))
-                    };
+                    });
 
                     let runtime = ddb_server::functions::FunctionRuntime::new(
                         backend,

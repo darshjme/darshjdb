@@ -789,7 +789,7 @@ mod tests {
             limit: None,
             offset: None,
         };
-        let err = store.query(&plan).await.err().expect("error");
+        let err = store.query(&plan).await.expect_err("error");
         match err {
             DarshJError::InvalidQuery(msg) => {
                 assert!(msg.contains("SqliteStore"), "message: {msg}");
