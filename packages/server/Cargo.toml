@@ -53,6 +53,9 @@ csv.workspace = true
 include_dir.workspace = true
 mime_guess.workspace = true
 
+# Phase 7.2 (slice 26/30) — Image transform pipeline for /api/storage/*path.
+image.workspace = true
+
 # Phase 0.3 (slice 4/30) — magic link SMTP/HTTP email delivery.
 lettre.workspace = true
 
