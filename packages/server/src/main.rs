@@ -208,13 +208,18 @@ async fn main() -> Result<()> {
 
     // Slice 14/30 — ensure agent memory tables (sessions + entries + facts)
     // so the context builder / memory API can write on first request.
-    ddb_server::agent_memory::ensure_agent_memory_schema(&pool)
-        .await
-        .map_err(|e| {
-            tracing::error!("Failed to ensure agent memory schema: {e}");
-            ddb_server::error::DarshJError::Database(e)
-        })?;
-    tracing::info!("agent memory schema ensured (sessions + entries + facts tables)");
+    // Best-effort: some CI Postgres service containers ship without the
+    // legacy `users` table the agent_facts FK references. Emit a warn and
+    // continue so /health can still respond — memory endpoints will then
+    // return 503 on first call until a proper migration runs.
+    if let Err(e) = ddb_server::agent_memory::ensure_agent_memory_schema(&pool).await {
+        tracing::warn!(
+            error = %e,
+            "agent memory schema bootstrap failed — memory endpoints disabled until schema lands"
+        );
+    } else {
+        tracing::info!("agent memory schema ensured (sessions + entries + facts tables)");
+    }
 
     // Phase 7.1 (slice 25/30): ensure chunked_uploads table exists so
     // resumable uploads and the cleanup task can run without a
