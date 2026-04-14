@@ -67,9 +67,7 @@ const ZSTD_LEVEL: i32 = 3;
 
 fn encode(payload: &[u8]) -> L2Result<Vec<u8>> {
     if payload.is_empty() {
-        let mut out = Vec::with_capacity(1);
-        out.push(TAG_RAW);
-        return Ok(out);
+        return Ok(vec![TAG_RAW]);
     }
     if payload.len() < COMPRESSION_THRESHOLD {
         let compressed = lz4_flex::compress_prepend_size(payload);

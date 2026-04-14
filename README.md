@@ -311,7 +311,7 @@ sequenceDiagram
 | `events` | Change feed, mutation event bus |
 | `fields` | Field definitions, type validation |
 | `formulas` | Computed fields, formula evaluation |
-| `functions` | Server functions, Node.js/Deno subprocess execution |
+| `functions` | Server functions — Node.js/Deno subprocess default, or embedded V8 via `--features v8` (VYASA) |
 | `graph` | RELATE, traversals, multi-hop queries |
 | `history` | Record version history, point-in-time queries |
 | `import_export` | JSON/CSV import, full database export |
@@ -583,7 +583,7 @@ An SSE streaming endpoint at `/api/agent/stream` pushes intermediate tokens for 
 | API keys | Scoped keys for service-to-service auth |
 | Plugins | Plugin registry with lifecycle hooks |
 | Automations | Cron-triggered scheduled tasks |
-| Server functions | Node.js / Deno subprocess execution |
+| Server functions | Node.js / Deno subprocess execution — or embedded V8 isolate via `cargo run --features v8` (VYASA, sub-ms cold start) |
 | Connectors | Webhook + log connectors, entity-level sync |
 | TTL / Expiry | Per-entity expiry with background reaper |
 | Batch API | Multiple operations in a single request |
@@ -759,7 +759,7 @@ Two columns. No hedging.
 | OAuth: Google, GitHub, Apple, Discord | No performance benchmarks published |
 | MFA / TOTP | No horizontal scaling / multi-node |
 | Session hardening + exponential login rate limit | Mobile SDKs (Swift, Kotlin) not started |
-| Row-level + field-level security | Server function V8 runtime is subprocess-based |
+| Row-level + field-level security | Embedded V8 runtime available via `--features v8` (VYASA), subprocess remains default |
 | WebSocket diff engine ({added, removed, updated}) | Phone OTP auth not implemented |
 | LIVE SELECT auto-registration | No production deployment under real traffic |
 | DarshJQL parser, optimizer, executor | Auth test suite still relies on live Postgres (testcontainers migration pending) |

@@ -77,10 +77,10 @@ fn validate(defs: &[StrictFieldDef], doc: &HashMap<String, Value>) -> Vec<Strict
                 errors.push(StrictValidationError::new(&def.attribute, "REQUIRED"));
             }
             Some(v) => {
-                if let Some(parsed_type) = StrictValueType::parse(&def.value_type) {
-                    if !parsed_type.matches(v) {
-                        errors.push(StrictValidationError::new(&def.attribute, "TYPE_MISMATCH"));
-                    }
+                if let Some(parsed_type) = StrictValueType::parse(&def.value_type)
+                    && !parsed_type.matches(v)
+                {
+                    errors.push(StrictValidationError::new(&def.attribute, "TYPE_MISMATCH"));
                 }
             }
         }

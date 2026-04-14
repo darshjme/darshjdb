@@ -134,10 +134,10 @@ impl OpenAiClient {
         let model = std::env::var("DARSH_LLM_MODEL").unwrap_or_else(|_| "gpt-4o-mini".to_string());
 
         let mut config = OpenAIConfig::new().with_api_key(api_key);
-        if let Ok(base) = std::env::var("DARSH_LLM_BASE_URL") {
-            if !base.is_empty() {
-                config = config.with_api_base(base);
-            }
+        if let Ok(base) = std::env::var("DARSH_LLM_BASE_URL")
+            && !base.is_empty()
+        {
+            config = config.with_api_base(base);
         }
         Ok(Self {
             client: OpenAiSdkClient::with_config(config),
@@ -267,7 +267,7 @@ impl LlmClient for NoneClient {
 ///
 /// Known providers:
 ///   * `"openai"`     → `OpenAiClient::from_env` (still reads
-///                      `DARSH_LLM_API_KEY` / `OPENAI_API_KEY`).
+///     `DARSH_LLM_API_KEY` / `OPENAI_API_KEY`).
 ///   * `"anthropic"`  → `AnthropicClient::from_env`.
 ///   * `"none"`, `""`, unknown → `NoneClient` offline fallback.
 ///
@@ -369,7 +369,7 @@ fn cl100k() -> Result<&'static CoreBPE, SummariserError> {
 pub fn count_tokens(text: &str) -> i32 {
     match cl100k() {
         Ok(bpe) => bpe.encode_with_special_tokens(text).len() as i32,
-        Err(_) => ((text.chars().count() + 3) / 4) as i32,
+        Err(_) => text.chars().count().div_ceil(4) as i32,
     }
 }
 
@@ -377,7 +377,7 @@ pub fn count_tokens(text: &str) -> i32 {
 /// `SUMMARISER_THRESHOLDS` values (equal-to counts as a crossing so
 /// we fire exactly once per threshold as entries tick over).
 pub fn is_threshold_crossed(count: i64) -> bool {
-    SUMMARISER_THRESHOLDS.iter().any(|t| count == *t)
+    SUMMARISER_THRESHOLDS.contains(&count)
 }
 
 // ── Core operation ──────────────────────────────────────────────────────
@@ -517,7 +517,10 @@ mod tests {
     // path which does `std::env::var(...)` reads under the hood. We
     // serialise them anyway so parallel test execution can't race on
     // process-wide env that external tooling (CI runners, user shells)
-    // might set.
+    // might set. The lock is intentionally held across `.await` because
+    // every await below is a trivial no-op completion (NoneClient has no
+    // real async work), so the blocking Mutex is safe in practice.
+    #[allow(clippy::await_holding_lock)]
     static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[tokio::test]

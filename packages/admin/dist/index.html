@@ -1,56 +1,18 @@
 <!doctype html>
-<!--
-  DarshJDB admin dashboard — stub fallback.
-
-  Author: Darshankumar Joshi
-
-  This file is a compile-time stub so `cargo build -p ddb-server` succeeds
-  in fresh checkouts where `npm run build --workspace=packages/admin` has
-  not yet run. The `include_dir!` macro in
-  `packages/server/src/admin/static_assets.rs` embeds whatever lives in
-  `packages/admin/dist/` at build time.
-
-  CI and the Dockerfile rebuild the admin dashboard before cargo, so the
-  shipped binary always embeds the real Vite build, not this stub. If you
-  see this page in production, the dashboard build step is broken.
--->
-<html lang="en">
+<html lang="en" class="dark">
   <head>
     <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/darshan.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>DarshJDB Admin — build pending</title>
-    <style>
-      body {
-        font-family: -apple-system, system-ui, sans-serif;
-        background: #09090b;
-        color: #e4e4e7;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        min-height: 100vh;
-        margin: 0;
-      }
-      .card {
-        max-width: 480px;
-        padding: 2rem;
-        border: 1px solid #27272a;
-        border-radius: 12px;
-        text-align: center;
-      }
-      code {
-        background: #18181b;
-        padding: 2px 6px;
-        border-radius: 4px;
-        font-family: ui-monospace, monospace;
-      }
-      h1 { margin-top: 0; }
-    </style>
+    <title>DarshanDB Dashboard</title>
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
+      rel="stylesheet"
+    />
+    <script type="module" crossorigin src="/assets/index-BDiFU613.js"></script>
+    <link rel="stylesheet" crossorigin href="/assets/index-DdnG0wJ3.css">
   </head>
-  <body>
-    <div class="card">
-      <h1>DarshJDB Admin</h1>
-      <p>Dashboard build not present in this binary.</p>
-      <p>Run <code>npm run build --workspace=packages/admin</code>, then rebuild <code>ddb-server</code>.</p>
-    </div>
+  <body class="bg-zinc-950 text-zinc-100 antialiased">
+    <div id="root"></div>
   </body>
 </html>

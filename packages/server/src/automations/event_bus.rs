@@ -403,7 +403,7 @@ mod tests {
 
         // Emit in a separate task so recv doesn't block forever.
         let event_clone = event.clone();
-        tokio::spawn({ async move { drop(event_clone) } });
+        tokio::spawn(async move { drop(event_clone) });
 
         // Use a channel-based approach instead.
         let bus = Arc::new(EventBus::new(16, 100));

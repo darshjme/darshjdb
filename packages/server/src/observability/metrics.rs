@@ -139,7 +139,7 @@ impl MetricsIpAllowList {
         if self.allow_all {
             return true;
         }
-        self.ips.iter().any(|allowed| *allowed == peer)
+        self.ips.contains(&peer)
     }
 }
 

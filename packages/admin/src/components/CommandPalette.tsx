@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import {
   Database,
   GitBranch,
+  Network,
   Zap,
   Users,
   HardDrive,
@@ -36,6 +37,7 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
   const commands: CommandItem[] = [
     { id: "nav-data", label: "Data Explorer", description: "Browse and query data", icon: Database, action: () => navigate("/"), category: "Navigation" },
     { id: "nav-schema", label: "Schema", description: "View entity relationships", icon: GitBranch, action: () => navigate("/schema"), category: "Navigation" },
+    { id: "nav-graph", label: "Graph Explorer", description: "Traverse record links visually", icon: Network, action: () => navigate("/graph"), category: "Navigation" },
     { id: "nav-functions", label: "Functions", description: "Manage queries and mutations", icon: Zap, action: () => navigate("/functions"), category: "Navigation" },
     { id: "nav-auth", label: "Auth & Users", description: "User management", icon: Users, action: () => navigate("/auth"), category: "Navigation" },
     { id: "nav-storage", label: "Storage", description: "File management", icon: HardDrive, action: () => navigate("/storage"), category: "Navigation" },

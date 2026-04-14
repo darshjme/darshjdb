@@ -21,7 +21,7 @@ fn cache(pool: PgPool) -> L2Cache {
     L2Cache::new(Arc::new(pool))
 }
 
-#[sqlx::test(migrations = "../server/migrations")]
+#[sqlx::test(migrations = "./tests/migrations")]
 async fn l2_set_get_del_roundtrip(pool: PgPool) {
     let c = cache(pool);
     c.set("k1", b"hello", None).await.unwrap();
@@ -34,7 +34,7 @@ async fn l2_set_get_del_roundtrip(pool: PgPool) {
     assert!(c.get("k1").await.unwrap().is_none());
 }
 
-#[sqlx::test(migrations = "../server/migrations")]
+#[sqlx::test(migrations = "./tests/migrations")]
 async fn l2_large_payload_uses_zstd(pool: PgPool) {
     let c = cache(pool);
     let big = vec![b'Z'; 8 * 1024];
@@ -43,7 +43,7 @@ async fn l2_large_payload_uses_zstd(pool: PgPool) {
     assert_eq!(got, big);
 }
 
-#[sqlx::test(migrations = "../server/migrations")]
+#[sqlx::test(migrations = "./tests/migrations")]
 async fn l2_ttl_and_expire(pool: PgPool) {
     let c = cache(pool);
     c.set("ephemeral", b"vanish", Some(Duration::from_secs(60)))
@@ -65,7 +65,7 @@ async fn l2_ttl_and_expire(pool: PgPool) {
     assert!(!c.expire("missing", Duration::from_secs(10)).await.unwrap());
 }
 
-#[sqlx::test(migrations = "../server/migrations")]
+#[sqlx::test(migrations = "./tests/migrations")]
 async fn l2_keys_pattern(pool: PgPool) {
     let c = cache(pool);
     c.set("user:1", b"a", None).await.unwrap();
@@ -81,7 +81,7 @@ async fn l2_keys_pattern(pool: PgPool) {
     assert_eq!(users, vec!["user:1", "user:2"]);
 }
 
-#[sqlx::test(migrations = "../server/migrations")]
+#[sqlx::test(migrations = "./tests/migrations")]
 async fn l2_hash_ops(pool: PgPool) {
     let c = cache(pool);
     assert!(c.hset("user:42", "name", "darshan").await.unwrap());
@@ -104,7 +104,7 @@ async fn l2_hash_ops(pool: PgPool) {
     assert_eq!(all.get("name").map(String::as_str), Some("darshan"));
 }
 
-#[sqlx::test(migrations = "../server/migrations")]
+#[sqlx::test(migrations = "./tests/migrations")]
 async fn l2_list_ops(pool: PgPool) {
     let c = cache(pool);
     assert_eq!(c.rpush("q", "a").await.unwrap(), 1);
@@ -122,7 +122,7 @@ async fn l2_list_ops(pool: PgPool) {
     assert_eq!(tail, vec!["b", "c"]);
 }
 
-#[sqlx::test(migrations = "../server/migrations")]
+#[sqlx::test(migrations = "./tests/migrations")]
 async fn l2_zset_ops(pool: PgPool) {
     let c = cache(pool);
     assert!(c.zadd("scores", 10.0, "alice").await.unwrap());
@@ -135,7 +135,7 @@ async fn l2_zset_ops(pool: PgPool) {
     assert_eq!(asc, vec!["bob", "alice", "carol"]);
 }
 
-#[sqlx::test(migrations = "../server/migrations")]
+#[sqlx::test(migrations = "./tests/migrations")]
 async fn l2_stream_xadd_xrange_xlen(pool: PgPool) {
     let c = cache(pool);
     let mut f1 = HashMap::new();
@@ -162,7 +162,7 @@ async fn l2_stream_xadd_xrange_xlen(pool: PgPool) {
     );
 }
 
-#[sqlx::test(migrations = "../server/migrations")]
+#[sqlx::test(migrations = "./tests/migrations")]
 async fn l2_stream_xread_progress(pool: PgPool) {
     let c = cache(pool);
     for i in 0..5 {
@@ -177,7 +177,7 @@ async fn l2_stream_xread_progress(pool: PgPool) {
     assert_eq!(next.len(), 2);
 }
 
-#[sqlx::test(migrations = "../server/migrations")]
+#[sqlx::test(migrations = "./tests/migrations")]
 async fn l2_type_mismatch_errors(pool: PgPool) {
     let c = cache(pool);
     c.set("plain", b"hello", None).await.unwrap();
@@ -185,7 +185,7 @@ async fn l2_type_mismatch_errors(pool: PgPool) {
     matches!(err, L2Error::TypeMismatch { .. });
 }
 
-#[sqlx::test(migrations = "../server/migrations")]
+#[sqlx::test(migrations = "./tests/migrations")]
 async fn l2_sweep_expired_once(pool: PgPool) {
     let c = cache(pool);
 

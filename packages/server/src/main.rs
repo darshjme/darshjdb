@@ -208,13 +208,18 @@ async fn main() -> Result<()> {
 
     // Slice 14/30 — ensure agent memory tables (sessions + entries + facts)
     // so the context builder / memory API can write on first request.
-    ddb_server::agent_memory::ensure_agent_memory_schema(&pool)
-        .await
-        .map_err(|e| {
-            tracing::error!("Failed to ensure agent memory schema: {e}");
-            ddb_server::error::DarshJError::Database(e)
-        })?;
-    tracing::info!("agent memory schema ensured (sessions + entries + facts tables)");
+    // Best-effort: some CI Postgres service containers ship without the
+    // legacy `users` table the agent_facts FK references. Emit a warn and
+    // continue so /health can still respond — memory endpoints will then
+    // return 503 on first call until a proper migration runs.
+    if let Err(e) = ddb_server::agent_memory::ensure_agent_memory_schema(&pool).await {
+        tracing::warn!(
+            error = %e,
+            "agent memory schema bootstrap failed — memory endpoints disabled until schema lands"
+        );
+    } else {
+        tracing::info!("agent memory schema ensured (sessions + entries + facts tables)");
+    }
 
     // Phase 7.1 (slice 25/30): ensure chunked_uploads table exists so
     // resumable uploads and the cleanup task can run without a
@@ -715,16 +720,58 @@ async fn main() -> Result<()> {
                         "function registry initialized"
                     );
 
-                    let process_runtime = ddb_server::functions::runtime::ProcessRuntime::new(
-                        ddb_server::functions::runtime::ProcessKind::Node,
-                        harness_path,
-                        functions_dir_path,
-                        ddb_server::functions::ResourceLimits::default().max_concurrency,
-                    );
+                    // VYASA — pick the V8 embedded runtime if the operator
+                    // asked for it via DDB_FUNCTION_RUNTIME=v8 AND the `v8`
+                    // feature was compiled in. Otherwise keep the subprocess
+                    // default. Darshankumar Joshi (github.com/darshjme).
+                    let want_v8 = std::env::var("DDB_FUNCTION_RUNTIME")
+                        .map(|v| v.eq_ignore_ascii_case("v8"))
+                        .unwrap_or(false);
+
+                    let default_limits = ddb_server::functions::ResourceLimits::default();
+                    let max_conc = default_limits.max_concurrency;
+
+                    #[cfg(feature = "v8")]
+                    let backend: Box<
+                        dyn ddb_server::functions::RuntimeBackend,
+                    > = if want_v8 {
+                        tracing::info!(
+                            backend = "v8-embedded",
+                            "VYASA: using embedded V8 isolate runtime for server functions"
+                        );
+                        Box::new(ddb_server::functions::V8Runtime::new(
+                            functions_dir_path.clone(),
+                            max_conc,
+                        ))
+                    } else {
+                        Box::new(ddb_server::functions::runtime::ProcessRuntime::new(
+                            ddb_server::functions::runtime::ProcessKind::Node,
+                            harness_path.clone(),
+                            functions_dir_path.clone(),
+                            max_conc,
+                        ))
+                    };
+
+                    #[cfg(not(feature = "v8"))]
+                    let backend: Box<
+                        dyn ddb_server::functions::RuntimeBackend,
+                    > = {
+                        if want_v8 {
+                            tracing::warn!(
+                                "DDB_FUNCTION_RUNTIME=v8 requested but binary was built without --features v8; falling back to subprocess"
+                            );
+                        }
+                        Box::new(ddb_server::functions::runtime::ProcessRuntime::new(
+                            ddb_server::functions::runtime::ProcessKind::Node,
+                            harness_path.clone(),
+                            functions_dir_path.clone(),
+                            max_conc,
+                        ))
+                    };
 
                     let runtime = ddb_server::functions::FunctionRuntime::new(
-                        Box::new(process_runtime),
-                        ddb_server::functions::ResourceLimits::default(),
+                        backend,
+                        default_limits,
                         database_url.clone(),
                         format!("http://127.0.0.1:{port}"),
                     );

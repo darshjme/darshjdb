@@ -435,7 +435,7 @@ mod tests {
         // Get.
         let app = plugin_routes(state);
         let resp = app
-            .oneshot(Request::get(&format!("/{id}")).body(Body::empty()).unwrap())
+            .oneshot(Request::get(format!("/{id}")).body(Body::empty()).unwrap())
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
@@ -471,7 +471,7 @@ mod tests {
 
         let resp = app
             .oneshot(
-                Request::get(&format!("/{fake_id}"))
+                Request::get(format!("/{fake_id}"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -491,7 +491,7 @@ mod tests {
         let app = plugin_routes(state);
         let resp = app
             .oneshot(
-                Request::delete(&format!("/{id}"))
+                Request::delete(format!("/{id}"))
                     .body(Body::empty())
                     .unwrap(),
             )

@@ -154,10 +154,7 @@ impl WorkingTier {
     /// batch-INSERTs into the episodic tier in Postgres.
     pub fn push(&self, entry: MemoryEntry) -> Vec<MemoryEntry> {
         let mut evicted = Vec::new();
-        let mut buf = self
-            .inner
-            .entry(entry.session_id)
-            .or_insert_with(VecDeque::new);
+        let mut buf = self.inner.entry(entry.session_id).or_default();
         buf.push_back(entry);
         while buf.len() > WORKING_CAPACITY {
             if let Some(old) = buf.pop_front() {
@@ -441,7 +438,7 @@ pub async fn promote_demote(
 /// a single call site. Standard alphabet, no padding stripping.
 fn base64_encode(bytes: &[u8]) -> String {
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity((bytes.len() + 2) / 3 * 4);
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
     let mut i = 0;
     while i + 3 <= bytes.len() {
         let n = ((bytes[i] as u32) << 16) | ((bytes[i + 1] as u32) << 8) | (bytes[i + 2] as u32);
@@ -651,7 +648,7 @@ mod tests {
             .map(|i| {
                 let importance = 1.0 - (i as f64) * 0.05; // 1.0, 0.95, … 0.55
                 let age = 1 + i as i64 * 2; // older => worse
-                let access_count = (10 - i) as i32; // fewer accesses => worse
+                let access_count = (10 - i); // fewer accesses => worse
                 make_entry(importance, age, access_count)
             })
             .collect();
