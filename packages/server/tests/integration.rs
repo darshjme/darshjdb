@@ -593,6 +593,192 @@ async fn test_auth_special_chars() {
 }
 
 // ===========================================================================
+// 2b. AUTH — Login rate limiting (exponential throttle + account lock)
+// ===========================================================================
+
+async fn cleanup_login_attempts(pool: &PgPool, email: &str) {
+    sqlx::query("DELETE FROM login_attempts WHERE email = $1")
+        .bind(email)
+        .execute(pool)
+        .await
+        .ok();
+}
+
+#[tokio::test]
+async fn test_login_attempts_allow_first_four() {
+    let Some(pool) = setup_pool().await else {
+        return;
+    };
+    let email = format!("login-ok-{}@darshan.db", Uuid::new_v4());
+    cleanup_login_attempts(&pool, &email).await;
+    let ip: std::net::IpAddr = "10.0.0.1".parse().unwrap();
+
+    // The first 5 failed attempts (0..4 prior failures) must all be allowed
+    // through the gate — throttling only kicks in starting with attempt #6.
+    for i in 0..5 {
+        let result =
+            ddb_server::api::rest::record_login_attempt_and_check(&pool, &email, ip).await;
+        assert!(
+            result.is_ok(),
+            "attempt #{} should pass the gate: {:?}",
+            i + 1,
+            result.err()
+        );
+    }
+    cleanup_login_attempts(&pool, &email).await;
+}
+
+#[tokio::test]
+async fn test_login_attempts_throttle_after_five_failures() {
+    let Some(pool) = setup_pool().await else {
+        return;
+    };
+    let email = format!("login-throttle-{}@darshan.db", Uuid::new_v4());
+    cleanup_login_attempts(&pool, &email).await;
+    let ip: std::net::IpAddr = "10.0.0.2".parse().unwrap();
+
+    // Burn 5 failed attempts — each inserts success=false and leaves count at 1..5.
+    for _ in 0..5 {
+        let _ = ddb_server::api::rest::record_login_attempt_and_check(&pool, &email, ip).await;
+    }
+
+    // 6th call: now 6 failures exist → retry_after = 2^(6-5) = 2 seconds.
+    let result = ddb_server::api::rest::record_login_attempt_and_check(&pool, &email, ip).await;
+    match result {
+        Err(ddb_server::api::rest::LoginGateError::Throttled { retry_after_secs }) => {
+            assert_eq!(retry_after_secs, 2, "6th attempt: 2^(6-5) = 2");
+        }
+        other => panic!("expected Throttled, got {other:?}"),
+    }
+
+    // 7th call: 7 failures → 2^(7-5) = 4 seconds.
+    let result = ddb_server::api::rest::record_login_attempt_and_check(&pool, &email, ip).await;
+    match result {
+        Err(ddb_server::api::rest::LoginGateError::Throttled { retry_after_secs }) => {
+            assert_eq!(retry_after_secs, 4, "7th attempt: 2^(7-5) = 4");
+        }
+        other => panic!("expected Throttled, got {other:?}"),
+    }
+
+    // 8th call: 8 failures → 8 seconds.
+    let result = ddb_server::api::rest::record_login_attempt_and_check(&pool, &email, ip).await;
+    match result {
+        Err(ddb_server::api::rest::LoginGateError::Throttled { retry_after_secs }) => {
+            assert_eq!(retry_after_secs, 8);
+        }
+        other => panic!("expected Throttled, got {other:?}"),
+    }
+
+    cleanup_login_attempts(&pool, &email).await;
+}
+
+#[tokio::test]
+async fn test_login_attempts_lock_after_ten_failures() {
+    let Some(pool) = setup_pool().await else {
+        return;
+    };
+    let email = format!("login-lock-{}@darshan.db", Uuid::new_v4());
+    cleanup_login_attempts(&pool, &email).await;
+    let ip: std::net::IpAddr = "10.0.0.3".parse().unwrap();
+
+    // Burn 9 failed attempts — inserts 9 rows, gate call at count=4..9 alternates
+    // pass/throttle but we don't care; we just need 9 failures in the window.
+    for _ in 0..9 {
+        let _ = ddb_server::api::rest::record_login_attempt_and_check(&pool, &email, ip).await;
+    }
+
+    // 10th call inserts row → 10 failures → account_locked with 3600s retry.
+    let result = ddb_server::api::rest::record_login_attempt_and_check(&pool, &email, ip).await;
+    match result {
+        Err(ddb_server::api::rest::LoginGateError::Locked { retry_after_secs }) => {
+            assert_eq!(retry_after_secs, 3600, "lock retry_after must be 1 hour");
+        }
+        other => panic!("expected Locked, got {other:?}"),
+    }
+
+    // 11th call should also stay locked.
+    let result = ddb_server::api::rest::record_login_attempt_and_check(&pool, &email, ip).await;
+    assert!(matches!(
+        result,
+        Err(ddb_server::api::rest::LoginGateError::Locked { .. })
+    ));
+
+    cleanup_login_attempts(&pool, &email).await;
+}
+
+#[tokio::test]
+async fn test_login_attempts_success_marks_row() {
+    let Some(pool) = setup_pool().await else {
+        return;
+    };
+    let email = format!("login-success-{}@darshan.db", Uuid::new_v4());
+    cleanup_login_attempts(&pool, &email).await;
+    let ip: std::net::IpAddr = "10.0.0.4".parse().unwrap();
+
+    let gate = ddb_server::api::rest::record_login_attempt_and_check(&pool, &email, ip)
+        .await
+        .expect("first attempt should pass");
+
+    // Row should exist with success=false.
+    let before: bool =
+        sqlx::query_scalar("SELECT success FROM login_attempts WHERE id = $1")
+            .bind(gate.attempt_id)
+            .fetch_one(&pool)
+            .await
+            .expect("row exists");
+    assert!(!before, "row should start with success=false");
+
+    // Flip to success.
+    ddb_server::api::rest::mark_login_attempt_success(&pool, gate.attempt_id).await;
+
+    let after: bool =
+        sqlx::query_scalar("SELECT success FROM login_attempts WHERE id = $1")
+            .bind(gate.attempt_id)
+            .fetch_one(&pool)
+            .await
+            .expect("row still exists");
+    assert!(after, "row should be flipped to success=true");
+
+    cleanup_login_attempts(&pool, &email).await;
+}
+
+#[tokio::test]
+async fn test_login_attempts_success_excluded_from_count() {
+    let Some(pool) = setup_pool().await else {
+        return;
+    };
+    let email = format!("login-mixed-{}@darshan.db", Uuid::new_v4());
+    cleanup_login_attempts(&pool, &email).await;
+    let ip: std::net::IpAddr = "10.0.0.5".parse().unwrap();
+
+    // 4 failures, then mark the 4th as success → effective failure count drops to 3.
+    let mut last_gate_id: Option<Uuid> = None;
+    for _ in 0..4 {
+        let g = ddb_server::api::rest::record_login_attempt_and_check(&pool, &email, ip)
+            .await
+            .expect("under threshold");
+        last_gate_id = Some(g.attempt_id);
+    }
+    // Flip the most recent attempt to success=true so it no longer counts.
+    ddb_server::api::rest::mark_login_attempt_success(&pool, last_gate_id.unwrap()).await;
+
+    // Now insert 2 more failures — total failures = 3 (first 3) + 2 = 5 rows with
+    // success=false. Counting happens after insert so the 5th inserted failure
+    // sees failed=5 and should trip the throttle.
+    let _ = ddb_server::api::rest::record_login_attempt_and_check(&pool, &email, ip).await;
+    let r = ddb_server::api::rest::record_login_attempt_and_check(&pool, &email, ip).await;
+    assert!(
+        matches!(
+            r,
+            Err(ddb_server::api::rest::LoginGateError::Throttled { .. })
+        ),
+        "successful row must be excluded from failure count, got {r:?}"
+    );
+
+    cleanup_login_attempts(&pool, &email).await;
+}
+
+// ===========================================================================
 // 3. AUTH — Session Manager (7)
 // ===========================================================================
 
