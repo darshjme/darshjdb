@@ -48,3 +48,10 @@ aws-credential-types.workspace = true
 aws-types.workspace = true
 async-trait.workspace = true
 csv.workspace = true
+
+# Phase 10 — Observability (slice 29/30): Prometheus metrics + JSON logging + request_id.
+metrics.workspace = true
+metrics-exporter-prometheus.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
