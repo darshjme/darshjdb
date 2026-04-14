@@ -48,3 +48,7 @@ aws-credential-types.workspace = true
 aws-types.workspace = true
 async-trait.workspace = true
 csv.workspace = true
+
+# Slice 11 — cache tier integration (RESP3 + HTTP REST `/api/cache/*`).
+ddb-cache = { path = "../cache" }
+ddb-cache-server = { path = "../cache-server" }

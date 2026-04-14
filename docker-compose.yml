@@ -17,6 +17,8 @@ services:
       dockerfile: Dockerfile
     ports:
       - "${DDB_HOST_PORT:-7700}:7700"
+      # Slice 11 — RESP3 protocol server (Redis-compatible) exposed on 7701.
+      - "${DDB_CACHE_HOST_PORT:-7701}:7701"
     environment:
       DATABASE_URL: "postgres://darshan:${POSTGRES_PASSWORD:-darshan}@postgres:5432/darshjdb"
       DDB_PORT: "7700"
@@ -24,6 +26,9 @@ services:
       DDB_JWT_SECRET: ${DDB_JWT_SECRET:?Set DDB_JWT_SECRET in .env}
       DDB_REDIS_URL: "redis://redis:6379/0"
       DDB_QDRANT_URL: "http://qdrant:6334"
+      # Slice 11 — DdbCache (RESP3 + HTTP REST) tunables.
+      DARSH_CACHE_PORT: "7701"
+      DARSH_CACHE_PASSWORD: ${DARSH_CACHE_PASSWORD:-}
       RUST_LOG: ${RUST_LOG:-info}
     depends_on:
       postgres:
