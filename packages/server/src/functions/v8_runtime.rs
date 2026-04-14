@@ -28,13 +28,13 @@
 
 #![cfg(feature = "v8")]
 
+use std::fmt::Display;
 use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use deno_core::error::AnyError;
 use deno_core::url::Url;
 use deno_core::{JsRuntime, PollEventLoopOptions, RuntimeOptions, v8};
 use serde_json::Value;
@@ -62,7 +62,7 @@ use super::runtime::{
 /// A concurrency semaphore caps the number of simultaneously live isolates
 /// at [`ResourceLimits::max_concurrency`] to bound memory.
 pub struct V8Runtime {
-    /// Base directory containing user function files. The harness resolves
+    /// Base directory containing user function files. The runtime resolves
     /// `FunctionDef::file_path` relative to this root.
     functions_dir: PathBuf,
 
@@ -142,7 +142,9 @@ impl RuntimeBackend for V8Runtime {
                     info!(backend = "v8-embedded", "runtime healthy");
                     Ok(())
                 }
-                Ok(Err(e)) => Err(RuntimeError::Internal(format!("v8 health check failed: {e}"))),
+                Ok(Err(e)) => Err(RuntimeError::Internal(format!(
+                    "v8 health check failed: {e}"
+                ))),
                 Err(e) => Err(RuntimeError::Internal(format!(
                     "v8 health worker panicked: {e}"
                 ))),
@@ -223,7 +225,7 @@ fn run_in_isolate(
         let preamble = format!("globalThis.__ddb_ctx = {ctx_json};");
         js_runtime
             .execute_script("[ddb:preamble]", preamble)
-            .map_err(map_any_err)?;
+            .map_err(map_err)?;
 
         // 5. Load the user file as a side ES module.
         let module_specifier = Url::from_file_path(&source_path).map_err(|_| {
@@ -236,29 +238,23 @@ fn run_in_isolate(
         let mod_id = js_runtime
             .load_side_es_module_from_code(&module_specifier, source_code)
             .await
-            .map_err(map_any_err)?;
+            .map_err(map_err)?;
 
-        // mod_evaluate returns a future that resolves when the module is
-        // fully evaluated (including any top-level await). We drive the
-        // event loop alongside it.
-        let eval_fut = js_runtime.mod_evaluate(mod_id);
+        // Drive mod_evaluate and the event loop concurrently — top-level
+        // await in the user module would otherwise deadlock.
+        let eval_fut = Box::pin(js_runtime.mod_evaluate(mod_id));
         js_runtime
-            .run_event_loop(PollEventLoopOptions::default())
+            .with_event_loop_promise(eval_fut, PollEventLoopOptions::default())
             .await
-            .map_err(map_any_err)?;
-        eval_fut.await.map_err(map_any_err)?;
+            .map_err(map_err)?;
 
-        // 6. Pull the module namespace, look up the requested export, call
-        //    it with __ddb_ctx, and serialize the result.
-        let namespace = js_runtime
-            .get_module_namespace(mod_id)
-            .map_err(map_any_err)?;
+        // 6. Pull the module namespace, look up the requested export, and
+        //    prepare a `v8::Global<v8::Function>` so we can drive the call
+        //    through deno_core's call/event-loop plumbing.
+        let namespace = js_runtime.get_module_namespace(mod_id).map_err(map_err)?;
 
-        // We capture the call result as a Global so we can await any Promise
-        // it returns via `resolve` without holding a HandleScope across an
-        // .await boundary.
-        let call_result_global: v8::Global<v8::Value> = {
-            let scope = &mut js_runtime.handle_scope();
+        let fn_global: v8::Global<v8::Function> = {
+            deno_core::scope!(scope, js_runtime);
             let ns_local = v8::Local::new(scope, namespace);
             let ns_obj: v8::Local<v8::Object> = ns_local
                 .try_into()
@@ -274,36 +270,33 @@ fn run_in_isolate(
                 RuntimeError::Internal(format!("export '{export_name}' is not a function"))
             })?;
 
-            // Read back __ddb_ctx from the global and pass it as arg 0.
-            let global = scope.get_current_context().global(scope);
-            let ctx_key = v8::String::new(scope, "__ddb_ctx").unwrap();
-            let ctx_val = global
-                .get(scope, ctx_key.into())
-                .ok_or_else(|| RuntimeError::Internal("__ddb_ctx vanished from globalThis".into()))?;
-
-            let undefined: v8::Local<v8::Value> = v8::undefined(scope).into();
-            let call_result = export_fn
-                .call(scope, undefined, &[ctx_val])
-                .ok_or_else(|| RuntimeError::Internal("function call returned no value".into()))?;
-
-            v8::Global::new(scope, call_result)
+            v8::Global::new(scope, export_fn)
         };
 
-        // If the function returned a Promise, resolve drives it to settlement.
-        let resolved_global = js_runtime
-            .resolve(call_result_global)
-            .await
-            .map_err(map_any_err)?;
+        // 7. Build the __ddb_ctx argument as a Global<Value>.
+        let ctx_arg_global: v8::Global<v8::Value> = {
+            deno_core::scope!(scope, js_runtime);
+            let global = scope.get_current_context().global(scope);
+            let ctx_key = v8::String::new(scope, "__ddb_ctx").unwrap();
+            let ctx_val = global.get(scope, ctx_key.into()).ok_or_else(|| {
+                RuntimeError::Internal("__ddb_ctx vanished from globalThis".into())
+            })?;
+            v8::Global::new(scope, ctx_val)
+        };
 
-        js_runtime
-            .run_event_loop(PollEventLoopOptions::default())
+        // 8. Call the function through deno_core, which returns a future
+        //    that resolves to the function's return value (driving promises
+        //    if necessary). We drive the event loop alongside it.
+        let call_fut = Box::pin(js_runtime.call_with_args(&fn_global, &[ctx_arg_global]));
+        let return_global = js_runtime
+            .with_event_loop_promise(call_fut, PollEventLoopOptions::default())
             .await
-            .map_err(map_any_err)?;
+            .map_err(map_err)?;
 
-        // 7. Serialize the resolved value to serde_json::Value.
+        // 9. Serialize the returned value to serde_json::Value.
         let json_value: Value = {
-            let scope = &mut js_runtime.handle_scope();
-            let local = v8::Local::new(scope, resolved_global);
+            deno_core::scope!(scope, js_runtime);
+            let local = v8::Local::new(scope, return_global);
             deno_core::serde_v8::from_v8(scope, local).map_err(|e| {
                 RuntimeError::Internal(format!("failed to convert v8 value to json: {e}"))
             })?
@@ -311,7 +304,6 @@ fn run_in_isolate(
 
         // Tell the watchdog we finished cleanly.
         let _ = stop_tx.send(());
-        // Drop the channel sender before joining so the recv_timeout returns.
         drop(stop_tx);
         let _ = watchdog.join();
 
@@ -328,7 +320,10 @@ fn run_in_isolate(
     })
 }
 
-/// Convert a `deno_core::AnyError` into our local [`RuntimeError`].
-fn map_any_err(e: AnyError) -> RuntimeError {
+/// Convert any `Display` error into our local [`RuntimeError`]. deno_core
+/// exposes `CoreError`, `Box<JsError>`, and a few other concrete error
+/// types from different APIs; a `Display`-bounded helper lets us use one
+/// `.map_err(map_err)` call at every site.
+fn map_err<E: Display>(e: E) -> RuntimeError {
     RuntimeError::Internal(format!("v8 runtime error: {e}"))
 }

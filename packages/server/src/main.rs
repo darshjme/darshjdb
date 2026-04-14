@@ -727,7 +727,9 @@ async fn main() -> Result<()> {
                     let max_conc = default_limits.max_concurrency;
 
                     #[cfg(feature = "v8")]
-                    let backend: Box<dyn ddb_server::functions::RuntimeBackend> = if want_v8 {
+                    let backend: Box<
+                        dyn ddb_server::functions::RuntimeBackend,
+                    > = if want_v8 {
                         tracing::info!(
                             backend = "v8-embedded",
                             "VYASA: using embedded V8 isolate runtime for server functions"
@@ -746,7 +748,9 @@ async fn main() -> Result<()> {
                     };
 
                     #[cfg(not(feature = "v8"))]
-                    let backend: Box<dyn ddb_server::functions::RuntimeBackend> = {
+                    let backend: Box<
+                        dyn ddb_server::functions::RuntimeBackend,
+                    > = {
                         if want_v8 {
                             tracing::warn!(
                                 "DDB_FUNCTION_RUNTIME=v8 requested but binary was built without --features v8; falling back to subprocess"
