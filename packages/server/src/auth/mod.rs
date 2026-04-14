@@ -27,6 +27,7 @@
 //! - **Middleware**: Axum layers for token extraction, rate limiting, and context building.
 
 pub mod default_permissions;
+pub mod magic_link;
 pub mod mfa;
 pub mod middleware;
 pub mod permissions;
@@ -36,6 +37,7 @@ pub mod scope;
 pub mod session;
 
 pub use default_permissions::{build_default_engine, get_rule_with_fallback};
+pub use magic_link::{GeneratedMagicLink, MagicLinkProvider};
 pub use mfa::{RecoveryCodeManager, TotpManager, WebAuthnStub};
 pub use middleware::{AuthLayer, RateLimiter, auth_middleware};
 pub use permissions::{
@@ -43,8 +45,8 @@ pub use permissions::{
     evaluate_rule_public,
 };
 pub use providers::{
-    GenericOAuth2Provider, MagicLinkProvider, OAuth2Provider, OAuthConfig, OAuthProviderKind,
-    OAuthUserInfo, PasswordProvider,
+    GenericOAuth2Provider, OAuth2Provider, OAuthConfig, OAuthProviderKind, OAuthUserInfo,
+    PasswordProvider,
 };
 pub use row_level::{
     AuthVars, CompareOp, EvalValue, LiteralValue, PermExpr, RowLevelSecurity, RowOp,
@@ -101,6 +103,10 @@ pub enum AuthError {
     #[error("token expired or invalid: {0}")]
     TokenInvalid(String),
 
+    /// A single-use token (e.g. magic link) was already consumed.
+    #[error("token has already been used")]
+    TokenAlreadyUsed,
+
     /// The refresh token does not match the expected device fingerprint.
     #[error("device fingerprint mismatch")]
     DeviceMismatch,
@@ -146,9 +152,10 @@ impl AuthError {
     pub fn status_code(&self) -> http::StatusCode {
         match self {
             Self::InvalidCredentials | Self::MfaFailed(_) => http::StatusCode::UNAUTHORIZED,
-            Self::TokenInvalid(_) | Self::DeviceMismatch | Self::SessionRevoked => {
-                http::StatusCode::UNAUTHORIZED
-            }
+            Self::TokenInvalid(_)
+            | Self::TokenAlreadyUsed
+            | Self::DeviceMismatch
+            | Self::SessionRevoked => http::StatusCode::UNAUTHORIZED,
             Self::PermissionDenied(_) => http::StatusCode::FORBIDDEN,
             Self::RateLimited { .. } => http::StatusCode::TOO_MANY_REQUESTS,
             Self::OAuth2(_) | Self::Crypto(_) => http::StatusCode::BAD_REQUEST,

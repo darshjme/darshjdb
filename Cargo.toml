@@ -63,3 +63,7 @@ ctrlc = { version = "3", features = ["termination"] }
 self_update = "0.41"
 async-trait = "0.1"
 csv = "1.3"
+
+# Phase 0.3 (slice 4/30) — SMTP delivery for magic-link authentication.
+# Declared as a plain version so crates can opt in to rustls-only features.
+lettre = { version = "0.11", default-features = false, features = ["smtp-transport", "tokio1-rustls-tls", "builder", "tokio1", "hostname"] }
