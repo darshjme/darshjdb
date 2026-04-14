@@ -48,7 +48,10 @@ tower = { version = "0.5", features = ["util"] }
 tower-http = { version = "0.6", features = ["cors", "catch-panic", "timeout", "trace", "compression-gzip"] }
 axum-extra = { version = "0.10", features = ["typed-header"] }
 pin-project-lite = "0.2"
-notify = { version = "7", features = ["macos_fsevent"] }
+# `notify` picks the right platform backend automatically — no platform-specific
+# feature should ever be forced here or the crate fails to compile on the other
+# OSes. macos_fsevent was set explicitly prior to v0.3.1 and broke Linux builds.
+notify = "7"
 cron = "0.15"
 rmp-serde = "1"
 tokio-stream = { version = "0.1", features = ["sync"] }
