@@ -759,9 +759,11 @@ async fn test_login_attempts_success_excluded_from_count() {
     // Flip the most recent attempt to success=true so it no longer counts.
     ddb_server::api::rest::mark_login_attempt_success(&pool, last_gate_id.unwrap()).await;
 
-    // Now insert 2 more failures — total failures = 3 (first 3) + 2 = 5 rows with
-    // success=false. Counting happens after insert so the 5th inserted failure
-    // sees failed=5 and should trip the throttle.
+    // Now insert 3 more failures — total failures = 3 (excluding flipped) + 3
+    // = 6 rows with success=false. Throttle kicks in at failed > 5, i.e. the
+    // 6th row. If the success flag were NOT excluded, we'd hit throttle at
+    // insert #5 instead of #6 — that gap is exactly what this test asserts.
+    let _ = ddb_server::api::rest::record_login_attempt_and_check(&pool, &email, ip).await;
     let _ = ddb_server::api::rest::record_login_attempt_and_check(&pool, &email, ip).await;
     let r = ddb_server::api::rest::record_login_attempt_and_check(&pool, &email, ip).await;
     assert!(

@@ -31,47 +31,15 @@ RUN apt-get update && \
 
 WORKDIR /build
 
-# Cache dependency layer — copy manifests first
-# v0.3.0 Grand Transformation added three new workspace members
-# (ddb-cache, ddb-cache-server, ddb-agent-memory); every manifest must
-# be copied here so cargo can resolve the dependency graph before any
-# real source lands.
+# v0.3.1: the stubbed warm-cache layer was corrupting cargo's crate
+# metadata for the multi-crate workspace (ddb-server would resolve
+# `ddb_cache::DdbCache` against the empty stub metadata even after the
+# real source was COPY'd in, because the stub compilation cache won). We
+# drop the warm cache and rely on GitHub Actions buildx cache-from/to
+# mounted via `cache-from: type=gha` in the CI workflow. The build stays
+# fast on incremental CI runs and is correct on cold builds.
+
 COPY Cargo.toml Cargo.lock ./
-COPY packages/server/Cargo.toml          packages/server/Cargo.toml
-COPY packages/cli/Cargo.toml             packages/cli/Cargo.toml
-COPY packages/cache/Cargo.toml           packages/cache/Cargo.toml
-COPY packages/cache-server/Cargo.toml    packages/cache-server/Cargo.toml
-COPY packages/agent-memory/Cargo.toml    packages/agent-memory/Cargo.toml
-
-# Create stub sources so cargo can resolve the dependency graph.
-# Also stub admin/dist so include_dir! can resolve
-# $CARGO_MANIFEST_DIR/../admin/dist during the dependency-only warm-up build.
-# Stubs include a lib.rs for crates that are lib-only (cache, agent-memory)
-# and a main.rs for binary crates (server, cli, cache-server).
-RUN mkdir -p \
-        packages/server/src \
-        packages/cli/src \
-        packages/cache/src \
-        packages/cache-server/src \
-        packages/agent-memory/src \
-        packages/admin/dist && \
-    echo "fn main() {}"                                                            > packages/server/src/main.rs && \
-    echo "fn main() {}"                                                            > packages/cli/src/main.rs && \
-    echo "fn main() {}"                                                            > packages/cache-server/src/main.rs && \
-    echo "// stub"                                                                 > packages/cache/src/lib.rs && \
-    echo "// stub"                                                                 > packages/cache-server/src/lib.rs && \
-    echo "// stub"                                                                 > packages/agent-memory/src/lib.rs && \
-    echo "<!doctype html><html><body>stub</body></html>"                           > packages/admin/dist/index.html && \
-    cargo build --release --workspace 2>/dev/null || true && \
-    rm -rf \
-        packages/server/src \
-        packages/cli/src \
-        packages/cache/src \
-        packages/cache-server/src \
-        packages/agent-memory/src
-
-# Copy real source AND the freshly built admin dist (from frontend stage)
-# so include_dir! embeds the real dashboard, not the stub.
 COPY packages/server/        packages/server/
 COPY packages/cli/           packages/cli/
 COPY packages/cache/         packages/cache/
@@ -79,17 +47,7 @@ COPY packages/cache-server/  packages/cache-server/
 COPY packages/agent-memory/  packages/agent-memory/
 COPY --from=frontend /build/packages/admin/dist packages/admin/dist
 
-# Touch the main.rs files so cargo always rebuilds them against the real
-# source after the warm-cache layer populated dependencies. For lib-only
-# crates (cache, agent-memory) we touch the manifest so modification-time
-# invalidation still fires without needing a main.rs to exist.
-RUN touch \
-        packages/server/src/main.rs \
-        packages/cli/src/main.rs \
-        packages/cache-server/src/main.rs \
-        packages/cache/Cargo.toml \
-        packages/agent-memory/Cargo.toml && \
-    cargo build --release --workspace && \
+RUN cargo build --release --workspace && \
     strip target/release/ddb-server target/release/ddb target/release/ddb-cache-server
 
 # ── Stage 3: Runtime (minimal) ───────────────────────────────────────

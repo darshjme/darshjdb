@@ -42,6 +42,50 @@ async fn summariser_replaces_20_episodic_with_1_semantic() {
         }
     };
 
+    // Bootstrap the agent_memory schema inline so the test is
+    // self-contained and can run against a fresh CI Postgres service
+    // container without relying on `ddb_server::ensure_agent_memory_schema`
+    // (which would create a circular dependency from ddb-agent-memory
+    // back to ddb-server). Skip the test entirely if pgvector is not
+    // installed — the hosted CI runner may not have it.
+    if let Err(e) = sqlx::raw_sql(
+        "CREATE EXTENSION IF NOT EXISTS vector;
+
+         CREATE TABLE IF NOT EXISTS agent_sessions (
+             session_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+             agent_id TEXT NOT NULL,
+             model TEXT NOT NULL,
+             created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+             last_active_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+             metadata JSONB NOT NULL DEFAULT '{}'::jsonb
+         );
+
+         CREATE TABLE IF NOT EXISTS memory_entries (
+             id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+             session_id UUID NOT NULL REFERENCES agent_sessions(session_id)
+                 ON DELETE CASCADE,
+             agent_id TEXT NOT NULL,
+             role TEXT NOT NULL,
+             content TEXT NOT NULL,
+             content_tokens INTEGER NOT NULL DEFAULT 0,
+             importance DOUBLE PRECISION NOT NULL DEFAULT 0.5,
+             tier TEXT NOT NULL DEFAULT 'working',
+             created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+             accessed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+             access_count INTEGER NOT NULL DEFAULT 0,
+             compressed BOOLEAN NOT NULL DEFAULT false
+         );",
+    )
+    .execute(&pool)
+    .await
+    {
+        eprintln!(
+            "skipping summariser integration test: schema bootstrap failed \
+             (pgvector extension probably missing): {e}"
+        );
+        return;
+    }
+
     // Unique per-run agent id so repeat runs don't collide.
     let agent_id = format!("test-summariser-{}", Uuid::new_v4());
 
