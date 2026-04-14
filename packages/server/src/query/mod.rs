@@ -5,8 +5,11 @@
 //! that join across the `triples` table, caching plan shapes in an LRU.
 
 pub mod darshql;
+pub mod dialect;
 pub mod parallel;
 pub mod reactive;
+
+pub use dialect::{ParamKind, PgDialect, SqlDialect, SqliteDialect};
 
 use lru::LruCache;
 use serde::{Deserialize, Serialize};
@@ -279,7 +282,24 @@ pub struct NestedPlan {
     /// The attribute on the parent whose value is a UUID reference.
     pub via_attribute: String,
     /// SQL to fetch the nested entity's triples.
+    ///
+    /// On Postgres this is a *baked* statement using
+    /// `entity_id = ANY($1::uuid[])` — one statement handles any batch
+    /// size. On SQLite the same string contains the `__UUID_LIST__`
+    /// sentinel (see `sql_template`) and must not be executed as-is.
     pub sql: String,
+    /// Template SQL for dialects where nested batch fetch uses a
+    /// runtime-arity `IN (...)` list (e.g. SQLite has no array type).
+    ///
+    /// When `Some`, the string contains a `__UUID_LIST__` token that
+    /// the store adapter replaces at bind time with a comma-separated
+    /// placeholder list of the correct length (`?1, ?2, …`). When
+    /// `None`, `sql` is directly executable against the target store.
+    ///
+    /// The SQLite adapter that performs the expansion lands in the
+    /// Phase 2 integration commit; v0.3.2 only carries the token
+    /// through the planner.
+    pub sql_template: Option<String>,
     /// Sub-nested plans for multi-level resolution (e.g. todos -> owner -> org).
     pub sub_nested: Vec<NestedPlan>,
 }
@@ -287,12 +307,29 @@ pub struct NestedPlan {
 /// Maximum nesting depth to prevent query explosion.
 const MAX_NESTING_DEPTH: usize = 3;
 
-/// Convert a [`QueryAST`] into an executable [`QueryPlan`].
+/// Convert a [`QueryAST`] into an executable [`QueryPlan`] using the
+/// default Postgres dialect.
 ///
-/// The planner generates SQL that joins the `triples` table once per
-/// attribute mentioned in the query (where-clauses, ordering, etc.)
-/// and applies pagination server-side.
+/// This is the byte-for-byte v0.3.1 behaviour — it delegates to
+/// [`plan_query_with_dialect`] with a [`PgDialect`] so the SQL string
+/// matches existing snapshots exactly. New call sites that want to
+/// target SQLite should use [`plan_query_with_dialect`] directly.
 pub fn plan_query(ast: &QueryAST) -> Result<QueryPlan> {
+    plan_query_with_dialect(ast, &PgDialect)
+}
+
+/// Convert a [`QueryAST`] into an executable [`QueryPlan`] using the
+/// supplied SQL dialect.
+///
+/// The planner orchestrates joins, aliases, and parameter indices;
+/// every dialect-specific fragment (param placeholders, JSONB wraps,
+/// UUID casts, `@>` containment, vector literals, `to_tsvector`) is
+/// routed through `dialect` so the same logical plan works on both
+/// Postgres and SQLite.
+pub fn plan_query_with_dialect(
+    ast: &QueryAST,
+    dialect: &dyn SqlDialect,
+) -> Result<QueryPlan> {
     let mut sql = String::with_capacity(512);
     let mut params: Vec<serde_json::Value> = Vec::new();
     let mut param_idx = 1u32;
@@ -309,9 +346,8 @@ pub fn plan_query(ast: &QueryAST) -> Result<QueryPlan> {
     sql.push_str("INNER JOIN triples t_type ON t_type.entity_id = t0.entity_id\n");
     sql.push_str("  AND t_type.attribute = ':db/type'\n");
     sql.push_str("  AND NOT t_type.retracted\n");
-    sql.push_str(&format!(
-        "  AND t_type.value = to_jsonb(${param_idx}::text)\n"
-    ));
+    let type_param = dialect.jsonb_param(param_idx, ParamKind::Text);
+    sql.push_str(&format!("  AND t_type.value = {type_param}\n"));
     params.push(serde_json::Value::String(ast.entity_type.clone()));
     param_idx += 1;
 
@@ -321,60 +357,101 @@ pub fn plan_query(ast: &QueryAST) -> Result<QueryPlan> {
         sql.push_str(&format!(
             "INNER JOIN triples {alias} ON {alias}.entity_id = t0.entity_id\n"
         ));
-        sql.push_str(&format!("  AND {alias}.attribute = ${param_idx}\n"));
+        let attr_placeholder = dialect.placeholder(param_idx);
+        sql.push_str(&format!("  AND {alias}.attribute = {attr_placeholder}\n"));
         params.push(serde_json::Value::String(wc.attribute.clone()));
         param_idx += 1;
 
         sql.push_str(&format!("  AND NOT {alias}.retracted\n"));
 
-        // For string params, bind_json_param sends TEXT which must be wrapped
-        // in to_jsonb() for JSONB column comparison.  Non-string JSON values
-        // are bound natively as JSONB so a plain cast works.
-        let is_string_value = wc.value.is_string();
-        let jsonb_param = if is_string_value {
-            format!("to_jsonb(${param_idx}::text)")
+        // For string params, the planner's binder sends TEXT which
+        // needs dialect-specific wrapping (to_jsonb on Postgres,
+        // json_quote on SQLite). Non-string JSON values are bound as
+        // pre-encoded JSON and compared directly.
+        let kind = if wc.value.is_string() {
+            ParamKind::Text
         } else {
-            format!("${param_idx}::jsonb")
+            ParamKind::Json
         };
+        let jsonb_param = dialect.jsonb_param(param_idx, kind);
         let op_sql = match wc.op {
-            WhereOp::Eq => format!("  AND {alias}.value = {jsonb_param}\n"),
-            WhereOp::Neq => format!("  AND {alias}.value != {jsonb_param}\n"),
-            WhereOp::Gt => format!("  AND {alias}.value > {jsonb_param}\n"),
-            WhereOp::Gte => format!("  AND {alias}.value >= {jsonb_param}\n"),
-            WhereOp::Lt => format!("  AND {alias}.value < {jsonb_param}\n"),
-            WhereOp::Lte => format!("  AND {alias}.value <= {jsonb_param}\n"),
-            WhereOp::Contains => format!("  AND {alias}.value @> {jsonb_param}\n"),
-            WhereOp::Like => format!("  AND {alias}.value #>> '{{}}' ILIKE ${param_idx}\n"),
+            WhereOp::Eq => format!(
+                "  AND {}\n",
+                dialect.compare_triple_value(&alias, "=", &jsonb_param)
+            ),
+            WhereOp::Neq => format!(
+                "  AND {}\n",
+                dialect.compare_triple_value(&alias, "!=", &jsonb_param)
+            ),
+            WhereOp::Gt => format!(
+                "  AND {}\n",
+                dialect.compare_triple_value(&alias, ">", &jsonb_param)
+            ),
+            WhereOp::Gte => format!(
+                "  AND {}\n",
+                dialect.compare_triple_value(&alias, ">=", &jsonb_param)
+            ),
+            WhereOp::Lt => format!(
+                "  AND {}\n",
+                dialect.compare_triple_value(&alias, "<", &jsonb_param)
+            ),
+            WhereOp::Lte => format!(
+                "  AND {}\n",
+                dialect.compare_triple_value(&alias, "<=", &jsonb_param)
+            ),
+            WhereOp::Contains => {
+                if !dialect.supports_jsonb_contains() {
+                    return Err(DarshJError::InvalidQuery(format!(
+                        "$where Contains (JSONB containment) is not supported on the \
+                         {} dialect; use Eq for exact match or wait for v0.4 portable IR",
+                        dialect.name()
+                    )));
+                }
+                format!("  AND {}\n", dialect.jsonb_contains(&alias, &jsonb_param))
+            }
+            WhereOp::Like => {
+                let like_param = dialect.placeholder(param_idx);
+                format!("  AND {}\n", dialect.text_ilike(&alias, &like_param))
+            }
         };
         sql.push_str(&op_sql);
         params.push(wc.value.clone());
         param_idx += 1;
     }
 
-    // Full-text search clause using PostgreSQL tsvector/tsquery.
-    // Uses the GIN index on to_tsvector('english', value #>> '{}') for
-    // efficient ranked full-text matching instead of brute-force ILIKE.
+    // Full-text search clause. On Postgres this uses the GIN-indexed
+    // tsvector/tsquery path; on SQLite it falls back to a LIKE match.
     if let Some(ref term) = ast.search {
         sql.push_str("INNER JOIN triples t_search ON t_search.entity_id = t0.entity_id\n");
         sql.push_str("  AND NOT t_search.retracted\n");
+        let search_placeholder = dialect.placeholder(param_idx);
         sql.push_str(&format!(
-            "  AND to_tsvector('english', t_search.value #>> '{{}}') @@ plainto_tsquery('english', ${param_idx})\n"
+            "  AND {}\n",
+            dialect.fulltext_match("t_search", &search_placeholder)
         ));
         params.push(serde_json::Value::String(term.clone()));
         param_idx += 1;
     }
 
-    // Semantic (vector) search: join the embeddings table and use pgvector's
-    // cosine distance operator (<=>) for nearest-neighbour ordering.
+    // Semantic (vector) search — only emitted on dialects that support
+    // it. SQLite silently skips the join because there is no native
+    // vector type; the request will fall back to returning the base
+    // entity rows.
     if let Some(ref sem) = ast.semantic {
         if let Some(ref vec) = sem.vector {
-            // Pre-computed vector supplied — wire directly to pgvector.
-            let vec_literal = format_vector_literal(vec);
-            sql.push_str("INNER JOIN embeddings t_emb ON t_emb.entity_id = t0.entity_id\n");
-            sql.push_str(&format!(
-                "  AND t_emb.embedding <=> '{vec_literal}'::vector < 2.0\n"
-            ));
-            // We store the vector literal as a param for the ORDER BY clause later.
+            if dialect.supports_vector() {
+                let vec_literal = dialect.vector_literal(vec);
+                sql.push_str("INNER JOIN embeddings t_emb ON t_emb.entity_id = t0.entity_id\n");
+                sql.push_str(&format!(
+                    "  AND {} < 2.0\n",
+                    dialect.cosine_distance("t_emb", &vec_literal)
+                ));
+            } else {
+                tracing::warn!(
+                    dialect = dialect.name(),
+                    "semantic vector search not supported on this dialect; skipping embeddings join"
+                );
+            }
         } else if sem.query.is_some() {
             tracing::warn!(
                 "$semantic.query requires an embedding API to convert text to vectors; \
@@ -392,21 +469,23 @@ pub fn plan_query(ast: &QueryAST) -> Result<QueryPlan> {
 
     sql.push_str("WHERE NOT t0.retracted\n");
 
-    // Ordering: when semantic search is active with a vector, order by
-    // cosine distance (ascending = most similar first). Explicit $order
-    // clauses are appended after the distance sort as tiebreakers.
-    let has_semantic_vector = ast.semantic.as_ref().is_some_and(|s| s.vector.is_some());
+    // Ordering: when semantic search is active with a vector (and the
+    // dialect supports vectors), order by cosine distance first.
+    let has_semantic_vector = ast.semantic.as_ref().is_some_and(|s| s.vector.is_some())
+        && dialect.supports_vector();
 
     if has_semantic_vector || !ast.order.is_empty() {
         sql.push_str("ORDER BY ");
         let mut first = true;
 
         // Vector distance sort (most similar first).
-        if let Some(ref sem) = ast.semantic
+        if has_semantic_vector
+            && let Some(ref sem) = ast.semantic
             && let Some(ref vec) = sem.vector
         {
-            let vec_literal = format_vector_literal(vec);
-            sql.push_str(&format!("t_emb.embedding <=> '{vec_literal}'::vector ASC"));
+            let vec_literal = dialect.vector_literal(vec);
+            sql.push_str(&dialect.cosine_distance("t_emb", &vec_literal));
+            sql.push_str(" ASC");
             first = false;
         }
 
@@ -416,11 +495,12 @@ pub fn plan_query(ast: &QueryAST) -> Result<QueryPlan> {
             }
             first = false;
             let alias = format!("to{i}");
-            // We need a sub-select or lateral join for ordering;
-            // for simplicity, sort by entity_id-scoped value.
-            // The ORDER BY references a correlated subquery.
+            // Correlated sub-select so the ORDER BY can reference the
+            // latest value of an attribute per entity. Both dialects
+            // share this shape; only the placeholder syntax differs.
+            let attr_placeholder = dialect.placeholder(param_idx);
             sql.push_str(&format!(
-                "(SELECT {alias}.value FROM triples {alias} WHERE {alias}.entity_id = t0.entity_id AND {alias}.attribute = ${param_idx} AND NOT {alias}.retracted ORDER BY {alias}.tx_id DESC LIMIT 1)",
+                "(SELECT {alias}.value FROM triples {alias} WHERE {alias}.entity_id = t0.entity_id AND {alias}.attribute = {attr_placeholder} AND NOT {alias}.retracted ORDER BY {alias}.tx_id DESC LIMIT 1)",
             ));
             params.push(serde_json::Value::String(oc.attribute.clone()));
             param_idx += 1;
@@ -439,7 +519,7 @@ pub fn plan_query(ast: &QueryAST) -> Result<QueryPlan> {
     let effective_limit = ast.limit.or_else(|| ast.semantic.as_ref().map(|s| s.limit));
 
     // Nested plans (with recursive sub-nesting up to MAX_NESTING_DEPTH)
-    let nested_plans = build_nested_plans(&ast.nested, 1);
+    let nested_plans = build_nested_plans(&ast.nested, dialect, 1);
 
     Ok(QueryPlan {
         sql,
@@ -452,7 +532,25 @@ pub fn plan_query(ast: &QueryAST) -> Result<QueryPlan> {
 
 /// Recursively build nested plans from the AST's nested queries,
 /// respecting [`MAX_NESTING_DEPTH`] to prevent query explosion.
-fn build_nested_plans(nested: &[NestedQuery], depth: usize) -> Vec<NestedPlan> {
+///
+/// The emitted SQL is dialect-specific for two reasons:
+/// - Postgres can bake a single statement with
+///   `entity_id = ANY($1::uuid[])` because the whole UUID batch binds
+///   to one parameter. SQLite has no array type, so the planner emits
+///   a `WHERE entity_id IN (__UUID_LIST__)` *template* that the
+///   SQLite store adapter expands at bind time with the correct
+///   number of `?N` placeholders (one per UUID).
+/// - Placeholder syntax (`$1` vs `?1`) for the Postgres baked form.
+///
+/// The `__UUID_LIST__` token is intentionally non-SQL so that any
+/// caller forgetting to expand it before executing the statement
+/// will see a clear prepare-time error rather than silently running
+/// wrong SQL.
+fn build_nested_plans(
+    nested: &[NestedQuery],
+    dialect: &dyn SqlDialect,
+    depth: usize,
+) -> Vec<NestedPlan> {
     if depth > MAX_NESTING_DEPTH {
         return Vec::new();
     }
@@ -460,33 +558,43 @@ fn build_nested_plans(nested: &[NestedQuery], depth: usize) -> Vec<NestedPlan> {
         .iter()
         .map(|n| {
             let sub_nested = match &n.sub_query {
-                Some(sub) => build_nested_plans(&sub.nested, depth + 1),
+                Some(sub) => build_nested_plans(&sub.nested, dialect, depth + 1),
                 None => Vec::new(),
             };
+
+            let (sql, sql_template) = if dialect.supports_uuid_array_any() {
+                // Postgres: bake `ANY($1::uuid[])` — one prepared
+                // statement handles any batch size.
+                let placeholder = dialect.placeholder(1);
+                let array_cast = dialect.uuid_array_cast(&placeholder);
+                let sql = format!(
+                    "SELECT attribute, value FROM triples \
+                     WHERE entity_id = ANY({array_cast}) AND NOT retracted \
+                     ORDER BY entity_id, attribute, tx_id DESC"
+                );
+                (sql, None)
+            } else {
+                // SQLite: emit an IN(__UUID_LIST__) template. The
+                // store adapter expands the token into
+                // `?1, ?2, …, ?N` at bind time once the UUID batch
+                // size is known. The `sql` field carries the
+                // template too so callers that inspect the plan in
+                // a dialect-agnostic way still see the shape.
+                let sql_template = "SELECT attribute, value FROM triples \
+                                    WHERE entity_id IN (__UUID_LIST__) AND NOT retracted \
+                                    ORDER BY entity_id, attribute, tx_id DESC"
+                    .to_string();
+                (sql_template.clone(), Some(sql_template))
+            };
+
             NestedPlan {
                 via_attribute: n.via_attribute.clone(),
-                sql: "SELECT attribute, value FROM triples \
-                     WHERE entity_id = ANY($1::uuid[]) AND NOT retracted \
-                     ORDER BY entity_id, attribute, tx_id DESC"
-                    .to_string(),
+                sql,
+                sql_template,
                 sub_nested,
             }
         })
         .collect()
-}
-
-/// Format a vector of f32 values as a pgvector literal string: `[0.1,0.2,0.3]`.
-fn format_vector_literal(vec: &[f32]) -> String {
-    let mut s = String::with_capacity(vec.len() * 8 + 2);
-    s.push('[');
-    for (i, v) in vec.iter().enumerate() {
-        if i > 0 {
-            s.push(',');
-        }
-        s.push_str(&v.to_string());
-    }
-    s.push(']');
-    s
 }
 
 /// Build a hybrid search query plan that combines tsvector full-text search
@@ -495,48 +603,83 @@ fn format_vector_literal(vec: &[f32]) -> String {
 /// The plan executes two CTEs — one for text ranking, one for vector ranking —
 /// then merges them with weighted RRF scores: `weight / (k + rank)`.
 pub fn plan_hybrid_query(ast: &QueryAST) -> Result<QueryPlan> {
+    plan_hybrid_query_with_dialect(ast, &PgDialect)
+}
+
+/// Dialect-aware variant of [`plan_hybrid_query`].
+///
+/// Hybrid search fundamentally depends on pgvector + tsvector, so the
+/// SQLite path returns an `InvalidQuery` error rather than emitting
+/// bogus SQL. The Postgres path is unchanged from v0.3.1.
+pub fn plan_hybrid_query_with_dialect(
+    ast: &QueryAST,
+    dialect: &dyn SqlDialect,
+) -> Result<QueryPlan> {
     let hybrid = ast
         .hybrid
         .as_ref()
         .ok_or_else(|| DarshJError::InvalidQuery("$hybrid clause is required".into()))?;
 
-    let vec_literal = format_vector_literal(&hybrid.vector);
+    if !dialect.supports_vector() {
+        return Err(DarshJError::InvalidQuery(format!(
+            "hybrid search (text + vector) is not supported on the {} dialect; \
+             use $search for text-only queries",
+            dialect.name()
+        )));
+    }
+
     let text_w = hybrid.text_weight;
     let vector_w = hybrid.vector_weight;
     let limit = hybrid.limit;
     let k = 60; // RRF constant (standard value from the literature)
 
+    // Route the two fundamentally Postgres-specific pieces (type-entity
+    // containment and full-text match) through the dialect so the SQL
+    // string is assembled rather than hard-coded.
+    let type_param = dialect.jsonb_param(1, ParamKind::Text);
+    let text_query_param = dialect.placeholder(2);
+    let fulltext_in_where = dialect.fulltext_match("t", &text_query_param);
+    // For the hybrid CTE, the Postgres dialect emits a quoted vector
+    // literal with the `::vector` cast (`'[…]'::vector`). We reuse
+    // that both inside the ORDER BY and as the column expression.
+    let pg_vec_literal = dialect.vector_literal(&hybrid.vector);
+    let cosine = dialect.cosine_distance("e", &pg_vec_literal);
+
     // The SQL uses two CTEs:
     //   text_ranked: full-text search results ranked by ts_rank_cd
     //   vector_ranked: cosine similarity results ranked by distance
     // Then a FULL OUTER JOIN with RRF scoring to merge both lists.
+    //
+    // The text_ranked CTE's ts_rank_cd expression is Postgres-only;
+    // since supports_vector() implies Postgres (our only vector
+    // backend), we leave it as a raw literal here.
     let sql = format!(
         r#"WITH type_entities AS (
     SELECT DISTINCT entity_id
     FROM triples
     WHERE attribute = ':db/type'
-      AND value = to_jsonb($1::text)
+      AND value = {type_param}
       AND NOT retracted
 ),
 text_ranked AS (
     SELECT t.entity_id,
            ROW_NUMBER() OVER (ORDER BY ts_rank_cd(
                to_tsvector('english', t.value #>> '{{}}'),
-               plainto_tsquery('english', $2)
+               plainto_tsquery('english', {text_query_param})
            ) DESC) AS rank
     FROM triples t
     INNER JOIN type_entities te ON te.entity_id = t.entity_id
     WHERE NOT t.retracted
-      AND to_tsvector('english', t.value #>> '{{}}') @@ plainto_tsquery('english', $2)
+      AND {fulltext_in_where}
     LIMIT {limit_inner}
 ),
 vector_ranked AS (
     SELECT e.entity_id,
-           ROW_NUMBER() OVER (ORDER BY e.embedding <=> '{vec_literal}'::vector) AS rank,
-           (e.embedding <=> '{vec_literal}'::vector) AS distance
+           ROW_NUMBER() OVER (ORDER BY {cosine}) AS rank,
+           ({cosine}) AS distance
     FROM embeddings e
     INNER JOIN type_entities te ON te.entity_id = e.entity_id
-    ORDER BY e.embedding <=> '{vec_literal}'::vector
+    ORDER BY {cosine}
     LIMIT {limit_inner}
 ),
 rrf_merged AS (
@@ -555,7 +698,10 @@ INNER JOIN rrf_merged rm ON rm.entity_id = t0.entity_id
 WHERE NOT t0.retracted
 ORDER BY rm.rrf_score DESC
 "#,
-        vec_literal = vec_literal,
+        type_param = type_param,
+        text_query_param = text_query_param,
+        fulltext_in_where = fulltext_in_where,
+        cosine = cosine,
         text_w = text_w,
         vector_w = vector_w,
         k = k,
@@ -569,7 +715,7 @@ ORDER BY rm.rrf_score DESC
     ];
 
     // Nested plans reuse the standard approach.
-    let nested_plans = build_nested_plans(&ast.nested, 1);
+    let nested_plans = build_nested_plans(&ast.nested, dialect, 1);
 
     Ok(QueryPlan {
         sql,
@@ -814,17 +960,36 @@ fn bind_json_param<'q>(
 
 /// Thread-safe LRU cache for query plans, keyed by a SHA-256 hash
 /// of the query shape (entity type + where attributes + order + nested).
+///
+/// Each instance is **pinned to a specific SQL dialect** at construction
+/// time. The cache key is the AST shape only (not the dialect), so two
+/// different stores (e.g. Postgres + SQLite) must use two separate
+/// `PlanCache` instances — otherwise a Pg plan could be served against
+/// a Sqlite store. `insert` / `get` `debug_assert!` on dialect match
+/// to catch bugs where a caller mixes dialects across a single cache.
 pub struct PlanCache {
     inner: RwLock<LruCache<[u8; 32], QueryPlan>>,
+    dialect_name: &'static str,
 }
 
 impl PlanCache {
-    /// Create a new cache with the given capacity.
-    pub fn new(capacity: usize) -> Self {
+    /// Create a new cache with the given capacity, pinned to `dialect`.
+    ///
+    /// The `dialect` parameter is stored as its static name only; the
+    /// cache itself never emits SQL. `insert` and `get` assert (debug
+    /// builds) that all traffic through this cache uses the same
+    /// dialect so plans from one backend never bleed into another.
+    pub fn new(capacity: usize, dialect: &dyn SqlDialect) -> Self {
         let cap = NonZeroUsize::new(capacity).unwrap_or(NonZeroUsize::new(256).expect("256 > 0"));
         Self {
             inner: RwLock::new(LruCache::new(cap)),
+            dialect_name: dialect.name(),
         }
+    }
+
+    /// Name of the dialect this cache is pinned to.
+    pub fn dialect_name(&self) -> &'static str {
+        self.dialect_name
     }
 
     /// Compute the shape hash for a query AST.
@@ -869,14 +1034,36 @@ impl PlanCache {
     ///
     /// Uses `peek` under a read lock so concurrent reads do not block
     /// each other. Trade-off: does not update LRU recency on read hits.
-    pub async fn get(&self, ast: &QueryAST) -> Option<QueryPlan> {
+    ///
+    /// `dialect` is asserted (debug builds) to match the dialect this
+    /// cache was pinned to at construction.
+    pub async fn get(&self, ast: &QueryAST, dialect: &dyn SqlDialect) -> Option<QueryPlan> {
+        debug_assert_eq!(
+            self.dialect_name,
+            dialect.name(),
+            "PlanCache pinned to {} but received {} lookup",
+            self.dialect_name,
+            dialect.name()
+        );
         let key = Self::shape_key(ast);
         let guard = self.inner.read().await;
         guard.peek(&key).cloned()
     }
 
     /// Insert a plan into the cache.
-    pub async fn insert(&self, ast: &QueryAST, plan: QueryPlan) {
+    ///
+    /// `dialect` is asserted (debug builds) to match the dialect this
+    /// cache was pinned to at construction. Mixing dialects on one
+    /// cache is a programmer error — different backends must use
+    /// different `PlanCache` instances (see the struct-level docs).
+    pub async fn insert(&self, ast: &QueryAST, plan: QueryPlan, dialect: &dyn SqlDialect) {
+        debug_assert_eq!(
+            self.dialect_name,
+            dialect.name(),
+            "PlanCache pinned to {} but received {} plan",
+            self.dialect_name,
+            dialect.name()
+        );
         let key = Self::shape_key(ast);
         let mut guard = self.inner.write().await;
         guard.put(key, plan);
@@ -901,7 +1088,11 @@ pub async fn run_query(
         plan_query
     };
 
-    let plan = match cache.get(&ast).await {
+    // run_query drives the Postgres backend only; SQLite runs through
+    // a separate store adapter with its own cache. The dialect passed
+    // here must match the cache's pinned dialect (debug_assert).
+    let dialect: &dyn SqlDialect = &PgDialect;
+    let plan = match cache.get(&ast, dialect).await {
         Some(cached) => {
             tracing::debug!("plan cache hit for type={}", ast.entity_type);
             // Re-plan to get fresh params (cache stores the shape, not values).
@@ -912,7 +1103,7 @@ pub async fn run_query(
         None => {
             tracing::debug!("plan cache miss for type={}", ast.entity_type);
             let plan = plan_fn(&ast)?;
-            cache.insert(&ast, plan.clone()).await;
+            cache.insert(&ast, plan.clone(), dialect).await;
             plan
         }
     };
@@ -1460,26 +1651,29 @@ mod tests {
 
     #[tokio::test]
     async fn plan_cache_hit() {
-        let cache = PlanCache::new(16);
+        let dialect: &dyn SqlDialect = &PgDialect;
+        let cache = PlanCache::new(16, dialect);
         let ast = bare_ast("User");
         let plan = plan_query(&ast).expect("should plan");
-        cache.insert(&ast, plan).await;
-        assert!(cache.get(&ast).await.is_some());
+        cache.insert(&ast, plan, dialect).await;
+        assert!(cache.get(&ast, dialect).await.is_some());
     }
 
     #[tokio::test]
     async fn plan_cache_miss_on_different_entity_type() {
-        let cache = PlanCache::new(16);
+        let dialect: &dyn SqlDialect = &PgDialect;
+        let cache = PlanCache::new(16, dialect);
         let ast1 = bare_ast("User");
         let plan = plan_query(&ast1).expect("should plan");
-        cache.insert(&ast1, plan).await;
+        cache.insert(&ast1, plan, dialect).await;
         let ast2 = bare_ast("Post");
-        assert!(cache.get(&ast2).await.is_none());
+        assert!(cache.get(&ast2, dialect).await.is_none());
     }
 
     #[tokio::test]
     async fn plan_cache_miss_on_different_operator() {
-        let cache = PlanCache::new(16);
+        let dialect: &dyn SqlDialect = &PgDialect;
+        let cache = PlanCache::new(16, dialect);
         let ast1 = QueryAST {
             where_clauses: vec![WhereClause {
                 attribute: "x".into(),
@@ -1488,7 +1682,7 @@ mod tests {
             }],
             ..bare_ast("T")
         };
-        cache.insert(&ast1, plan_query(&ast1).unwrap()).await;
+        cache.insert(&ast1, plan_query(&ast1).unwrap(), dialect).await;
         let ast2 = QueryAST {
             where_clauses: vec![WhereClause {
                 attribute: "x".into(),
@@ -1497,12 +1691,16 @@ mod tests {
             }],
             ..bare_ast("T")
         };
-        assert!(cache.get(&ast2).await.is_none(), "different op should miss");
+        assert!(
+            cache.get(&ast2, dialect).await.is_none(),
+            "different op should miss"
+        );
     }
 
     #[tokio::test]
     async fn plan_cache_miss_on_different_attribute() {
-        let cache = PlanCache::new(16);
+        let dialect: &dyn SqlDialect = &PgDialect;
+        let cache = PlanCache::new(16, dialect);
         let ast1 = QueryAST {
             where_clauses: vec![WhereClause {
                 attribute: "email".into(),
@@ -1511,7 +1709,7 @@ mod tests {
             }],
             ..bare_ast("T")
         };
-        cache.insert(&ast1, plan_query(&ast1).unwrap()).await;
+        cache.insert(&ast1, plan_query(&ast1).unwrap(), dialect).await;
         let ast2 = QueryAST {
             where_clauses: vec![WhereClause {
                 attribute: "name".into(),
@@ -1521,7 +1719,7 @@ mod tests {
             ..bare_ast("T")
         };
         assert!(
-            cache.get(&ast2).await.is_none(),
+            cache.get(&ast2, dialect).await.is_none(),
             "different attribute should miss"
         );
     }
@@ -1622,51 +1820,88 @@ mod tests {
 
     #[tokio::test]
     async fn plan_cache_lru_eviction() {
-        let cache = PlanCache::new(2);
+        let dialect: &dyn SqlDialect = &PgDialect;
+        let cache = PlanCache::new(2, dialect);
         let ast_a = bare_ast("A");
         let ast_b = bare_ast("B");
         let ast_c = bare_ast("C");
 
-        cache.insert(&ast_a, plan_query(&ast_a).unwrap()).await;
-        cache.insert(&ast_b, plan_query(&ast_b).unwrap()).await;
+        cache.insert(&ast_a, plan_query(&ast_a).unwrap(), dialect).await;
+        cache.insert(&ast_b, plan_query(&ast_b).unwrap(), dialect).await;
         // Access B so it becomes most-recently-used; A is now LRU.
-        assert!(cache.get(&ast_b).await.is_some());
+        assert!(cache.get(&ast_b, dialect).await.is_some());
 
         // Insert C — should evict A (the least recently used).
-        cache.insert(&ast_c, plan_query(&ast_c).unwrap()).await;
+        cache.insert(&ast_c, plan_query(&ast_c).unwrap(), dialect).await;
         assert!(
-            cache.get(&ast_a).await.is_none(),
+            cache.get(&ast_a, dialect).await.is_none(),
             "A should have been evicted"
         );
-        assert!(cache.get(&ast_b).await.is_some(), "B was recently accessed");
-        assert!(cache.get(&ast_c).await.is_some(), "C was just inserted");
+        assert!(
+            cache.get(&ast_b, dialect).await.is_some(),
+            "B was recently accessed"
+        );
+        assert!(
+            cache.get(&ast_c, dialect).await.is_some(),
+            "C was just inserted"
+        );
     }
 
     #[tokio::test]
     async fn plan_cache_zero_capacity_uses_default() {
         // Should not panic; falls back to 256.
-        let cache = PlanCache::new(0);
+        let dialect: &dyn SqlDialect = &PgDialect;
+        let cache = PlanCache::new(0, dialect);
         let ast = bare_ast("T");
-        cache.insert(&ast, plan_query(&ast).unwrap()).await;
-        assert!(cache.get(&ast).await.is_some());
+        cache.insert(&ast, plan_query(&ast).unwrap(), dialect).await;
+        assert!(cache.get(&ast, dialect).await.is_some());
     }
 
-    // ── Vector helpers ─────────────────────────────────────────────
-
-    #[test]
-    fn format_vector_literal_empty() {
-        assert_eq!(format_vector_literal(&[]), "[]");
+    #[tokio::test]
+    async fn plan_cache_pinned_to_dialect() {
+        // M-2 regression test: PlanCache is pinned to a single dialect
+        // at construction time. A Pg-pinned cache must report the
+        // `"postgres"` name and a Sqlite-pinned cache `"sqlite"`.
+        let pg_cache = PlanCache::new(4, &PgDialect);
+        let sq_cache = PlanCache::new(4, &SqliteDialect);
+        assert_eq!(pg_cache.dialect_name(), "postgres");
+        assert_eq!(sq_cache.dialect_name(), "sqlite");
     }
 
+    // M-2 regression test — the debug_assert on mixed dialects.
+    //
+    // Rust aborts on double-panic (debug_assert inside an async task
+    // may poison state in ways that catch_unwind can't recover), so
+    // we only gate this test on debug_assertions and skip it when
+    // panics are disabled (e.g. on panic=abort release builds).
+    #[cfg(debug_assertions)]
     #[test]
-    fn format_vector_literal_single() {
-        assert_eq!(format_vector_literal(&[0.5]), "[0.5]");
-    }
+    fn plan_cache_debug_asserts_on_mixed_dialect() {
+        use std::panic::{AssertUnwindSafe, catch_unwind};
 
-    #[test]
-    fn format_vector_literal_multiple() {
-        let result = format_vector_literal(&[0.1, 0.2, 0.3]);
-        assert_eq!(result, "[0.1,0.2,0.3]");
+        let pg_cache = PlanCache::new(4, &PgDialect);
+        let ast = bare_ast("User");
+        let sq_plan =
+            plan_query_with_dialect(&ast, &SqliteDialect).expect("sqlite plan");
+
+        // Inserting a SqliteDialect plan into a Pg-pinned cache must
+        // trip the debug_assert. We drive the future to first poll
+        // via `block_on` inside a fresh runtime so the catch_unwind
+        // sees the panic directly.
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            rt.block_on(async {
+                pg_cache.insert(&ast, sq_plan, &SqliteDialect).await;
+            })
+        }));
+        assert!(
+            result.is_err(),
+            "inserting a sqlite plan into a pg-pinned cache must panic"
+        );
     }
 
     // ── Semantic plan generation ───────────────────────────────────
@@ -1857,5 +2092,515 @@ mod tests {
             current = &current[0].sub_nested;
         }
         assert_eq!(depth, MAX_NESTING_DEPTH, "should stop at max nesting depth");
+    }
+
+    // ── Dialect parity suite ────────────────────────────────────────
+    //
+    // These tests feed the same QueryAST into both dialects and
+    // snapshot-assert the emitted SQL fragments. They catch accidental
+    // drift where a future refactor changes one dialect but not the
+    // other, and they document exactly which SQL both dialects emit.
+
+    #[test]
+    fn parity_plan_basic_both_dialects_work() {
+        let ast = bare_ast("User");
+        let pg = plan_query_with_dialect(&ast, &PgDialect).expect("pg plan");
+        let sq = plan_query_with_dialect(&ast, &SqliteDialect).expect("sqlite plan");
+
+        // Pg uses to_jsonb + $1; SQLite uses json_quote + ?1.
+        assert!(pg.sql.contains("to_jsonb($1::text)"), "pg SQL:\n{}", pg.sql);
+        assert!(
+            sq.sql.contains("json_quote(?1)"),
+            "sqlite SQL:\n{}",
+            sq.sql
+        );
+        assert!(!sq.sql.contains("to_jsonb"), "sqlite SQL should be free of to_jsonb");
+        assert!(!sq.sql.contains("::text"), "sqlite SQL should be free of ::text");
+        // Both dialects share the outer shape.
+        assert!(pg.sql.contains("FROM triples t0"));
+        assert!(sq.sql.contains("FROM triples t0"));
+        assert_eq!(pg.params.len(), sq.params.len());
+    }
+
+    #[test]
+    fn parity_where_eq_string_value() {
+        let ast = QueryAST {
+            where_clauses: vec![WhereClause {
+                attribute: "email".into(),
+                op: WhereOp::Eq,
+                value: serde_json::json!("a@b.com"),
+            }],
+            ..bare_ast("User")
+        };
+        let pg = plan_query_with_dialect(&ast, &PgDialect).unwrap();
+        let sq = plan_query_with_dialect(&ast, &SqliteDialect).unwrap();
+
+        assert!(pg.sql.contains("tw0.value = to_jsonb($3::text)"));
+        assert!(sq.sql.contains("tw0.value = json_quote(?3)"));
+    }
+
+    #[test]
+    fn parity_where_eq_numeric_value() {
+        let ast = QueryAST {
+            where_clauses: vec![WhereClause {
+                attribute: "age".into(),
+                op: WhereOp::Eq,
+                value: serde_json::json!(42),
+            }],
+            ..bare_ast("User")
+        };
+        let pg = plan_query_with_dialect(&ast, &PgDialect).unwrap();
+        let sq = plan_query_with_dialect(&ast, &SqliteDialect).unwrap();
+
+        // Numeric is ParamKind::Json on both dialects.
+        assert!(pg.sql.contains("$3::jsonb"), "pg SQL:\n{}", pg.sql);
+        assert!(sq.sql.contains("tw0.value = ?3"), "sqlite SQL:\n{}", sq.sql);
+        assert!(!sq.sql.contains("::jsonb"));
+    }
+
+    #[test]
+    fn parity_where_all_operators() {
+        // Contains is excluded here because SQLite refuses it at plan
+        // time (see M-1 / parity_pg_accepts_contains_sqlite_refuses).
+        for op in [
+            WhereOp::Eq,
+            WhereOp::Neq,
+            WhereOp::Gt,
+            WhereOp::Gte,
+            WhereOp::Lt,
+            WhereOp::Lte,
+            WhereOp::Like,
+        ] {
+            let ast = QueryAST {
+                where_clauses: vec![WhereClause {
+                    attribute: "x".into(),
+                    op,
+                    value: serde_json::json!("v"),
+                }],
+                ..bare_ast("T")
+            };
+            let pg = plan_query_with_dialect(&ast, &PgDialect).unwrap();
+            let sq = plan_query_with_dialect(&ast, &SqliteDialect).unwrap();
+            // Both dialects must produce *some* fragment for every op,
+            // and both must bind the same number of params.
+            assert!(!pg.sql.is_empty());
+            assert!(!sq.sql.is_empty());
+            assert_eq!(pg.params.len(), sq.params.len(), "op {op:?}");
+        }
+    }
+
+    #[test]
+    fn parity_pg_accepts_contains_sqlite_refuses() {
+        // M-1 regression test: Postgres accepts WhereOp::Contains and
+        // emits the native `@>` operator. SQLite refuses at plan time
+        // with InvalidQuery, because the only available fallback
+        // (instr()) is unsound (substring match on JSON text, wrong on
+        // scalar-prefix collision and key reordering).
+        let ast = QueryAST {
+            where_clauses: vec![WhereClause {
+                attribute: "tags".into(),
+                op: WhereOp::Contains,
+                value: serde_json::json!(["rust"]),
+            }],
+            ..bare_ast("Post")
+        };
+
+        let pg = plan_query_with_dialect(&ast, &PgDialect).expect("pg accepts Contains");
+        assert!(pg.sql.contains("tw0.value @> $3::jsonb"), "pg SQL:\n{}", pg.sql);
+
+        let err = plan_query_with_dialect(&ast, &SqliteDialect)
+            .expect_err("sqlite must refuse Contains");
+        match err {
+            DarshJError::InvalidQuery(msg) => {
+                assert!(
+                    msg.contains("Contains") && msg.contains("sqlite"),
+                    "msg should mention Contains + sqlite, got: {msg}"
+                );
+            }
+            other => panic!("expected InvalidQuery, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn sqlite_refuses_jsonb_contains() {
+        // M-1 unit-level regression: even with a trivial single
+        // Contains clause, the SQLite planner must surface InvalidQuery
+        // and never call through to the unsound instr() fallback.
+        let ast = QueryAST {
+            where_clauses: vec![WhereClause {
+                attribute: "payload".into(),
+                op: WhereOp::Contains,
+                value: serde_json::json!({"k": "v"}),
+            }],
+            ..bare_ast("T")
+        };
+        let err = plan_query_with_dialect(&ast, &SqliteDialect)
+            .expect_err("sqlite must refuse Contains");
+        let DarshJError::InvalidQuery(msg) = err else {
+            panic!("expected InvalidQuery");
+        };
+        assert!(msg.to_lowercase().contains("contains"), "msg: {msg}");
+    }
+
+    #[test]
+    fn parity_where_like_prefix() {
+        let ast = QueryAST {
+            where_clauses: vec![WhereClause {
+                attribute: "name".into(),
+                op: WhereOp::Like,
+                value: serde_json::json!("Al%"),
+            }],
+            ..bare_ast("User")
+        };
+        let pg = plan_query_with_dialect(&ast, &PgDialect).unwrap();
+        let sq = plan_query_with_dialect(&ast, &SqliteDialect).unwrap();
+
+        assert!(
+            pg.sql.contains("tw0.value #>> '{}' ILIKE $3"),
+            "pg SQL:\n{}",
+            pg.sql
+        );
+        assert!(sq.sql.contains("tw0.value LIKE ?3"), "sqlite SQL:\n{}", sq.sql);
+    }
+
+    #[test]
+    fn parity_search_fulltext() {
+        let ast = QueryAST {
+            search: Some("hello world".into()),
+            ..bare_ast("Doc")
+        };
+        let pg = plan_query_with_dialect(&ast, &PgDialect).unwrap();
+        let sq = plan_query_with_dialect(&ast, &SqliteDialect).unwrap();
+
+        assert!(pg.sql.contains("to_tsvector('english'"));
+        assert!(pg.sql.contains("plainto_tsquery('english', $2)"));
+
+        assert!(!sq.sql.contains("to_tsvector"));
+        assert!(!sq.sql.contains("plainto_tsquery"));
+        assert!(
+            sq.sql.contains("t_search.value LIKE '%' || ?2 || '%'"),
+            "sqlite SQL:\n{}",
+            sq.sql
+        );
+    }
+
+    #[test]
+    fn parity_semantic_vector_pg_only() {
+        let ast = QueryAST {
+            semantic: Some(SemanticQuery {
+                vector: Some(vec![0.1, 0.2, 0.3]),
+                query: None,
+                limit: 5,
+            }),
+            ..bare_ast("Doc")
+        };
+        let pg = plan_query_with_dialect(&ast, &PgDialect).unwrap();
+        let sq = plan_query_with_dialect(&ast, &SqliteDialect).unwrap();
+
+        assert!(pg.sql.contains("embeddings"));
+        assert!(pg.sql.contains("<=>"));
+        assert!(pg.sql.contains("'[0.1,0.2,0.3]'::vector"));
+        // SQLite silently skips the embeddings join and emits no vector syntax.
+        assert!(!sq.sql.contains("embeddings"));
+        assert!(!sq.sql.contains("<=>"));
+        assert!(!sq.sql.contains("::vector"));
+        // Semantic limit still propagates to plan.limit so the caller
+        // can paginate post-grouping on both dialects.
+        assert_eq!(pg.limit, sq.limit);
+    }
+
+    #[test]
+    fn parity_hybrid_sqlite_errors() {
+        let ast = QueryAST {
+            hybrid: Some(HybridQuery {
+                text: "cats".into(),
+                vector: vec![0.1, 0.2],
+                text_weight: 0.3,
+                vector_weight: 0.7,
+                limit: 10,
+            }),
+            ..bare_ast("Article")
+        };
+        // Pg succeeds.
+        assert!(plan_hybrid_query_with_dialect(&ast, &PgDialect).is_ok());
+        // SQLite returns InvalidQuery.
+        let err =
+            plan_hybrid_query_with_dialect(&ast, &SqliteDialect).expect_err("should error on sqlite");
+        match err {
+            DarshJError::InvalidQuery(msg) => {
+                assert!(msg.contains("sqlite"), "msg: {msg}");
+            }
+            other => panic!("expected InvalidQuery, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parity_order_by_correlated_subquery() {
+        let ast = QueryAST {
+            order: vec![OrderClause {
+                attribute: "score".into(),
+                direction: SortDirection::Desc,
+            }],
+            ..bare_ast("T")
+        };
+        let pg = plan_query_with_dialect(&ast, &PgDialect).unwrap();
+        let sq = plan_query_with_dialect(&ast, &SqliteDialect).unwrap();
+
+        assert!(pg.sql.contains("ORDER BY"));
+        assert!(sq.sql.contains("ORDER BY"));
+        assert!(pg.sql.contains("$2"));
+        assert!(sq.sql.contains("?2"));
+        assert!(pg.sql.contains(" DESC"));
+        assert!(sq.sql.contains(" DESC"));
+    }
+
+    #[test]
+    fn parity_nested_plan_uuid_batch() {
+        // M-3 regression test. Postgres bakes a single statement with
+        // `ANY($1::uuid[])`; SQLite cannot bake an IN-list at plan
+        // time because the batch size is only known at execute time,
+        // so the planner emits a `__UUID_LIST__` sentinel that the
+        // SqliteStore adapter (landing in the Phase 2 integration
+        // commit) replaces with `?1, ?2, …, ?N` at bind time. The
+        // old test asserted `ANY(?1)` which is invalid SQLite and
+        // would have failed at statement prepare time.
+        let ast = QueryAST {
+            nested: vec![NestedQuery {
+                via_attribute: "owner_id".into(),
+                sub_query: None,
+            }],
+            ..bare_ast("Todo")
+        };
+        let pg = plan_query_with_dialect(&ast, &PgDialect).unwrap();
+        let sq = plan_query_with_dialect(&ast, &SqliteDialect).unwrap();
+
+        // Pg: baked ANY($1::uuid[]) form, no template.
+        assert!(
+            pg.nested_plans[0].sql.contains("ANY($1::uuid[])"),
+            "pg nested:\n{}",
+            pg.nested_plans[0].sql
+        );
+        assert!(
+            pg.nested_plans[0].sql_template.is_none(),
+            "pg nested should have no template"
+        );
+
+        // SQLite: IN(__UUID_LIST__) template on both `sql` and
+        // `sql_template`. The token is intentionally non-SQL so any
+        // caller that forgets to expand it will fail at prepare time
+        // instead of silently running wrong SQL.
+        assert!(
+            sq.nested_plans[0].sql.contains("__UUID_LIST__"),
+            "sqlite nested sql should carry the expansion sentinel:\n{}",
+            sq.nested_plans[0].sql
+        );
+        assert!(
+            sq.nested_plans[0]
+                .sql_template
+                .as_deref()
+                .is_some_and(|t| t.contains("__UUID_LIST__")),
+            "sqlite nested sql_template must be Some with the sentinel"
+        );
+        assert!(
+            !sq.nested_plans[0].sql.contains("ANY("),
+            "sqlite nested must not contain ANY(...) — invalid SQLite SQL"
+        );
+    }
+
+    #[test]
+    fn parity_pg_default_wrapper_matches_with_dialect() {
+        // plan_query() must emit the same SQL as
+        // plan_query_with_dialect(…, &PgDialect) — this is the
+        // compatibility guarantee that lets the rest of the server
+        // keep calling plan_query() unchanged.
+        for ast in [
+            bare_ast("User"),
+            QueryAST {
+                where_clauses: vec![WhereClause {
+                    attribute: "email".into(),
+                    op: WhereOp::Eq,
+                    value: serde_json::json!("a@b.com"),
+                }],
+                ..bare_ast("User")
+            },
+            QueryAST {
+                search: Some("hello".into()),
+                ..bare_ast("Doc")
+            },
+            QueryAST {
+                order: vec![OrderClause {
+                    attribute: "created_at".into(),
+                    direction: SortDirection::Desc,
+                }],
+                limit: Some(10),
+                ..bare_ast("T")
+            },
+        ] {
+            let default_plan = plan_query(&ast).unwrap();
+            let dialect_plan = plan_query_with_dialect(&ast, &PgDialect).unwrap();
+            assert_eq!(
+                default_plan.sql, dialect_plan.sql,
+                "plan_query() must match plan_query_with_dialect(PgDialect)"
+            );
+            assert_eq!(default_plan.params, dialect_plan.params);
+        }
+    }
+
+    #[test]
+    fn parity_all_features_full_snapshot() {
+        // m-2 regression test. 12 of 13 parity tests use
+        // `contains(fragment)` substring assertions, which let
+        // between-fragment refactors (extra JOIN, reordered clauses,
+        // changed whitespace) slip through unnoticed. This test
+        // captures the full SQL string for an AST that exercises
+        // every planner feature the dialect layer covers:
+        //
+        //   - namespaced entity type
+        //   - multiple `$where` clauses (Eq + Contains on Pg, Eq only
+        //     on SQLite because Contains is refused by M-1)
+        //   - `$search` full-text term
+        //   - `$semantic.vector` similarity (Pg only; SQLite skips
+        //     the embeddings join because supports_vector is false)
+        //   - `$order` correlated sub-select
+        //   - `$limit` (applied at the Rust grouping layer)
+        //   - `$nested` sub-plan
+        //
+        // The two snapshots below are load-bearing: any refactor that
+        // changes SQL emission in any way will fail this test and
+        // force the author to review the diff before shipping.
+        let base_ast = QueryAST {
+            entity_type: "mystore.User".into(),
+            where_clauses: vec![
+                WhereClause {
+                    attribute: "email".into(),
+                    op: WhereOp::Eq,
+                    value: serde_json::json!("alice@example.com"),
+                },
+                WhereClause {
+                    attribute: "tags".into(),
+                    op: WhereOp::Contains,
+                    value: serde_json::json!(["rust"]),
+                },
+            ],
+            order: vec![OrderClause {
+                attribute: "created_at".into(),
+                direction: SortDirection::Desc,
+            }],
+            limit: Some(25),
+            offset: None,
+            search: Some("darshan".into()),
+            semantic: Some(SemanticQuery {
+                vector: Some(vec![0.1, 0.2, 0.3]),
+                query: None,
+                limit: 5,
+            }),
+            hybrid: None,
+            nested: vec![NestedQuery {
+                via_attribute: "org_id".into(),
+                sub_query: None,
+            }],
+        };
+
+        // Postgres: full feature set (Eq + Contains + $search +
+        // $semantic vector + $order + $nested).
+        let pg = plan_query_with_dialect(&base_ast, &PgDialect).unwrap();
+        let pg_expected = "SELECT t0.entity_id, t0.attribute, t0.value, t0.value_type, t0.tx_id, t0.created_at\n\
+FROM triples t0\n\
+INNER JOIN triples t_type ON t_type.entity_id = t0.entity_id\n  \
+AND t_type.attribute = ':db/type'\n  \
+AND NOT t_type.retracted\n  \
+AND t_type.value = to_jsonb($1::text)\n\
+INNER JOIN triples tw0 ON tw0.entity_id = t0.entity_id\n  \
+AND tw0.attribute = $2\n  \
+AND NOT tw0.retracted\n  \
+AND tw0.value = to_jsonb($3::text)\n\
+INNER JOIN triples tw1 ON tw1.entity_id = t0.entity_id\n  \
+AND tw1.attribute = $4\n  \
+AND NOT tw1.retracted\n  \
+AND tw1.value @> $5::jsonb\n\
+INNER JOIN triples t_search ON t_search.entity_id = t0.entity_id\n  \
+AND NOT t_search.retracted\n  \
+AND to_tsvector('english', t_search.value #>> '{}') @@ plainto_tsquery('english', $6)\n\
+INNER JOIN embeddings t_emb ON t_emb.entity_id = t0.entity_id\n  \
+AND t_emb.embedding <=> '[0.1,0.2,0.3]'::vector < 2.0\n\
+WHERE NOT t0.retracted\n\
+ORDER BY t_emb.embedding <=> '[0.1,0.2,0.3]'::vector ASC, (SELECT to0.value FROM triples to0 WHERE to0.entity_id = t0.entity_id AND to0.attribute = $7 AND NOT to0.retracted ORDER BY to0.tx_id DESC LIMIT 1) DESC\n";
+        assert_eq!(
+            pg.sql, pg_expected,
+            "Postgres SQL snapshot drift — review the full diff:\n--- expected ---\n{pg_expected}\n--- got ---\n{}",
+            pg.sql
+        );
+
+        // SQLite: the Contains-gated subset. Drop the Contains clause
+        // (M-1 refuses it on SQLite) and $semantic (SQLite has no
+        // native vector support, so the planner silently skips the
+        // embeddings join).
+        let sq_ast = QueryAST {
+            where_clauses: vec![WhereClause {
+                attribute: "email".into(),
+                op: WhereOp::Eq,
+                value: serde_json::json!("alice@example.com"),
+            }],
+            semantic: None,
+            ..base_ast.clone()
+        };
+        let sq = plan_query_with_dialect(&sq_ast, &SqliteDialect).unwrap();
+        let sq_expected = "SELECT t0.entity_id, t0.attribute, t0.value, t0.value_type, t0.tx_id, t0.created_at\n\
+FROM triples t0\n\
+INNER JOIN triples t_type ON t_type.entity_id = t0.entity_id\n  \
+AND t_type.attribute = ':db/type'\n  \
+AND NOT t_type.retracted\n  \
+AND t_type.value = json_quote(?1)\n\
+INNER JOIN triples tw0 ON tw0.entity_id = t0.entity_id\n  \
+AND tw0.attribute = ?2\n  \
+AND NOT tw0.retracted\n  \
+AND tw0.value = json_quote(?3)\n\
+INNER JOIN triples t_search ON t_search.entity_id = t0.entity_id\n  \
+AND NOT t_search.retracted\n  \
+AND t_search.value LIKE '%' || ?4 || '%'\n\
+WHERE NOT t0.retracted\n\
+ORDER BY (SELECT to0.value FROM triples to0 WHERE to0.entity_id = t0.entity_id AND to0.attribute = ?5 AND NOT to0.retracted ORDER BY to0.tx_id DESC LIMIT 1) DESC\n";
+        assert_eq!(
+            sq.sql, sq_expected,
+            "SQLite SQL snapshot drift — review the full diff:\n--- expected ---\n{sq_expected}\n--- got ---\n{}",
+            sq.sql
+        );
+
+        // Nested plan on both dialects — Postgres bakes the UUID
+        // array, SQLite emits the __UUID_LIST__ token (see M-3).
+        assert_eq!(pg.nested_plans.len(), 1);
+        assert_eq!(sq.nested_plans.len(), 1);
+        assert!(pg.nested_plans[0].sql.contains("ANY($1::uuid[])"));
+        assert!(sq.nested_plans[0].sql.contains("__UUID_LIST__"));
+    }
+
+    #[tokio::test]
+    async fn parity_plan_cache_works_with_both_dialects() {
+        // The plan cache keys by AST shape and is pinned to a single
+        // dialect at construction time. Callers must use one
+        // `PlanCache` instance per dialect-store pair. This test
+        // documents the behaviour by round-tripping plans through
+        // two separately-pinned caches.
+        let ast = bare_ast("User");
+
+        let pg_cache = PlanCache::new(4, &PgDialect);
+        let pg_plan = plan_query_with_dialect(&ast, &PgDialect).unwrap();
+        pg_cache.insert(&ast, pg_plan.clone(), &PgDialect).await;
+        let cached_pg = pg_cache.get(&ast, &PgDialect).await.expect("pg cache hit");
+        assert_eq!(cached_pg.sql, pg_plan.sql);
+
+        let sq_cache = PlanCache::new(4, &SqliteDialect);
+        let sq_plan = plan_query_with_dialect(&ast, &SqliteDialect).unwrap();
+        sq_cache
+            .insert(&ast, sq_plan.clone(), &SqliteDialect)
+            .await;
+        let cached_sq = sq_cache
+            .get(&ast, &SqliteDialect)
+            .await
+            .expect("sqlite cache hit");
+        assert_eq!(cached_sq.sql, sq_plan.sql);
+
+        // And the two SQL strings are distinct.
+        assert_ne!(pg_plan.sql, sq_plan.sql);
     }
 }
