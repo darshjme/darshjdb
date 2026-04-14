@@ -1988,4 +1988,319 @@ mod tests {
         }
         assert_eq!(depth, MAX_NESTING_DEPTH, "should stop at max nesting depth");
     }
+
+    // ── Dialect parity suite ────────────────────────────────────────
+    //
+    // These tests feed the same QueryAST into both dialects and
+    // snapshot-assert the emitted SQL fragments. They catch accidental
+    // drift where a future refactor changes one dialect but not the
+    // other, and they document exactly which SQL both dialects emit.
+
+    #[test]
+    fn parity_plan_basic_both_dialects_work() {
+        let ast = bare_ast("User");
+        let pg = plan_query_with_dialect(&ast, &PgDialect).expect("pg plan");
+        let sq = plan_query_with_dialect(&ast, &SqliteDialect).expect("sqlite plan");
+
+        // Pg uses to_jsonb + $1; SQLite uses json_quote + ?1.
+        assert!(pg.sql.contains("to_jsonb($1::text)"), "pg SQL:\n{}", pg.sql);
+        assert!(
+            sq.sql.contains("json_quote(?1)"),
+            "sqlite SQL:\n{}",
+            sq.sql
+        );
+        assert!(!sq.sql.contains("to_jsonb"), "sqlite SQL should be free of to_jsonb");
+        assert!(!sq.sql.contains("::text"), "sqlite SQL should be free of ::text");
+        // Both dialects share the outer shape.
+        assert!(pg.sql.contains("FROM triples t0"));
+        assert!(sq.sql.contains("FROM triples t0"));
+        assert_eq!(pg.params.len(), sq.params.len());
+    }
+
+    #[test]
+    fn parity_where_eq_string_value() {
+        let ast = QueryAST {
+            where_clauses: vec![WhereClause {
+                attribute: "email".into(),
+                op: WhereOp::Eq,
+                value: serde_json::json!("a@b.com"),
+            }],
+            ..bare_ast("User")
+        };
+        let pg = plan_query_with_dialect(&ast, &PgDialect).unwrap();
+        let sq = plan_query_with_dialect(&ast, &SqliteDialect).unwrap();
+
+        assert!(pg.sql.contains("tw0.value = to_jsonb($3::text)"));
+        assert!(sq.sql.contains("tw0.value = json_quote(?3)"));
+    }
+
+    #[test]
+    fn parity_where_eq_numeric_value() {
+        let ast = QueryAST {
+            where_clauses: vec![WhereClause {
+                attribute: "age".into(),
+                op: WhereOp::Eq,
+                value: serde_json::json!(42),
+            }],
+            ..bare_ast("User")
+        };
+        let pg = plan_query_with_dialect(&ast, &PgDialect).unwrap();
+        let sq = plan_query_with_dialect(&ast, &SqliteDialect).unwrap();
+
+        // Numeric is ParamKind::Json on both dialects.
+        assert!(pg.sql.contains("$3::jsonb"), "pg SQL:\n{}", pg.sql);
+        assert!(sq.sql.contains("tw0.value = ?3"), "sqlite SQL:\n{}", sq.sql);
+        assert!(!sq.sql.contains("::jsonb"));
+    }
+
+    #[test]
+    fn parity_where_all_operators() {
+        for op in [
+            WhereOp::Eq,
+            WhereOp::Neq,
+            WhereOp::Gt,
+            WhereOp::Gte,
+            WhereOp::Lt,
+            WhereOp::Lte,
+            WhereOp::Contains,
+            WhereOp::Like,
+        ] {
+            let ast = QueryAST {
+                where_clauses: vec![WhereClause {
+                    attribute: "x".into(),
+                    op,
+                    value: serde_json::json!("v"),
+                }],
+                ..bare_ast("T")
+            };
+            let pg = plan_query_with_dialect(&ast, &PgDialect).unwrap();
+            let sq = plan_query_with_dialect(&ast, &SqliteDialect).unwrap();
+            // Both dialects must produce *some* fragment for every op,
+            // and both must bind the same number of params.
+            assert!(!pg.sql.is_empty());
+            assert!(!sq.sql.is_empty());
+            assert_eq!(pg.params.len(), sq.params.len(), "op {op:?}");
+        }
+    }
+
+    #[test]
+    fn parity_where_contains_containment() {
+        let ast = QueryAST {
+            where_clauses: vec![WhereClause {
+                attribute: "tags".into(),
+                op: WhereOp::Contains,
+                value: serde_json::json!(["rust"]),
+            }],
+            ..bare_ast("Post")
+        };
+        let pg = plan_query_with_dialect(&ast, &PgDialect).unwrap();
+        let sq = plan_query_with_dialect(&ast, &SqliteDialect).unwrap();
+
+        assert!(pg.sql.contains("tw0.value @> $3::jsonb"), "pg SQL:\n{}", pg.sql);
+        assert!(
+            sq.sql.contains("instr(tw0.value, ?3) > 0"),
+            "sqlite SQL:\n{}",
+            sq.sql
+        );
+    }
+
+    #[test]
+    fn parity_where_like_prefix() {
+        let ast = QueryAST {
+            where_clauses: vec![WhereClause {
+                attribute: "name".into(),
+                op: WhereOp::Like,
+                value: serde_json::json!("Al%"),
+            }],
+            ..bare_ast("User")
+        };
+        let pg = plan_query_with_dialect(&ast, &PgDialect).unwrap();
+        let sq = plan_query_with_dialect(&ast, &SqliteDialect).unwrap();
+
+        assert!(
+            pg.sql.contains("tw0.value #>> '{}' ILIKE $3"),
+            "pg SQL:\n{}",
+            pg.sql
+        );
+        assert!(sq.sql.contains("tw0.value LIKE ?3"), "sqlite SQL:\n{}", sq.sql);
+    }
+
+    #[test]
+    fn parity_search_fulltext() {
+        let ast = QueryAST {
+            search: Some("hello world".into()),
+            ..bare_ast("Doc")
+        };
+        let pg = plan_query_with_dialect(&ast, &PgDialect).unwrap();
+        let sq = plan_query_with_dialect(&ast, &SqliteDialect).unwrap();
+
+        assert!(pg.sql.contains("to_tsvector('english'"));
+        assert!(pg.sql.contains("plainto_tsquery('english', $2)"));
+
+        assert!(!sq.sql.contains("to_tsvector"));
+        assert!(!sq.sql.contains("plainto_tsquery"));
+        assert!(
+            sq.sql.contains("t_search.value LIKE '%' || ?2 || '%'"),
+            "sqlite SQL:\n{}",
+            sq.sql
+        );
+    }
+
+    #[test]
+    fn parity_semantic_vector_pg_only() {
+        let ast = QueryAST {
+            semantic: Some(SemanticQuery {
+                vector: Some(vec![0.1, 0.2, 0.3]),
+                query: None,
+                limit: 5,
+            }),
+            ..bare_ast("Doc")
+        };
+        let pg = plan_query_with_dialect(&ast, &PgDialect).unwrap();
+        let sq = plan_query_with_dialect(&ast, &SqliteDialect).unwrap();
+
+        assert!(pg.sql.contains("embeddings"));
+        assert!(pg.sql.contains("<=>"));
+        assert!(pg.sql.contains("'[0.1,0.2,0.3]'::vector"));
+        // SQLite silently skips the embeddings join and emits no vector syntax.
+        assert!(!sq.sql.contains("embeddings"));
+        assert!(!sq.sql.contains("<=>"));
+        assert!(!sq.sql.contains("::vector"));
+        // Semantic limit still propagates to plan.limit so the caller
+        // can paginate post-grouping on both dialects.
+        assert_eq!(pg.limit, sq.limit);
+    }
+
+    #[test]
+    fn parity_hybrid_sqlite_errors() {
+        let ast = QueryAST {
+            hybrid: Some(HybridQuery {
+                text: "cats".into(),
+                vector: vec![0.1, 0.2],
+                text_weight: 0.3,
+                vector_weight: 0.7,
+                limit: 10,
+            }),
+            ..bare_ast("Article")
+        };
+        // Pg succeeds.
+        assert!(plan_hybrid_query_with_dialect(&ast, &PgDialect).is_ok());
+        // SQLite returns InvalidQuery.
+        let err =
+            plan_hybrid_query_with_dialect(&ast, &SqliteDialect).expect_err("should error on sqlite");
+        match err {
+            DarshJError::InvalidQuery(msg) => {
+                assert!(msg.contains("sqlite"), "msg: {msg}");
+            }
+            other => panic!("expected InvalidQuery, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parity_order_by_correlated_subquery() {
+        let ast = QueryAST {
+            order: vec![OrderClause {
+                attribute: "score".into(),
+                direction: SortDirection::Desc,
+            }],
+            ..bare_ast("T")
+        };
+        let pg = plan_query_with_dialect(&ast, &PgDialect).unwrap();
+        let sq = plan_query_with_dialect(&ast, &SqliteDialect).unwrap();
+
+        assert!(pg.sql.contains("ORDER BY"));
+        assert!(sq.sql.contains("ORDER BY"));
+        assert!(pg.sql.contains("$2"));
+        assert!(sq.sql.contains("?2"));
+        assert!(pg.sql.contains(" DESC"));
+        assert!(sq.sql.contains(" DESC"));
+    }
+
+    #[test]
+    fn parity_nested_plan_uuid_batch() {
+        let ast = QueryAST {
+            nested: vec![NestedQuery {
+                via_attribute: "owner_id".into(),
+                sub_query: None,
+            }],
+            ..bare_ast("Todo")
+        };
+        let pg = plan_query_with_dialect(&ast, &PgDialect).unwrap();
+        let sq = plan_query_with_dialect(&ast, &SqliteDialect).unwrap();
+
+        // Pg: full ::uuid[] cast. SQLite: bare placeholder.
+        assert!(
+            pg.nested_plans[0].sql.contains("ANY($1::uuid[])"),
+            "pg nested:\n{}",
+            pg.nested_plans[0].sql
+        );
+        assert!(
+            sq.nested_plans[0].sql.contains("ANY(?1)"),
+            "sqlite nested:\n{}",
+            sq.nested_plans[0].sql
+        );
+    }
+
+    #[test]
+    fn parity_pg_default_wrapper_matches_with_dialect() {
+        // plan_query() must emit the same SQL as
+        // plan_query_with_dialect(…, &PgDialect) — this is the
+        // compatibility guarantee that lets the rest of the server
+        // keep calling plan_query() unchanged.
+        for ast in [
+            bare_ast("User"),
+            QueryAST {
+                where_clauses: vec![WhereClause {
+                    attribute: "email".into(),
+                    op: WhereOp::Eq,
+                    value: serde_json::json!("a@b.com"),
+                }],
+                ..bare_ast("User")
+            },
+            QueryAST {
+                search: Some("hello".into()),
+                ..bare_ast("Doc")
+            },
+            QueryAST {
+                order: vec![OrderClause {
+                    attribute: "created_at".into(),
+                    direction: SortDirection::Desc,
+                }],
+                limit: Some(10),
+                ..bare_ast("T")
+            },
+        ] {
+            let default_plan = plan_query(&ast).unwrap();
+            let dialect_plan = plan_query_with_dialect(&ast, &PgDialect).unwrap();
+            assert_eq!(
+                default_plan.sql, dialect_plan.sql,
+                "plan_query() must match plan_query_with_dialect(PgDialect)"
+            );
+            assert_eq!(default_plan.params, dialect_plan.params);
+        }
+    }
+
+    #[tokio::test]
+    async fn parity_plan_cache_works_with_both_dialects() {
+        // The plan cache keys by AST shape, not dialect. Callers must
+        // therefore use one dialect per cache. This test documents the
+        // behaviour by confirming that the cache round-trips plans
+        // produced with either dialect.
+        let ast = bare_ast("User");
+
+        let pg_cache = PlanCache::new(4);
+        let pg_plan = plan_query_with_dialect(&ast, &PgDialect).unwrap();
+        pg_cache.insert(&ast, pg_plan.clone()).await;
+        let cached_pg = pg_cache.get(&ast).await.expect("pg cache hit");
+        assert_eq!(cached_pg.sql, pg_plan.sql);
+
+        let sq_cache = PlanCache::new(4);
+        let sq_plan = plan_query_with_dialect(&ast, &SqliteDialect).unwrap();
+        sq_cache.insert(&ast, sq_plan.clone()).await;
+        let cached_sq = sq_cache.get(&ast).await.expect("sqlite cache hit");
+        assert_eq!(cached_sq.sql, sq_plan.sql);
+
+        // And the two SQL strings are distinct.
+        assert_ne!(pg_plan.sql, sq_plan.sql);
+    }
 }
