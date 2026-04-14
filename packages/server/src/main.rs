@@ -546,6 +546,7 @@ async fn main() -> Result<()> {
         change_feed,
         rule_engine: rule_engine.clone(),
         query_cache: query_cache.clone(),
+        subscription_snapshots: Arc::new(dashmap::DashMap::new()),
     };
 
     tracing::info!("sync engine initialized");
