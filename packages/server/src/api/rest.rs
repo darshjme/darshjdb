@@ -652,10 +652,14 @@ pub fn build_router(state: AppState) -> Router {
             "/admin/audit/proof/{entity_id}",
             get(crate::audit::handlers::audit_entity_proof),
         )
-        // -- Embeddings / Semantic Search (TODO: wire handlers) ------------
-        // .route("/embeddings", post(embeddings_store))
-        // .route("/embeddings/{entity_id}", get(embeddings_get))
-        // .route("/search/semantic", post(search_semantic))
+        // -- Embeddings / Vector + Full-text + Hybrid Search ---------------
+        // Phase 3 (slice 16/30) — pgvector-backed semantic search, Postgres
+        // FTS over triples.value, and Reciprocal Rank Fusion hybrid ranking.
+        .route("/embeddings", post(embeddings_store))
+        .route("/embeddings/{entity_id}", get(embeddings_get))
+        .route("/search/semantic", post(search_semantic))
+        .route("/search/text", get(search_text))
+        .route("/search/hybrid", post(search_hybrid))
         // -- Graph (SurrealDB-style record links) -------------------------
         .route("/graph/relate", post(graph_relate))
         .route("/graph/traverse", post(graph_traverse))
@@ -3605,27 +3609,115 @@ fn validate_entity_name(name: &str) -> Result<(), ApiError> {
 }
 
 // ===========================================================================
-// Embeddings / Semantic Search handlers
+// Embeddings / Vector + Full-text + Hybrid Search handlers
 // ===========================================================================
+//
+// Phase 3 (slice 16/30) — pgvector + Postgres FTS + Reciprocal Rank Fusion.
+// All handlers below are mounted by `build_router` and require the schema
+// added by `ensure_search_schema` (which mirrors the SQL in
+// `migrations/20260414003000_pgvector_bootstrap.sql`).
+//
+// Author: Darshankumar Joshi.
+
+/// Default embedding model recorded when callers do not provide one.
+/// Phase 3 standardises on OpenAI's `text-embedding-3-small` (1536 dims).
+fn default_embedding_model() -> String {
+    "text-embedding-3-small".to_string()
+}
+
+/// Default `limit` for any search endpoint when the caller omits it.
+fn default_search_limit() -> u32 {
+    10
+}
+
+/// Default attribute label stored alongside an embedding row when the
+/// caller does not specify one. Mirrors the SQL column default.
+fn default_embedding_attribute() -> String {
+    "default".to_string()
+}
+
+/// Reciprocal Rank Fusion `k` constant. Standard literature value (Cormack,
+/// Clarke & Buettcher, SIGIR '09). Larger `k` flattens the ranking curve.
+const RRF_K: f64 = 60.0;
+
+/// Ensure the Phase 3 search schema (pgvector extension, embeddings table
+/// constraints, vector indexes, and FTS index on `triples.value::text`)
+/// exists. Idempotent — safe to call on every startup or test setup.
+///
+/// Mirrors `migrations/20260414003000_pgvector_bootstrap.sql` so unit
+/// tests that bypass external migration tooling still get a usable schema.
+pub async fn ensure_search_schema(pool: &PgPool) -> std::result::Result<(), sqlx::Error> {
+    sqlx::raw_sql(
+        r#"
+        CREATE EXTENSION IF NOT EXISTS vector;
+
+        CREATE TABLE IF NOT EXISTS embeddings (
+            id          BIGSERIAL   PRIMARY KEY,
+            entity_id   UUID        NOT NULL,
+            attribute   TEXT        NOT NULL DEFAULT 'default',
+            embedding   vector(1536) NOT NULL,
+            model       TEXT        NOT NULL DEFAULT 'text-embedding-3-small',
+            created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+        );
+
+        ALTER TABLE embeddings
+            ALTER COLUMN attribute SET DEFAULT 'default';
+        ALTER TABLE embeddings
+            ALTER COLUMN model SET DEFAULT 'text-embedding-3-small';
+
+        DO $do$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM pg_indexes
+                WHERE schemaname = 'public'
+                  AND indexname  = 'uq_embeddings_entity_attribute'
+            ) THEN
+                BEGIN
+                    CREATE UNIQUE INDEX uq_embeddings_entity_attribute
+                        ON embeddings (entity_id, attribute);
+                EXCEPTION WHEN unique_violation THEN
+                    RAISE NOTICE 'uq_embeddings_entity_attribute skipped: pre-existing duplicates';
+                END;
+            END IF;
+        END$do$;
+
+        CREATE INDEX IF NOT EXISTS idx_embeddings_hnsw
+            ON embeddings USING hnsw (embedding vector_cosine_ops)
+            WITH (m = 16, ef_construction = 64);
+
+        CREATE INDEX IF NOT EXISTS idx_embeddings_ivfflat
+            ON embeddings USING ivfflat (embedding vector_l2_ops)
+            WITH (lists = 100);
+
+        CREATE INDEX IF NOT EXISTS idx_embeddings_entity
+            ON embeddings (entity_id, attribute);
+
+        CREATE INDEX IF NOT EXISTS idx_triples_fts_text
+            ON triples USING gin (to_tsvector('english', value::text))
+            WHERE value IS NOT NULL;
+        "#,
+    )
+    .execute(pool)
+    .await?;
+    Ok(())
+}
 
 /// Request body for `POST /api/embeddings`.
-#[allow(dead_code)]
 #[derive(Deserialize)]
 struct EmbeddingStoreRequest {
     entity_id: Uuid,
+    #[serde(default = "default_embedding_attribute")]
     attribute: String,
     embedding: Vec<f32>,
     #[serde(default = "default_embedding_model")]
     model: String,
 }
 
-#[allow(dead_code)]
-fn default_embedding_model() -> String {
-    "text-embedding-ada-002".to_string()
-}
-
-#[allow(dead_code)]
 /// `POST /api/embeddings` — Store an embedding vector for an entity+attribute pair.
+///
+/// Upserts on `(entity_id, attribute)` so callers can re-embed without first
+/// deleting the prior row. Uses the unique index installed by
+/// `ensure_search_schema` / the `pgvector_bootstrap` migration.
 async fn embeddings_store(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -3644,6 +3736,10 @@ async fn embeddings_store(
     let result = sqlx::query_scalar::<_, i64>(
         "INSERT INTO embeddings (entity_id, attribute, embedding, model) \
          VALUES ($1, $2, $3::vector, $4) \
+         ON CONFLICT (entity_id, attribute) DO UPDATE \
+            SET embedding  = EXCLUDED.embedding, \
+                model      = EXCLUDED.model, \
+                created_at = now() \
          RETURNING id",
     )
     .bind(body.entity_id)
@@ -3668,7 +3764,6 @@ async fn embeddings_store(
     ))
 }
 
-#[allow(dead_code)]
 /// `GET /api/embeddings/:entity_id` — Get all embeddings for an entity.
 async fn embeddings_get(
     State(state): State<AppState>,
@@ -3707,7 +3802,6 @@ async fn embeddings_get(
 }
 
 /// Request body for `POST /api/search/semantic`.
-#[allow(dead_code)]
 #[derive(Deserialize)]
 struct SemanticSearchRequest {
     /// The entity type to search within (e.g. "Article").
@@ -3722,12 +3816,6 @@ struct SemanticSearchRequest {
     attribute: Option<String>,
 }
 
-#[allow(dead_code)]
-fn default_search_limit() -> u32 {
-    10
-}
-
-#[allow(dead_code)]
 /// `POST /api/search/semantic` — Search by vector similarity, return matched
 /// entities with their cosine distance scores.
 async fn search_semantic(
@@ -3742,58 +3830,14 @@ async fn search_semantic(
         return Err(ApiError::bad_request("entity_type must not be empty"));
     }
 
-    let vec_literal = format_pgvector_literal(&body.vector);
-
-    // Build the query dynamically to support optional attribute filter.
-    let (sql, has_attr_param) = if body.attribute.is_some() {
-        (
-            format!(
-                "SELECT e.entity_id, e.attribute, \
-                        (e.embedding <=> '{vec}'::vector) AS distance \
-                 FROM embeddings e \
-                 INNER JOIN triples t_type ON t_type.entity_id = e.entity_id \
-                   AND t_type.attribute = ':db/type' \
-                   AND t_type.value = $1::jsonb \
-                   AND NOT t_type.retracted \
-                 WHERE e.attribute = $2 \
-                 ORDER BY e.embedding <=> '{vec}'::vector \
-                 LIMIT $3",
-                vec = vec_literal,
-            ),
-            true,
-        )
-    } else {
-        (
-            format!(
-                "SELECT e.entity_id, e.attribute, \
-                        (e.embedding <=> '{vec}'::vector) AS distance \
-                 FROM embeddings e \
-                 INNER JOIN triples t_type ON t_type.entity_id = e.entity_id \
-                   AND t_type.attribute = ':db/type' \
-                   AND t_type.value = $1::jsonb \
-                   AND NOT t_type.retracted \
-                 ORDER BY e.embedding <=> '{vec}'::vector \
-                 LIMIT $2",
-                vec = vec_literal,
-            ),
-            false,
-        )
-    };
-
-    let rows: Vec<(Uuid, String, f64)> = if has_attr_param {
-        sqlx::query_as::<_, (Uuid, String, f64)>(&sql)
-            .bind(serde_json::Value::String(body.entity_type.clone()))
-            .bind(body.attribute.as_deref().unwrap_or(""))
-            .bind(body.limit as i32)
-            .fetch_all(&state.pool)
-            .await
-    } else {
-        sqlx::query_as::<_, (Uuid, String, f64)>(&sql)
-            .bind(serde_json::Value::String(body.entity_type.clone()))
-            .bind(body.limit as i32)
-            .fetch_all(&state.pool)
-            .await
-    }
+    let rows = run_semantic_search(
+        &state.pool,
+        &body.vector,
+        &body.entity_type,
+        body.attribute.as_deref(),
+        body.limit,
+    )
+    .await
     .map_err(|e| ApiError::internal(format!("Semantic search failed: {e}")))?;
 
     let results: Vec<serde_json::Value> = rows
@@ -3818,7 +3862,340 @@ async fn search_semantic(
     Ok(negotiate_response(&headers, &response))
 }
 
-#[allow(dead_code)]
+/// Internal helper that runs the cosine-distance ANN query and returns
+/// `(entity_id, attribute, distance)` rows in ascending-distance order.
+///
+/// Shared by `search_semantic` and `search_hybrid` so both endpoints stay
+/// in lockstep about the SQL shape, attribute filtering, and binding
+/// strategy. Pulls the embedding vector via a parameterized cast string
+/// because pgvector's `vector` type cannot be bound with a `Vec<f32>`
+/// directly through sqlx today.
+async fn run_semantic_search(
+    pool: &PgPool,
+    vector: &[f32],
+    entity_type: &str,
+    attribute: Option<&str>,
+    limit: u32,
+) -> std::result::Result<Vec<(Uuid, String, f64)>, sqlx::Error> {
+    let vec_literal = format_pgvector_literal(vector);
+
+    if let Some(attr) = attribute {
+        let sql = "SELECT e.entity_id, e.attribute, \
+                          (e.embedding <=> $4::vector) AS distance \
+                   FROM embeddings e \
+                   INNER JOIN triples t_type ON t_type.entity_id = e.entity_id \
+                     AND t_type.attribute = ':db/type' \
+                     AND t_type.value = $1::jsonb \
+                     AND NOT t_type.retracted \
+                   WHERE e.attribute = $2 \
+                   ORDER BY e.embedding <=> $4::vector \
+                   LIMIT $3";
+        sqlx::query_as::<_, (Uuid, String, f64)>(sql)
+            .bind(serde_json::Value::String(entity_type.to_string()))
+            .bind(attr)
+            .bind(limit as i32)
+            .bind(&vec_literal)
+            .fetch_all(pool)
+            .await
+    } else {
+        let sql = "SELECT e.entity_id, e.attribute, \
+                          (e.embedding <=> $3::vector) AS distance \
+                   FROM embeddings e \
+                   INNER JOIN triples t_type ON t_type.entity_id = e.entity_id \
+                     AND t_type.attribute = ':db/type' \
+                     AND t_type.value = $1::jsonb \
+                     AND NOT t_type.retracted \
+                   ORDER BY e.embedding <=> $3::vector \
+                   LIMIT $2";
+        sqlx::query_as::<_, (Uuid, String, f64)>(sql)
+            .bind(serde_json::Value::String(entity_type.to_string()))
+            .bind(limit as i32)
+            .bind(&vec_literal)
+            .fetch_all(pool)
+            .await
+    }
+}
+
+/// Query parameters for `GET /api/search/text`.
+#[derive(Deserialize)]
+struct TextSearchQuery {
+    /// User search string. Parsed via `plainto_tsquery('english', $1)`.
+    q: String,
+    /// Restrict matches to entities of this type (`:db/type` value).
+    entity_type: String,
+    /// Maximum number of results.
+    #[serde(default = "default_search_limit")]
+    limit: u32,
+}
+
+/// `GET /api/search/text` — Postgres full-text search across `triples.value`.
+///
+/// Joins each FTS hit back to its `:db/type` triple so the `entity_type`
+/// filter is enforced server-side. Uses `ts_rank` for relevance ordering.
+async fn search_text(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    axum::extract::Query(params): axum::extract::Query<TextSearchQuery>,
+) -> Result<Response, ApiError> {
+    if params.q.trim().is_empty() {
+        return Err(ApiError::bad_request("q (query string) must not be empty"));
+    }
+    if params.entity_type.is_empty() {
+        return Err(ApiError::bad_request("entity_type must not be empty"));
+    }
+
+    let rows = run_text_search(&state.pool, &params.q, &params.entity_type, params.limit)
+        .await
+        .map_err(|e| ApiError::internal(format!("Text search failed: {e}")))?;
+
+    let results: Vec<serde_json::Value> = rows
+        .iter()
+        .map(|(entity_id, rank)| {
+            serde_json::json!({
+                "entity_id": entity_id,
+                "rank": rank,
+            })
+        })
+        .collect();
+
+    let response = serde_json::json!({
+        "data": results,
+        "meta": {
+            "count": results.len(),
+            "entity_type": params.entity_type,
+            "q": params.q,
+        }
+    });
+    Ok(negotiate_response(&headers, &response))
+}
+
+/// Internal helper that runs the FTS query against `triples.value::text`,
+/// joined to `:db/type` so the entity_type filter is enforced.
+///
+/// Returns `(entity_id, rank)` rows ordered by descending `ts_rank`. We
+/// `MAX(rank)` because a single entity may match across many triples and
+/// we want one row per entity.
+async fn run_text_search(
+    pool: &PgPool,
+    q: &str,
+    entity_type: &str,
+    limit: u32,
+) -> std::result::Result<Vec<(Uuid, f64)>, sqlx::Error> {
+    let sql = "SELECT t.entity_id, \
+                      MAX(ts_rank(to_tsvector('english', t.value::text), \
+                                  plainto_tsquery('english', $1))::float8) AS rank \
+               FROM triples t \
+               INNER JOIN triples t_type ON t_type.entity_id = t.entity_id \
+                 AND t_type.attribute = ':db/type' \
+                 AND t_type.value = $2::jsonb \
+                 AND NOT t_type.retracted \
+               WHERE NOT t.retracted \
+                 AND t.value IS NOT NULL \
+                 AND to_tsvector('english', t.value::text) @@ plainto_tsquery('english', $1) \
+               GROUP BY t.entity_id \
+               ORDER BY rank DESC \
+               LIMIT $3";
+    sqlx::query_as::<_, (Uuid, f64)>(sql)
+        .bind(q)
+        .bind(serde_json::Value::String(entity_type.to_string()))
+        .bind(limit as i32)
+        .fetch_all(pool)
+        .await
+}
+
+/// Optional weight overrides for the hybrid RRF endpoint.
+#[derive(Deserialize, Default)]
+struct HybridWeights {
+    #[serde(default = "default_weight")]
+    semantic: f64,
+    #[serde(default = "default_weight")]
+    text: f64,
+}
+
+fn default_weight() -> f64 {
+    1.0
+}
+
+/// Request body for `POST /api/search/hybrid`.
+#[derive(Deserialize)]
+struct HybridSearchRequest {
+    /// User text query (used for FTS and, optionally, embedded by the caller).
+    query_text: String,
+    /// Pre-computed embedding vector for `query_text`. Required — Phase 3
+    /// keeps embedding generation client-side / via the embedding pipeline.
+    vector: Vec<f32>,
+    /// Restrict matches to this entity type.
+    entity_type: String,
+    /// Maximum number of fused results to return.
+    #[serde(default = "default_search_limit")]
+    limit: u32,
+    /// Optional attribute filter for the semantic side.
+    #[serde(default)]
+    attribute: Option<String>,
+    /// Optional weight overrides. Defaults to `{ semantic: 1.0, text: 1.0 }`.
+    #[serde(default)]
+    weights: HybridWeights,
+}
+
+/// `POST /api/search/hybrid` — Reciprocal Rank Fusion over semantic + text.
+///
+/// Runs both `run_semantic_search` and `run_text_search` and merges the
+/// rankings using the standard RRF formula:
+///
+/// ```text
+/// score(d) = Σ wᵢ / (k + rankᵢ(d))
+/// ```
+///
+/// where `k = 60` (Cormack et al.) and `wᵢ` is the per-list weight from
+/// the request body. Each candidate is then sorted by descending RRF
+/// score and the top `limit` rows are returned.
+async fn search_hybrid(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    axum::Json(body): axum::Json<HybridSearchRequest>,
+) -> Result<Response, ApiError> {
+    if body.query_text.trim().is_empty() {
+        return Err(ApiError::bad_request("query_text must not be empty"));
+    }
+    if body.vector.is_empty() {
+        return Err(ApiError::bad_request("vector must not be empty"));
+    }
+    if body.entity_type.is_empty() {
+        return Err(ApiError::bad_request("entity_type must not be empty"));
+    }
+
+    // Pull more candidates per side than the requested limit so the fusion
+    // step has room to reorder. A 4× window is a common heuristic.
+    let candidate_window = (body.limit.saturating_mul(4)).max(body.limit);
+
+    let semantic_rows = run_semantic_search(
+        &state.pool,
+        &body.vector,
+        &body.entity_type,
+        body.attribute.as_deref(),
+        candidate_window,
+    )
+    .await
+    .map_err(|e| ApiError::internal(format!("Hybrid semantic step failed: {e}")))?;
+
+    let text_rows = run_text_search(
+        &state.pool,
+        &body.query_text,
+        &body.entity_type,
+        candidate_window,
+    )
+    .await
+    .map_err(|e| ApiError::internal(format!("Hybrid text step failed: {e}")))?;
+
+    // Fuse the two rankings using Reciprocal Rank Fusion.
+    let fused = reciprocal_rank_fuse(
+        &semantic_rows,
+        &text_rows,
+        body.weights.semantic,
+        body.weights.text,
+    );
+
+    // Apply the requested limit after fusion.
+    let limited: Vec<&FusedHit> = fused.iter().take(body.limit as usize).collect();
+
+    let results: Vec<serde_json::Value> = limited
+        .iter()
+        .map(|hit| {
+            serde_json::json!({
+                "id": hit.entity_id,
+                "entity_type": body.entity_type,
+                "semantic_score": hit.semantic_score,
+                "text_score": hit.text_score,
+                "rrf_score": hit.rrf_score,
+            })
+        })
+        .collect();
+
+    let response = serde_json::json!({
+        "data": results,
+        "meta": {
+            "count": results.len(),
+            "entity_type": body.entity_type,
+            "k": RRF_K,
+            "weights": {
+                "semantic": body.weights.semantic,
+                "text": body.weights.text,
+            }
+        }
+    });
+    Ok(negotiate_response(&headers, &response))
+}
+
+/// One row of the fused output ranking.
+#[derive(Debug, Clone)]
+struct FusedHit {
+    entity_id: Uuid,
+    /// Cosine similarity (1 - distance) from the semantic side, if any.
+    semantic_score: Option<f64>,
+    /// `ts_rank` from the FTS side, if any.
+    text_score: Option<f64>,
+    /// Final fused RRF score (higher is better).
+    rrf_score: f64,
+}
+
+/// Apply Reciprocal Rank Fusion over the semantic and text result lists.
+///
+/// `semantic_rows` is `(entity_id, attribute, distance)` ordered by
+/// ascending distance; `text_rows` is `(entity_id, ts_rank)` ordered by
+/// descending rank. Returns hits sorted by descending RRF score.
+fn reciprocal_rank_fuse(
+    semantic_rows: &[(Uuid, String, f64)],
+    text_rows: &[(Uuid, f64)],
+    w_semantic: f64,
+    w_text: f64,
+) -> Vec<FusedHit> {
+    use std::collections::{HashMap, HashSet};
+
+    let mut hits: HashMap<Uuid, FusedHit> = HashMap::new();
+
+    // De-duplicate semantic_rows by entity_id (best — i.e. smallest distance —
+    // wins because the input is already sorted ascending).
+    let mut seen_semantic: HashSet<Uuid> = HashSet::new();
+    let mut semantic_rank = 0usize;
+    for (entity_id, _attr, distance) in semantic_rows {
+        if !seen_semantic.insert(*entity_id) {
+            continue;
+        }
+        semantic_rank += 1;
+        let contribution = w_semantic / (RRF_K + semantic_rank as f64);
+        let entry = hits.entry(*entity_id).or_insert_with(|| FusedHit {
+            entity_id: *entity_id,
+            semantic_score: None,
+            text_score: None,
+            rrf_score: 0.0,
+        });
+        entry.semantic_score = Some(1.0 - *distance);
+        entry.rrf_score += contribution;
+    }
+
+    let mut text_rank = 0usize;
+    for (entity_id, rank) in text_rows {
+        text_rank += 1;
+        let contribution = w_text / (RRF_K + text_rank as f64);
+        let entry = hits.entry(*entity_id).or_insert_with(|| FusedHit {
+            entity_id: *entity_id,
+            semantic_score: None,
+            text_score: None,
+            rrf_score: 0.0,
+        });
+        entry.text_score = Some(*rank);
+        entry.rrf_score += contribution;
+    }
+
+    let mut out: Vec<FusedHit> = hits.into_values().collect();
+    out.sort_by(|a, b| {
+        b.rrf_score
+            .partial_cmp(&a.rrf_score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    out
+}
+
 /// Format a slice of f32 values as a pgvector literal string: `[0.1,0.2,0.3]`.
 fn format_pgvector_literal(vec: &[f32]) -> String {
     let mut s = String::with_capacity(vec.len() * 8 + 2);
@@ -3831,6 +4208,97 @@ fn format_pgvector_literal(vec: &[f32]) -> String {
     }
     s.push(']');
     s
+}
+
+#[cfg(test)]
+mod search_unit_tests {
+    use super::*;
+
+    /// Pure-Rust unit test for the RRF fusion math. Does not require Postgres.
+    #[test]
+    fn rrf_fuses_two_lists_into_descending_ranking() {
+        // entity A is rank 1 in semantic and rank 2 in text — should win.
+        // entity B is rank 2 in semantic and rank 1 in text — close second.
+        // entity C only appears in semantic at rank 3.
+        // entity D only appears in text at rank 3.
+        let a = Uuid::from_u128(1);
+        let b = Uuid::from_u128(2);
+        let c = Uuid::from_u128(3);
+        let d = Uuid::from_u128(4);
+
+        let semantic = vec![
+            (a, "default".to_string(), 0.10), // similarity 0.90
+            (b, "default".to_string(), 0.20), // similarity 0.80
+            (c, "default".to_string(), 0.30), // similarity 0.70
+        ];
+        let text = vec![(b, 0.95), (a, 0.80), (d, 0.40)];
+
+        let fused = reciprocal_rank_fuse(&semantic, &text, 1.0, 1.0);
+
+        assert_eq!(fused.len(), 4);
+
+        // The top two entries must be A or B (they each appear in both lists),
+        // and they must outrank C and D (which only appear in one list).
+        let top_two: Vec<Uuid> = fused.iter().take(2).map(|h| h.entity_id).collect();
+        assert!(top_two.contains(&a));
+        assert!(top_two.contains(&b));
+
+        // Ranking must be strictly descending by rrf_score.
+        for win in fused.windows(2) {
+            assert!(win[0].rrf_score >= win[1].rrf_score);
+        }
+
+        // C only had a semantic score; D only had a text score — both
+        // populate exactly one side.
+        let c_hit = fused.iter().find(|h| h.entity_id == c).unwrap();
+        assert!(c_hit.semantic_score.is_some());
+        assert!(c_hit.text_score.is_none());
+        let d_hit = fused.iter().find(|h| h.entity_id == d).unwrap();
+        assert!(d_hit.semantic_score.is_none());
+        assert!(d_hit.text_score.is_some());
+    }
+
+    #[test]
+    fn rrf_weights_bias_toward_chosen_side() {
+        let a = Uuid::from_u128(1);
+        let b = Uuid::from_u128(2);
+
+        // A is rank 1 semantic, rank 5 text.
+        // B is rank 1 text, rank 5 semantic.
+        let semantic = vec![
+            (a, "default".to_string(), 0.05),
+            (Uuid::from_u128(10), "default".to_string(), 0.10),
+            (Uuid::from_u128(11), "default".to_string(), 0.20),
+            (Uuid::from_u128(12), "default".to_string(), 0.30),
+            (b, "default".to_string(), 0.40),
+        ];
+        let text = vec![
+            (b, 0.99),
+            (Uuid::from_u128(20), 0.80),
+            (Uuid::from_u128(21), 0.70),
+            (Uuid::from_u128(22), 0.60),
+            (a, 0.50),
+        ];
+
+        // Heavy semantic weighting should put A first.
+        let fused_sem = reciprocal_rank_fuse(&semantic, &text, 5.0, 1.0);
+        assert_eq!(fused_sem[0].entity_id, a);
+
+        // Heavy text weighting should put B first.
+        let fused_text = reciprocal_rank_fuse(&semantic, &text, 1.0, 5.0);
+        assert_eq!(fused_text[0].entity_id, b);
+    }
+
+    #[test]
+    fn pgvector_literal_round_trips() {
+        let v = vec![0.1, -0.25, 1.0];
+        let literal = format_pgvector_literal(&v);
+        assert!(literal.starts_with('['));
+        assert!(literal.ends_with(']'));
+        assert!(literal.contains("0.1"));
+        assert!(literal.contains("-0.25"));
+        assert!(literal.contains("1"));
+    }
 }
 
 // ===========================================================================
