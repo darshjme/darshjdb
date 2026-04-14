@@ -157,6 +157,21 @@ pub trait SqlDialect: Send + Sync + std::fmt::Debug {
     ///   a single cast token.
     fn uuid_array_cast(&self, param: &str) -> String;
 
+    /// Whether this dialect supports baking a single
+    /// `entity_id = ANY($1::uuid[])` statement for batched UUID lookups.
+    ///
+    /// - Postgres: `true`. One prepared statement handles any batch
+    ///   size because the whole array binds to a single parameter.
+    /// - SQLite: `false`. `IN (...)` requires one placeholder per
+    ///   value, so the planner emits a `__UUID_LIST__` template that
+    ///   the store adapter expands at bind time.
+    ///
+    /// Default is `true` to preserve the v0.3.1 Postgres shape for any
+    /// downstream dialect that does not override it.
+    fn supports_uuid_array_any(&self) -> bool {
+        true
+    }
+
     /// Build an `entity_id IN (…)` expression for a dynamically-sized
     /// UUID list.
     ///
@@ -377,6 +392,10 @@ impl SqlDialect for SqliteDialect {
         // `in_uuid_list`. We still return the raw placeholder so that
         // any lingering callers don't panic on a todo!().
         param.to_string()
+    }
+
+    fn supports_uuid_array_any(&self) -> bool {
+        false
     }
 
     fn in_uuid_list(&self, column: &str, placeholders: &[String]) -> String {

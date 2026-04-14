@@ -282,7 +282,24 @@ pub struct NestedPlan {
     /// The attribute on the parent whose value is a UUID reference.
     pub via_attribute: String,
     /// SQL to fetch the nested entity's triples.
+    ///
+    /// On Postgres this is a *baked* statement using
+    /// `entity_id = ANY($1::uuid[])` — one statement handles any batch
+    /// size. On SQLite the same string contains the `__UUID_LIST__`
+    /// sentinel (see `sql_template`) and must not be executed as-is.
     pub sql: String,
+    /// Template SQL for dialects where nested batch fetch uses a
+    /// runtime-arity `IN (...)` list (e.g. SQLite has no array type).
+    ///
+    /// When `Some`, the string contains a `__UUID_LIST__` token that
+    /// the store adapter replaces at bind time with a comma-separated
+    /// placeholder list of the correct length (`?1, ?2, …`). When
+    /// `None`, `sql` is directly executable against the target store.
+    ///
+    /// The SQLite adapter that performs the expansion lands in the
+    /// Phase 2 integration commit; v0.3.2 only carries the token
+    /// through the planner.
+    pub sql_template: Option<String>,
     /// Sub-nested plans for multi-level resolution (e.g. todos -> owner -> org).
     pub sub_nested: Vec<NestedPlan>,
 }
@@ -517,13 +534,18 @@ pub fn plan_query_with_dialect(
 /// respecting [`MAX_NESTING_DEPTH`] to prevent query explosion.
 ///
 /// The emitted SQL is dialect-specific for two reasons:
-/// - Postgres uses `entity_id = ANY($1::uuid[])` for batched fetches;
-///   SQLite has no array type and the planner handles the list at
-///   execute-time by rebuilding the plan with a dynamic `IN (…)`
-///   clause. For the nested plan itself we emit the Postgres form
-///   (preserving v0.3.1 behaviour) and rely on the SQLite store
-///   adapter to rewrite at bind time if needed.
-/// - Placeholder syntax (`$1` vs `?1`).
+/// - Postgres can bake a single statement with
+///   `entity_id = ANY($1::uuid[])` because the whole UUID batch binds
+///   to one parameter. SQLite has no array type, so the planner emits
+///   a `WHERE entity_id IN (__UUID_LIST__)` *template* that the
+///   SQLite store adapter expands at bind time with the correct
+///   number of `?N` placeholders (one per UUID).
+/// - Placeholder syntax (`$1` vs `?1`) for the Postgres baked form.
+///
+/// The `__UUID_LIST__` token is intentionally non-SQL so that any
+/// caller forgetting to expand it before executing the statement
+/// will see a clear prepare-time error rather than silently running
+/// wrong SQL.
 fn build_nested_plans(
     nested: &[NestedQuery],
     dialect: &dyn SqlDialect,
@@ -539,22 +561,36 @@ fn build_nested_plans(
                 Some(sub) => build_nested_plans(&sub.nested, dialect, depth + 1),
                 None => Vec::new(),
             };
-            // Nested SQL uses a UUID-array batch fetch on Postgres.
-            // On SQLite, the store adapter expands the bind list at
-            // query-time, but we still need the literal SQL string
-            // here; we mirror the v0.3.1 Postgres shape exactly so
-            // existing tests pass and the Sqlite adapter can do a
-            // simple string replace of the `= ANY($1::uuid[])` token.
-            let placeholder = dialect.placeholder(1);
-            let array_cast = dialect.uuid_array_cast(&placeholder);
-            let sql = format!(
-                "SELECT attribute, value FROM triples \
-                 WHERE entity_id = ANY({array_cast}) AND NOT retracted \
-                 ORDER BY entity_id, attribute, tx_id DESC"
-            );
+
+            let (sql, sql_template) = if dialect.supports_uuid_array_any() {
+                // Postgres: bake `ANY($1::uuid[])` — one prepared
+                // statement handles any batch size.
+                let placeholder = dialect.placeholder(1);
+                let array_cast = dialect.uuid_array_cast(&placeholder);
+                let sql = format!(
+                    "SELECT attribute, value FROM triples \
+                     WHERE entity_id = ANY({array_cast}) AND NOT retracted \
+                     ORDER BY entity_id, attribute, tx_id DESC"
+                );
+                (sql, None)
+            } else {
+                // SQLite: emit an IN(__UUID_LIST__) template. The
+                // store adapter expands the token into
+                // `?1, ?2, …, ?N` at bind time once the UUID batch
+                // size is known. The `sql` field carries the
+                // template too so callers that inspect the plan in
+                // a dialect-agnostic way still see the shape.
+                let sql_template = "SELECT attribute, value FROM triples \
+                                    WHERE entity_id IN (__UUID_LIST__) AND NOT retracted \
+                                    ORDER BY entity_id, attribute, tx_id DESC"
+                    .to_string();
+                (sql_template.clone(), Some(sql_template))
+            };
+
             NestedPlan {
                 via_attribute: n.via_attribute.clone(),
                 sql,
+                sql_template,
                 sub_nested,
             }
         })
@@ -2364,6 +2400,14 @@ mod tests {
 
     #[test]
     fn parity_nested_plan_uuid_batch() {
+        // M-3 regression test. Postgres bakes a single statement with
+        // `ANY($1::uuid[])`; SQLite cannot bake an IN-list at plan
+        // time because the batch size is only known at execute time,
+        // so the planner emits a `__UUID_LIST__` sentinel that the
+        // SqliteStore adapter (landing in the Phase 2 integration
+        // commit) replaces with `?1, ?2, …, ?N` at bind time. The
+        // old test asserted `ANY(?1)` which is invalid SQLite and
+        // would have failed at statement prepare time.
         let ast = QueryAST {
             nested: vec![NestedQuery {
                 via_attribute: "owner_id".into(),
@@ -2374,16 +2418,36 @@ mod tests {
         let pg = plan_query_with_dialect(&ast, &PgDialect).unwrap();
         let sq = plan_query_with_dialect(&ast, &SqliteDialect).unwrap();
 
-        // Pg: full ::uuid[] cast. SQLite: bare placeholder.
+        // Pg: baked ANY($1::uuid[]) form, no template.
         assert!(
             pg.nested_plans[0].sql.contains("ANY($1::uuid[])"),
             "pg nested:\n{}",
             pg.nested_plans[0].sql
         );
         assert!(
-            sq.nested_plans[0].sql.contains("ANY(?1)"),
-            "sqlite nested:\n{}",
+            pg.nested_plans[0].sql_template.is_none(),
+            "pg nested should have no template"
+        );
+
+        // SQLite: IN(__UUID_LIST__) template on both `sql` and
+        // `sql_template`. The token is intentionally non-SQL so any
+        // caller that forgets to expand it will fail at prepare time
+        // instead of silently running wrong SQL.
+        assert!(
+            sq.nested_plans[0].sql.contains("__UUID_LIST__"),
+            "sqlite nested sql should carry the expansion sentinel:\n{}",
             sq.nested_plans[0].sql
+        );
+        assert!(
+            sq.nested_plans[0]
+                .sql_template
+                .as_deref()
+                .is_some_and(|t| t.contains("__UUID_LIST__")),
+            "sqlite nested sql_template must be Some with the sentinel"
+        );
+        assert!(
+            !sq.nested_plans[0].sql.contains("ANY("),
+            "sqlite nested must not contain ANY(...) — invalid SQLite SQL"
         );
     }
 
