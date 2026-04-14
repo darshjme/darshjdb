@@ -950,17 +950,36 @@ fn bind_json_param<'q>(
 
 /// Thread-safe LRU cache for query plans, keyed by a SHA-256 hash
 /// of the query shape (entity type + where attributes + order + nested).
+///
+/// Each instance is **pinned to a specific SQL dialect** at construction
+/// time. The cache key is the AST shape only (not the dialect), so two
+/// different stores (e.g. Postgres + SQLite) must use two separate
+/// `PlanCache` instances — otherwise a Pg plan could be served against
+/// a Sqlite store. `insert` / `get` `debug_assert!` on dialect match
+/// to catch bugs where a caller mixes dialects across a single cache.
 pub struct PlanCache {
     inner: RwLock<LruCache<[u8; 32], QueryPlan>>,
+    dialect_name: &'static str,
 }
 
 impl PlanCache {
-    /// Create a new cache with the given capacity.
-    pub fn new(capacity: usize) -> Self {
+    /// Create a new cache with the given capacity, pinned to `dialect`.
+    ///
+    /// The `dialect` parameter is stored as its static name only; the
+    /// cache itself never emits SQL. `insert` and `get` assert (debug
+    /// builds) that all traffic through this cache uses the same
+    /// dialect so plans from one backend never bleed into another.
+    pub fn new(capacity: usize, dialect: &dyn SqlDialect) -> Self {
         let cap = NonZeroUsize::new(capacity).unwrap_or(NonZeroUsize::new(256).expect("256 > 0"));
         Self {
             inner: RwLock::new(LruCache::new(cap)),
+            dialect_name: dialect.name(),
         }
+    }
+
+    /// Name of the dialect this cache is pinned to.
+    pub fn dialect_name(&self) -> &'static str {
+        self.dialect_name
     }
 
     /// Compute the shape hash for a query AST.
@@ -1005,14 +1024,36 @@ impl PlanCache {
     ///
     /// Uses `peek` under a read lock so concurrent reads do not block
     /// each other. Trade-off: does not update LRU recency on read hits.
-    pub async fn get(&self, ast: &QueryAST) -> Option<QueryPlan> {
+    ///
+    /// `dialect` is asserted (debug builds) to match the dialect this
+    /// cache was pinned to at construction.
+    pub async fn get(&self, ast: &QueryAST, dialect: &dyn SqlDialect) -> Option<QueryPlan> {
+        debug_assert_eq!(
+            self.dialect_name,
+            dialect.name(),
+            "PlanCache pinned to {} but received {} lookup",
+            self.dialect_name,
+            dialect.name()
+        );
         let key = Self::shape_key(ast);
         let guard = self.inner.read().await;
         guard.peek(&key).cloned()
     }
 
     /// Insert a plan into the cache.
-    pub async fn insert(&self, ast: &QueryAST, plan: QueryPlan) {
+    ///
+    /// `dialect` is asserted (debug builds) to match the dialect this
+    /// cache was pinned to at construction. Mixing dialects on one
+    /// cache is a programmer error — different backends must use
+    /// different `PlanCache` instances (see the struct-level docs).
+    pub async fn insert(&self, ast: &QueryAST, plan: QueryPlan, dialect: &dyn SqlDialect) {
+        debug_assert_eq!(
+            self.dialect_name,
+            dialect.name(),
+            "PlanCache pinned to {} but received {} plan",
+            self.dialect_name,
+            dialect.name()
+        );
         let key = Self::shape_key(ast);
         let mut guard = self.inner.write().await;
         guard.put(key, plan);
@@ -1037,7 +1078,11 @@ pub async fn run_query(
         plan_query
     };
 
-    let plan = match cache.get(&ast).await {
+    // run_query drives the Postgres backend only; SQLite runs through
+    // a separate store adapter with its own cache. The dialect passed
+    // here must match the cache's pinned dialect (debug_assert).
+    let dialect: &dyn SqlDialect = &PgDialect;
+    let plan = match cache.get(&ast, dialect).await {
         Some(cached) => {
             tracing::debug!("plan cache hit for type={}", ast.entity_type);
             // Re-plan to get fresh params (cache stores the shape, not values).
@@ -1048,7 +1093,7 @@ pub async fn run_query(
         None => {
             tracing::debug!("plan cache miss for type={}", ast.entity_type);
             let plan = plan_fn(&ast)?;
-            cache.insert(&ast, plan.clone()).await;
+            cache.insert(&ast, plan.clone(), dialect).await;
             plan
         }
     };
@@ -1596,26 +1641,29 @@ mod tests {
 
     #[tokio::test]
     async fn plan_cache_hit() {
-        let cache = PlanCache::new(16);
+        let dialect: &dyn SqlDialect = &PgDialect;
+        let cache = PlanCache::new(16, dialect);
         let ast = bare_ast("User");
         let plan = plan_query(&ast).expect("should plan");
-        cache.insert(&ast, plan).await;
-        assert!(cache.get(&ast).await.is_some());
+        cache.insert(&ast, plan, dialect).await;
+        assert!(cache.get(&ast, dialect).await.is_some());
     }
 
     #[tokio::test]
     async fn plan_cache_miss_on_different_entity_type() {
-        let cache = PlanCache::new(16);
+        let dialect: &dyn SqlDialect = &PgDialect;
+        let cache = PlanCache::new(16, dialect);
         let ast1 = bare_ast("User");
         let plan = plan_query(&ast1).expect("should plan");
-        cache.insert(&ast1, plan).await;
+        cache.insert(&ast1, plan, dialect).await;
         let ast2 = bare_ast("Post");
-        assert!(cache.get(&ast2).await.is_none());
+        assert!(cache.get(&ast2, dialect).await.is_none());
     }
 
     #[tokio::test]
     async fn plan_cache_miss_on_different_operator() {
-        let cache = PlanCache::new(16);
+        let dialect: &dyn SqlDialect = &PgDialect;
+        let cache = PlanCache::new(16, dialect);
         let ast1 = QueryAST {
             where_clauses: vec![WhereClause {
                 attribute: "x".into(),
@@ -1624,7 +1672,7 @@ mod tests {
             }],
             ..bare_ast("T")
         };
-        cache.insert(&ast1, plan_query(&ast1).unwrap()).await;
+        cache.insert(&ast1, plan_query(&ast1).unwrap(), dialect).await;
         let ast2 = QueryAST {
             where_clauses: vec![WhereClause {
                 attribute: "x".into(),
@@ -1633,12 +1681,16 @@ mod tests {
             }],
             ..bare_ast("T")
         };
-        assert!(cache.get(&ast2).await.is_none(), "different op should miss");
+        assert!(
+            cache.get(&ast2, dialect).await.is_none(),
+            "different op should miss"
+        );
     }
 
     #[tokio::test]
     async fn plan_cache_miss_on_different_attribute() {
-        let cache = PlanCache::new(16);
+        let dialect: &dyn SqlDialect = &PgDialect;
+        let cache = PlanCache::new(16, dialect);
         let ast1 = QueryAST {
             where_clauses: vec![WhereClause {
                 attribute: "email".into(),
@@ -1647,7 +1699,7 @@ mod tests {
             }],
             ..bare_ast("T")
         };
-        cache.insert(&ast1, plan_query(&ast1).unwrap()).await;
+        cache.insert(&ast1, plan_query(&ast1).unwrap(), dialect).await;
         let ast2 = QueryAST {
             where_clauses: vec![WhereClause {
                 attribute: "name".into(),
@@ -1657,7 +1709,7 @@ mod tests {
             ..bare_ast("T")
         };
         assert!(
-            cache.get(&ast2).await.is_none(),
+            cache.get(&ast2, dialect).await.is_none(),
             "different attribute should miss"
         );
     }
@@ -1758,33 +1810,88 @@ mod tests {
 
     #[tokio::test]
     async fn plan_cache_lru_eviction() {
-        let cache = PlanCache::new(2);
+        let dialect: &dyn SqlDialect = &PgDialect;
+        let cache = PlanCache::new(2, dialect);
         let ast_a = bare_ast("A");
         let ast_b = bare_ast("B");
         let ast_c = bare_ast("C");
 
-        cache.insert(&ast_a, plan_query(&ast_a).unwrap()).await;
-        cache.insert(&ast_b, plan_query(&ast_b).unwrap()).await;
+        cache.insert(&ast_a, plan_query(&ast_a).unwrap(), dialect).await;
+        cache.insert(&ast_b, plan_query(&ast_b).unwrap(), dialect).await;
         // Access B so it becomes most-recently-used; A is now LRU.
-        assert!(cache.get(&ast_b).await.is_some());
+        assert!(cache.get(&ast_b, dialect).await.is_some());
 
         // Insert C — should evict A (the least recently used).
-        cache.insert(&ast_c, plan_query(&ast_c).unwrap()).await;
+        cache.insert(&ast_c, plan_query(&ast_c).unwrap(), dialect).await;
         assert!(
-            cache.get(&ast_a).await.is_none(),
+            cache.get(&ast_a, dialect).await.is_none(),
             "A should have been evicted"
         );
-        assert!(cache.get(&ast_b).await.is_some(), "B was recently accessed");
-        assert!(cache.get(&ast_c).await.is_some(), "C was just inserted");
+        assert!(
+            cache.get(&ast_b, dialect).await.is_some(),
+            "B was recently accessed"
+        );
+        assert!(
+            cache.get(&ast_c, dialect).await.is_some(),
+            "C was just inserted"
+        );
     }
 
     #[tokio::test]
     async fn plan_cache_zero_capacity_uses_default() {
         // Should not panic; falls back to 256.
-        let cache = PlanCache::new(0);
+        let dialect: &dyn SqlDialect = &PgDialect;
+        let cache = PlanCache::new(0, dialect);
         let ast = bare_ast("T");
-        cache.insert(&ast, plan_query(&ast).unwrap()).await;
-        assert!(cache.get(&ast).await.is_some());
+        cache.insert(&ast, plan_query(&ast).unwrap(), dialect).await;
+        assert!(cache.get(&ast, dialect).await.is_some());
+    }
+
+    #[tokio::test]
+    async fn plan_cache_pinned_to_dialect() {
+        // M-2 regression test: PlanCache is pinned to a single dialect
+        // at construction time. A Pg-pinned cache must report the
+        // `"postgres"` name and a Sqlite-pinned cache `"sqlite"`.
+        let pg_cache = PlanCache::new(4, &PgDialect);
+        let sq_cache = PlanCache::new(4, &SqliteDialect);
+        assert_eq!(pg_cache.dialect_name(), "postgres");
+        assert_eq!(sq_cache.dialect_name(), "sqlite");
+    }
+
+    // M-2 regression test — the debug_assert on mixed dialects.
+    //
+    // Rust aborts on double-panic (debug_assert inside an async task
+    // may poison state in ways that catch_unwind can't recover), so
+    // we only gate this test on debug_assertions and skip it when
+    // panics are disabled (e.g. on panic=abort release builds).
+    #[cfg(debug_assertions)]
+    #[test]
+    fn plan_cache_debug_asserts_on_mixed_dialect() {
+        use std::panic::{AssertUnwindSafe, catch_unwind};
+
+        let pg_cache = PlanCache::new(4, &PgDialect);
+        let ast = bare_ast("User");
+        let sq_plan =
+            plan_query_with_dialect(&ast, &SqliteDialect).expect("sqlite plan");
+
+        // Inserting a SqliteDialect plan into a Pg-pinned cache must
+        // trip the debug_assert. We drive the future to first poll
+        // via `block_on` inside a fresh runtime so the catch_unwind
+        // sees the panic directly.
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            rt.block_on(async {
+                pg_cache.insert(&ast, sq_plan, &SqliteDialect).await;
+            })
+        }));
+        assert!(
+            result.is_err(),
+            "inserting a sqlite plan into a pg-pinned cache must panic"
+        );
     }
 
     // ── Vector helpers ─────────────────────────────────────────────
@@ -2321,22 +2428,28 @@ mod tests {
 
     #[tokio::test]
     async fn parity_plan_cache_works_with_both_dialects() {
-        // The plan cache keys by AST shape, not dialect. Callers must
-        // therefore use one dialect per cache. This test documents the
-        // behaviour by confirming that the cache round-trips plans
-        // produced with either dialect.
+        // The plan cache keys by AST shape and is pinned to a single
+        // dialect at construction time. Callers must use one
+        // `PlanCache` instance per dialect-store pair. This test
+        // documents the behaviour by round-tripping plans through
+        // two separately-pinned caches.
         let ast = bare_ast("User");
 
-        let pg_cache = PlanCache::new(4);
+        let pg_cache = PlanCache::new(4, &PgDialect);
         let pg_plan = plan_query_with_dialect(&ast, &PgDialect).unwrap();
-        pg_cache.insert(&ast, pg_plan.clone()).await;
-        let cached_pg = pg_cache.get(&ast).await.expect("pg cache hit");
+        pg_cache.insert(&ast, pg_plan.clone(), &PgDialect).await;
+        let cached_pg = pg_cache.get(&ast, &PgDialect).await.expect("pg cache hit");
         assert_eq!(cached_pg.sql, pg_plan.sql);
 
-        let sq_cache = PlanCache::new(4);
+        let sq_cache = PlanCache::new(4, &SqliteDialect);
         let sq_plan = plan_query_with_dialect(&ast, &SqliteDialect).unwrap();
-        sq_cache.insert(&ast, sq_plan.clone()).await;
-        let cached_sq = sq_cache.get(&ast).await.expect("sqlite cache hit");
+        sq_cache
+            .insert(&ast, sq_plan.clone(), &SqliteDialect)
+            .await;
+        let cached_sq = sq_cache
+            .get(&ast, &SqliteDialect)
+            .await
+            .expect("sqlite cache hit");
         assert_eq!(cached_sq.sql, sq_plan.sql);
 
         // And the two SQL strings are distinct.
