@@ -17,6 +17,10 @@ use ddb_server::api::rest::{AppState, build_router};
 use ddb_server::api::ws::{WsState, ws_routes};
 use ddb_server::auth::middleware::RateLimiter;
 use ddb_server::auth::session::{KeyManager, SessionManager};
+use ddb_server::cluster::{
+    self, ClusterState, LOCK_EXPIRY_SWEEPER, NodeId, spawn_singleton_task,
+};
+use ddb_server::cluster::status::{ClusterStatusState, router as cluster_status_router};
 use ddb_server::config::{DdbConfig, load_config};
 use ddb_server::error::Result;
 use ddb_server::sync::presence::PresenceManager;
@@ -283,42 +287,74 @@ async fn main() -> Result<()> {
 
     let triple_store_arc = Arc::new(triple_store);
 
-    // -- TTL Expiry Background Task -------------------------------------------
+    // -- Cluster state (v0.3.1 horizontal scaling) ----------------------------
+    // A stable per-process node id (random UUID) and a shared set describing
+    // which singleton background tasks this replica currently leads. Both are
+    // exposed via `GET /cluster/status`. See `docs/HORIZONTAL_SCALING.md` for
+    // the full multi-replica deployment story.
+    let node_id = Arc::new(NodeId::new());
+    let cluster_state = ClusterState::new();
+    tracing::info!(
+        node_id = %node_id.uuid(),
+        "cluster node identity generated"
+    );
+
+    // Wrap a pool Arc once so every singleton task can share it without
+    // having to clone the inner `PgPool` for every spawn.
+    let cluster_pool = Arc::new(pool.clone());
+
+    // -- TTL Expiry Background Task (singleton via advisory lock) --------------
     // Every 30 seconds, scan for expired triples and retract them.
     // Uses the idx_triples_expiry partial index for efficient scans.
+    //
+    // Wrapped through `spawn_singleton_task` so that in a multi-replica
+    // deployment only ONE `ddb-server` process holds
+    // `pg_try_advisory_lock(LOCK_EXPIRY_SWEEPER)` at a time and actually
+    // runs the scan. The other replicas poll the lock every 30 s and wait
+    // for leadership. Single-node deployments are a trivial case: the one
+    // replica wins the lock immediately on startup.
     {
         let ttl_store = triple_store_arc.clone();
         let ttl_change_tx = change_tx.clone();
-        tokio::spawn(async move {
-            let mut interval = tokio::time::interval(Duration::from_secs(30));
-            loop {
-                interval.tick().await;
-                match ttl_store.expire_triples().await {
-                    Ok(expired_ids) => {
-                        if !expired_ids.is_empty() {
-                            tracing::info!(
-                                count = expired_ids.len(),
-                                "TTL expiry: retracted expired entities"
-                            );
-                            // Emit change events so WebSocket subscriptions update.
-                            for entity_id in &expired_ids {
-                                let _ = ttl_change_tx.send(ddb_server::sync::ChangeEvent {
-                                    tx_id: 0,
-                                    entity_ids: vec![entity_id.to_string()],
-                                    attributes: vec![":ttl/expired".to_string()],
-                                    entity_type: None,
-                                    actor_id: None,
-                                });
+        let _handle = spawn_singleton_task(
+            cluster_pool.clone(),
+            cluster_state.clone(),
+            LOCK_EXPIRY_SWEEPER,
+            Duration::from_secs(30),
+            "expiry_sweeper",
+            move |_pool| {
+                let ttl_store = ttl_store.clone();
+                let ttl_change_tx = ttl_change_tx.clone();
+                async move {
+                    match ttl_store.expire_triples().await {
+                        Ok(expired_ids) => {
+                            if !expired_ids.is_empty() {
+                                tracing::info!(
+                                    count = expired_ids.len(),
+                                    "TTL expiry: retracted expired entities"
+                                );
+                                for entity_id in &expired_ids {
+                                    let _ = ttl_change_tx.send(ddb_server::sync::ChangeEvent {
+                                        tx_id: 0,
+                                        entity_ids: vec![entity_id.to_string()],
+                                        attributes: vec![":ttl/expired".to_string()],
+                                        entity_type: None,
+                                        actor_id: None,
+                                    });
+                                }
                             }
                         }
-                    }
-                    Err(e) => {
-                        tracing::warn!(error = %e, "TTL expiry scan failed");
+                        Err(e) => {
+                            tracing::warn!(error = %e, "TTL expiry scan failed");
+                        }
                     }
                 }
-            }
-        });
-        tracing::info!("TTL expiry background task started (30s interval)");
+            },
+        );
+        tracing::info!(
+            "TTL expiry background task registered as singleton (30s interval, lock={:#x})",
+            LOCK_EXPIRY_SWEEPER
+        );
     }
 
     // -- Blockchain Anchor Background Task (Phase 5.3, slice 23/30) -----------
@@ -456,62 +492,19 @@ async fn main() -> Result<()> {
         tracing::info!("chunked upload cleanup task started (5min interval, 24h stale threshold)");
     }
 
-    // -- Postgres LISTEN/NOTIFY for multi-process sync -------------------------
+    // -- Postgres LISTEN/NOTIFY for multi-process / multi-replica sync --------
     // A background task LISTENs on the `ddb_changes` channel. When another
-    // process mutates via set_triples, the NOTIFY fires and this task parses
-    // the payload (`{tx_id}:{entity_type}`) into ChangeEvents, feeding the
-    // existing broadcast channel so WebSocket subscribers get updates.
-    {
-        let listen_change_tx = change_tx.clone();
-        let listen_db_url = database_url.clone();
-        tokio::spawn(async move {
-            // Use a dedicated connection (not from the pool) for LISTEN.
-            let mut listener = match sqlx::postgres::PgListener::connect(&listen_db_url).await {
-                Ok(l) => l,
-                Err(e) => {
-                    tracing::error!(error = %e, "failed to create PgListener for ddb_changes");
-                    return;
-                }
-            };
-            if let Err(e) = listener.listen("ddb_changes").await {
-                tracing::error!(error = %e, "failed to LISTEN on ddb_changes channel");
-                return;
-            }
-            tracing::info!("LISTEN/NOTIFY: subscribed to ddb_changes channel");
-
-            loop {
-                match listener.recv().await {
-                    Ok(notification) => {
-                        let payload = notification.payload();
-                        // Parse "{tx_id}:{entity_type}"
-                        let (tx_id, entity_type) = match payload.split_once(':') {
-                            Some((tid, etype)) => {
-                                let tid: i64 = tid.parse().unwrap_or(0);
-                                (tid, Some(etype.to_string()))
-                            }
-                            None => {
-                                let tid: i64 = payload.parse().unwrap_or(0);
-                                (tid, None)
-                            }
-                        };
-                        tracing::debug!(tx_id, entity_type = ?entity_type, "received ddb_changes notification");
-                        let _ = listen_change_tx.send(ddb_server::sync::ChangeEvent {
-                            tx_id,
-                            entity_ids: vec![],
-                            attributes: vec![],
-                            entity_type,
-                            actor_id: None,
-                        });
-                    }
-                    Err(e) => {
-                        tracing::warn!(error = %e, "PgListener recv error, reconnecting in 1s");
-                        tokio::time::sleep(Duration::from_secs(1)).await;
-                    }
-                }
-            }
-        });
-        tracing::info!("LISTEN/NOTIFY background task started for multi-process sync");
-    }
+    // process (or replica) mutates via set_triples, the NOTIFY fires and
+    // the payload is parsed into a ChangeEvent that feeds the local
+    // broadcast channel so WebSocket subscribers attached to THIS replica
+    // see the event — giving us cross-replica WS fanout for free.
+    //
+    // The listener lives in `cluster::notify_listener` so the horizontal-
+    // scaling primitives all sit in one module. Unlike the prior inline
+    // version, the extracted task reconnects automatically if the
+    // listener session dies. See `docs/HORIZONTAL_SCALING.md`.
+    let _notify_handle = cluster::notify_listener::spawn(database_url.clone(), change_tx.clone());
+    tracing::info!("LISTEN/NOTIFY background task started (cluster::notify_listener)");
 
     // Pub/sub engine for keyspace notifications (shared between WS and REST).
     let (pubsub_engine, _pubsub_rx) = ddb_server::sync::pubsub::PubSubEngine::new(4096);
@@ -985,6 +978,14 @@ async fn main() -> Result<()> {
         metrics_allow_list.clone(),
     );
 
+    // Cluster status router (v0.3.1 horizontal scaling). Mounted at the
+    // top level, next to /health, so operators and load balancers can
+    // probe without an auth token.
+    let cluster_status = cluster_status_router(ClusterStatusState {
+        node_id: node_id.clone(),
+        cluster_state: cluster_state.clone(),
+    });
+
     let app = axum::Router::new()
         // REST API routes under /api
         .nest("/api", api_router)
@@ -999,6 +1000,8 @@ async fn main() -> Result<()> {
         .merge(phase10_health)
         // Phase 10: /metrics (Prometheus text exposition).
         .merge(phase10_metrics)
+        // Cluster status at /cluster/status (v0.3.1 horizontal scaling).
+        .merge(cluster_status)
         // Legacy rich health shape at /health/full for dashboards that still
         // want pool/ws/triple counts.
         .route(
