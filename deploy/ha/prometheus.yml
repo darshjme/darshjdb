@@ -1,0 +1,40 @@
+# DarshJDB HA — Prometheus scrape config
+# Scrapes /metrics from each DarshJDB replica + HAProxy stats.
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    cluster: darshjdb-ha
+    environment: production
+
+scrape_configs:
+  - job_name: darshjdb
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - ddb-server-1:7700
+          - ddb-server-2:7700
+          - ddb-server-3:7700
+        labels:
+          service: darshjdb
+
+  - job_name: haproxy
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - haproxy:7000
+        labels:
+          service: haproxy
+
+  - job_name: pgbouncer
+    static_configs:
+      - targets:
+          - pgbouncer:6432
+        labels:
+          service: pgbouncer
+
+  - job_name: prometheus
+    static_configs:
+      - targets:
+          - localhost:9090
