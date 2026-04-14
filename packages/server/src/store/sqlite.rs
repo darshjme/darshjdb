@@ -417,7 +417,9 @@ impl Store for SqliteStore {
                 let mut stmt = conn
                     .prepare(
                         "SELECT entity_id, json_extract(value, '$') FROM triples
-                         WHERE attribute = ':db/type' AND retracted = 0",
+                         WHERE attribute = ':db/type'
+                           AND retracted = 0
+                           AND json_type(value) = 'text'",
                     )
                     .map_err(map_rq)?;
                 let rows = stmt
@@ -792,6 +794,43 @@ mod tests {
         let store = SqliteStore::open(":memory:").expect("open");
         let handle = store.begin_tx().await.expect("begin_tx");
         handle.commit().await.expect("commit");
+    }
+
+    #[tokio::test]
+    async fn get_schema_skips_non_text_db_type() {
+        // Regression test for MINOR-3: if any :db/type triple has a
+        // non-string JSON value, the SQL-level `json_type(value) = 'text'`
+        // filter must skip it so `row.get::<_, String>` cannot crash the
+        // entire get_schema endpoint.
+        let store = SqliteStore::open(":memory:").expect("open");
+        let tx_id = store.next_tx_id().await.unwrap();
+        let good = Uuid::new_v4();
+        let bad = Uuid::new_v4();
+        store
+            .set_triples(
+                tx_id,
+                &[
+                    // Well-formed user.
+                    sample_triple(good, ":db/type", serde_json::json!("user")),
+                    sample_triple(good, "user/email", serde_json::json!("alice@example.com")),
+                    // Malformed :db/type: value is a JSON object, not a string.
+                    // Must be ignored by get_schema rather than crashing it.
+                    sample_triple(
+                        bad,
+                        ":db/type",
+                        serde_json::json!({"nested": "object"}),
+                    ),
+                    sample_triple(bad, "user/email", serde_json::json!("bob@example.com")),
+                ],
+            )
+            .await
+            .unwrap();
+
+        let schema = store.get_schema().await.expect("schema must not crash");
+        // Only the well-formed entity's type is inferred.
+        assert_eq!(schema.entity_types.len(), 1);
+        let user = schema.entity_types.get("user").expect("user type");
+        assert_eq!(user.entity_count, 1);
     }
 
     #[tokio::test]
