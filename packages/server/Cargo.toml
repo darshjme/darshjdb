@@ -105,6 +105,12 @@ deno_core = { version = "0.398", optional = true }
 # default builds stay Postgres-only. See packages/server/src/store/sqlite.rs.
 rusqlite = { version = "0.31", optional = true, features = ["bundled"] }
 
+# v0.3.2 — embedded mlua 0.10 Lua runtime for server functions. Gated behind # TODO(v0.3.2-sprint-merge):
+# the `mlua-runtime` Cargo feature so default builds skip the vendored Lua  # TODO(v0.3.2-sprint-merge):
+# compilation. `vendored` avoids a system Lua dependency; `async` lets Lua   # TODO(v0.3.2-sprint-merge):
+# callbacks await DDB host calls; `serialize` bridges serde_json <-> Lua.   # TODO(v0.3.2-sprint-merge):
+mlua = { version = "0.10", features = ["lua54", "vendored", "async", "serialize", "send"], optional = true } # TODO(v0.3.2-sprint-merge):
+
 [features]
 default = []
 # Enable IPFS-backed audit anchoring via `ipfs-api-backend-hyper`.
@@ -121,6 +127,11 @@ v8 = ["dep:deno_core"]
 # only — every method returns NotYetImplemented). Full backend: v0.3.2.
 # Usage: `cargo check -p ddb-server --features sqlite-store`
 sqlite-store = ["dep:rusqlite"]
+# v0.3.2 — embedded mlua 0.10 Lua runtime for server functions.       # TODO(v0.3.2-sprint-merge):
+# Usage: `cargo run -p ddb-server --features mlua-runtime`.            # TODO(v0.3.2-sprint-merge):
+# Selects MluaRuntime when DDB_FUNCTION_RUNTIME=mlua; falls back to   # TODO(v0.3.2-sprint-merge):
+# ProcessRuntime otherwise.                                           # TODO(v0.3.2-sprint-merge):
+mlua-runtime = ["dep:mlua"] # TODO(v0.3.2-sprint-merge):
 
 [dev-dependencies]
 tokio-tungstenite = "0.28"
