@@ -143,3 +143,55 @@ Clippy is clean on the files I touched. Pre-existing warnings in `packages/serve
 - **`plan_hybrid_query_with_dialect` on SQLite returns `InvalidQuery`.** Agent 1's `SqliteStore` will never receive a `QueryPlan` produced from `$hybrid` — because the planner refuses to produce it on SQLite in the first place. The HTTP handler's error path should surface this as a 400 with the trait's error message.
 
 - **Agent 3 (mlua) interaction.** Zero. Lua functions do not emit SQL and do not touch the query planner. Merge is trivially orthogonal.
+
+## v0.3.2 Post-Review Fixes (2026-04-15)
+
+Code review on the Agent 2 output surfaced 0 Critical / 3 Major / 4 Minor findings. This section records the post-review fix commits applied on the same branch before the Phase 2 integration merge.
+
+### Fix commits (on `feat/v0.3.2-darshanql-dialect`)
+
+1. **M-1 — `fix(query): gate WhereOp::Contains on dialect supports_jsonb_contains`**
+   - Added `SqlDialect::supports_jsonb_contains()` (default `true`), overridden to `false` on `SqliteDialect`.
+   - Planner call site now returns `InvalidQuery` on SQLite instead of calling through to the unsound `instr(value, param) > 0` fallback (substring match on serialised JSON, wrong on scalar prefix collisions and key reordering).
+   - The `SqliteDialect::jsonb_contains` impl is kept as a guarded last-resort with a doc comment; it's only reachable if a caller bypasses the gate.
+   - New regression tests: `sqlite_refuses_jsonb_contains`, `parity_pg_accepts_contains_sqlite_refuses`.
+
+2. **M-2 — `fix(query): pin PlanCache instances to a specific dialect`**
+   - `PlanCache` now carries `dialect_name: &'static str` and exposes `PlanCache::new(capacity, dialect)` + `dialect_name()`.
+   - `insert` / `get` take `dialect: &dyn SqlDialect` and `debug_assert!` the pinned name matches.
+   - All test call sites threaded through `&PgDialect`; the existing `parity_plan_cache_works_with_both_dialects` now instantiates two separately-pinned caches.
+   - New regression tests: `plan_cache_pinned_to_dialect`, `plan_cache_debug_asserts_on_mixed_dialect` (catches the debug_assert via `std::panic::catch_unwind`).
+
+3. **M-3 — `fix(query): emit IN(__UUID_LIST__) template for SQLite nested plans`**
+   - Added `SqlDialect::supports_uuid_array_any()` (default `true`), overridden to `false` on `SqliteDialect`.
+   - `NestedPlan` gained `sql_template: Option<String>`; Postgres bakes `ANY($1::uuid[])`, SQLite emits `WHERE entity_id IN (__UUID_LIST__)` which the Phase 2 SqliteStore adapter will expand at bind time.
+   - Flipped `parity_nested_plan_uuid_batch` — the pre-fix test certified the broken `ANY(?1)` output. It now asserts the sentinel on SQLite and the baked form on Postgres.
+
+4. **m-1 — `chore(query): remove dead format_vector_literal + vec_payload`**
+   - Removed the private `format_vector_literal` function, the `vec_payload` binding in `plan_hybrid_query_with_dialect`, the misleading `let _ = vec_payload;` silencer, and the three unit tests that were the only callers of the dead function.
+
+5. **m-2 — `test(query): add full-string snapshot parity test for all-features AST`**
+   - New `parity_all_features_full_snapshot` test emits SQL for a maximal AST (namespaced type, multi-`$where`, `$search`, `$semantic.vector`, `$order`, `$limit`, `$nested`) and pins the entire string with `assert_eq!` on both dialects. Any refactor that changes SQL emission at all will fail this test.
+
+6. **m-3 — `fix(query): use prepare-failing sentinel for SqliteDialect vector ops`**
+   - `SqliteDialect::vector_literal` now returns `__SQLITE_VECTOR_UNSUPPORTED__` and `cosine_distance` returns `__SQLITE_COSINE_DISTANCE_UNSUPPORTED__`. The old `NULL /* comment */` return was syntactically-valid SQL that silently returned zero rows when a caller forgot the `supports_vector()` gate; the new tokens fail at statement prepare time.
+   - New regression test: `sqlite_vector_sentinels_are_non_sql`.
+
+### Test counts after fixes
+
+- `cargo test -p ddb-server --lib query::` — **186 passed, 0 failed, 1 ignored** (pre-existing baseline failure tracked in v0.3.1 follow-up). Net +6 tests vs. the Agent 2 landing:
+  - `+2` Contains gate (M-1)
+  - `+2` plan cache pinning (M-2; includes the panic-capture test)
+  - `−3` deleted dead-function tests (m-1)
+  - `+1` full-string snapshot (m-2)
+  - `+1` sqlite vector sentinel (m-3)
+- `cargo check -p ddb-server` — clean.
+- `cargo clippy -p ddb-server --lib -- -D warnings` — the 4 pre-existing `config/mod.rs` errors remain (Stream A territory, out of scope). The `query::*` modules contribute **zero** new warnings.
+
+### Files touched in Post-Review pass
+
+- `packages/server/src/query/dialect.rs` — `supports_jsonb_contains`, `supports_uuid_array_any`, sentinel swaps, new unit tests.
+- `packages/server/src/query/mod.rs` — planner Contains gate, `PlanCache` dialect pinning, `NestedPlan.sql_template`, dead-code removal, snapshot parity test, updated regression tests.
+- `SUMMARY.md` — this section.
+
+No push. No tag. Orchestrator handles Phase 2 merge.
