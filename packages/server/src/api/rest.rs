@@ -339,10 +339,7 @@ impl AppState {
             use rand::RngCore;
             let mut bytes = [0u8; 16];
             rand::thread_rng().fill_bytes(&mut bytes);
-            let hex = bytes
-                .iter()
-                .map(|b| format!("{b:02x}"))
-                .collect::<String>();
+            let hex = bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
             let token = format!("dev.{hex}");
             tracing::warn!(
                 dev_bypass_token = %token,
@@ -1262,8 +1259,10 @@ pub async fn record_login_attempt_and_check(
         });
     }
 
-    // 4. Exponential throttle between 5 and 9 failures: 2^(failed-5) seconds.
-    if failed >= LOGIN_THROTTLE_THRESHOLD {
+    // 4. Exponential throttle for failures 6..9: retry = 2^(failed-5) seconds.
+    //    First 5 attempts pass unconditionally; throttling starts at attempt #6.
+    //    Lock is caught above at attempt #10.
+    if failed > LOGIN_THROTTLE_THRESHOLD {
         let exp = (failed - LOGIN_THROTTLE_THRESHOLD) as u32;
         let retry = 2u64.pow(exp);
         return Err(LoginGateError::Throttled {

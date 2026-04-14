@@ -96,6 +96,11 @@ ddb-agent-memory = { path = "../agent-memory" }
 pg_embed = { workspace = true, optional = true }
 portpicker = { workspace = true, optional = true }
 
+# VYASA (Tier-1 Prometheus) — embedded V8 isolate runtime for server functions.
+# Optional so default builds don't link ~30MB of V8 + deno_core.
+# Created by Darshankumar Joshi (github.com/darshjme).
+deno_core = { version = "0.398", optional = true }
+
 [features]
 default = []
 # Enable IPFS-backed audit anchoring via `ipfs-api-backend-hyper`.
@@ -105,6 +110,9 @@ anchor-eth = ["dep:ethers-core"]
 # Zero-dep dev mode: run DarshJDB with a bundled Postgres 16 instance.
 # Usage: `cargo run --features embedded-db`
 embedded-db = ["dep:pg_embed", "dep:portpicker"]
+# VYASA — embedded V8 isolate function runtime (sub-millisecond cold start).
+# Usage: `cargo run --features v8`. Selects V8 when DDB_FUNCTION_RUNTIME=v8.
+v8 = ["dep:deno_core"]
 
 [dev-dependencies]
 tokio-tungstenite = "0.28"
