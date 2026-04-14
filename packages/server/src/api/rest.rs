@@ -950,11 +950,163 @@ pub async fn ensure_auth_schema(pool: &PgPool) -> std::result::Result<(), sqlx::
         );
         CREATE INDEX IF NOT EXISTS idx_magic_links_hash
             ON magic_links (token_hash) WHERE NOT consumed;
+        CREATE TABLE IF NOT EXISTS login_attempts (
+            id            UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+            email         TEXT        NOT NULL,
+            ip_address    INET        NOT NULL,
+            attempted_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+            success       BOOLEAN     NOT NULL DEFAULT false
+        );
+        CREATE INDEX IF NOT EXISTS idx_login_attempts_email_time
+            ON login_attempts (email, attempted_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_login_attempts_ip_time
+            ON login_attempts (ip_address, attempted_at DESC);
         "#,
     )
     .execute(pool)
     .await?;
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Login rate limiting (exponential throttle + account lock)
+// ---------------------------------------------------------------------------
+
+/// Window (minutes) over which failed login attempts are counted.
+const LOGIN_ATTEMPT_WINDOW_MINUTES: i32 = 15;
+/// Number of recent failures before exponential throttling kicks in.
+const LOGIN_THROTTLE_THRESHOLD: i64 = 5;
+/// Number of recent failures before the account is hard-locked.
+const LOGIN_LOCK_THRESHOLD: i64 = 10;
+/// Retry-after (seconds) returned when the account is locked.
+const LOGIN_LOCK_RETRY_AFTER_SECS: u64 = 3600;
+
+/// Outcome of the pre-authentication rate-limit check.
+#[derive(Debug)]
+pub struct LoginAttemptGate {
+    /// UUID of the attempt row just inserted (for later success flip).
+    pub attempt_id: Uuid,
+}
+
+/// Error outcomes from the login rate-limit gate.
+///
+/// `Locked` / `Throttled` serialize to the spec-mandated body shape
+/// `{"error":"...","retry_after":"N"}` with a 429 status. `Internal`
+/// bubbles up a standard `ApiError` 500.
+#[derive(Debug)]
+pub enum LoginGateError {
+    /// Caller has hit ≥ 10 failures in the window → account locked.
+    Locked { retry_after_secs: u64 },
+    /// Caller has hit ≥ 5 failures in the window → exponential throttle.
+    Throttled { retry_after_secs: u64 },
+    /// DB or other server-side failure while recording/counting.
+    Internal(String),
+}
+
+impl LoginGateError {
+    fn into_response(self) -> Response {
+        match self {
+            LoginGateError::Locked { retry_after_secs } => {
+                let body = serde_json::json!({
+                    "error": "account_locked",
+                    "retry_after": retry_after_secs.to_string(),
+                });
+                let mut resp = (StatusCode::TOO_MANY_REQUESTS, axum::Json(body)).into_response();
+                if let Ok(v) = HeaderValue::from_str(&retry_after_secs.to_string()) {
+                    resp.headers_mut().insert("Retry-After", v);
+                }
+                resp
+            }
+            LoginGateError::Throttled { retry_after_secs } => {
+                let body = serde_json::json!({
+                    "error": "too_many_attempts",
+                    "retry_after": retry_after_secs.to_string(),
+                });
+                let mut resp = (StatusCode::TOO_MANY_REQUESTS, axum::Json(body)).into_response();
+                if let Ok(v) = HeaderValue::from_str(&retry_after_secs.to_string()) {
+                    resp.headers_mut().insert("Retry-After", v);
+                }
+                resp
+            }
+            LoginGateError::Internal(msg) => ApiError::internal(msg).into_response(),
+        }
+    }
+}
+
+/// Parse a client-supplied IP string into a canonical `IpAddr`.
+///
+/// Accepts both IPv4 and IPv6. Returns `400 Bad Request` on failure.
+fn parse_client_ip(raw: &str) -> Result<std::net::IpAddr, ApiError> {
+    raw.parse::<std::net::IpAddr>()
+        .map_err(|_| ApiError::bad_request(format!("Invalid client IP address: {raw}")))
+}
+
+/// Record a failed login attempt and enforce the exponential throttle.
+///
+/// Steps:
+/// 1. INSERT a `login_attempts` row with `success=false`.
+/// 2. COUNT failed attempts for this email in the last 15 minutes.
+/// 3. `>= 10` → return `429 {"error":"account_locked","retry_after":"3600"}`.
+/// 4. `>= 5`  → return `429 {"error":"too_many_attempts","retry_after":"2^(n-5)"}`.
+/// 5. Otherwise return the inserted row id so the caller can flip it on success.
+pub async fn record_login_attempt_and_check(
+    pool: &PgPool,
+    email: &str,
+    ip: std::net::IpAddr,
+) -> Result<LoginAttemptGate, LoginGateError> {
+    // 1. Insert the attempt row (success=false by default).
+    let attempt_id: Uuid = sqlx::query_scalar(
+        "INSERT INTO login_attempts (email, ip_address, success) \
+         VALUES ($1, $2::inet, false) RETURNING id",
+    )
+    .bind(email)
+    .bind(ip.to_string())
+    .fetch_one(pool)
+    .await
+    .map_err(|e| LoginGateError::Internal(format!("login_attempts insert failed: {e}")))?;
+
+    // 2. Count recent failures for this email.
+    let failed: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM login_attempts \
+         WHERE email = $1 \
+           AND success = false \
+           AND attempted_at > now() - make_interval(mins => $2)",
+    )
+    .bind(email)
+    .bind(LOGIN_ATTEMPT_WINDOW_MINUTES)
+    .fetch_one(pool)
+    .await
+    .map_err(|e| LoginGateError::Internal(format!("login_attempts count failed: {e}")))?;
+
+    // 3. Hard lock after LOGIN_LOCK_THRESHOLD failures.
+    if failed >= LOGIN_LOCK_THRESHOLD {
+        return Err(LoginGateError::Locked {
+            retry_after_secs: LOGIN_LOCK_RETRY_AFTER_SECS,
+        });
+    }
+
+    // 4. Exponential throttle between 5 and 9 failures: 2^(failed-5) seconds.
+    if failed >= LOGIN_THROTTLE_THRESHOLD {
+        let exp = (failed - LOGIN_THROTTLE_THRESHOLD) as u32;
+        let retry = 2u64.pow(exp);
+        return Err(LoginGateError::Throttled {
+            retry_after_secs: retry,
+        });
+    }
+
+    Ok(LoginAttemptGate { attempt_id })
+}
+
+/// Flip a previously-recorded attempt row to `success=true` after the
+/// password has been verified. Non-fatal — failures only warn.
+pub async fn mark_login_attempt_success(pool: &PgPool, attempt_id: Uuid) {
+    if let Err(e) = sqlx::query("UPDATE login_attempts SET success = true WHERE id = $1")
+        .bind(attempt_id)
+        .execute(pool)
+        .await
+    {
+        tracing::warn!(%attempt_id, error = %e, "failed to mark login attempt success");
+    }
 }
 
 /// Middleware that enforces JWT authentication on protected routes.
@@ -1155,8 +1307,22 @@ struct SigninRequest {
 async fn auth_signin(
     State(state): State<AppState>,
     headers: HeaderMap,
-    axum::Json(body): axum::Json<SigninRequest>,
+    request: Request<Body>,
 ) -> Result<Response, ApiError> {
+    // Extract ConnectInfo from request extensions (middleware-injected).
+    let connect_info_ip: Option<String> = request
+        .extensions()
+        .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+        .map(|ci| ci.0.ip().to_string());
+
+    // Parse JSON body manually so we don't compete with the body extractor.
+    let body: SigninRequest = {
+        let bytes = axum::body::to_bytes(request.into_body(), 64 * 1024)
+            .await
+            .map_err(|e| ApiError::bad_request(format!("Failed to read body: {e}")))?;
+        serde_json::from_slice(&bytes)
+            .map_err(|e| ApiError::bad_request(format!("Invalid signin JSON: {e}")))?
+    };
     let email = body.email.trim().to_lowercase();
     if email.is_empty() {
         return Err(ApiError::bad_request("Email is required"));
@@ -1165,16 +1331,31 @@ async fn auth_signin(
         return Err(ApiError::bad_request("Password is required"));
     }
 
+    // Resolve client IP: X-Forwarded-For (first hop) overrides ConnectInfo.
+    let ip_str = headers
+        .get("x-forwarded-for")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.split(',').next())
+        .map(|s| s.trim().to_string())
+        .or(connect_info_ip)
+        .unwrap_or_else(|| "0.0.0.0".to_string());
+    let client_ip = parse_client_ip(&ip_str)?;
+
+    // Gate: record the attempt (success=false) and enforce exponential throttle.
+    let gate = match record_login_attempt_and_check(&state.pool, &email, client_ip).await {
+        Ok(g) => g,
+        Err(e) => return Ok(e.into_response()),
+    };
+
     let outcome = PasswordProvider::authenticate(&state.pool, &email, &body.password)
         .await
         .map_err(|e| ApiError::internal(format!("Authentication error: {e}")))?;
 
     match outcome {
         AuthOutcome::Success { user_id, roles } => {
-            let ip = headers
-                .get("x-forwarded-for")
-                .and_then(|v| v.to_str().ok())
-                .unwrap_or("unknown");
+            // Flip the attempt row to success=true so future failures restart the counter.
+            mark_login_attempt_success(&state.pool, gate.attempt_id).await;
+
             let ua = headers
                 .get("user-agent")
                 .and_then(|v| v.to_str().ok())
@@ -1186,7 +1367,7 @@ async fn auth_signin(
 
             let token_pair = state
                 .session_manager
-                .create_session(user_id, roles, ip, ua, dfp)
+                .create_session(user_id, roles, &ip_str, ua, dfp)
                 .await
                 .map_err(|e| ApiError::internal(format!("Session creation failed: {e}")))?;
 
@@ -1200,6 +1381,8 @@ async fn auth_signin(
             Ok(negotiate_response(&headers, &response))
         }
         AuthOutcome::MfaRequired { user_id, mfa_token } => {
+            // MFA challenge issued — treat as password-verified for throttle counter.
+            mark_login_attempt_success(&state.pool, gate.attempt_id).await;
             let response = serde_json::json!({
                 "mfa_required": true,
                 "user_id": user_id,
@@ -1208,6 +1391,7 @@ async fn auth_signin(
             Ok(negotiate_response(&headers, &response))
         }
         AuthOutcome::Failed { reason: _ } => {
+            // Leave the attempt row as success=false.
             Err(ApiError::unauthenticated("Invalid email or password"))
         }
     }
@@ -4556,6 +4740,78 @@ mod tests {
         // 21st should fail.
         let result = limiter.check(&key, false);
         assert!(result.is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // Login rate-limit gate — pure logic / response shape
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn login_attempts_exponential_backoff_math() {
+        // The exponential throttle formula: retry_after = 2^(failed - 5).
+        // Spot-check the first few steps to catch regressions without a DB.
+        let cases = [(5, 1), (6, 2), (7, 4), (8, 8), (9, 16)];
+        for (failed, expected) in cases {
+            let exp = (failed - LOGIN_THROTTLE_THRESHOLD) as u32;
+            assert_eq!(
+                2u64.pow(exp),
+                expected,
+                "failed={failed} should map to {expected}s"
+            );
+        }
+    }
+
+    #[test]
+    fn login_attempts_constants_match_spec() {
+        assert_eq!(LOGIN_ATTEMPT_WINDOW_MINUTES, 15);
+        assert_eq!(LOGIN_THROTTLE_THRESHOLD, 5);
+        assert_eq!(LOGIN_LOCK_THRESHOLD, 10);
+        assert_eq!(LOGIN_LOCK_RETRY_AFTER_SECS, 3600);
+    }
+
+    #[test]
+    fn login_attempts_locked_response_shape() {
+        let resp = LoginGateError::Locked {
+            retry_after_secs: 3600,
+        }
+        .into_response();
+        assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+        let retry = resp
+            .headers()
+            .get("Retry-After")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default();
+        assert_eq!(retry, "3600");
+    }
+
+    #[test]
+    fn login_attempts_throttled_response_shape() {
+        let resp = LoginGateError::Throttled {
+            retry_after_secs: 4,
+        }
+        .into_response();
+        assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+        let retry = resp
+            .headers()
+            .get("Retry-After")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default();
+        assert_eq!(retry, "4");
+    }
+
+    #[test]
+    fn parse_client_ip_accepts_v4_and_v6() {
+        assert!(parse_client_ip("127.0.0.1").is_ok());
+        assert!(parse_client_ip("10.0.0.1").is_ok());
+        assert!(parse_client_ip("::1").is_ok());
+        assert!(parse_client_ip("2001:db8::1").is_ok());
+    }
+
+    #[test]
+    fn parse_client_ip_rejects_garbage() {
+        assert!(parse_client_ip("not an ip").is_err());
+        assert!(parse_client_ip("").is_err());
+        assert!(parse_client_ip("999.999.999.999").is_err());
     }
 
     #[test]
