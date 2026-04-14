@@ -3,12 +3,19 @@ resolver = "2"
 members = [
     "packages/server",
     "packages/cli",
+    "packages/cache",
 ]
 
 [workspace.package]
 version = "0.2.0"
 edition = "2024"
 license = "MIT"
+authors = ["Darshankumar Joshi <darshjme@gmail.com>"]
+homepage = "https://db.darshj.me"
+repository = "https://github.com/darshjme/darshjdb"
+keywords = ["database", "baas", "agent-memory", "redis", "vector-search"]
+categories = ["database", "web-programming", "asynchronous"]
+description = "Self-hosted BaaS: replaces PostgreSQL+Redis+Pinecone+MCP memory. Agent LLM unlimited context. Single Rust binary. Created by Darshankumar Joshi."
 
 [workspace.dependencies]
 tokio = { version = "1", features = ["full"] }
@@ -21,7 +28,7 @@ thiserror = "2"
 anyhow = "1"
 lru = "0.12"
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "fmt"] }
 chrono = { version = "0.4", features = ["serde"] }
 sha2 = "0.10"
 sha1 = "0.10"
@@ -36,7 +43,7 @@ base64 = "0.22"
 url = "2"
 http = "1"
 tower = { version = "0.5", features = ["util"] }
-tower-http = { version = "0.6", features = ["cors", "catch-panic", "timeout", "trace"] }
+tower-http = { version = "0.6", features = ["cors", "catch-panic", "timeout", "trace", "compression-gzip"] }
 axum-extra = { version = "0.10", features = ["typed-header"] }
 pin-project-lite = "0.2"
 notify = { version = "7", features = ["macos_fsevent"] }
@@ -63,3 +70,38 @@ ctrlc = { version = "3", features = ["termination"] }
 self_update = "0.41"
 async-trait = "0.1"
 csv = "1.3"
+
+# Grand Transformation dependencies (added by slice 8/30 — cache L1)
+tokio-util = { version = "0.7", features = ["codec"] }
+bytes = "1"
+zstd = "0.13"
+lz4_flex = "0.11"
+probabilistic-collections = "0.7"
+metrics = "0.23"
+
+# Grand Transformation dependencies (slice 1/30 — dependency manifest)
+pgvector = { version = "0.4", features = ["sqlx"] }
+rusqlite = { version = "0.31", features = ["bundled", "serde_json"] }
+pg_embed = { package = "pg-embed", version = "1", default-features = false, features = ["rt_tokio_migrate"] }
+tiktoken-rs = "0.6"
+async-openai = "0.23"
+image = { version = "0.25", features = ["jpeg", "png", "webp", "avif"] }
+imagesize = "0.13"
+infer = "0.16"
+petgraph = { version = "0.6", features = ["serde-1"] }
+sha3 = "0.10"
+ethers-core = { version = "2" }
+tiny-keccak = { version = "2", features = ["keccak"] }
+ipfs-api-backend-hyper = { version = "0.6" }
+include_dir = "0.7"
+mime_guess = "2"
+config = "0.14"
+dotenvy = "0.15"
+metrics-exporter-prometheus = "0.15"
+lettre = "0.11"
+portpicker = "0.1"
+
+# Dev / test deps (workspace-shared, activated via member crates' [dev-dependencies])
+wiremock = "0.6"
+fake = { version = "2", features = ["derive"] }
+proptest = "1"
