@@ -9,6 +9,13 @@ dist/
 .turbo/
 *.tsbuildinfo
 
+# Slice 19/30: the admin dashboard is embedded into ddb-server at compile
+# time via include_dir!. We commit a minimal stub index.html so the rust
+# crate compiles in fresh checkouts before `npm run build` has run. CI and
+# the Dockerfile rebuild the dashboard before cargo, overwriting the stub.
+!packages/admin/dist/
+!packages/admin/dist/index.html
+
 # Environment and secrets
 .env
 .env.local

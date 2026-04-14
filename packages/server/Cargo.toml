@@ -48,6 +48,11 @@ aws-credential-types.workspace = true
 aws-types.workspace = true
 async-trait.workspace = true
 csv.workspace = true
+
+# Slice 19/30 — embedded admin dashboard (Vite dist baked via include_dir!).
+include_dir.workspace = true
+mime_guess.workspace = true
+
 # Phase 0.3 (slice 4/30) — magic link SMTP/HTTP email delivery.
 lettre.workspace = true
 

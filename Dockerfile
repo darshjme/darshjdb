@@ -1,34 +1,6 @@
-# ── Stage 1: Build the Rust server and CLI ───────────────────────────
-FROM rust:1.92-slim-bookworm AS builder
-
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-        pkg-config libssl-dev musl-tools && \
-    rm -rf /var/lib/apt/lists/*
-
-WORKDIR /build
-
-# Cache dependency layer — copy manifests first
-COPY Cargo.toml Cargo.lock ./
-COPY packages/server/Cargo.toml packages/server/Cargo.toml
-COPY packages/cli/Cargo.toml packages/cli/Cargo.toml
-
-# Create stub sources so cargo can resolve the dependency graph
-RUN mkdir -p packages/server/src packages/cli/src && \
-    echo "fn main() {}" > packages/server/src/main.rs && \
-    echo "fn main() {}" > packages/cli/src/main.rs && \
-    cargo build --release --workspace 2>/dev/null || true && \
-    rm -rf packages/server/src packages/cli/src
-
-# Copy real source and rebuild (only changed crates recompile)
-COPY packages/server/ packages/server/
-COPY packages/cli/ packages/cli/
-
-RUN touch packages/server/src/main.rs packages/cli/src/main.rs && \
-    cargo build --release --workspace && \
-    strip target/release/ddb-server target/release/ddb
-
-# ── Stage 2: Build the admin dashboard ───────────────────────────────
+# ── Stage 1: Build the admin dashboard ───────────────────────────────
+# Slice 19/30: the dashboard is embedded into ddb-server at compile time
+# via include_dir!, so it MUST be built before the rust crate.
 FROM node:22-alpine AS frontend
 
 WORKDIR /build
@@ -48,6 +20,41 @@ COPY packages/react/ packages/react/
 COPY packages/admin/ packages/admin/
 
 RUN npm run build --workspace=packages/admin
+
+# ── Stage 2: Build the Rust server and CLI ───────────────────────────
+FROM rust:1.92-slim-bookworm AS builder
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        pkg-config libssl-dev musl-tools && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+
+# Cache dependency layer — copy manifests first
+COPY Cargo.toml Cargo.lock ./
+COPY packages/server/Cargo.toml packages/server/Cargo.toml
+COPY packages/cli/Cargo.toml packages/cli/Cargo.toml
+
+# Create stub sources so cargo can resolve the dependency graph.
+# Also stub admin/dist so include_dir! can resolve $CARGO_MANIFEST_DIR/../admin/dist
+# during the dependency-only warm-up build.
+RUN mkdir -p packages/server/src packages/cli/src packages/admin/dist && \
+    echo "fn main() {}" > packages/server/src/main.rs && \
+    echo "fn main() {}" > packages/cli/src/main.rs && \
+    echo "<!doctype html><html><body>stub</body></html>" > packages/admin/dist/index.html && \
+    cargo build --release --workspace 2>/dev/null || true && \
+    rm -rf packages/server/src packages/cli/src
+
+# Copy real source AND the freshly built admin dist (from frontend stage)
+# so include_dir! embeds the real dashboard, not the stub.
+COPY packages/server/ packages/server/
+COPY packages/cli/ packages/cli/
+COPY --from=frontend /build/packages/admin/dist packages/admin/dist
+
+RUN touch packages/server/src/main.rs packages/cli/src/main.rs && \
+    cargo build --release --workspace && \
+    strip target/release/ddb-server target/release/ddb
 
 # ── Stage 3: Runtime (minimal) ───────────────────────────────────────
 FROM debian:bookworm-slim AS runtime
