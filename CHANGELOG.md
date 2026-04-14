@@ -5,6 +5,169 @@ All notable changes to DarshJDB will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.2] - 2026-04-15 — SQLite Backend + mlua Runtime + Dialect Abstraction
+
+The v0.3.1 architecture wave laid the trait boundaries; v0.3.2 fills
+them in. Three sprint branches developed in parallel land together:
+a real SQLite backend behind the `Store` trait, a `SqlDialect` trait
+that lets the DarshanQL planner emit Postgres or SQLite SQL from the
+same AST, and an embedded Lua 5.4 function runtime with a hardened
+sandbox and a wired `ddb.*` host API. PostgreSQL 16 is still the
+production HTTP backend — sqlite-only HTTP boot lands in v0.3.3.
+
+### Added
+
+- **`SqliteStore` (gated on `--features sqlite-store`)** — full
+  `Store` trait implementation over a bundled `rusqlite` 0.31
+  database. Migrations live at `migrations/sqlite/001_initial.sql`
+  (triples + darshan_tx_seq). Uses `IMMEDIATE` transactions with a
+  5-second `busy_timeout` so concurrent `set_triples` paths do not
+  deadlock. 12 unit tests covering migration, set/get/retract
+  roundtrip, TTL expiry, schema inference, concurrent batch ingest,
+  and timestamp parsing.
+- **`SqlDialect` trait + `PgDialect` / `SqliteDialect` impls** — the
+  DarshanQL planner now routes through a dialect handle so the same
+  `QueryAST` produces Postgres SQL (`$1`-style placeholders, JSONB
+  operators, `::uuid` casts, `ANY($1::uuid[])` batches) or SQLite SQL
+  (`?N` placeholders, JSON `LIKE` fallbacks, `IN(__UUID_LIST__)`
+  templates expanded at bind time). `PlanCache` instances are now
+  pinned to a specific dialect so a Postgres planner cache can never
+  hand back SQLite SQL or vice versa. Snapshot parity tests cover
+  every WHERE op, ORDER, LIMIT/OFFSET, search, semantic, hybrid, and
+  nested combination across both dialects.
+- **`MluaRuntime` (gated on `--features mlua-runtime`)** — embedded
+  mlua 0.10 with vendored Lua 5.4. Hardened sandbox strips `os.execute`,
+  `io`, `require`, `dofile`, `loadfile`, `load`, `loadstring`,
+  `string.dump`, `debug`, `collectgarbage`, the raw accessors, every
+  bytecode loader path, and pins `ChunkMode::Text` on every load.
+  Per-invocation environment isolation: each call gets a fresh proxy
+  table over a frozen `safe_globals` snapshot so `string.sub = ...`
+  in one user chunk cannot leak into another tenant. Wall-clock
+  timeout via `tokio::time::timeout` + `call_async`. Function path
+  containment via canonicalize + `starts_with` check (rejects
+  `../escape.lua`). Single `Mutex<Lua>` serializes invocations
+  (concurrency=1 is honest until v0.4 brings a `Pool<Lua>`). 23 unit
+  tests covering every sandbox escape vector.
+- **Wired `ddb.*` host API** — when `MluaRuntime` is constructed with
+  an `MluaContext` (production server boot path), the Lua host
+  bindings are wired live against the runtime-selected `Store` and
+  `SqlDialect`:
+  - `ddb.query(json_ast)` parses a DarshJQL AST, plans through the
+    pinned dialect, dispatches via `Store::query`, returns rows as a
+    Lua table.
+  - `ddb.triples.get(uuid_string)` calls `Store::get_entity`.
+  - `ddb.triples.put(uuid_string, attribute, value)` allocates a
+    fresh `tx_id` via `Store::next_tx_id` and writes via
+    `Store::set_triples`.
+  - `ddb.log.{debug,info,warn,error}` forward into `tracing` with
+    structured `message` fields and a 64 KiB cap to prevent OOM via
+    `string.rep`.
+- **`DDB_FUNCTION_RUNTIME=mlua` dispatch** in `main.rs`, mirroring
+  the existing `DDB_FUNCTION_RUNTIME=v8` pattern. Subprocess
+  (`ProcessRuntime`) remains the safe default. Misconfiguration
+  (e.g. `mlua` requested without `--features mlua-runtime`) emits a
+  clear warn and falls back to subprocess.
+- **Top-level `Store` + `SqlDialect` handles in `main.rs`** —
+  `Arc<dyn Store + Send + Sync>` and `Arc<dyn SqlDialect + Send +
+  Sync>` constructed once at boot from the existing PgTripleStore +
+  PgPool path. Today they wrap Postgres; in v0.3.3 the same handles
+  flow out of the URL-scheme dispatch branch.
+- **`docs/SQL_DIALECTS.md`** describing the dialect trait surface,
+  what differs between Postgres and SQLite, and the v0.4 portable IR
+  roadmap.
+
+### Changed
+
+- `darshql/dialect.rs` adds the trait extraction; `query/mod.rs`
+  routes `plan_query` through `plan_query_with_dialect(ast,
+  &PgDialect)` so v0.3.1 callers see byte-identical SQL output.
+- Front-door `DATABASE_URL` validation in `main.rs` rejects `sqlite:`
+  URLs with a clear message: SqliteStore is wired into the function
+  runtime and the Store trait, but the HTTP server's auth, anchor,
+  search, agent_memory, and chunked_uploads bootstraps are still
+  Postgres-only and a sqlite-only HTTP boot lands in v0.3.3. Misconfig
+  surfaces immediately instead of as a cryptic `pg_advisory_lock` panic.
+- `SqliteStoreTx::{commit,rollback}` are stateless markers that match
+  `PgStoreTx` symmetry — multi-statement transactions through the
+  dynamic dispatch surface are tracked for v0.3.3.
+
+### Security
+
+The mlua runtime landed under a full security audit by the
+`gsd-code-reviewer`, `gsd-security-auditor`, `gsd-nyquist-auditor`,
+`gsd-integration-checker`, and `gsd-doc-verifier` agents. Findings
+that landed as fixes inside the v0.3.2 sprint:
+
+- **MJ-02** — drop redundant per-invocation semaphore (admitted N
+  permits but every admitted task locked the same `Mutex<Lua>`, so
+  the permit cap was theatre).
+- **MJ-03 + MN-01** — user log text passed as a structured `message`
+  field (not a captured format identifier) so embedded newlines are
+  escaped by the log formatter instead of injecting fake log lines.
+  64 KiB cap on a single user log.
+- **MN-03 + F6** — canonicalize and validate the functions directory
+  at construction time; reject `../escape.lua` traversal via
+  `canonicalize` + `starts_with` containment check.
+- **MN-04** — switched the per-invocation source read from blocking
+  `std::fs::read_to_string` to `tokio::fs::read_to_string` and moved
+  it before the `Mutex<Lua>` lock so I/O does not block the VM mutex.
+- **F4** — per-invocation environment isolation via fresh proxy
+  tables over a frozen `safe_globals` snapshot.
+- **F5** — `ChunkMode::Text` pinned on every chunk load to refuse
+  bytecode (which can bypass every source-level sandbox check).
+- **F7** — wall-clock timeout via `tokio::time::timeout` +
+  `call_async` so CPU-cooperative user code cannot hang the worker.
+
+### Cargo features
+
+```toml
+sqlite-store = ["dep:rusqlite"]      # SqliteStore backend
+mlua-runtime = ["dep:mlua"]          # Embedded Lua 5.4 function runtime
+```
+
+Both default-off so production builds skip the bundled SQLite + Lua
+compilation cost. All four feature combos
+(`default`, `sqlite-store`, `mlua-runtime`, `sqlite-store mlua-runtime`)
+are covered by `cargo check`, `cargo clippy --all-targets -D warnings`,
+and `cargo test --lib` in CI.
+
+### Known limitations / deferred to v0.3.2.1
+
+- **`darshql/executor.rs` rewire onto `Store::query`** — the bespoke
+  SurrealQL-style statement executor (959 lines, 12 statement types,
+  20+ pg-specific helpers including graph traversal and DEFINE TABLE)
+  still uses `PgPool` directly. The simpler `parse_darshan_ql →
+  plan_query → execute_query` JSON-AST path is fully wired through the
+  Store trait via `PgStore::query`, which is what the mlua `ddb.query`
+  binding uses. The richer executor lands in v0.3.2.1.
+- **`SqliteStore::query`** — currently returns `InvalidQuery` because
+  the v0.3.2 SQLite SQL emission path covers triple-level CRUD but
+  not the full DarshanQL surface. Triple-level APIs (`set_triples`,
+  `get_entity`, `retract`, `next_tx_id`, `get_schema`) are wired
+  end-to-end and exercised by the `ddb.triples.*` Lua bindings against
+  a real `:memory:` SqliteStore.
+- **`ddb.kv.{get,set}`** — kept as `NotYetImplemented` with an updated
+  message. The `DdbCache` (slice 10) is keyed on the HTTP request
+  boundary and is not exposed to the function runtime; tracked for
+  v0.3.2.1.
+- **CPU-bound Lua mid-instruction interruption** — the mlua 0.10
+  `set_interrupt` hook lands in v0.3.3. Today the wall-clock timeout
+  cancels at the next yield boundary, which is sufficient for any
+  cooperative user code (the lua_call_respects_wall_clock_cap test
+  passes) but a `while true do end` tight loop is bounded only by
+  the OS scheduler.
+- **`sqlite:` URL HTTP boot** — main.rs rejects sqlite: URLs at the
+  front door because the auth/anchor/search/agent_memory/chunked_uploads
+  bootstraps are still Postgres-only. Sqlite-only HTTP boot lands in
+  v0.3.3.
+
+### Acknowledgements
+
+The v0.3.2 sprint shipped under the gsd-army audit protocol:
+gsd-code-reviewer, gsd-security-auditor, gsd-nyquist-auditor,
+gsd-integration-checker, and gsd-doc-verifier. Every Mxx and Fx
+finding above carries the audit tag of the agent that surfaced it.
+
 ## [0.3.1] - 2026-04-15 — Architecture Wave
 
 Three feature branches (PR #3, #5, #6) that spent the v0.3.0 release cycle
