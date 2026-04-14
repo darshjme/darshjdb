@@ -17,6 +17,7 @@ use ddb_server::api::rest::{AppState, build_router};
 use ddb_server::api::ws::{WsState, ws_routes};
 use ddb_server::auth::middleware::RateLimiter;
 use ddb_server::auth::session::{KeyManager, SessionManager};
+use ddb_server::config::{DdbConfig, load_config};
 use ddb_server::error::Result;
 use ddb_server::sync::presence::PresenceManager;
 use ddb_server::sync::registry::SubscriptionRegistry;
@@ -27,21 +28,6 @@ use tokio::signal;
 use tower_http::catch_panic::CatchPanicLayer;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::timeout::TimeoutLayer;
-
-/// Default server port when `DDB_PORT` is not set.
-const DEFAULT_PORT: u16 = 7700;
-
-/// Maximum database connections in the pool.
-const DEFAULT_MAX_CONNECTIONS: u32 = 20;
-
-/// Minimum idle connections in the pool.
-const DEFAULT_MIN_CONNECTIONS: u32 = 2;
-
-/// Timeout (seconds) to acquire a connection from the pool.
-const DEFAULT_ACQUIRE_TIMEOUT_SECS: u64 = 5;
-
-/// Idle timeout (seconds) before a connection is released.
-const DEFAULT_IDLE_TIMEOUT_SECS: u64 = 600;
 
 /// Pool utilization percentage that triggers a warning log.
 const POOL_HIGH_WATER_MARK: f64 = 0.80;
@@ -54,7 +40,23 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // -- Typed configuration (Slice 17) ---------------------------------------
+    // Load defaults + config.toml + env vars into a strongly-typed tree.
+    // Loaded first so downstream subsystems can consume `cfg` without
+    // touching `std::env::var` directly.
+    let cfg: DdbConfig = load_config().map_err(|e| {
+        // cfg failed — fall back to stderr since tracing isn't wired yet.
+        eprintln!("failed to load DdbConfig: {e}");
+        ddb_server::error::DarshJError::Internal(format!("failed to load configuration: {e}"))
+    })?;
+
     // -- Tracing / Logging (Phase 10: JSON + request_id) ----------------------
+    // `init_json_logging` honors `RUST_LOG`; seed it from `cfg.server.log_level`
+    // when the env var is unset so the typed config still wins by default.
+    if std::env::var("RUST_LOG").is_err() && !cfg.server.log_level.is_empty() {
+        // Safe: called before any threads are spawned and only when unset.
+        unsafe { std::env::set_var("RUST_LOG", &cfg.server.log_level); }
+    }
     ddb_server::observability::init_json_logging().map_err(|e| {
         ddb_server::error::DarshJError::Internal(format!("tracing init failed: {e}"))
     })?;
@@ -64,6 +66,7 @@ async fn main() -> Result<()> {
         author = "Darshankumar Joshi",
         "DarshJDB server starting"
     );
+    tracing::info!(?cfg, "loaded configuration");
 
     // -- Prometheus recorder (Phase 10) ---------------------------------------
     let (metrics_handle, metrics_allow_list) = ddb_server::observability::init_prometheus()
@@ -75,14 +78,14 @@ async fn main() -> Result<()> {
         "Prometheus recorder installed"
     );
 
-    // -- Configuration from environment ---------------------------------------
-    //
-    // Zero-dep dev mode (slice 17/30): if `DATABASE_URL` is unset AND the
-    // binary was compiled with `--features embedded-db`, launch a local
-    // Postgres 16 instance via `pg_embed` and use its URI. The `PgEmbed`
-    // handle is bound to `_embedded_pg` so the child process lives for the
-    // full server lifetime.
-    let configured_url = std::env::var("DATABASE_URL").ok();
+    // -- Database URL resolution ----------------------------------------------
+    // Priority: cfg.database.url (typed config / env) → embedded Postgres
+    // (if the `embedded-db` feature is on) → localhost default.
+    let configured_url = cfg
+        .database
+        .url
+        .clone()
+        .or_else(|| std::env::var("DATABASE_URL").ok());
 
     #[cfg(feature = "embedded-db")]
     let (database_url, _embedded_pg) = match configured_url {
@@ -94,7 +97,7 @@ async fn main() -> Result<()> {
                 .join("data");
             tracing::info!(
                 data_dir = %data_dir.display(),
-                "no DATABASE_URL set — booting embedded Postgres 16 (zero-dep dev mode)"
+                "no database.url set — booting embedded Postgres 16 (zero-dep dev mode)"
             );
             let (pg, uri) = ddb_server::embedded_pg::start_embedded_postgres(&data_dir)
                 .await
@@ -109,38 +112,24 @@ async fn main() -> Result<()> {
 
     #[cfg(not(feature = "embedded-db"))]
     let database_url = configured_url.unwrap_or_else(|| {
-        tracing::warn!("DATABASE_URL not set, using default localhost connection");
+        tracing::warn!("database.url not set, using default localhost connection");
         "postgres://ddb:ddb@localhost:5432/darshjdb".to_string()
     });
 
-    let port: u16 = std::env::var("DDB_PORT")
-        .ok()
-        .and_then(|p| p.parse().ok())
-        .unwrap_or(DEFAULT_PORT);
+    let port: u16 = cfg.server.port;
+    let max_connections: u32 = cfg.database.pool_max;
+    let min_connections: u32 = cfg.database.pool_min;
+    let acquire_timeout_secs: u64 = cfg.database.acquire_timeout_secs;
+    let idle_timeout_secs: u64 = cfg.database.idle_timeout_secs;
+    let max_lifetime_sec: u64 = cfg.database.max_lifetime_sec;
 
-    let max_connections: u32 = std::env::var("DDB_DB_MAX_CONNECTIONS")
-        .ok()
-        .and_then(|p| p.parse().ok())
-        .unwrap_or(DEFAULT_MAX_CONNECTIONS);
-
-    let min_connections: u32 = std::env::var("DDB_DB_MIN_CONNECTIONS")
-        .ok()
-        .and_then(|p| p.parse().ok())
-        .unwrap_or(DEFAULT_MIN_CONNECTIONS);
-
-    let acquire_timeout_secs: u64 = std::env::var("DDB_DB_ACQUIRE_TIMEOUT_SECS")
-        .ok()
-        .and_then(|p| p.parse().ok())
-        .unwrap_or(DEFAULT_ACQUIRE_TIMEOUT_SECS);
-
-    let idle_timeout_secs: u64 = std::env::var("DDB_DB_IDLE_TIMEOUT_SECS")
-        .ok()
-        .and_then(|p| p.parse().ok())
-        .unwrap_or(DEFAULT_IDLE_TIMEOUT_SECS);
-
-    let jwt_secret = std::env::var("DDB_JWT_SECRET").ok();
-    let jwt_private_key_path = std::env::var("DDB_JWT_PRIVATE_KEY").ok();
-    let jwt_public_key_path = std::env::var("DDB_JWT_PUBLIC_KEY").ok();
+    let jwt_secret: Option<String> = cfg
+        .auth
+        .jwt_secret
+        .as_ref()
+        .map(|s| s.expose().clone());
+    let jwt_private_key_path: Option<String> = cfg.auth.jwt_private_key_path.clone();
+    let jwt_public_key_path: Option<String> = cfg.auth.jwt_public_key_path.clone();
 
     // -- Database Pool --------------------------------------------------------
     tracing::info!(database_url = %mask_url(&database_url), "connecting to database");
@@ -158,7 +147,7 @@ async fn main() -> Result<()> {
         .min_connections(min_connections)
         .acquire_timeout(Duration::from_secs(acquire_timeout_secs))
         .idle_timeout(Duration::from_secs(idle_timeout_secs))
-        .max_lifetime(Duration::from_secs(1800))
+        .max_lifetime(Duration::from_secs(max_lifetime_sec))
         .connect(&database_url)
         .await
         .map_err(|e| {
@@ -541,8 +530,14 @@ async fn main() -> Result<()> {
 
     // -- Rule Engine (built early so WS handler can fire it inside the same
     //    transaction as user writes, matching the REST mutation path).
+    //    Path comes from typed DdbConfig (Slice 17), falling back to the
+    //    legacy DDB_RULES_FILE env var for backward compatibility.
     let rules_path = std::path::PathBuf::from(
-        std::env::var("DDB_RULES_FILE").unwrap_or_else(|_| "./darshan/rules.json".to_string()),
+        if !cfg.rules.file_path.is_empty() {
+            cfg.rules.file_path.clone()
+        } else {
+            std::env::var("DDB_RULES_FILE").unwrap_or_else(|_| "./darshan/rules.json".to_string())
+        },
     );
     let rules = ddb_server::rules::load_rules_from_file(&rules_path).unwrap_or_else(|e| {
         tracing::error!(error = %e, "failed to load rules, continuing without rule engine");
@@ -675,8 +670,10 @@ async fn main() -> Result<()> {
     }
 
     // -- Storage Engine -------------------------------------------------------
+    // `storage.path` is the typed setting; `DDB_STORAGE_DIR` stays as an
+    // escape hatch until the storage subsystem is migrated.
     let storage_dir =
-        std::env::var("DDB_STORAGE_DIR").unwrap_or_else(|_| "./darshan/storage".to_string());
+        std::env::var("DDB_STORAGE_DIR").unwrap_or_else(|_| cfg.storage.path.clone());
     let storage_backend = Arc::new(
         ddb_server::storage::LocalFsBackend::new(&storage_dir).unwrap_or_else(|e| {
             tracing::warn!("Failed to create storage backend at {storage_dir}: {e}, using /tmp");
@@ -900,13 +897,11 @@ async fn main() -> Result<()> {
     }
 
     // -- CORS Layer -----------------------------------------------------------
-    let dev_mode = std::env::var("DDB_DEV")
-        .map(|v| v == "1" || v == "true")
-        .unwrap_or(false);
+    let dev_mode = cfg.dev.mode;
 
-    // Determine allowed origins: DDB_CORS_ORIGINS takes precedence, then
+    // Determine allowed origins: cfg.cors.origins takes precedence, then
     // dev-mode defaults to localhost, production defaults to deny-all.
-    let cors_origins = std::env::var("DDB_CORS_ORIGINS").unwrap_or_default();
+    let cors_origins = cfg.cors.origins.join(",");
 
     let cors = if cors_origins.trim() == "*" {
         // Explicit wildcard: allow all origins regardless of mode.
@@ -1084,12 +1079,13 @@ async fn main() -> Result<()> {
         .expect("default bind parse");
     let addr = SocketAddr::from((bind_ip, port));
 
-    // Optional TLS termination: if DDB_TLS_CERT and DDB_TLS_KEY are set,
-    // bind with rustls for native TLS 1.2/1.3 support. Otherwise, plain HTTP.
-    let tls_cert = std::env::var("DDB_TLS_CERT");
-    let tls_key = std::env::var("DDB_TLS_KEY");
+    // Optional TLS termination: if both `server.tls_cert_path` and
+    // `server.tls_key_path` are configured, bind with rustls. Otherwise,
+    // plain HTTP.
+    let tls_cert = cfg.server.tls_cert_path.clone();
+    let tls_key = cfg.server.tls_key_path.clone();
 
-    if let (Ok(cert_path), Ok(key_path)) = (tls_cert, tls_key) {
+    if let (Some(cert_path), Some(key_path)) = (tls_cert, tls_key) {
         tracing::info!("TLS enabled: loading certificate from {cert_path}");
 
         let rustls_config =

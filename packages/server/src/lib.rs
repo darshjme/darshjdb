@@ -37,6 +37,7 @@ pub mod auth;
 pub mod automations;
 pub mod cache;
 pub mod collaboration;
+pub mod config;
 pub mod connectors;
 #[cfg(feature = "embedded-db")]
 pub mod embedded_pg;
