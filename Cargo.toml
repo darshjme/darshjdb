@@ -9,7 +9,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.3.0"
+version = "0.3.1"
 edition = "2024"
 license = "MIT"
 authors = ["Darshankumar Joshi <darshjme@gmail.com>"]
@@ -102,7 +102,9 @@ tiny-keccak = { version = "2", features = ["keccak"] }
 ipfs-api-backend-hyper = { version = "0.6" }
 include_dir = "0.7"
 mime_guess = "2"
-config = "0.14"
+# Slice 17 typed DdbConfig hierarchy needs config 0.15 with the `convert-case`
+# feature so enum deserialisation works from TOML and env var sources.
+config = { version = "0.15", default-features = false, features = ["toml", "convert-case"] }
 dotenvy = "0.15"
 metrics-exporter-prometheus = "0.15"
 # Phase 0.3 (slice 4/30) — SMTP delivery for magic-link authentication.
