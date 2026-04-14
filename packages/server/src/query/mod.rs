@@ -597,26 +597,6 @@ fn build_nested_plans(
         .collect()
 }
 
-/// Format a vector of f32 values as an unquoted pgvector literal
-/// payload: `[0.1,0.2,0.3]`.
-///
-/// This is the payload *without* the surrounding `'…'::vector` wrap
-/// so it can be interpolated into the hybrid query CTE templates that
-/// reference the same literal four times. The [`PgDialect`] adds the
-/// quote + cast via [`SqlDialect::vector_literal`].
-fn format_vector_literal(vec: &[f32]) -> String {
-    let mut s = String::with_capacity(vec.len() * 8 + 2);
-    s.push('[');
-    for (i, v) in vec.iter().enumerate() {
-        if i > 0 {
-            s.push(',');
-        }
-        s.push_str(&v.to_string());
-    }
-    s.push(']');
-    s
-}
-
 /// Build a hybrid search query plan that combines tsvector full-text search
 /// with pgvector cosine similarity using Reciprocal Rank Fusion (RRF).
 ///
@@ -648,7 +628,6 @@ pub fn plan_hybrid_query_with_dialect(
         )));
     }
 
-    let vec_payload = format_vector_literal(&hybrid.vector);
     let text_w = hybrid.text_weight;
     let vector_w = hybrid.vector_weight;
     let limit = hybrid.limit;
@@ -729,11 +708,6 @@ ORDER BY rm.rrf_score DESC
         limit = limit,
         limit_inner = limit * 3, // Oversample for better RRF fusion
     );
-
-    // Silence the unused-variable warning on vec_payload — it is
-    // retained for callers that introspect the raw f32 payload and
-    // mirrors the v0.3.1 public surface.
-    let _ = vec_payload;
 
     let params = vec![
         serde_json::Value::String(ast.entity_type.clone()),
@@ -1928,24 +1902,6 @@ mod tests {
             result.is_err(),
             "inserting a sqlite plan into a pg-pinned cache must panic"
         );
-    }
-
-    // ── Vector helpers ─────────────────────────────────────────────
-
-    #[test]
-    fn format_vector_literal_empty() {
-        assert_eq!(format_vector_literal(&[]), "[]");
-    }
-
-    #[test]
-    fn format_vector_literal_single() {
-        assert_eq!(format_vector_literal(&[0.5]), "[0.5]");
-    }
-
-    #[test]
-    fn format_vector_literal_multiple() {
-        let result = format_vector_literal(&[0.1, 0.2, 0.3]);
-        assert_eq!(result, "[0.1,0.2,0.3]");
     }
 
     // ── Semantic plan generation ───────────────────────────────────
