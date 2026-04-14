@@ -56,7 +56,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, TransactionBehavior};
 
 use crate::error::{DarshJError, Result};
 use crate::query::QueryPlan;
@@ -115,6 +115,12 @@ impl SqliteStore {
         }
         conn.pragma_update(None, "foreign_keys", "ON")
             .map_err(|e| DarshJError::Internal(format!("sqlite pragma failed: {e}")))?;
+
+        // Set a generous busy_timeout so brief contention (lock upgrade
+        // during IMMEDIATE transactions, WAL checkpoint races) backs off
+        // cleanly instead of failing fast with SQLITE_BUSY.
+        conn.busy_timeout(std::time::Duration::from_secs(5))
+            .map_err(|e| DarshJError::Internal(format!("sqlite busy_timeout failed: {e}")))?;
 
         // Apply schema. execute_batch runs multiple statements in one
         // call; rusqlite supports it because the bundled SQLite build
@@ -287,7 +293,9 @@ impl Store for SqliteStore {
         let owned: Vec<TripleInput> = triples.to_vec();
 
         self.with_conn(move |conn| {
-            let tx = conn.transaction().map_err(map_rq)?;
+            let tx = conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(map_rq)?;
             {
                 let mut stmt = tx
                     .prepare_cached(
@@ -352,13 +360,20 @@ impl Store for SqliteStore {
         let entity_str = entity_id.to_string();
         let attribute = attribute.to_string();
         self.with_conn(move |conn| {
-            conn.execute(
+            // Wrap in an explicit IMMEDIATE transaction for symmetry
+            // with set_triples and to keep future multi-statement
+            // extensions atomic under concurrent writers.
+            let tx = conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(map_rq)?;
+            tx.execute(
                 "UPDATE triples
                  SET retracted = 1
                  WHERE entity_id = ?1 AND attribute = ?2 AND retracted = 0",
                 params![entity_str, attribute],
             )
             .map_err(map_rq)?;
+            tx.commit().map_err(map_rq)?;
             Ok(())
         })
         .await
