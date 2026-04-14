@@ -940,16 +940,19 @@ pub async fn ensure_auth_schema(pool: &PgPool) -> std::result::Result<(), sqlx::
         CREATE INDEX IF NOT EXISTS idx_oauth_provider_user
             ON oauth_identities (provider, provider_user_id);
         CREATE INDEX IF NOT EXISTS idx_oauth_user_id ON oauth_identities (user_id);
-        CREATE TABLE IF NOT EXISTS magic_links (
-            id              BIGSERIAL PRIMARY KEY,
-            token_hash      TEXT NOT NULL UNIQUE,
-            user_id         UUID NOT NULL REFERENCES users(id),
-            expires_at      TIMESTAMPTZ NOT NULL,
-            consumed        BOOLEAN NOT NULL DEFAULT false,
-            created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+        CREATE TABLE IF NOT EXISTS magic_link_tokens (
+            id           UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+            user_id      UUID        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            token_hash   TEXT        NOT NULL,
+            email        TEXT        NOT NULL,
+            created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+            expires_at   TIMESTAMPTZ NOT NULL DEFAULT (now() + INTERVAL '15 minutes'),
+            used_at      TIMESTAMPTZ,
+            ip_address   INET,
+            CONSTRAINT unique_unused_token UNIQUE (token_hash)
         );
-        CREATE INDEX IF NOT EXISTS idx_magic_links_hash
-            ON magic_links (token_hash) WHERE NOT consumed;
+        CREATE INDEX IF NOT EXISTS idx_magic_link_tokens_hash
+            ON magic_link_tokens (token_hash) WHERE used_at IS NULL;
         "#,
     )
     .execute(pool)
@@ -1221,6 +1224,7 @@ struct MagicLinkRequest {
 
 async fn auth_magic_link(
     State(state): State<AppState>,
+    headers: HeaderMap,
     axum::Json(body): axum::Json<MagicLinkRequest>,
 ) -> Result<Response, ApiError> {
     let email = body.email.trim().to_lowercase();
@@ -1237,19 +1241,38 @@ async fn auth_magic_link(
             .map_err(|e| ApiError::internal(format!("Database error: {e}")))?;
 
     if let Some((user_id,)) = user_row {
-        let magic_link = MagicLinkProvider::generate(&state.pool, user_id)
+        let ip = headers
+            .get("x-forwarded-for")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.split(',').next())
+            .map(|s| s.trim())
+            .unwrap_or("");
+
+        let magic_link = MagicLinkProvider::generate(&state.pool, &email, user_id, ip)
             .await
             .map_err(|e| ApiError::internal(format!("Failed to generate magic link: {e}")))?;
 
-        tracing::debug!(user_id = %user_id, expires_at = %magic_link.expires_at, "magic link generated");
+        tracing::debug!(
+            user_id = %user_id,
+            expires_at = %magic_link.expires_at,
+            "magic link generated"
+        );
 
-        // In dev mode, include the token in the response for testing.
+        // Deliver via configured transport (SMTP, SendGrid, or dev log).
+        // Delivery failure is logged, not returned, to avoid leaking
+        // account existence.
+        if let Err(e) = MagicLinkProvider::send_email(&email, &magic_link.url).await {
+            tracing::warn!(error = %e, "magic link delivery failed");
+        }
+
+        // In dev mode, include the token + URL in the response for testing.
         if state.dev_mode {
             return Ok((
                 StatusCode::OK,
                 axum::Json(serde_json::json!({
                     "message": "If an account exists, a magic link has been sent.",
                     "_dev_token": magic_link.token,
+                    "_dev_url": magic_link.url,
                     "_dev_expires_at": magic_link.expires_at.to_rfc3339(),
                 })),
             )
@@ -1285,53 +1308,64 @@ async fn auth_verify(
         return Err(ApiError::bad_request("Token is required"));
     }
 
-    // Verify the magic-link token against the database.
-    let outcome = MagicLinkProvider::verify(&state.pool, &body.token)
+    // Verify the magic-link token. On success we get the owning user_id;
+    // invalid/expired/used tokens map to 401 responses.
+    let user_id = match MagicLinkProvider::verify(&state.pool, &body.token).await {
+        Ok(uid) => uid,
+        Err(crate::auth::AuthError::TokenAlreadyUsed) => {
+            return Err(ApiError::unauthenticated("Magic link already used"));
+        }
+        Err(crate::auth::AuthError::TokenInvalid(reason)) => {
+            return Err(ApiError::unauthenticated(format!(
+                "Invalid magic link: {reason}"
+            )));
+        }
+        Err(e) => {
+            return Err(ApiError::internal(format!(
+                "Token verification failed: {e}"
+            )));
+        }
+    };
+
+    // Fetch the user's roles so the issued JWT is properly scoped.
+    let roles_json: Option<serde_json::Value> =
+        sqlx::query_scalar("SELECT roles FROM users WHERE id = $1 AND deleted_at IS NULL")
+            .bind(user_id)
+            .fetch_optional(&state.pool)
+            .await
+            .map_err(|e| ApiError::internal(format!("Database error: {e}")))?;
+
+    let roles: Vec<String> = roles_json
+        .and_then(|v| serde_json::from_value(v).ok())
+        .unwrap_or_else(|| vec!["user".to_string()]);
+
+    let ip = headers
+        .get("x-forwarded-for")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("unknown");
+    let ua = headers
+        .get("user-agent")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("unknown");
+    let dfp = headers
+        .get("x-device-fingerprint")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+
+    let token_pair = state
+        .session_manager
+        .create_session(user_id, roles, ip, ua, dfp)
         .await
-        .map_err(|e| ApiError::internal(format!("Token verification failed: {e}")))?;
+        .map_err(|e| ApiError::internal(format!("Session creation failed: {e}")))?;
 
-    match outcome {
-        AuthOutcome::Success { user_id, roles } => {
-            let ip = headers
-                .get("x-forwarded-for")
-                .and_then(|v| v.to_str().ok())
-                .unwrap_or("unknown");
-            let ua = headers
-                .get("user-agent")
-                .and_then(|v| v.to_str().ok())
-                .unwrap_or("unknown");
-            let dfp = headers
-                .get("x-device-fingerprint")
-                .and_then(|v| v.to_str().ok())
-                .unwrap_or("");
-
-            let token_pair = state
-                .session_manager
-                .create_session(user_id, roles, ip, ua, dfp)
-                .await
-                .map_err(|e| ApiError::internal(format!("Session creation failed: {e}")))?;
-
-            let response = serde_json::json!({
-                "user_id": user_id,
-                "access_token": token_pair.access_token,
-                "refresh_token": token_pair.refresh_token,
-                "expires_in": token_pair.expires_in,
-                "token_type": token_pair.token_type,
-            });
-            Ok(negotiate_response(&headers, &response))
-        }
-        AuthOutcome::MfaRequired { user_id, mfa_token } => {
-            let response = serde_json::json!({
-                "mfa_required": true,
-                "user_id": user_id,
-                "mfa_token": mfa_token,
-            });
-            Ok(negotiate_response(&headers, &response))
-        }
-        AuthOutcome::Failed { reason } => Err(ApiError::unauthenticated(format!(
-            "Verification failed: {reason}"
-        ))),
-    }
+    let response = serde_json::json!({
+        "user_id": user_id,
+        "access_token": token_pair.access_token,
+        "refresh_token": token_pair.refresh_token,
+        "expires_in": token_pair.expires_in,
+        "token_type": token_pair.token_type,
+    });
+    Ok(negotiate_response(&headers, &response))
 }
 
 /// `POST /api/auth/oauth/:provider` — Generate an OAuth2 authorize URL with PKCE + HMAC state,

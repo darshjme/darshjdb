@@ -48,3 +48,5 @@ aws-credential-types.workspace = true
 aws-types.workspace = true
 async-trait.workspace = true
 csv.workspace = true
+# Phase 0.3 (slice 4/30) — magic link SMTP/HTTP email delivery.
+lettre.workspace = true
