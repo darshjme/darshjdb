@@ -113,11 +113,23 @@ pub trait SqlDialect: Send + Sync + std::fmt::Debug {
     /// Build a JSON-containment check of the form `<col> @> <param>`.
     ///
     /// - Postgres: `<alias>.value @> <param>`
-    /// - SQLite: approximated with a `LIKE` on the JSON text (the
-    ///   triple store stores values as JSON text), which is
-    ///   sufficient for the planner's current containment usage
-    ///   (substring of a JSON object / array).
+    /// - SQLite: unsound substring fallback via `instr()` — callers MUST
+    ///   check [`Self::supports_jsonb_contains`] before reaching this
+    ///   method. The SQLite fallback is only kept so a surprise call
+    ///   site does not panic; the planner refuses Contains on SQLite.
     fn jsonb_contains(&self, alias: &str, param: &str) -> String;
+
+    /// Whether this dialect supports structural JSON containment
+    /// (`@>` on Postgres, nothing equivalent on SQLite).
+    ///
+    /// The planner MUST check this before emitting a
+    /// [`crate::query::WhereOp::Contains`] clause and refuse with
+    /// `InvalidQuery` when false. The default is `true` to preserve
+    /// the v0.3.1 Postgres behaviour for any downstream dialect that
+    /// does not override it.
+    fn supports_jsonb_contains(&self) -> bool {
+        true
+    }
 
     /// Build a case-insensitive LIKE prefix match against the raw
     /// text of a JSON value.
@@ -331,13 +343,22 @@ impl SqlDialect for SqliteDialect {
         format!("{alias}.value {op} {param}")
     }
 
+    /// Unsound fallback — callers MUST check
+    /// [`SqlDialect::supports_jsonb_contains`] first.
+    ///
+    /// `instr(value, param) > 0` is substring match on serialized JSON
+    /// text. It fails on scalar prefix collision (`instr('123','12') > 0`
+    /// is true but `12 @> 123` is false) and on key reordering inside
+    /// JSON objects. The planner gates `WhereOp::Contains` via
+    /// `supports_jsonb_contains` and refuses SQLite; this method
+    /// remains so a surprise call site does not panic, but any output
+    /// it produces is wrong.
     fn jsonb_contains(&self, alias: &str, param: &str) -> String {
-        // SQLite has no jsonb `@>` operator. Approximate containment
-        // as a substring of the JSON text. This is lossy but matches
-        // the planner's current usage (checking that a value contains
-        // a scalar/fragment). The portable IR in v0.4 will replace
-        // this with a proper semantic check.
         format!("instr({alias}.value, {param}) > 0")
+    }
+
+    fn supports_jsonb_contains(&self) -> bool {
+        false
     }
 
     fn text_ilike(&self, alias: &str, param: &str) -> String {
