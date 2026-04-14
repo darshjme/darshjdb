@@ -97,7 +97,9 @@ mime_guess = "2"
 config = "0.14"
 dotenvy = "0.15"
 metrics-exporter-prometheus = "0.15"
-lettre = "0.11"
+# Phase 0.3 (slice 4/30) — SMTP delivery for magic-link authentication.
+# Declared with rustls features for cross-slice SMTP usage.
+lettre = { version = "0.11", default-features = false, features = ["smtp-transport", "tokio1-rustls-tls", "builder", "tokio1", "hostname"] }
 portpicker = "0.1"
 
 # Dev / test deps (workspace-shared, activated via member crates' [dev-dependencies])
