@@ -101,6 +101,10 @@ portpicker = { workspace = true, optional = true }
 # Created by Darshankumar Joshi (github.com/darshjme).
 deno_core = { version = "0.398", optional = true }
 
+# v0.3.1 — SQLite backend stub. Gated behind the `sqlite-store` feature so
+# default builds stay Postgres-only. See packages/server/src/store/sqlite.rs.
+rusqlite = { version = "0.31", optional = true, features = ["bundled"] }
+
 [features]
 default = []
 # Enable IPFS-backed audit anchoring via `ipfs-api-backend-hyper`.
@@ -113,6 +117,10 @@ embedded-db = ["dep:pg_embed", "dep:portpicker"]
 # VYASA — embedded V8 isolate function runtime (sub-millisecond cold start).
 # Usage: `cargo run --features v8`. Selects V8 when DDB_FUNCTION_RUNTIME=v8.
 v8 = ["dep:deno_core"]
+# v0.3.1 — compile-time SQLite backend stub (trait boundary verification
+# only — every method returns NotYetImplemented). Full backend: v0.3.2.
+# Usage: `cargo check -p ddb-server --features sqlite-store`
+sqlite-store = ["dep:rusqlite"]
 
 [dev-dependencies]
 tokio-tungstenite = "0.28"

@@ -1,0 +1,438 @@
+## DarshJDB — PRODUCTION HA STACK
+## Usage:  docker compose -f docker-compose.ha.yml up -d
+## Docs:   docs/HORIZONTAL_SCALING.md
+##
+## ╔══════════════════════════════════════════════════════════════════╗
+## ║  HIGH-AVAILABILITY TOPOLOGY                                      ║
+## ║                                                                  ║
+## ║    ┌─────────────┐   ┌─────────────┐   ┌─────────────┐           ║
+## ║    │  ddb-srv-1  │   │  ddb-srv-2  │   │  ddb-srv-3  │           ║
+## ║    └──────┬──────┘   └──────┬──────┘   └──────┬──────┘           ║
+## ║           └──────────┬──────┴─────────────────┘                  ║
+## ║                      │                                           ║
+## ║                 ┌────▼─────┐   ddb-lb (HTTP front-door)          ║
+## ║                 │ pgbounce │                                     ║
+## ║                 └────┬─────┘   transaction pooling, 100 cx       ║
+## ║                      │                                           ║
+## ║                 ┌────▼─────┐                                     ║
+## ║                 │ haproxy  │   routes to current Patroni leader  ║
+## ║                 └────┬─────┘                                     ║
+## ║         ┌────────────┼────────────┐                              ║
+## ║    ┌────▼───┐  ┌─────▼────┐  ┌────▼────┐                         ║
+## ║    │ pg-1   │  │  pg-2    │  │  pg-3   │   Patroni-managed       ║
+## ║    │ leader │  │ replica  │  │ replica │   streaming replication ║
+## ║    └────┬───┘  └──────────┘  └─────────┘                         ║
+## ║         │                                                        ║
+## ║    ┌────▼──────┐                                                  ║
+## ║    │  WAL-G    │   continuous WAL archival + nightly basebackup  ║
+## ║    └────┬──────┘                                                  ║
+## ║         │                                                        ║
+## ║    ┌────▼──────┐                                                  ║
+## ║    │  MinIO    │   S3-compatible (swap for AWS S3 / CF R2)       ║
+## ║    └───────────┘                                                  ║
+## ║                                                                  ║
+## ║    etcd1 + etcd2 + etcd3  →  Patroni DCS (leader election)       ║
+## ║    prometheus + grafana   →  scrapes /metrics from each ddb-srv  ║
+## ╚══════════════════════════════════════════════════════════════════╝
+##
+## Required env vars (put these in .env, never commit):
+##   DDB_JWT_SECRET          — JWT signing key for the API
+##   DARSH_CACHE_PASSWORD    — RESP3 cache-server AUTH
+##   POSTGRES_PASSWORD       — ddb user password
+##   POSTGRES_REPL_PASSWORD  — replication user password
+##   PATRONI_SUPERUSER_PW    — Patroni superuser (distinct from app user)
+##   MINIO_ROOT_USER         — MinIO admin
+##   MINIO_ROOT_PASSWORD     — MinIO admin
+##   WALG_S3_PREFIX          — e.g. s3://darshjdb-wal/cluster-prod
+##
+## Optional (for AWS S3 / Cloudflare R2 instead of MinIO — then remove
+## the `minio` service and `walg-backup` will use real AWS creds):
+##   AWS_ACCESS_KEY_ID
+##   AWS_SECRET_ACCESS_KEY
+##   AWS_REGION
+##   AWS_ENDPOINT
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "5"
+
+x-ddb-env: &ddb-env
+  DATABASE_URL: "postgres://ddb:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@pgbouncer:6432/darshjdb"
+  DDB_PORT: "7700"
+  DDB_DEV: "0"
+  DDB_JWT_SECRET: ${DDB_JWT_SECRET:?Set DDB_JWT_SECRET}
+  DDB_DB_MAX_CONNECTIONS: "40"
+  DDB_DB_MIN_CONNECTIONS: "8"
+  DARSH_CACHE_PORT: "7701"
+  DARSH_CACHE_PASSWORD: ${DARSH_CACHE_PASSWORD:?Set DARSH_CACHE_PASSWORD}
+  RUST_LOG: ${RUST_LOG:-info}
+  DDB_METRICS_ENABLED: "1"
+
+services:
+
+  # ── etcd cluster (Patroni DCS) ───────────────────────────────────────
+  etcd1: &etcd-base
+    image: quay.io/coreos/etcd:v3.5.13
+    command:
+      - etcd
+      - --name=etcd1
+      - --data-dir=/etcd-data
+      - --listen-client-urls=http://0.0.0.0:2379
+      - --advertise-client-urls=http://etcd1:2379
+      - --listen-peer-urls=http://0.0.0.0:2380
+      - --initial-advertise-peer-urls=http://etcd1:2380
+      - --initial-cluster=etcd1=http://etcd1:2380,etcd2=http://etcd2:2380,etcd3=http://etcd3:2380
+      - --initial-cluster-token=ddb-patroni-etcd
+      - --initial-cluster-state=new
+    volumes:
+      - etcd1_data:/etcd-data
+    restart: unless-stopped
+    logging: *default-logging
+    networks:
+      - ddb-ha
+
+  etcd2:
+    <<: *etcd-base
+    command:
+      - etcd
+      - --name=etcd2
+      - --data-dir=/etcd-data
+      - --listen-client-urls=http://0.0.0.0:2379
+      - --advertise-client-urls=http://etcd2:2379
+      - --listen-peer-urls=http://0.0.0.0:2380
+      - --initial-advertise-peer-urls=http://etcd2:2380
+      - --initial-cluster=etcd1=http://etcd1:2380,etcd2=http://etcd2:2380,etcd3=http://etcd3:2380
+      - --initial-cluster-token=ddb-patroni-etcd
+      - --initial-cluster-state=new
+    volumes:
+      - etcd2_data:/etcd-data
+
+  etcd3:
+    <<: *etcd-base
+    command:
+      - etcd
+      - --name=etcd3
+      - --data-dir=/etcd-data
+      - --listen-client-urls=http://0.0.0.0:2379
+      - --advertise-client-urls=http://etcd3:2379
+      - --listen-peer-urls=http://0.0.0.0:2380
+      - --initial-advertise-peer-urls=http://etcd3:2380
+      - --initial-cluster=etcd1=http://etcd1:2380,etcd2=http://etcd2:2380,etcd3=http://etcd3:2380
+      - --initial-cluster-token=ddb-patroni-etcd
+      - --initial-cluster-state=new
+    volumes:
+      - etcd3_data:/etcd-data
+
+  # ── Patroni-managed Postgres 16 (Spilo) ──────────────────────────────
+  # Spilo is Zalando's Patroni+Postgres image with TimescaleDB + pgvector.
+  patroni-pg-1: &patroni-base
+    image: ghcr.io/zalando/spilo-16:3.2-p3
+    hostname: patroni-pg-1
+    environment:
+      SCOPE: ddb-cluster
+      PGVERSION: "16"
+      ETCD_HOSTS: etcd1:2379,etcd2:2379,etcd3:2379
+      PATRONI_NAME: patroni-pg-1
+      PATRONI_RESTAPI_LISTEN: 0.0.0.0:8008
+      PATRONI_POSTGRESQL_LISTEN: 0.0.0.0:5432
+      PATRONI_POSTGRESQL_CONNECT_ADDRESS: patroni-pg-1:5432
+      PATRONI_RESTAPI_CONNECT_ADDRESS: patroni-pg-1:8008
+      PATRONI_SUPERUSER_USERNAME: postgres
+      PATRONI_SUPERUSER_PASSWORD: ${PATRONI_SUPERUSER_PW:?Set PATRONI_SUPERUSER_PW}
+      PATRONI_REPLICATION_USERNAME: replicator
+      PATRONI_REPLICATION_PASSWORD: ${POSTGRES_REPL_PASSWORD:?Set POSTGRES_REPL_PASSWORD}
+      PATRONI_admin_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+      PATRONI_admin_OPTIONS: createdb, createrole
+      # Create the app user (ddb) + database on cluster bootstrap.
+      PGUSER_SUPERUSER: postgres
+      PGPASSWORD_SUPERUSER: ${PATRONI_SUPERUSER_PW:?}
+      PGPASSWORD_ADMIN: ${POSTGRES_PASSWORD:?}
+      PGPASSWORD_STANDBY: ${POSTGRES_REPL_PASSWORD:?}
+      # WAL-G archival configuration (Patroni runs this as archive_command
+      # via spilo's bootstrap scripts).
+      USE_WALG_BACKUP: "true"
+      USE_WALG_RESTORE: "true"
+      WALG_S3_PREFIX: ${WALG_S3_PREFIX:-s3://ddb-wal/cluster-prod}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-${MINIO_ROOT_USER:?Set MINIO_ROOT_USER or AWS_ACCESS_KEY_ID}}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-${MINIO_ROOT_PASSWORD:?Set MINIO_ROOT_PASSWORD or AWS_SECRET_ACCESS_KEY}}
+      AWS_REGION: ${AWS_REGION:-us-east-1}
+      AWS_ENDPOINT: ${AWS_ENDPOINT:-http://minio:9000}
+      AWS_S3_FORCE_PATH_STYLE: "true"
+    volumes:
+      - patroni_pg_1:/home/postgres/pgdata
+    restart: unless-stopped
+    logging: *default-logging
+    depends_on:
+      - etcd1
+      - etcd2
+      - etcd3
+    networks:
+      - ddb-ha
+
+  patroni-pg-2:
+    <<: *patroni-base
+    hostname: patroni-pg-2
+    environment:
+      SCOPE: ddb-cluster
+      PGVERSION: "16"
+      ETCD_HOSTS: etcd1:2379,etcd2:2379,etcd3:2379
+      PATRONI_NAME: patroni-pg-2
+      PATRONI_RESTAPI_LISTEN: 0.0.0.0:8008
+      PATRONI_POSTGRESQL_LISTEN: 0.0.0.0:5432
+      PATRONI_POSTGRESQL_CONNECT_ADDRESS: patroni-pg-2:5432
+      PATRONI_RESTAPI_CONNECT_ADDRESS: patroni-pg-2:8008
+      PATRONI_SUPERUSER_USERNAME: postgres
+      PATRONI_SUPERUSER_PASSWORD: ${PATRONI_SUPERUSER_PW:?}
+      PATRONI_REPLICATION_USERNAME: replicator
+      PATRONI_REPLICATION_PASSWORD: ${POSTGRES_REPL_PASSWORD:?}
+      USE_WALG_BACKUP: "true"
+      USE_WALG_RESTORE: "true"
+      WALG_S3_PREFIX: ${WALG_S3_PREFIX:-s3://ddb-wal/cluster-prod}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-${MINIO_ROOT_USER:?}}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-${MINIO_ROOT_PASSWORD:?}}
+      AWS_REGION: ${AWS_REGION:-us-east-1}
+      AWS_ENDPOINT: ${AWS_ENDPOINT:-http://minio:9000}
+      AWS_S3_FORCE_PATH_STYLE: "true"
+    volumes:
+      - patroni_pg_2:/home/postgres/pgdata
+
+  patroni-pg-3:
+    <<: *patroni-base
+    hostname: patroni-pg-3
+    environment:
+      SCOPE: ddb-cluster
+      PGVERSION: "16"
+      ETCD_HOSTS: etcd1:2379,etcd2:2379,etcd3:2379
+      PATRONI_NAME: patroni-pg-3
+      PATRONI_RESTAPI_LISTEN: 0.0.0.0:8008
+      PATRONI_POSTGRESQL_LISTEN: 0.0.0.0:5432
+      PATRONI_POSTGRESQL_CONNECT_ADDRESS: patroni-pg-3:5432
+      PATRONI_RESTAPI_CONNECT_ADDRESS: patroni-pg-3:8008
+      PATRONI_SUPERUSER_USERNAME: postgres
+      PATRONI_SUPERUSER_PASSWORD: ${PATRONI_SUPERUSER_PW:?}
+      PATRONI_REPLICATION_USERNAME: replicator
+      PATRONI_REPLICATION_PASSWORD: ${POSTGRES_REPL_PASSWORD:?}
+      USE_WALG_BACKUP: "true"
+      USE_WALG_RESTORE: "true"
+      WALG_S3_PREFIX: ${WALG_S3_PREFIX:-s3://ddb-wal/cluster-prod}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-${MINIO_ROOT_USER:?}}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-${MINIO_ROOT_PASSWORD:?}}
+      AWS_REGION: ${AWS_REGION:-us-east-1}
+      AWS_ENDPOINT: ${AWS_ENDPOINT:-http://minio:9000}
+      AWS_S3_FORCE_PATH_STYLE: "true"
+    volumes:
+      - patroni_pg_3:/home/postgres/pgdata
+
+  # ── HAProxy (routes Postgres traffic to current Patroni leader) ──────
+  haproxy:
+    image: haproxy:2.9-alpine
+    volumes:
+      - ./deploy/ha/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+    ports:
+      - "5432:5432"  # writer (leader)
+      - "5433:5433"  # read-only (any replica)
+      - "7000:7000"  # HAProxy stats UI
+    depends_on:
+      - patroni-pg-1
+      - patroni-pg-2
+      - patroni-pg-3
+    restart: unless-stopped
+    logging: *default-logging
+    networks:
+      - ddb-ha
+
+  # ── pgBouncer (transaction-mode connection multiplexer) ─────────────
+  pgbouncer:
+    image: edoburu/pgbouncer:v1.23.1-p1
+    environment:
+      DB_HOST: haproxy
+      DB_PORT: "5432"
+      DB_USER: ddb
+      DB_PASSWORD: ${POSTGRES_PASSWORD:?}
+      DB_NAME: darshjdb
+      POOL_MODE: transaction
+      MAX_CLIENT_CONN: "2000"
+      DEFAULT_POOL_SIZE: "100"
+      MIN_POOL_SIZE: "20"
+      RESERVE_POOL_SIZE: "20"
+      RESERVE_POOL_TIMEOUT: "3"
+      SERVER_RESET_QUERY: "DISCARD ALL"
+      # Listen ALL users (auth passes through to upstream).
+      AUTH_TYPE: scram-sha-256
+      ADMIN_USERS: postgres,ddb
+    ports:
+      - "6432:6432"
+    depends_on:
+      - haproxy
+    restart: unless-stopped
+    logging: *default-logging
+    networks:
+      - ddb-ha
+
+  # ── WAL-G backup sidecar (nightly basebackup; continuous WAL push) ──
+  # The Spilo image already runs WAL-G as archive_command, so this
+  # sidecar is just a cron runner for the nightly `backup-push`.
+  walg-backup:
+    image: ghcr.io/wal-g/wal-g:v3.0.3
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        # Nightly at 03:17 UTC: trigger a fresh basebackup against the
+        # current leader via Patroni's REST API.
+        while true; do
+          now=$$(date -u +%s)
+          next=$$(date -u -d '03:17 tomorrow' +%s 2>/dev/null || echo $$((now + 3600)))
+          sleep $$((next - now))
+          echo "[wal-g] triggering backup-push $$(date -u)"
+          PGHOST=haproxy PGPORT=5432 PGUSER=postgres \
+            PGPASSWORD="$${PATRONI_SUPERUSER_PW}" \
+            wal-g backup-push /home/postgres/pgdata || true
+        done
+    environment:
+      WALG_S3_PREFIX: ${WALG_S3_PREFIX:-s3://ddb-wal/cluster-prod}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-${MINIO_ROOT_USER:?}}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-${MINIO_ROOT_PASSWORD:?}}
+      AWS_REGION: ${AWS_REGION:-us-east-1}
+      AWS_ENDPOINT: ${AWS_ENDPOINT:-http://minio:9000}
+      AWS_S3_FORCE_PATH_STYLE: "true"
+      PATRONI_SUPERUSER_PW: ${PATRONI_SUPERUSER_PW:?}
+    depends_on:
+      - haproxy
+      - minio
+    restart: unless-stopped
+    logging: *default-logging
+    networks:
+      - ddb-ha
+
+  # ── DarshJDB server replicas (stateless) ────────────────────────────
+  ddb-server-1: &ddb-server-base
+    image: darshjme/darshjdb:${DDB_VERSION:-latest}
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      <<: *ddb-env
+      DDB_REPLICA_ID: "1"
+    depends_on:
+      - pgbouncer
+      - ddb-cache-server
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:size=64M
+    logging: *default-logging
+    networks:
+      - ddb-ha
+    security_opt:
+      - no-new-privileges:true
+
+  ddb-server-2:
+    <<: *ddb-server-base
+    environment:
+      <<: *ddb-env
+      DDB_REPLICA_ID: "2"
+
+  ddb-server-3:
+    <<: *ddb-server-base
+    environment:
+      <<: *ddb-env
+      DDB_REPLICA_ID: "3"
+
+  # ── DarshJDB front-door load balancer ───────────────────────────────
+  ddb-lb:
+    image: nginx:1.27-alpine
+    volumes:
+      - ./deploy/ha/nginx-ddb.conf:/etc/nginx/nginx.conf:ro
+    ports:
+      - "7700:7700"
+    depends_on:
+      - ddb-server-1
+      - ddb-server-2
+      - ddb-server-3
+    restart: unless-stopped
+    logging: *default-logging
+    networks:
+      - ddb-ha
+
+  # ── DarshJDB cache server (RESP3, AUTH required) ────────────────────
+  ddb-cache-server:
+    image: darshjme/darshjdb:${DDB_VERSION:-latest}
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["/usr/local/bin/ddb-cache-server"]
+    environment:
+      DARSH_CACHE_PORT: "7701"
+      # REQUIRED. The RESP3 server MUST refuse to start if this is empty.
+      DARSH_CACHE_PASSWORD: ${DARSH_CACHE_PASSWORD:?Set DARSH_CACHE_PASSWORD}
+      RUST_LOG: ${RUST_LOG:-info}
+    ports:
+      - "7701:7701"
+    restart: unless-stopped
+    logging: *default-logging
+    networks:
+      - ddb-ha
+
+  # ── Observability ───────────────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    volumes:
+      - ./deploy/ha/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "9090:9090"
+    restart: unless-stopped
+    logging: *default-logging
+    networks:
+      - ddb-ha
+
+  grafana:
+    image: grafana/grafana:11.1.0
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:?Set GRAFANA_PASSWORD}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - grafana_data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+    logging: *default-logging
+    networks:
+      - ddb-ha
+
+  # ── MinIO (S3-compatible target for WAL-G; swap for real S3/R2) ─────
+  minio:
+    image: minio/minio:RELEASE.2024-10-13T13-34-11Z
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?Set MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?Set MINIO_ROOT_PASSWORD}
+    volumes:
+      - minio_data:/data
+    ports:
+      - "9000:9000"  # S3 API
+      - "9001:9001"  # Console
+    restart: unless-stopped
+    logging: *default-logging
+    networks:
+      - ddb-ha
+
+volumes:
+  etcd1_data:
+  etcd2_data:
+  etcd3_data:
+  patroni_pg_1:
+  patroni_pg_2:
+  patroni_pg_3:
+  prometheus_data:
+  grafana_data:
+  minio_data:
+
+networks:
+  ddb-ha:
+    driver: bridge

@@ -1,4 +1,19 @@
-## DarshJDB — Production Stack
+## DarshJDB — SINGLE-NODE DEV / SMALL-DEPLOYMENT STACK
+##
+## ╔══════════════════════════════════════════════════════════════════╗
+## ║                      NOT FOR PRODUCTION                          ║
+## ║                                                                  ║
+## ║  This compose file runs a SINGLE Postgres node with no replica,  ║
+## ║  no Patroni, no pgBouncer, and no WAL-G archival. It is suitable ║
+## ║  for development, single-tenant pilots, and hobby deployments.   ║
+## ║                                                                  ║
+## ║  For production HA (3-node Patroni + etcd + HAProxy + pgBouncer  ║
+## ║  + WAL-G + multi-replica DarshJDB) use:                          ║
+## ║      docker compose -f docker-compose.ha.yml up -d               ║
+## ║                                                                  ║
+## ║  See docs/HORIZONTAL_SCALING.md for the full topology.           ║
+## ╚══════════════════════════════════════════════════════════════════╝
+##
 ## Usage: docker compose up -d
 ## Secrets: provide via .env file (never commit it)
 
@@ -28,7 +43,9 @@ services:
       DDB_QDRANT_URL: "http://qdrant:6334"
       # Slice 11 — DdbCache (RESP3 + HTTP REST) tunables.
       DARSH_CACHE_PORT: "7701"
-      DARSH_CACHE_PASSWORD: ${DARSH_CACHE_PASSWORD:-}
+      # REQUIRED: fail to start if unset. The RESP3 cache server refuses
+      # to boot without AUTH configured — see packages/cache-server.
+      DARSH_CACHE_PASSWORD: ${DARSH_CACHE_PASSWORD:?Set DARSH_CACHE_PASSWORD in .env}
       RUST_LOG: ${RUST_LOG:-info}
     depends_on:
       postgres:
