@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "packages/server",
     "packages/cli",
+    "packages/agent-memory",
 ]
 
 [workspace.package]
@@ -63,3 +64,11 @@ ctrlc = { version = "3", features = ["termination"] }
 self_update = "0.41"
 async-trait = "0.1"
 csv = "1.3"
+
+# Grand Transformation — Phase 2 agent memory (slice 12/30)
+pgvector = { version = "0.4", features = ["sqlx"] }
+tiktoken-rs = "0.6"
+async-openai = "0.23"
+zstd = "0.13"
+bytes = "1"
+metrics = "0.23"
