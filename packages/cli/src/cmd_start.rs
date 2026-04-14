@@ -302,6 +302,13 @@ pub async fn run(
         pubsub: pubsub_engine.clone(),
         live_queries: live_query_manager,
         change_feed,
+        rule_engine: None,
+        query_cache: Arc::new(ddb_server::cache::QueryCache::new(
+            100,
+            std::time::Duration::from_secs(60),
+            true,
+        )),
+        subscription_snapshots: Arc::new(dashmap::DashMap::new()),
     };
 
     tracing::info!("sync engine initialized");
