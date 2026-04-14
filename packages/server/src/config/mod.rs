@@ -85,7 +85,7 @@ impl<T> fmt::Debug for Secret<T> {
 ///
 /// Every section is flattened under a named field so env-var overrides work
 /// predictably: `DDB__<SECTION>__<FIELD>=value`.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct DdbConfig {
     #[serde(default)]
@@ -114,26 +114,6 @@ pub struct DdbConfig {
     pub memory: MemoryConfig,
     #[serde(default)]
     pub rules: RulesConfig,
-}
-
-impl Default for DdbConfig {
-    fn default() -> Self {
-        Self {
-            server: ServerConfig::default(),
-            database: DatabaseConfig::default(),
-            auth: AuthConfig::default(),
-            cors: CorsConfig::default(),
-            dev: DevConfig::default(),
-            cache: CacheConfig::default(),
-            embedding: EmbeddingConfig::default(),
-            llm: LlmConfig::default(),
-            storage: StorageConfig::default(),
-            schema: SchemaConfig::default(),
-            anchor: AnchorConfig::default(),
-            memory: MemoryConfig::default(),
-            rules: RulesConfig::default(),
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -659,19 +639,19 @@ mod defaults {
 fn apply_legacy_env_shim() {
     // Helper: only copy when the new form is unset AND the old form is set.
     fn copy_if_unset(new_key: &str, old_key: &str) {
-        if std::env::var_os(new_key).is_none() {
-            if let Ok(val) = std::env::var(old_key) {
-                // SAFETY: called during startup, before any downstream
-                // subsystem spawns a reader for DDB__* / DARSH__* env
-                // vars. `load_config` runs inside `#[tokio::main]`'s
-                // runtime (so worker threads do exist), but no task
-                // reads these variables until observability + typed
-                // config assembly complete later in main(). This
-                // remains non-racy as long as no Rust 2024 lint-gated
-                // callsite is added earlier in main().
-                unsafe {
-                    std::env::set_var(new_key, val);
-                }
+        if std::env::var_os(new_key).is_none()
+            && let Ok(val) = std::env::var(old_key)
+        {
+            // SAFETY: called during startup, before any downstream
+            // subsystem spawns a reader for DDB__* / DARSH__* env
+            // vars. `load_config` runs inside `#[tokio::main]`'s
+            // runtime (so worker threads do exist), but no task
+            // reads these variables until observability + typed
+            // config assembly complete later in main(). This
+            // remains non-racy as long as no Rust 2024 lint-gated
+            // callsite is added earlier in main().
+            unsafe {
+                std::env::set_var(new_key, val);
             }
         }
     }
@@ -701,14 +681,14 @@ fn apply_legacy_env_shim() {
     copy_if_unset("DDB__AUTH__JWT_PUBLIC_KEY_PATH", "DDB_JWT_PUBLIC_KEY");
 
     // Dev.
-    if std::env::var_os("DDB__DEV__MODE").is_none() {
-        if let Ok(val) = std::env::var("DDB_DEV") {
-            let as_bool = matches!(val.as_str(), "1" | "true" | "TRUE" | "yes");
-            // SAFETY: called before any downstream reader spawns — see
-            // the `copy_if_unset` safety note above.
-            unsafe {
-                std::env::set_var("DDB__DEV__MODE", if as_bool { "true" } else { "false" });
-            }
+    if std::env::var_os("DDB__DEV__MODE").is_none()
+        && let Ok(val) = std::env::var("DDB_DEV")
+    {
+        let as_bool = matches!(val.as_str(), "1" | "true" | "TRUE" | "yes");
+        // SAFETY: called before any downstream reader spawns — see
+        // the `copy_if_unset` safety note above.
+        unsafe {
+            std::env::set_var("DDB__DEV__MODE", if as_bool { "true" } else { "false" });
         }
     }
 
@@ -716,20 +696,20 @@ fn apply_legacy_env_shim() {
     // normalise by trimming each entry before handing it to `config`,
     // because `list_separator(",")` does a byte-level split with no
     // whitespace stripping.
-    if std::env::var_os("DDB__CORS__ORIGINS").is_none() {
-        if let Ok(val) = std::env::var("DDB_CORS_ORIGINS") {
-            let normalised: String = val
-                .split(',')
-                .map(|s| s.trim())
-                .filter(|s| !s.is_empty())
-                .collect::<Vec<_>>()
-                .join(",");
-            if !normalised.is_empty() {
-                // SAFETY: called before any downstream reader spawns —
-                // see the `copy_if_unset` safety note above.
-                unsafe {
-                    std::env::set_var("DDB__CORS__ORIGINS", normalised);
-                }
+    if std::env::var_os("DDB__CORS__ORIGINS").is_none()
+        && let Ok(val) = std::env::var("DDB_CORS_ORIGINS")
+    {
+        let normalised: String = val
+            .split(',')
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join(",");
+        if !normalised.is_empty() {
+            // SAFETY: called before any downstream reader spawns —
+            // see the `copy_if_unset` safety note above.
+            unsafe {
+                std::env::set_var("DDB__CORS__ORIGINS", normalised);
             }
         }
     }
