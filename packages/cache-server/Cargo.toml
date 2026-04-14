@@ -1,0 +1,41 @@
+# DarshJDB — created by Darshankumar Joshi (github.com/darshjme)
+# ddb-cache-server: standalone RESP3 protocol server speaking
+# Redis-compatible commands on top of [`ddb_cache::DdbCache`].
+[package]
+name = "ddb-cache-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "DarshJDB RESP3 protocol server — Redis-compatible front-end for ddb-cache"
+authors = ["Darshankumar Joshi <github.com/darshjme>"]
+
+[[bin]]
+name = "ddb-cache-server"
+path = "src/main.rs"
+
+[lib]
+name = "ddb_cache_server"
+path = "src/lib.rs"
+
+[dependencies]
+ddb-cache = { path = "../cache" }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+bytes = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+metrics = { workspace = true }
+futures = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+axum = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tower = { workspace = true }
+http = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+tower = { workspace = true }
+http = { workspace = true }
+serde_json = { workspace = true }

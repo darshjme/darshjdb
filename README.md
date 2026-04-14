@@ -46,6 +46,9 @@ git clone https://github.com/darshjme/darshjdb.git
 cd darshjdb
 docker compose up -d
 curl http://localhost:7700/health
+# Redis-compatible cache (RESP3 protocol, Slice 11+).
+redis-cli -p 7701 PING                 # → PONG
+curl http://localhost:7700/api/cache/stats
 ```
 
 Write data:
