@@ -27,10 +27,7 @@ struct EnvGuard {
 
 impl EnvGuard {
     fn new(keys: &[&'static str]) -> Self {
-        let saved = keys
-            .iter()
-            .map(|k| (*k, std::env::var(*k).ok()))
-            .collect();
+        let saved = keys.iter().map(|k| (*k, std::env::var(*k).ok())).collect();
         // Proactively clear every key so we start from a known baseline.
         for k in keys {
             // SAFETY: tests hold `ENV_LOCK`, so no other thread reads/writes env.

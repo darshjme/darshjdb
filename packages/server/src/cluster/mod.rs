@@ -133,10 +133,7 @@ impl Default for NodeId {
 /// pool. Callers that need the lock to persist across many ticks MUST
 /// hold the same `&mut PgConnection` (or `PoolConnection<Postgres>`) for
 /// the lock's whole lifetime.
-pub async fn try_acquire_leader(
-    conn: &mut sqlx::PgConnection,
-    lock_key: i64,
-) -> Result<bool> {
+pub async fn try_acquire_leader(conn: &mut sqlx::PgConnection, lock_key: i64) -> Result<bool> {
     let row = sqlx::query("SELECT pg_try_advisory_lock($1) AS acquired")
         .bind(lock_key)
         .fetch_one(conn)

@@ -22,11 +22,11 @@
 
 use std::time::Duration;
 
+use ddb_server::cluster::notify_listener::{self, CHANGE_CHANNEL};
 use ddb_server::cluster::{
     ClusterState, LOCK_ANCHOR_WRITER, LOCK_EXPIRY_SWEEPER, NodeId, release_leader,
     spawn_singleton_task, try_acquire_leader,
 };
-use ddb_server::cluster::notify_listener::{self, CHANGE_CHANNEL};
 use sqlx::PgPool;
 use std::sync::Arc;
 
@@ -214,12 +214,10 @@ async fn listen_notify_fanout_delivers_change_events_cross_session() {
 
     // Replica A: emit a NOTIFY directly from the pool. Use a synthetic
     // payload that parses into a non-zero tx_id so we can round-trip it.
-    sqlx::query(&format!(
-        "NOTIFY {CHANGE_CHANNEL}, '77:test_entity_type'",
-    ))
-    .execute(&pool)
-    .await
-    .expect("NOTIFY failed");
+    sqlx::query(&format!("NOTIFY {CHANGE_CHANNEL}, '77:test_entity_type'",))
+        .execute(&pool)
+        .await
+        .expect("NOTIFY failed");
 
     // Wait for the event to arrive through the broadcast channel. Use a
     // bounded timeout so the test never hangs.
@@ -286,7 +284,10 @@ async fn different_lock_keys_do_not_collide() {
         "session B should acquire EXPIRY_SWEEPER lock — different keys must not block each other"
     );
 
-    release_leader(&mut conn_a, LOCK_ANCHOR_WRITER).await.unwrap();
-    release_leader(&mut conn_b, LOCK_EXPIRY_SWEEPER).await.unwrap();
+    release_leader(&mut conn_a, LOCK_ANCHOR_WRITER)
+        .await
+        .unwrap();
+    release_leader(&mut conn_b, LOCK_EXPIRY_SWEEPER)
+        .await
+        .unwrap();
 }
-

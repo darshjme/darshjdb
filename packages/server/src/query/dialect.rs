@@ -466,7 +466,10 @@ mod tests {
 
     #[test]
     fn pg_jsonb_param_wraps_text() {
-        assert_eq!(PgDialect.jsonb_param(3, ParamKind::Text), "to_jsonb($3::text)");
+        assert_eq!(
+            PgDialect.jsonb_param(3, ParamKind::Text),
+            "to_jsonb($3::text)"
+        );
         assert_eq!(PgDialect.jsonb_param(3, ParamKind::Json), "$3::jsonb");
     }
 

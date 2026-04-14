@@ -56,13 +56,11 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 
-use rusqlite::{params, Connection, TransactionBehavior};
+use rusqlite::{Connection, TransactionBehavior, params};
 
 use crate::error::{DarshJError, Result};
 use crate::query::QueryPlan;
-use crate::triple_store::schema::{
-    AttributeInfo, EntityType, ReferenceInfo, Schema, ValueType,
-};
+use crate::triple_store::schema::{AttributeInfo, EntityType, ReferenceInfo, Schema, ValueType};
 use crate::triple_store::{Triple, TripleInput};
 
 use super::{Store, StoreTx};
@@ -209,8 +207,10 @@ fn parse_sqlite_ts(s: &str) -> Result<DateTime<Utc>> {
             "sqlite: timestamp {s:?} carries no UTC marker (expected trailing 'Z' or RFC3339 offset)"
         ))
     })?;
-    let naive = chrono::NaiveDateTime::parse_from_str(trimmed, "%Y-%m-%dT%H:%M:%S%.f")
-        .map_err(|e| DarshJError::Internal(format!("sqlite: timestamp parse failed for {s:?}: {e}")))?;
+    let naive =
+        chrono::NaiveDateTime::parse_from_str(trimmed, "%Y-%m-%dT%H:%M:%S%.f").map_err(|e| {
+            DarshJError::Internal(format!("sqlite: timestamp parse failed for {s:?}: {e}"))
+        })?;
     Ok(DateTime::<Utc>::from_naive_utc_and_offset(naive, Utc))
 }
 
@@ -237,18 +237,17 @@ fn row_to_triple(row: &rusqlite::Row<'_>) -> rusqlite::Result<Triple> {
     })?;
 
     let value: serde_json::Value = serde_json::from_str(&value_str).map_err(|e| {
-        rusqlite::Error::FromSqlConversionFailure(
-            3,
-            rusqlite::types::Type::Text,
-            Box::new(e),
-        )
+        rusqlite::Error::FromSqlConversionFailure(3, rusqlite::types::Type::Text, Box::new(e))
     })?;
 
     let created_at = parse_sqlite_ts(&created_at_str).map_err(|e| {
         rusqlite::Error::FromSqlConversionFailure(
             6,
             rusqlite::types::Type::Text,
-            Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string())),
+            Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                e.to_string(),
+            )),
         )
     })?;
 
@@ -257,7 +256,10 @@ fn row_to_triple(row: &rusqlite::Row<'_>) -> rusqlite::Result<Triple> {
             rusqlite::Error::FromSqlConversionFailure(
                 8,
                 rusqlite::types::Type::Text,
-                Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string())),
+                Box::new(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    e.to_string(),
+                )),
             )
         })?),
         None => None,
@@ -320,8 +322,8 @@ impl Store for SqliteStore {
                             .format("%Y-%m-%dT%H:%M:%S%.3fZ")
                             .to_string()
                     });
-                    let value_str = serde_json::to_string(&t.value)
-                        .map_err(DarshJError::Serialization)?;
+                    let value_str =
+                        serde_json::to_string(&t.value).map_err(DarshJError::Serialization)?;
                     stmt.execute(params![
                         t.entity_id.to_string(),
                         &t.attribute,
@@ -453,10 +455,8 @@ impl Store for SqliteStore {
             let mut attr_entities: HashMap<(String, String), std::collections::HashSet<String>> =
                 HashMap::new();
             // (type, attribute) -> observed value_types.
-            let mut attr_value_types: HashMap<
-                (String, String),
-                std::collections::HashSet<i16>,
-            > = HashMap::new();
+            let mut attr_value_types: HashMap<(String, String), std::collections::HashSet<i16>> =
+                HashMap::new();
             // entities per type.
             let mut type_entities: HashMap<String, std::collections::HashSet<String>> =
                 HashMap::new();
@@ -481,7 +481,10 @@ impl Store for SqliteStore {
                     let Some(ty) = entity_types.get(&eid).cloned() else {
                         continue;
                     };
-                    type_entities.entry(ty.clone()).or_default().insert(eid.clone());
+                    type_entities
+                        .entry(ty.clone())
+                        .or_default()
+                        .insert(eid.clone());
                     attr_entities
                         .entry((ty.clone(), attr.clone()))
                         .or_default()
@@ -516,10 +519,8 @@ impl Store for SqliteStore {
                     .get(&(ty.clone(), attr.clone()))
                     .cloned()
                     .unwrap_or_default();
-                let mut value_types: Vec<ValueType> = vts
-                    .into_iter()
-                    .filter_map(ValueType::from_i16)
-                    .collect();
+                let mut value_types: Vec<ValueType> =
+                    vts.into_iter().filter_map(ValueType::from_i16).collect();
                 value_types.sort_by_key(|v| *v as i16);
                 let cardinality = ents.len() as u64;
                 let required = cardinality == et.entity_count && et.entity_count > 0;
@@ -638,7 +639,10 @@ mod tests {
             by_attr.get("user/email").unwrap(),
             &&serde_json::json!("alice@example.com")
         );
-        assert_eq!(by_attr.get("user/name").unwrap(), &&serde_json::json!("Alice"));
+        assert_eq!(
+            by_attr.get("user/name").unwrap(),
+            &&serde_json::json!("Alice")
+        );
 
         // Every returned triple should carry the tx_id we just allocated.
         for t in &triples {
@@ -712,7 +716,7 @@ mod tests {
                     value_type: ValueType::String as i16,
                     // Expire 1 second in the past — already expired.
                     ttl_seconds: Some(-1),
-                    }],
+                }],
             )
             .await
             .unwrap();
@@ -824,11 +828,7 @@ mod tests {
                     sample_triple(good, "user/email", serde_json::json!("alice@example.com")),
                     // Malformed :db/type: value is a JSON object, not a string.
                     // Must be ignored by get_schema rather than crashing it.
-                    sample_triple(
-                        bad,
-                        ":db/type",
-                        serde_json::json!({"nested": "object"}),
-                    ),
+                    sample_triple(bad, ":db/type", serde_json::json!({"nested": "object"})),
                     sample_triple(bad, "user/email", serde_json::json!("bob@example.com")),
                 ],
             )

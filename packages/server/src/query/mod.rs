@@ -326,10 +326,7 @@ pub fn plan_query(ast: &QueryAST) -> Result<QueryPlan> {
 /// UUID casts, `@>` containment, vector literals, `to_tsvector`) is
 /// routed through `dialect` so the same logical plan works on both
 /// Postgres and SQLite.
-pub fn plan_query_with_dialect(
-    ast: &QueryAST,
-    dialect: &dyn SqlDialect,
-) -> Result<QueryPlan> {
+pub fn plan_query_with_dialect(ast: &QueryAST, dialect: &dyn SqlDialect) -> Result<QueryPlan> {
     let mut sql = String::with_capacity(512);
     let mut params: Vec<serde_json::Value> = Vec::new();
     let mut param_idx = 1u32;
@@ -471,8 +468,8 @@ pub fn plan_query_with_dialect(
 
     // Ordering: when semantic search is active with a vector (and the
     // dialect supports vectors), order by cosine distance first.
-    let has_semantic_vector = ast.semantic.as_ref().is_some_and(|s| s.vector.is_some())
-        && dialect.supports_vector();
+    let has_semantic_vector =
+        ast.semantic.as_ref().is_some_and(|s| s.vector.is_some()) && dialect.supports_vector();
 
     if has_semantic_vector || !ast.order.is_empty() {
         sql.push_str("ORDER BY ");
@@ -1682,7 +1679,9 @@ mod tests {
             }],
             ..bare_ast("T")
         };
-        cache.insert(&ast1, plan_query(&ast1).unwrap(), dialect).await;
+        cache
+            .insert(&ast1, plan_query(&ast1).unwrap(), dialect)
+            .await;
         let ast2 = QueryAST {
             where_clauses: vec![WhereClause {
                 attribute: "x".into(),
@@ -1709,7 +1708,9 @@ mod tests {
             }],
             ..bare_ast("T")
         };
-        cache.insert(&ast1, plan_query(&ast1).unwrap(), dialect).await;
+        cache
+            .insert(&ast1, plan_query(&ast1).unwrap(), dialect)
+            .await;
         let ast2 = QueryAST {
             where_clauses: vec![WhereClause {
                 attribute: "name".into(),
@@ -1826,13 +1827,19 @@ mod tests {
         let ast_b = bare_ast("B");
         let ast_c = bare_ast("C");
 
-        cache.insert(&ast_a, plan_query(&ast_a).unwrap(), dialect).await;
-        cache.insert(&ast_b, plan_query(&ast_b).unwrap(), dialect).await;
+        cache
+            .insert(&ast_a, plan_query(&ast_a).unwrap(), dialect)
+            .await;
+        cache
+            .insert(&ast_b, plan_query(&ast_b).unwrap(), dialect)
+            .await;
         // Access B so it becomes most-recently-used; A is now LRU.
         assert!(cache.get(&ast_b, dialect).await.is_some());
 
         // Insert C — should evict A (the least recently used).
-        cache.insert(&ast_c, plan_query(&ast_c).unwrap(), dialect).await;
+        cache
+            .insert(&ast_c, plan_query(&ast_c).unwrap(), dialect)
+            .await;
         assert!(
             cache.get(&ast_a, dialect).await.is_none(),
             "A should have been evicted"
@@ -1881,8 +1888,7 @@ mod tests {
 
         let pg_cache = PlanCache::new(4, &PgDialect);
         let ast = bare_ast("User");
-        let sq_plan =
-            plan_query_with_dialect(&ast, &SqliteDialect).expect("sqlite plan");
+        let sq_plan = plan_query_with_dialect(&ast, &SqliteDialect).expect("sqlite plan");
 
         // Inserting a SqliteDialect plan into a Pg-pinned cache must
         // trip the debug_assert. We drive the future to first poll
@@ -2109,13 +2115,15 @@ mod tests {
 
         // Pg uses to_jsonb + $1; SQLite uses json_quote + ?1.
         assert!(pg.sql.contains("to_jsonb($1::text)"), "pg SQL:\n{}", pg.sql);
+        assert!(sq.sql.contains("json_quote(?1)"), "sqlite SQL:\n{}", sq.sql);
         assert!(
-            sq.sql.contains("json_quote(?1)"),
-            "sqlite SQL:\n{}",
-            sq.sql
+            !sq.sql.contains("to_jsonb"),
+            "sqlite SQL should be free of to_jsonb"
         );
-        assert!(!sq.sql.contains("to_jsonb"), "sqlite SQL should be free of to_jsonb");
-        assert!(!sq.sql.contains("::text"), "sqlite SQL should be free of ::text");
+        assert!(
+            !sq.sql.contains("::text"),
+            "sqlite SQL should be free of ::text"
+        );
         // Both dialects share the outer shape.
         assert!(pg.sql.contains("FROM triples t0"));
         assert!(sq.sql.contains("FROM triples t0"));
@@ -2206,10 +2214,14 @@ mod tests {
         };
 
         let pg = plan_query_with_dialect(&ast, &PgDialect).expect("pg accepts Contains");
-        assert!(pg.sql.contains("tw0.value @> $3::jsonb"), "pg SQL:\n{}", pg.sql);
+        assert!(
+            pg.sql.contains("tw0.value @> $3::jsonb"),
+            "pg SQL:\n{}",
+            pg.sql
+        );
 
-        let err = plan_query_with_dialect(&ast, &SqliteDialect)
-            .expect_err("sqlite must refuse Contains");
+        let err =
+            plan_query_with_dialect(&ast, &SqliteDialect).expect_err("sqlite must refuse Contains");
         match err {
             DarshJError::InvalidQuery(msg) => {
                 assert!(
@@ -2234,8 +2246,8 @@ mod tests {
             }],
             ..bare_ast("T")
         };
-        let err = plan_query_with_dialect(&ast, &SqliteDialect)
-            .expect_err("sqlite must refuse Contains");
+        let err =
+            plan_query_with_dialect(&ast, &SqliteDialect).expect_err("sqlite must refuse Contains");
         let DarshJError::InvalidQuery(msg) = err else {
             panic!("expected InvalidQuery");
         };
@@ -2260,7 +2272,11 @@ mod tests {
             "pg SQL:\n{}",
             pg.sql
         );
-        assert!(sq.sql.contains("tw0.value LIKE ?3"), "sqlite SQL:\n{}", sq.sql);
+        assert!(
+            sq.sql.contains("tw0.value LIKE ?3"),
+            "sqlite SQL:\n{}",
+            sq.sql
+        );
     }
 
     #[test]
@@ -2324,8 +2340,8 @@ mod tests {
         // Pg succeeds.
         assert!(plan_hybrid_query_with_dialect(&ast, &PgDialect).is_ok());
         // SQLite returns InvalidQuery.
-        let err =
-            plan_hybrid_query_with_dialect(&ast, &SqliteDialect).expect_err("should error on sqlite");
+        let err = plan_hybrid_query_with_dialect(&ast, &SqliteDialect)
+            .expect_err("should error on sqlite");
         match err {
             DarshJError::InvalidQuery(msg) => {
                 assert!(msg.contains("sqlite"), "msg: {msg}");
@@ -2591,9 +2607,7 @@ ORDER BY (SELECT to0.value FROM triples to0 WHERE to0.entity_id = t0.entity_id A
 
         let sq_cache = PlanCache::new(4, &SqliteDialect);
         let sq_plan = plan_query_with_dialect(&ast, &SqliteDialect).unwrap();
-        sq_cache
-            .insert(&ast, sq_plan.clone(), &SqliteDialect)
-            .await;
+        sq_cache.insert(&ast, sq_plan.clone(), &SqliteDialect).await;
         let cached_sq = sq_cache
             .get(&ast, &SqliteDialect)
             .await

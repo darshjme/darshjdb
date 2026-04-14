@@ -45,9 +45,7 @@ pub fn router(state: ClusterStatusState) -> Router {
         .with_state(state)
 }
 
-async fn handler(
-    State(state): State<ClusterStatusState>,
-) -> Json<ClusterStatusResponse> {
+async fn handler(State(state): State<ClusterStatusState>) -> Json<ClusterStatusResponse> {
     let leader_for = state
         .cluster_state
         .leader_for()

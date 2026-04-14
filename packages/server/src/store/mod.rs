@@ -43,8 +43,8 @@ use uuid::Uuid;
 
 use crate::error::Result;
 use crate::query::QueryPlan;
-use crate::triple_store::{Triple, TripleInput};
 use crate::triple_store::schema::Schema;
+use crate::triple_store::{Triple, TripleInput};
 
 pub mod pg;
 

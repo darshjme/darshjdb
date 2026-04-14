@@ -14,8 +14,8 @@ use uuid::Uuid;
 
 use crate::error::{DarshJError, Result};
 use crate::query::{QueryPlan, execute_query};
-use crate::triple_store::{PgTripleStore, Triple, TripleInput, TripleStore};
 use crate::triple_store::schema::Schema;
+use crate::triple_store::{PgTripleStore, Triple, TripleInput, TripleStore};
 
 use super::{Store, StoreTx};
 
@@ -90,14 +90,10 @@ impl Store for PgStore {
         if triples.is_empty() {
             return Ok(());
         }
-        let mut tx = self
-            .inner
-            .begin_tx()
-            .await
-            .map_err(|e| match e {
-                DarshJError::Database(err) => DarshJError::Database(err),
-                other => other,
-            })?;
+        let mut tx = self.inner.begin_tx().await.map_err(|e| match e {
+            DarshJError::Database(err) => DarshJError::Database(err),
+            other => other,
+        })?;
         PgTripleStore::set_triples_in_tx(&mut tx, triples, tx_id).await?;
         tx.commit().await.map_err(DarshJError::Database)?;
         Ok(())
@@ -119,9 +115,7 @@ impl Store for PgStore {
         // `execute_query` directly.
         let out = rows
             .into_iter()
-            .map(|r| {
-                serde_json::to_value(&r).map_err(DarshJError::Serialization)
-            })
+            .map(|r| serde_json::to_value(&r).map_err(DarshJError::Serialization))
             .collect::<Result<Vec<_>>>()?;
         Ok(out)
     }
@@ -143,7 +137,12 @@ impl Store for PgStore {
         // transaction API is pending v0.3.2 (see `PgStoreTx` docs).
         // We still round-trip to the pool here so connectivity errors
         // surface immediately instead of at the first mutating call.
-        let _probe = self.inner.pool().acquire().await.map_err(DarshJError::Database)?;
+        let _probe = self
+            .inner
+            .pool()
+            .acquire()
+            .await
+            .map_err(DarshJError::Database)?;
         drop(_probe);
         Ok(Box::new(PgStoreTx { _private: () }))
     }
