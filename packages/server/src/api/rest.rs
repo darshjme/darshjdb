@@ -652,6 +652,11 @@ pub fn build_router(state: AppState) -> Router {
             "/admin/audit/proof/{entity_id}",
             get(crate::audit::handlers::audit_entity_proof),
         )
+        // -- Audit (Blockchain anchor receipts, slice 23/30) --------------
+        .route(
+            "/admin/audit/anchors",
+            get(crate::anchor::handlers::admin_list_anchors),
+        )
         // -- Embeddings / Semantic Search (TODO: wire handlers) ------------
         // .route("/embeddings", post(embeddings_store))
         // .route("/embeddings/{entity_id}", get(embeddings_get))
@@ -3873,6 +3878,21 @@ async fn require_admin_auth(
     } else {
         Err(ApiError::permission_denied("admin role required"))
     }
+}
+
+/// Verify the authenticated user holds the "admin" role via cryptographic
+/// JWT validation. This is a convenience wrapper that sibling modules
+/// (e.g. [`crate::anchor::handlers`]) can call when they only need to
+/// gate on the admin role and don't require the full [`AuthContext`].
+///
+/// Delegates to [`require_admin_auth`] so forged tokens are rejected
+/// with the same hardened signature verification used by `/admin/*`
+/// handlers.
+pub(crate) async fn require_admin_role(
+    headers: &HeaderMap,
+    state: &AppState,
+) -> Result<(), ApiError> {
+    require_admin_auth(headers, state).await.map(|_| ())
 }
 
 /// Extract an [`AuthContext`] by validating the JWT via the [`SessionManager`].

@@ -27,6 +27,7 @@
 
 pub mod activity;
 pub mod aggregation;
+pub mod anchor;
 pub mod api;
 pub mod api_keys;
 pub mod audit;
