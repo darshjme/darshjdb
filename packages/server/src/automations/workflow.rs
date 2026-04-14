@@ -676,7 +676,7 @@ mod tests {
 
     #[test]
     fn step_ordering_default_sequential() {
-        let steps = vec![
+        let steps = [
             WorkflowStep::new("a", ActionConfig::new(ActionKind::Notify, json!({}))),
             WorkflowStep::new("b", ActionConfig::new(ActionKind::Notify, json!({}))),
         ];

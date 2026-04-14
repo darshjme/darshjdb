@@ -2891,17 +2891,17 @@ async fn data_create(
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect();
     let mut coerced_from_strict: Option<std::collections::HashMap<String, Value>> = None;
-    if let Some(ref strict) = state.strict_schema {
-        if strict.is_strict() {
-            let report = strict.validate_create(&entity, &obj_for_strict);
-            if !report.is_valid() {
-                return Err(ApiError::validation_with_payload(
-                    "Schema validation failed",
-                    report.error_payload(),
-                ));
-            }
-            coerced_from_strict = Some(report.document);
+    if let Some(ref strict) = state.strict_schema
+        && strict.is_strict()
+    {
+        let report = strict.validate_create(&entity, &obj_for_strict);
+        if !report.is_valid() {
+            return Err(ApiError::validation_with_payload(
+                "Schema validation failed",
+                report.error_payload(),
+            ));
         }
+        coerced_from_strict = Some(report.document);
     }
 
     // ── Schema validation (SCHEMAFULL / MIXED mode) ──────────────
@@ -3197,20 +3197,20 @@ async fn data_patch(
     // Required-field checks are skipped for partial updates, but
     // every supplied attribute is still type-checked against
     // `schema_definitions`.
-    if let Some(ref strict) = state.strict_schema {
-        if strict.is_strict() {
-            let patch_doc: std::collections::HashMap<String, Value> = obj
-                .iter()
-                .filter(|(k, _)| !k.starts_with('$'))
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect();
-            let report = strict.validate_patch(&entity, &patch_doc);
-            if !report.is_valid() {
-                return Err(ApiError::validation_with_payload(
-                    "Schema validation failed",
-                    report.error_payload(),
-                ));
-            }
+    if let Some(ref strict) = state.strict_schema
+        && strict.is_strict()
+    {
+        let patch_doc: std::collections::HashMap<String, Value> = obj
+            .iter()
+            .filter(|(k, _)| !k.starts_with('$'))
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        let report = strict.validate_patch(&entity, &patch_doc);
+        if !report.is_valid() {
+            return Err(ApiError::validation_with_payload(
+                "Schema validation failed",
+                report.error_payload(),
+            ));
         }
     }
 

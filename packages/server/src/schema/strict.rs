@@ -455,16 +455,18 @@ impl StrictSchemaEnforcer {
 
         let mut errors = Vec::new();
         for (attr, v) in patch {
-            if let Some(def) = defs.get(attr) {
-                if let Some(parsed_type) = StrictValueType::parse(&def.value_type) {
-                    if !parsed_type.matches(v) && !v.is_null() {
-                        errors.push(
-                            StrictValidationError::new(attr, "TYPE_MISMATCH").with_message(
-                                format!("expected {}, got {}", def.value_type, value_kind(v)),
-                            ),
-                        );
-                    }
-                }
+            if let Some(def) = defs.get(attr)
+                && let Some(parsed_type) = StrictValueType::parse(&def.value_type)
+                && !parsed_type.matches(v)
+                && !v.is_null()
+            {
+                errors.push(
+                    StrictValidationError::new(attr, "TYPE_MISMATCH").with_message(format!(
+                        "expected {}, got {}",
+                        def.value_type,
+                        value_kind(v)
+                    )),
+                );
             }
         }
 

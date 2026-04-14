@@ -128,10 +128,10 @@ impl Dispatcher {
 
     fn hello(&self, session: &mut Session, args: &[&[u8]]) -> RespFrame {
         let mut want_resp3 = session.resp3;
-        if let Some(first) = args.first() {
-            if let Ok(ver) = std::str::from_utf8(first).unwrap_or("").parse::<i64>() {
-                want_resp3 = ver >= 3;
-            }
+        if let Some(first) = args.first()
+            && let Ok(ver) = std::str::from_utf8(first).unwrap_or("").parse::<i64>()
+        {
+            want_resp3 = ver >= 3;
         }
         session.resp3 = want_resp3;
         let pairs: Vec<(RespFrame, RespFrame)> = vec![
@@ -226,10 +226,10 @@ impl Dispatcher {
     fn del(&self, args: &[&[u8]]) -> RespFrame {
         let mut n = 0i64;
         for a in args {
-            if let Ok(k) = std::str::from_utf8(a) {
-                if self.cache.del(k) {
-                    n += 1;
-                }
+            if let Ok(k) = std::str::from_utf8(a)
+                && self.cache.del(k)
+            {
+                n += 1;
             }
         }
         RespFrame::Integer(n)
@@ -238,10 +238,10 @@ impl Dispatcher {
     fn exists(&self, args: &[&[u8]]) -> RespFrame {
         let mut n = 0i64;
         for a in args {
-            if let Ok(k) = std::str::from_utf8(a) {
-                if self.cache.exists(k) {
-                    n += 1;
-                }
+            if let Ok(k) = std::str::from_utf8(a)
+                && self.cache.exists(k)
+            {
+                n += 1;
             }
         }
         RespFrame::Integer(n)
@@ -288,7 +288,7 @@ impl Dispatcher {
     // ── HASH ───────────────────────────────────────────────────────────
 
     fn hset(&self, args: &[&[u8]]) -> RespFrame {
-        if args.len() < 3 || (args.len() - 1) % 2 != 0 {
+        if args.len() < 3 || !(args.len() - 1).is_multiple_of(2) {
             return RespFrame::err("ERR wrong number of arguments for 'hset'");
         }
         let Some(key) = std::str::from_utf8(args[0]).ok() else {
@@ -297,13 +297,12 @@ impl Dispatcher {
         let mut added = 0i64;
         let mut i = 1;
         while i + 1 < args.len() {
-            if let Ok(field) = std::str::from_utf8(args[i]) {
-                if self
+            if let Ok(field) = std::str::from_utf8(args[i])
+                && self
                     .cache
                     .hset(key, field.to_string(), args[i + 1].to_vec())
-                {
-                    added += 1;
-                }
+            {
+                added += 1;
             }
             i += 2;
         }
@@ -342,10 +341,10 @@ impl Dispatcher {
         let key = String::from_utf8_lossy(args[0]);
         let mut n = 0i64;
         for a in &args[1..] {
-            if let Ok(f) = std::str::from_utf8(a) {
-                if self.cache.hdel(&key, f) {
-                    n += 1;
-                }
+            if let Ok(f) = std::str::from_utf8(a)
+                && self.cache.hdel(&key, f)
+            {
+                n += 1;
             }
         }
         RespFrame::Integer(n)
@@ -437,7 +436,7 @@ impl Dispatcher {
     // ── ZSET ───────────────────────────────────────────────────────────
 
     fn zadd(&self, args: &[&[u8]]) -> RespFrame {
-        if args.len() < 3 || (args.len() - 1) % 2 != 0 {
+        if args.len() < 3 || !(args.len() - 1).is_multiple_of(2) {
             return RespFrame::err("ERR wrong number of arguments for 'zadd'");
         }
         let Some(key) = std::str::from_utf8(args[0]).ok() else {

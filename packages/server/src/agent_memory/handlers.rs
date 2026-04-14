@@ -195,6 +195,7 @@ pub struct CloseSessionRequest {
 // Auth helper
 // ---------------------------------------------------------------------------
 
+#[allow(clippy::result_large_err)] // Response carries the full body via IntoResponse; boxing would just move the allocation
 fn require_auth(auth: Option<Extension<AuthContext>>) -> Result<AuthContext, Response> {
     match auth {
         Some(Extension(ctx)) => Ok(ctx),
