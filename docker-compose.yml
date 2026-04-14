@@ -35,7 +35,7 @@ services:
       # Slice 11 — RESP3 protocol server (Redis-compatible) exposed on 7701.
       - "${DDB_CACHE_HOST_PORT:-7701}:7701"
     environment:
-      DATABASE_URL: "postgres://darshan:${POSTGRES_PASSWORD:-darshan}@postgres:5432/darshjdb"
+      DATABASE_URL: "postgres://darshan:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env — no weak default}@postgres:5432/darshjdb"
       DDB_PORT: "7700"
       DDB_ADMIN_DIR: /usr/share/darshan/admin
       DDB_JWT_SECRET: ${DDB_JWT_SECRET:?Set DDB_JWT_SECRET in .env}
@@ -81,7 +81,7 @@ services:
     image: timescale/timescaledb-ha:pg16-latest
     environment:
       POSTGRES_USER: darshan
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-darshan}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env — no weak default}
       POSTGRES_DB: darshjdb
       POSTGRES_INITDB_ARGS: "--data-checksums"
     volumes:
