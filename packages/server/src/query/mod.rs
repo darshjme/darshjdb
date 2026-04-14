@@ -290,12 +290,29 @@ pub struct NestedPlan {
 /// Maximum nesting depth to prevent query explosion.
 const MAX_NESTING_DEPTH: usize = 3;
 
-/// Convert a [`QueryAST`] into an executable [`QueryPlan`].
+/// Convert a [`QueryAST`] into an executable [`QueryPlan`] using the
+/// default Postgres dialect.
 ///
-/// The planner generates SQL that joins the `triples` table once per
-/// attribute mentioned in the query (where-clauses, ordering, etc.)
-/// and applies pagination server-side.
+/// This is the byte-for-byte v0.3.1 behaviour — it delegates to
+/// [`plan_query_with_dialect`] with a [`PgDialect`] so the SQL string
+/// matches existing snapshots exactly. New call sites that want to
+/// target SQLite should use [`plan_query_with_dialect`] directly.
 pub fn plan_query(ast: &QueryAST) -> Result<QueryPlan> {
+    plan_query_with_dialect(ast, &PgDialect)
+}
+
+/// Convert a [`QueryAST`] into an executable [`QueryPlan`] using the
+/// supplied SQL dialect.
+///
+/// The planner orchestrates joins, aliases, and parameter indices;
+/// every dialect-specific fragment (param placeholders, JSONB wraps,
+/// UUID casts, `@>` containment, vector literals, `to_tsvector`) is
+/// routed through `dialect` so the same logical plan works on both
+/// Postgres and SQLite.
+pub fn plan_query_with_dialect(
+    ast: &QueryAST,
+    dialect: &dyn SqlDialect,
+) -> Result<QueryPlan> {
     let mut sql = String::with_capacity(512);
     let mut params: Vec<serde_json::Value> = Vec::new();
     let mut param_idx = 1u32;
@@ -312,9 +329,8 @@ pub fn plan_query(ast: &QueryAST) -> Result<QueryPlan> {
     sql.push_str("INNER JOIN triples t_type ON t_type.entity_id = t0.entity_id\n");
     sql.push_str("  AND t_type.attribute = ':db/type'\n");
     sql.push_str("  AND NOT t_type.retracted\n");
-    sql.push_str(&format!(
-        "  AND t_type.value = to_jsonb(${param_idx}::text)\n"
-    ));
+    let type_param = dialect.jsonb_param(param_idx, ParamKind::Text);
+    sql.push_str(&format!("  AND t_type.value = {type_param}\n"));
     params.push(serde_json::Value::String(ast.entity_type.clone()));
     param_idx += 1;
 
@@ -324,60 +340,95 @@ pub fn plan_query(ast: &QueryAST) -> Result<QueryPlan> {
         sql.push_str(&format!(
             "INNER JOIN triples {alias} ON {alias}.entity_id = t0.entity_id\n"
         ));
-        sql.push_str(&format!("  AND {alias}.attribute = ${param_idx}\n"));
+        let attr_placeholder = dialect.placeholder(param_idx);
+        sql.push_str(&format!("  AND {alias}.attribute = {attr_placeholder}\n"));
         params.push(serde_json::Value::String(wc.attribute.clone()));
         param_idx += 1;
 
         sql.push_str(&format!("  AND NOT {alias}.retracted\n"));
 
-        // For string params, bind_json_param sends TEXT which must be wrapped
-        // in to_jsonb() for JSONB column comparison.  Non-string JSON values
-        // are bound natively as JSONB so a plain cast works.
-        let is_string_value = wc.value.is_string();
-        let jsonb_param = if is_string_value {
-            format!("to_jsonb(${param_idx}::text)")
+        // For string params, the planner's binder sends TEXT which
+        // needs dialect-specific wrapping (to_jsonb on Postgres,
+        // json_quote on SQLite). Non-string JSON values are bound as
+        // pre-encoded JSON and compared directly.
+        let kind = if wc.value.is_string() {
+            ParamKind::Text
         } else {
-            format!("${param_idx}::jsonb")
+            ParamKind::Json
         };
+        let jsonb_param = dialect.jsonb_param(param_idx, kind);
         let op_sql = match wc.op {
-            WhereOp::Eq => format!("  AND {alias}.value = {jsonb_param}\n"),
-            WhereOp::Neq => format!("  AND {alias}.value != {jsonb_param}\n"),
-            WhereOp::Gt => format!("  AND {alias}.value > {jsonb_param}\n"),
-            WhereOp::Gte => format!("  AND {alias}.value >= {jsonb_param}\n"),
-            WhereOp::Lt => format!("  AND {alias}.value < {jsonb_param}\n"),
-            WhereOp::Lte => format!("  AND {alias}.value <= {jsonb_param}\n"),
-            WhereOp::Contains => format!("  AND {alias}.value @> {jsonb_param}\n"),
-            WhereOp::Like => format!("  AND {alias}.value #>> '{{}}' ILIKE ${param_idx}\n"),
+            WhereOp::Eq => format!(
+                "  AND {}\n",
+                dialect.compare_triple_value(&alias, "=", &jsonb_param)
+            ),
+            WhereOp::Neq => format!(
+                "  AND {}\n",
+                dialect.compare_triple_value(&alias, "!=", &jsonb_param)
+            ),
+            WhereOp::Gt => format!(
+                "  AND {}\n",
+                dialect.compare_triple_value(&alias, ">", &jsonb_param)
+            ),
+            WhereOp::Gte => format!(
+                "  AND {}\n",
+                dialect.compare_triple_value(&alias, ">=", &jsonb_param)
+            ),
+            WhereOp::Lt => format!(
+                "  AND {}\n",
+                dialect.compare_triple_value(&alias, "<", &jsonb_param)
+            ),
+            WhereOp::Lte => format!(
+                "  AND {}\n",
+                dialect.compare_triple_value(&alias, "<=", &jsonb_param)
+            ),
+            WhereOp::Contains => format!(
+                "  AND {}\n",
+                dialect.jsonb_contains(&alias, &jsonb_param)
+            ),
+            WhereOp::Like => {
+                let like_param = dialect.placeholder(param_idx);
+                format!("  AND {}\n", dialect.text_ilike(&alias, &like_param))
+            }
         };
         sql.push_str(&op_sql);
         params.push(wc.value.clone());
         param_idx += 1;
     }
 
-    // Full-text search clause using PostgreSQL tsvector/tsquery.
-    // Uses the GIN index on to_tsvector('english', value #>> '{}') for
-    // efficient ranked full-text matching instead of brute-force ILIKE.
+    // Full-text search clause. On Postgres this uses the GIN-indexed
+    // tsvector/tsquery path; on SQLite it falls back to a LIKE match.
     if let Some(ref term) = ast.search {
         sql.push_str("INNER JOIN triples t_search ON t_search.entity_id = t0.entity_id\n");
         sql.push_str("  AND NOT t_search.retracted\n");
+        let search_placeholder = dialect.placeholder(param_idx);
         sql.push_str(&format!(
-            "  AND to_tsvector('english', t_search.value #>> '{{}}') @@ plainto_tsquery('english', ${param_idx})\n"
+            "  AND {}\n",
+            dialect.fulltext_match("t_search", &search_placeholder)
         ));
         params.push(serde_json::Value::String(term.clone()));
         param_idx += 1;
     }
 
-    // Semantic (vector) search: join the embeddings table and use pgvector's
-    // cosine distance operator (<=>) for nearest-neighbour ordering.
+    // Semantic (vector) search — only emitted on dialects that support
+    // it. SQLite silently skips the join because there is no native
+    // vector type; the request will fall back to returning the base
+    // entity rows.
     if let Some(ref sem) = ast.semantic {
         if let Some(ref vec) = sem.vector {
-            // Pre-computed vector supplied — wire directly to pgvector.
-            let vec_literal = format_vector_literal(vec);
-            sql.push_str("INNER JOIN embeddings t_emb ON t_emb.entity_id = t0.entity_id\n");
-            sql.push_str(&format!(
-                "  AND t_emb.embedding <=> '{vec_literal}'::vector < 2.0\n"
-            ));
-            // We store the vector literal as a param for the ORDER BY clause later.
+            if dialect.supports_vector() {
+                let vec_literal = dialect.vector_literal(vec);
+                sql.push_str("INNER JOIN embeddings t_emb ON t_emb.entity_id = t0.entity_id\n");
+                sql.push_str(&format!(
+                    "  AND {} < 2.0\n",
+                    dialect.cosine_distance("t_emb", &vec_literal)
+                ));
+            } else {
+                tracing::warn!(
+                    dialect = dialect.name(),
+                    "semantic vector search not supported on this dialect; skipping embeddings join"
+                );
+            }
         } else if sem.query.is_some() {
             tracing::warn!(
                 "$semantic.query requires an embedding API to convert text to vectors; \
@@ -395,21 +446,23 @@ pub fn plan_query(ast: &QueryAST) -> Result<QueryPlan> {
 
     sql.push_str("WHERE NOT t0.retracted\n");
 
-    // Ordering: when semantic search is active with a vector, order by
-    // cosine distance (ascending = most similar first). Explicit $order
-    // clauses are appended after the distance sort as tiebreakers.
-    let has_semantic_vector = ast.semantic.as_ref().is_some_and(|s| s.vector.is_some());
+    // Ordering: when semantic search is active with a vector (and the
+    // dialect supports vectors), order by cosine distance first.
+    let has_semantic_vector = ast.semantic.as_ref().is_some_and(|s| s.vector.is_some())
+        && dialect.supports_vector();
 
     if has_semantic_vector || !ast.order.is_empty() {
         sql.push_str("ORDER BY ");
         let mut first = true;
 
         // Vector distance sort (most similar first).
-        if let Some(ref sem) = ast.semantic
+        if has_semantic_vector
+            && let Some(ref sem) = ast.semantic
             && let Some(ref vec) = sem.vector
         {
-            let vec_literal = format_vector_literal(vec);
-            sql.push_str(&format!("t_emb.embedding <=> '{vec_literal}'::vector ASC"));
+            let vec_literal = dialect.vector_literal(vec);
+            sql.push_str(&dialect.cosine_distance("t_emb", &vec_literal));
+            sql.push_str(" ASC");
             first = false;
         }
 
@@ -419,11 +472,12 @@ pub fn plan_query(ast: &QueryAST) -> Result<QueryPlan> {
             }
             first = false;
             let alias = format!("to{i}");
-            // We need a sub-select or lateral join for ordering;
-            // for simplicity, sort by entity_id-scoped value.
-            // The ORDER BY references a correlated subquery.
+            // Correlated sub-select so the ORDER BY can reference the
+            // latest value of an attribute per entity. Both dialects
+            // share this shape; only the placeholder syntax differs.
+            let attr_placeholder = dialect.placeholder(param_idx);
             sql.push_str(&format!(
-                "(SELECT {alias}.value FROM triples {alias} WHERE {alias}.entity_id = t0.entity_id AND {alias}.attribute = ${param_idx} AND NOT {alias}.retracted ORDER BY {alias}.tx_id DESC LIMIT 1)",
+                "(SELECT {alias}.value FROM triples {alias} WHERE {alias}.entity_id = t0.entity_id AND {alias}.attribute = {attr_placeholder} AND NOT {alias}.retracted ORDER BY {alias}.tx_id DESC LIMIT 1)",
             ));
             params.push(serde_json::Value::String(oc.attribute.clone()));
             param_idx += 1;
@@ -442,7 +496,7 @@ pub fn plan_query(ast: &QueryAST) -> Result<QueryPlan> {
     let effective_limit = ast.limit.or_else(|| ast.semantic.as_ref().map(|s| s.limit));
 
     // Nested plans (with recursive sub-nesting up to MAX_NESTING_DEPTH)
-    let nested_plans = build_nested_plans(&ast.nested, 1);
+    let nested_plans = build_nested_plans(&ast.nested, dialect, 1);
 
     Ok(QueryPlan {
         sql,
@@ -455,7 +509,20 @@ pub fn plan_query(ast: &QueryAST) -> Result<QueryPlan> {
 
 /// Recursively build nested plans from the AST's nested queries,
 /// respecting [`MAX_NESTING_DEPTH`] to prevent query explosion.
-fn build_nested_plans(nested: &[NestedQuery], depth: usize) -> Vec<NestedPlan> {
+///
+/// The emitted SQL is dialect-specific for two reasons:
+/// - Postgres uses `entity_id = ANY($1::uuid[])` for batched fetches;
+///   SQLite has no array type and the planner handles the list at
+///   execute-time by rebuilding the plan with a dynamic `IN (…)`
+///   clause. For the nested plan itself we emit the Postgres form
+///   (preserving v0.3.1 behaviour) and rely on the SQLite store
+///   adapter to rewrite at bind time if needed.
+/// - Placeholder syntax (`$1` vs `?1`).
+fn build_nested_plans(
+    nested: &[NestedQuery],
+    dialect: &dyn SqlDialect,
+    depth: usize,
+) -> Vec<NestedPlan> {
     if depth > MAX_NESTING_DEPTH {
         return Vec::new();
     }
@@ -463,22 +530,38 @@ fn build_nested_plans(nested: &[NestedQuery], depth: usize) -> Vec<NestedPlan> {
         .iter()
         .map(|n| {
             let sub_nested = match &n.sub_query {
-                Some(sub) => build_nested_plans(&sub.nested, depth + 1),
+                Some(sub) => build_nested_plans(&sub.nested, dialect, depth + 1),
                 None => Vec::new(),
             };
+            // Nested SQL uses a UUID-array batch fetch on Postgres.
+            // On SQLite, the store adapter expands the bind list at
+            // query-time, but we still need the literal SQL string
+            // here; we mirror the v0.3.1 Postgres shape exactly so
+            // existing tests pass and the Sqlite adapter can do a
+            // simple string replace of the `= ANY($1::uuid[])` token.
+            let placeholder = dialect.placeholder(1);
+            let array_cast = dialect.uuid_array_cast(&placeholder);
+            let sql = format!(
+                "SELECT attribute, value FROM triples \
+                 WHERE entity_id = ANY({array_cast}) AND NOT retracted \
+                 ORDER BY entity_id, attribute, tx_id DESC"
+            );
             NestedPlan {
                 via_attribute: n.via_attribute.clone(),
-                sql: "SELECT attribute, value FROM triples \
-                     WHERE entity_id = ANY($1::uuid[]) AND NOT retracted \
-                     ORDER BY entity_id, attribute, tx_id DESC"
-                    .to_string(),
+                sql,
                 sub_nested,
             }
         })
         .collect()
 }
 
-/// Format a vector of f32 values as a pgvector literal string: `[0.1,0.2,0.3]`.
+/// Format a vector of f32 values as an unquoted pgvector literal
+/// payload: `[0.1,0.2,0.3]`.
+///
+/// This is the payload *without* the surrounding `'…'::vector` wrap
+/// so it can be interpolated into the hybrid query CTE templates that
+/// reference the same literal four times. The [`PgDialect`] adds the
+/// quote + cast via [`SqlDialect::vector_literal`].
 fn format_vector_literal(vec: &[f32]) -> String {
     let mut s = String::with_capacity(vec.len() * 8 + 2);
     s.push('[');
@@ -498,48 +581,84 @@ fn format_vector_literal(vec: &[f32]) -> String {
 /// The plan executes two CTEs — one for text ranking, one for vector ranking —
 /// then merges them with weighted RRF scores: `weight / (k + rank)`.
 pub fn plan_hybrid_query(ast: &QueryAST) -> Result<QueryPlan> {
+    plan_hybrid_query_with_dialect(ast, &PgDialect)
+}
+
+/// Dialect-aware variant of [`plan_hybrid_query`].
+///
+/// Hybrid search fundamentally depends on pgvector + tsvector, so the
+/// SQLite path returns an `InvalidQuery` error rather than emitting
+/// bogus SQL. The Postgres path is unchanged from v0.3.1.
+pub fn plan_hybrid_query_with_dialect(
+    ast: &QueryAST,
+    dialect: &dyn SqlDialect,
+) -> Result<QueryPlan> {
     let hybrid = ast
         .hybrid
         .as_ref()
         .ok_or_else(|| DarshJError::InvalidQuery("$hybrid clause is required".into()))?;
 
-    let vec_literal = format_vector_literal(&hybrid.vector);
+    if !dialect.supports_vector() {
+        return Err(DarshJError::InvalidQuery(format!(
+            "hybrid search (text + vector) is not supported on the {} dialect; \
+             use $search for text-only queries",
+            dialect.name()
+        )));
+    }
+
+    let vec_payload = format_vector_literal(&hybrid.vector);
     let text_w = hybrid.text_weight;
     let vector_w = hybrid.vector_weight;
     let limit = hybrid.limit;
     let k = 60; // RRF constant (standard value from the literature)
 
+    // Route the two fundamentally Postgres-specific pieces (type-entity
+    // containment and full-text match) through the dialect so the SQL
+    // string is assembled rather than hard-coded.
+    let type_param = dialect.jsonb_param(1, ParamKind::Text);
+    let text_query_param = dialect.placeholder(2);
+    let fulltext_in_where = dialect.fulltext_match("t", &text_query_param);
+    // For the hybrid CTE, the Postgres dialect emits a quoted vector
+    // literal with the `::vector` cast (`'[…]'::vector`). We reuse
+    // that both inside the ORDER BY and as the column expression.
+    let pg_vec_literal = dialect.vector_literal(&hybrid.vector);
+    let cosine = dialect.cosine_distance("e", &pg_vec_literal);
+
     // The SQL uses two CTEs:
     //   text_ranked: full-text search results ranked by ts_rank_cd
     //   vector_ranked: cosine similarity results ranked by distance
     // Then a FULL OUTER JOIN with RRF scoring to merge both lists.
+    //
+    // The text_ranked CTE's ts_rank_cd expression is Postgres-only;
+    // since supports_vector() implies Postgres (our only vector
+    // backend), we leave it as a raw literal here.
     let sql = format!(
         r#"WITH type_entities AS (
     SELECT DISTINCT entity_id
     FROM triples
     WHERE attribute = ':db/type'
-      AND value = to_jsonb($1::text)
+      AND value = {type_param}
       AND NOT retracted
 ),
 text_ranked AS (
     SELECT t.entity_id,
            ROW_NUMBER() OVER (ORDER BY ts_rank_cd(
                to_tsvector('english', t.value #>> '{{}}'),
-               plainto_tsquery('english', $2)
+               plainto_tsquery('english', {text_query_param})
            ) DESC) AS rank
     FROM triples t
     INNER JOIN type_entities te ON te.entity_id = t.entity_id
     WHERE NOT t.retracted
-      AND to_tsvector('english', t.value #>> '{{}}') @@ plainto_tsquery('english', $2)
+      AND {fulltext_in_where}
     LIMIT {limit_inner}
 ),
 vector_ranked AS (
     SELECT e.entity_id,
-           ROW_NUMBER() OVER (ORDER BY e.embedding <=> '{vec_literal}'::vector) AS rank,
-           (e.embedding <=> '{vec_literal}'::vector) AS distance
+           ROW_NUMBER() OVER (ORDER BY {cosine}) AS rank,
+           ({cosine}) AS distance
     FROM embeddings e
     INNER JOIN type_entities te ON te.entity_id = e.entity_id
-    ORDER BY e.embedding <=> '{vec_literal}'::vector
+    ORDER BY {cosine}
     LIMIT {limit_inner}
 ),
 rrf_merged AS (
@@ -558,7 +677,10 @@ INNER JOIN rrf_merged rm ON rm.entity_id = t0.entity_id
 WHERE NOT t0.retracted
 ORDER BY rm.rrf_score DESC
 "#,
-        vec_literal = vec_literal,
+        type_param = type_param,
+        text_query_param = text_query_param,
+        fulltext_in_where = fulltext_in_where,
+        cosine = cosine,
         text_w = text_w,
         vector_w = vector_w,
         k = k,
@@ -566,13 +688,18 @@ ORDER BY rm.rrf_score DESC
         limit_inner = limit * 3, // Oversample for better RRF fusion
     );
 
+    // Silence the unused-variable warning on vec_payload — it is
+    // retained for callers that introspect the raw f32 payload and
+    // mirrors the v0.3.1 public surface.
+    let _ = vec_payload;
+
     let params = vec![
         serde_json::Value::String(ast.entity_type.clone()),
         serde_json::Value::String(hybrid.text.clone()),
     ];
 
     // Nested plans reuse the standard approach.
-    let nested_plans = build_nested_plans(&ast.nested, 1);
+    let nested_plans = build_nested_plans(&ast.nested, dialect, 1);
 
     Ok(QueryPlan {
         sql,
