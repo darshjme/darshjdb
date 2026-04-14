@@ -38,6 +38,8 @@ pub mod cache;
 pub mod collaboration;
 pub mod connectors;
 pub mod embeddings;
+#[cfg(feature = "embedded-db")]
+pub mod embedded_pg;
 pub mod error;
 pub mod events;
 pub mod fields;

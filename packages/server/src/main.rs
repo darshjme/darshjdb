@@ -64,7 +64,39 @@ async fn main() -> Result<()> {
     tracing::info!("DarshJDB server starting");
 
     // -- Configuration from environment ---------------------------------------
-    let database_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| {
+    //
+    // Zero-dep dev mode (slice 17/30): if `DATABASE_URL` is unset AND the
+    // binary was compiled with `--features embedded-db`, launch a local
+    // Postgres 16 instance via `pg_embed` and use its URI. The `PgEmbed`
+    // handle is bound to `_embedded_pg` so the child process lives for the
+    // full server lifetime.
+    let configured_url = std::env::var("DATABASE_URL").ok();
+
+    #[cfg(feature = "embedded-db")]
+    let (database_url, _embedded_pg) = match configured_url {
+        Some(url) => (url, None),
+        None => {
+            let data_dir = dirs::home_dir()
+                .unwrap_or_else(|| std::path::PathBuf::from("."))
+                .join(".darshjdb")
+                .join("data");
+            tracing::info!(
+                data_dir = %data_dir.display(),
+                "no DATABASE_URL set — booting embedded Postgres 16 (zero-dep dev mode)"
+            );
+            let (pg, uri) = ddb_server::embedded_pg::start_embedded_postgres(&data_dir)
+                .await
+                .map_err(|e| {
+                    ddb_server::error::DarshJError::Internal(format!(
+                        "embedded Postgres startup failed: {e}"
+                    ))
+                })?;
+            (uri, Some(pg))
+        }
+    };
+
+    #[cfg(not(feature = "embedded-db"))]
+    let database_url = configured_url.unwrap_or_else(|| {
         tracing::warn!("DATABASE_URL not set, using default localhost connection");
         "postgres://darshan:darshan@localhost:5432/darshjdb".to_string()
     });
