@@ -127,7 +127,10 @@ use super::runtime::{
 /// permits but every admitted task then locked the one `Mutex<Lua>`, so
 /// the permit cap was theatre (MJ-02).
 pub struct MluaRuntime {
-    /// Base directory containing user function files (`.lua`).
+    /// Base directory containing user function files (`.lua`),
+    /// canonicalized at construction so path-containment checks on each
+    /// invocation compare apples-to-apples. See [`MluaRuntime::new`] and
+    /// F6 / MN-04.
     functions_dir: PathBuf,
 
     /// Shared Lua VM. `Mutex` because `mlua::Lua` is `!Sync`.
@@ -149,6 +152,28 @@ impl MluaRuntime {
     /// serializes every invocation to one in-flight call. See the
     /// type-level doc for the v0.4 pool plan.
     pub fn new(functions_dir: PathBuf, _max_concurrency: usize) -> RuntimeResult<Self> {
+        // MN-03 + F6: canonicalize and validate the functions directory
+        // at construction time. Misconfiguration surfaces immediately at
+        // boot instead of as a cryptic per-call error on first invoke.
+        if !functions_dir.exists() {
+            return Err(RuntimeError::Internal(format!(
+                "mlua functions_dir does not exist: {}",
+                functions_dir.display()
+            )));
+        }
+        if !functions_dir.is_dir() {
+            return Err(RuntimeError::Internal(format!(
+                "mlua functions_dir is not a directory: {}",
+                functions_dir.display()
+            )));
+        }
+        let functions_dir = std::fs::canonicalize(&functions_dir).map_err(|e| {
+            RuntimeError::Internal(format!(
+                "mlua functions_dir canonicalize failed ({}): {e}",
+                functions_dir.display()
+            ))
+        })?;
+
         let lua = Lua::new();
         install_sandbox(&lua)
             .map_err(|e| RuntimeError::Internal(format!("sandbox install failed: {e}")))?;
@@ -278,11 +303,31 @@ impl RuntimeBackend for MluaRuntime {
                 "mlua invoking function"
             );
 
-            let function_path = functions_dir.join(&function_def.file_path);
-            let source = std::fs::read_to_string(&function_path).map_err(|e| {
+            // F6: resolve and canonicalize the function path BEFORE
+            // acquiring the Lua mutex (also fixes MN-04: the old sync
+            // std::fs::read_to_string was held across the mutex guard).
+            //
+            // function_def.file_path is untrusted input — a naive
+            // join(functions_dir, "../../etc/passwd") would happily
+            // escape the functions directory. Canonicalize and assert
+            // containment.
+            let unchecked = functions_dir.join(&function_def.file_path);
+            let canon = tokio::fs::canonicalize(&unchecked).await.map_err(|e| {
+                RuntimeError::Internal(format!(
+                    "function path not found: {}: {e}",
+                    unchecked.display()
+                ))
+            })?;
+            if !canon.starts_with(&functions_dir) {
+                return Err(RuntimeError::Internal(format!(
+                    "function path escapes functions directory: {}",
+                    canon.display()
+                )));
+            }
+            let source = tokio::fs::read_to_string(&canon).await.map_err(|e| {
                 RuntimeError::Internal(format!(
                     "failed to read lua source `{}`: {e}",
-                    function_path.display()
+                    canon.display()
                 ))
             })?;
 
@@ -706,11 +751,16 @@ pub fn install_ddb_api(lua: &Lua) -> mlua::Result<()> {
 #[cfg(all(test, feature = "mlua-runtime"))]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
 
+    /// Build a runtime rooted at a fresh tempdir so MN-03's
+    /// functions_dir-must-exist check always passes in tests. The
+    /// tempdir is leaked intentionally: tests never drop the runtime
+    /// before they finish, and a background cleanup is not worth the
+    /// complexity here.
     fn new_runtime() -> MluaRuntime {
-        MluaRuntime::new(PathBuf::from("/tmp/ddb-test-functions"), 4)
-            .expect("mlua runtime must construct")
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.keep();
+        MluaRuntime::new(path, 4).expect("mlua runtime must construct")
     }
 
     #[tokio::test]
@@ -961,6 +1011,77 @@ mod tests {
             msg.contains("wall-clock cap") || msg.contains("lua call failed"),
             "unexpected error: {msg}"
         );
+    }
+
+    /// F6 regression: a FunctionDef whose file_path tries to traverse
+    /// out of the functions directory (`../escape.lua`) must be rejected
+    /// with a clear error, not silently loaded.
+    #[tokio::test]
+    async fn function_path_traversal_rejected() {
+        use crate::functions::registry::{FunctionDef, FunctionKind};
+        use crate::functions::runtime::{ExecutionContext, ResourceLimits, RuntimeBackend};
+
+        // Build a parent tempdir and an adjacent `escape.lua` outside
+        // the functions directory. The functions dir itself is a child
+        // of the parent so `../escape.lua` resolves to a real file that
+        // canonicalize() can find — otherwise the test would trip on a
+        // ENOENT instead of the containment check.
+        let parent = tempfile::tempdir().expect("parent tempdir");
+        let functions_dir = parent.path().join("functions");
+        std::fs::create_dir(&functions_dir).expect("mkdir functions");
+        let escape = parent.path().join("escape.lua");
+        std::fs::write(&escape, "function hacked() return 'pwn' end")
+            .expect("write escape.lua");
+
+        let rt = MluaRuntime::new(functions_dir.clone(), 4).expect("rt");
+
+        let def = FunctionDef {
+            name: "hacked".into(),
+            file_path: std::path::PathBuf::from("../escape.lua"),
+            export_name: "hacked".into(),
+            kind: FunctionKind::Query,
+            args_schema: None,
+            description: None,
+            last_modified: None,
+        };
+        let ctx = ExecutionContext {
+            invocation_id: "test-inv".into(),
+            function_name: "hacked".into(),
+            args: serde_json::json!(null),
+            db_url: String::new(),
+            auth_token: None,
+            internal_api_url: String::new(),
+        };
+        let err = rt
+            .execute(&def, &ctx, &ResourceLimits::default())
+            .await
+            .expect_err("traversal must be rejected");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("escapes functions directory"),
+            "expected containment error, got: {msg}"
+        );
+    }
+
+    /// MN-03 regression: constructing an MluaRuntime with a
+    /// non-existent functions_dir must fail fast at `new()` time, not
+    /// defer the error to first invocation.
+    #[tokio::test]
+    async fn new_rejects_missing_functions_dir() {
+        let parent = tempfile::tempdir().expect("parent tempdir");
+        let ghost = parent.path().join("does-not-exist");
+        // MluaRuntime doesn't implement Debug, so we can't use
+        // expect_err directly — match on the Result instead.
+        match MluaRuntime::new(ghost.clone(), 4) {
+            Ok(_) => panic!("missing dir must be rejected"),
+            Err(err) => {
+                let msg = format!("{err}");
+                assert!(
+                    msg.contains("does not exist"),
+                    "expected missing-dir error, got: {msg}"
+                );
+            }
+        }
     }
 
     /// CPU-bound interruption requires mlua 0.10's `Lua::set_interrupt`
