@@ -577,7 +577,7 @@ mod tests {
         let get_resp = app
             .oneshot(
                 Request::builder()
-                    .uri(&format!("/{automation_id}"))
+                    .uri(format!("/{automation_id}"))
                     .method("GET")
                     .body(Body::empty())
                     .unwrap(),
@@ -596,7 +596,7 @@ mod tests {
         let response = app
             .oneshot(
                 Request::builder()
-                    .uri(&format!("/{fake_id}"))
+                    .uri(format!("/{fake_id}"))
                     .method("GET")
                     .body(Body::empty())
                     .unwrap(),

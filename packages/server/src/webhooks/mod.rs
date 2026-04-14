@@ -1027,11 +1027,11 @@ mod tests {
 
         let matches = wh.active
             && (wh.events.is_empty() || wh.events.contains(&event.kind))
-            && wh.entity_types.as_ref().map_or(true, |types| {
+            && wh.entity_types.as_ref().is_none_or(|types| {
                 event
                     .entity_type
                     .as_ref()
-                    .map_or(false, |et| types.contains(et))
+                    .is_some_and(|et| types.contains(et))
             });
         assert!(matches);
     }
@@ -1040,7 +1040,7 @@ mod tests {
     fn event_matching_wrong_kind() {
         let event = DdbEvent::new(EventKind::RecordDeleted, 1).with_entity_type("User");
 
-        let matches_kind = vec![EventKind::RecordCreated].contains(&event.kind);
+        let matches_kind = [EventKind::RecordCreated].contains(&event.kind);
         assert!(!matches_kind);
     }
 
@@ -1071,9 +1071,8 @@ mod tests {
 
     #[test]
     fn circuit_breaker_threshold_value() {
+        // Locks the sentinel so a future refactor can't silently change it.
         assert_eq!(CIRCUIT_BREAKER_THRESHOLD, 10);
-        assert!(10u32 >= CIRCUIT_BREAKER_THRESHOLD);
-        assert!(!(9u32 >= CIRCUIT_BREAKER_THRESHOLD));
     }
 
     #[test]

@@ -1939,7 +1939,7 @@ mod tests {
             .expect("upload");
 
         let files = engine.list("", 100, None).await.expect("list");
-        assert!(files.len() >= 1);
+        assert!(!files.is_empty());
 
         let _ = std::fs::remove_dir_all(&dir);
     }

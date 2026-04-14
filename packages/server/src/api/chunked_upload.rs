@@ -230,10 +230,10 @@ pub async fn init_upload(
             req.total_chunks
         )));
     }
-    if let Some(size) = req.file_size {
-        if size < 0 {
-            return Err(ApiError::bad_request("file_size must not be negative"));
-        }
+    if let Some(size) = req.file_size
+        && size < 0
+    {
+        return Err(ApiError::bad_request("file_size must not be negative"));
     }
 
     // --- insert -------------------------------------------------------

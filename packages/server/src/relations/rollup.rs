@@ -451,44 +451,44 @@ mod tests {
     #[test]
     fn rust_fallback_aggregations() {
         // Test the Rust-side aggregation helpers used in compute_rust_rollup.
-        let values = vec![
+        let values = [
             serde_json::json!(10),
             serde_json::json!(20),
             serde_json::json!(30),
         ];
 
         // Sum
-        let sum: f64 = values.iter().filter_map(|v| value_to_f64(v)).sum();
+        let sum: f64 = values.iter().filter_map(value_to_f64).sum();
         assert_eq!(sum, 60.0);
 
         // Average
-        let nums: Vec<f64> = values.iter().filter_map(|v| value_to_f64(v)).collect();
+        let nums: Vec<f64> = values.iter().filter_map(value_to_f64).collect();
         let avg = nums.iter().sum::<f64>() / nums.len() as f64;
         assert_eq!(avg, 20.0);
 
         // Min
         let min = values
             .iter()
-            .filter_map(|v| value_to_f64(v))
+            .filter_map(value_to_f64)
             .fold(f64::INFINITY, f64::min);
         assert_eq!(min, 10.0);
 
         // Max
         let max = values
             .iter()
-            .filter_map(|v| value_to_f64(v))
+            .filter_map(value_to_f64)
             .fold(f64::NEG_INFINITY, f64::max);
         assert_eq!(max, 30.0);
     }
 
     #[test]
     fn array_join_with_separator() {
-        let values = vec![
+        let values = [
             serde_json::json!("alpha"),
             serde_json::json!("beta"),
             serde_json::json!("gamma"),
         ];
-        let strings: Vec<String> = values.iter().map(|v| value_to_string(v)).collect();
+        let strings: Vec<String> = values.iter().map(value_to_string).collect();
         assert_eq!(strings.join(", "), "alpha, beta, gamma");
         assert_eq!(strings.concat(), "alphabetagamma");
     }
