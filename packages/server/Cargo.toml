@@ -101,15 +101,15 @@ portpicker = { workspace = true, optional = true }
 # Created by Darshankumar Joshi (github.com/darshjme).
 deno_core = { version = "0.398", optional = true }
 
-# v0.3.1 — SQLite backend stub. Gated behind the `sqlite-store` feature so
+# v0.3.2 — SQLite backend. Gated behind the `sqlite-store` feature so
 # default builds stay Postgres-only. See packages/server/src/store/sqlite.rs.
 rusqlite = { version = "0.31", optional = true, features = ["bundled"] }
 
-# v0.3.2 — embedded mlua 0.10 Lua runtime for server functions. Gated behind # TODO(v0.3.2-sprint-merge):
-# the `mlua-runtime` Cargo feature so default builds skip the vendored Lua  # TODO(v0.3.2-sprint-merge):
-# compilation. `vendored` avoids a system Lua dependency; `async` lets Lua   # TODO(v0.3.2-sprint-merge):
-# callbacks await DDB host calls; `serialize` bridges serde_json <-> Lua.   # TODO(v0.3.2-sprint-merge):
-mlua = { version = "0.10", features = ["lua54", "vendored", "async", "serialize", "send"], optional = true } # TODO(v0.3.2-sprint-merge):
+# v0.3.2 — embedded mlua 0.10 Lua runtime for server functions. Gated behind
+# the `mlua-runtime` Cargo feature so default builds skip the vendored Lua
+# compilation. `vendored` avoids a system Lua dependency; `async` lets Lua
+# callbacks await DDB host calls; `serialize` bridges serde_json <-> Lua.
+mlua = { version = "0.10", features = ["lua54", "vendored", "async", "serialize", "send"], optional = true }
 
 [features]
 default = []
@@ -123,15 +123,16 @@ embedded-db = ["dep:pg_embed", "dep:portpicker"]
 # VYASA — embedded V8 isolate function runtime (sub-millisecond cold start).
 # Usage: `cargo run --features v8`. Selects V8 when DDB_FUNCTION_RUNTIME=v8.
 v8 = ["dep:deno_core"]
-# v0.3.1 — compile-time SQLite backend stub (trait boundary verification
-# only — every method returns NotYetImplemented). Full backend: v0.3.2.
-# Usage: `cargo check -p ddb-server --features sqlite-store`
+# v0.3.2 — SQLite backend via rusqlite. Full Store trait implementation
+# over a bundled SQLite database. Usage:
+#   `cargo run -p ddb-server --features sqlite-store`
+# Selected when DATABASE_URL uses the `sqlite:` scheme.
 sqlite-store = ["dep:rusqlite"]
-# v0.3.2 — embedded mlua 0.10 Lua runtime for server functions.       # TODO(v0.3.2-sprint-merge):
-# Usage: `cargo run -p ddb-server --features mlua-runtime`.            # TODO(v0.3.2-sprint-merge):
-# Selects MluaRuntime when DDB_FUNCTION_RUNTIME=mlua; falls back to   # TODO(v0.3.2-sprint-merge):
-# ProcessRuntime otherwise.                                           # TODO(v0.3.2-sprint-merge):
-mlua-runtime = ["dep:mlua"] # TODO(v0.3.2-sprint-merge):
+# v0.3.2 — embedded mlua 0.10 Lua runtime for server functions.
+# Usage: `cargo run -p ddb-server --features mlua-runtime`.
+# Selects MluaRuntime when DDB_FUNCTION_RUNTIME=mlua; falls back to
+# ProcessRuntime otherwise.
+mlua-runtime = ["dep:mlua"]
 
 [dev-dependencies]
 tokio-tungstenite = "0.28"
