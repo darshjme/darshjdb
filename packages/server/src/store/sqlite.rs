@@ -65,6 +65,15 @@ impl SqliteStore {
 }
 
 /// Marker transaction handle for the SQLite stub.
+///
+/// NOTE: both [`PgStoreTx`](super::pg::PgStoreTx) and `SqliteStoreTx`
+/// are stateless markers in v0.3.1 — the `Store` trait's `begin_tx`
+/// surface intentionally does not yet hold a live backend transaction
+/// (see `PgStoreTx` docs for the lifetime-plumbing rationale). Both
+/// impls return `Ok(())` so behaviour is symmetric across backends;
+/// callers that genuinely need a multi-statement transaction must
+/// reach through to the concrete backend until the richer
+/// `StoreTx` surface lands in v0.3.3.
 pub struct SqliteStoreTx {
     _private: (),
 }
@@ -72,15 +81,14 @@ pub struct SqliteStoreTx {
 #[async_trait]
 impl StoreTx for SqliteStoreTx {
     async fn commit(self: Box<Self>) -> Result<()> {
-        Err(DarshJError::Internal(
-            "SqliteStore: commit not yet implemented (v0.3.2)".into(),
-        ))
+        // No-op: marker-only until v0.3.3 multi-statement StoreTx.
+        // Matches PgStoreTx so behaviour is symmetric across backends.
+        Ok(())
     }
 
     async fn rollback(self: Box<Self>) -> Result<()> {
-        Err(DarshJError::Internal(
-            "SqliteStore: rollback not yet implemented (v0.3.2)".into(),
-        ))
+        // No-op: see `commit` — marker-only until v0.3.3.
+        Ok(())
     }
 }
 

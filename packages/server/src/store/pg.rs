@@ -63,12 +63,13 @@ pub struct PgStoreTx {
 #[async_trait]
 impl StoreTx for PgStoreTx {
     async fn commit(self: Box<Self>) -> Result<()> {
-        // No-op: the v0.3.1 Store trait does not hold a live tx.
-        // See struct docs for rationale.
+        // No-op: marker-only until v0.3.3 multi-statement StoreTx.
+        // Matches SqliteStoreTx so behaviour is symmetric across backends.
         Ok(())
     }
 
     async fn rollback(self: Box<Self>) -> Result<()> {
+        // No-op: see `commit` — marker-only until v0.3.3.
         Ok(())
     }
 }
