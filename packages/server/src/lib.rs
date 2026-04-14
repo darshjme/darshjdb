@@ -49,6 +49,7 @@ pub mod functions;
 pub mod graph;
 pub mod history;
 pub mod import_export;
+pub mod mcp;
 pub mod plugins;
 pub mod query;
 pub mod relations;

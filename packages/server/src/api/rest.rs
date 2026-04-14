@@ -917,6 +917,10 @@ pub fn build_router(state: AppState) -> Router {
             require_auth_middleware,
         ));
 
+    // -- MCP (slice 24) -----------------------------------------------------
+    // Model Context Protocol JSON-RPC + SSE streaming agent routes.
+    let mcp_routes = crate::mcp::mcp_routes(state.clone());
+
     // Merge all route groups.
     public_routes
         .merge(protected_routes)
@@ -936,6 +940,7 @@ pub fn build_router(state: AppState) -> Router {
         .merge(automation_routes)
         .merge(cache_http_routes)
         .merge(agent_memory_routes)
+        .merge(mcp_routes)
 }
 
 /// Process-wide [`DdbCache`] shared by the HTTP REST cache API. The RESP3
@@ -1184,6 +1189,21 @@ pub async fn mark_login_attempt_success(pool: &PgPool, attempt_id: Uuid) {
     {
         tracing::warn!(%attempt_id, error = %e, "failed to mark login attempt success");
     }
+}
+
+/// Public wrapper around [`require_auth_middleware`] so sibling modules
+/// (e.g. `crate::mcp`) can attach the same JWT enforcement used by
+/// every other protected DarshJDB route. Keeping the core helper
+/// private preserves its invariants; the wrapper only exists to
+/// expose the trait-object-friendly shape the `middleware::from_fn_*`
+/// API requires when wiring from another module.
+pub async fn require_auth_middleware_public(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    request: Request<Body>,
+    next: Next,
+) -> Response {
+    require_auth_middleware(State(state), headers, request, next).await
 }
 
 /// Middleware that enforces JWT authentication on protected routes.
