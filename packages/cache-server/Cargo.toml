@@ -6,8 +6,13 @@ name = "ddb-cache-server"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "DarshJDB RESP3 protocol server — Redis-compatible front-end for ddb-cache"
-authors = ["Darshankumar Joshi <github.com/darshjme>"]
+authors.workspace = true
+homepage.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "DarshJDB RESP3 protocol server — Redis-compatible front-end for ddb-cache. Created by Darshankumar Joshi."
+publish = true
 
 [[bin]]
 name = "ddb-cache-server"
@@ -35,7 +40,7 @@ tower = { workspace = true }
 http = { workspace = true }
 
 [dev-dependencies]
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
 tower = { workspace = true }
 http = { workspace = true }
 serde_json = { workspace = true }
