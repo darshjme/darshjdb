@@ -923,8 +923,28 @@ pub async fn ensure_auth_schema(pool: &PgPool) -> std::result::Result<(), sqlx::
             refresh_token_hash  TEXT NOT NULL,
             refresh_expires_at  TIMESTAMPTZ NOT NULL
         );
+        -- Phase 0.4 hardening: structured revocation, absolute timeout,
+        -- per-device IP/UA forensics. New columns are nullable / defaulted so
+        -- this block stays idempotent against legacy databases.
+        ALTER TABLE sessions
+            ADD COLUMN IF NOT EXISTS ip_address          INET,
+            ADD COLUMN IF NOT EXISTS last_active_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+            ADD COLUMN IF NOT EXISTS absolute_expires_at TIMESTAMPTZ NOT NULL DEFAULT (now() + INTERVAL '24 hours'),
+            ADD COLUMN IF NOT EXISTS revoked_at          TIMESTAMPTZ,
+            ADD COLUMN IF NOT EXISTS revoke_reason       TEXT;
+        UPDATE sessions
+           SET revoked_at = COALESCE(revoked_at, now()),
+               revoke_reason = COALESCE(revoke_reason, 'legacy_revoked')
+         WHERE revoked = true
+           AND revoked_at IS NULL;
         CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions (user_id) WHERE NOT revoked;
         CREATE INDEX IF NOT EXISTS idx_sessions_refresh ON sessions (refresh_token_hash) WHERE NOT revoked;
+        CREATE INDEX IF NOT EXISTS idx_sessions_user_active
+            ON sessions (user_id) WHERE revoked_at IS NULL;
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_user_device
+            ON sessions (user_id, device_fingerprint) WHERE revoked_at IS NULL;
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_refresh_hash
+            ON sessions (refresh_token_hash) WHERE revoked_at IS NULL;
         CREATE TABLE IF NOT EXISTS oauth_identities (
             id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
             user_id             UUID NOT NULL REFERENCES users(id),
@@ -1007,7 +1027,11 @@ async fn require_auth_middleware(
         .unwrap_or("")
         .to_string();
 
-    match state.session_manager.validate_token(token, &ip, &ua, &dfp) {
+    match state
+        .session_manager
+        .validate_token(token, &ip, &ua, &dfp)
+        .await
+    {
         Ok(ctx) => {
             request.extensions_mut().insert(ctx);
             next.run(request).await
@@ -1628,6 +1652,7 @@ async fn auth_signout(
     let auth_ctx = state
         .session_manager
         .validate_token(&token, ip, ua, dfp)
+        .await
         .map_err(|e| ApiError::unauthenticated(format!("Invalid token: {e}")))?;
 
     state
@@ -1660,6 +1685,7 @@ async fn auth_me(State(state): State<AppState>, headers: HeaderMap) -> Result<Re
     let auth_ctx = state
         .session_manager
         .validate_token(&token, ip, ua, dfp)
+        .await
         .map_err(|e| ApiError::unauthenticated(format!("Invalid token: {e}")))?;
 
     // Fetch user record from the database.
@@ -1710,7 +1736,7 @@ async fn darshql_handler(
     headers: HeaderMap,
     axum::Json(body): axum::Json<DarshQLRequest>,
 ) -> Result<Response, ApiError> {
-    let _auth_ctx = extract_auth_context(&headers, &state)?;
+    let _auth_ctx = extract_auth_context(&headers, &state).await?;
 
     let start = Instant::now();
 
@@ -1754,7 +1780,7 @@ async fn query(
     headers: HeaderMap,
     axum::Json(body): axum::Json<QueryRequest>,
 ) -> Result<Response, ApiError> {
-    let auth_ctx = extract_auth_context(&headers, &state)?;
+    let auth_ctx = extract_auth_context(&headers, &state).await?;
 
     let start = Instant::now();
 
@@ -2105,7 +2131,7 @@ async fn data_list(
     Query(params): Query<DataListParams>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
-    let auth_ctx = extract_auth_context(&headers, &state)?;
+    let auth_ctx = extract_auth_context(&headers, &state).await?;
     let limit = params.limit.unwrap_or(50).min(1000);
 
     validate_entity_name(&entity)?;
@@ -2153,7 +2179,7 @@ async fn data_create(
     headers: HeaderMap,
     axum::Json(body): axum::Json<Value>,
 ) -> Result<Response, ApiError> {
-    let auth_ctx = extract_auth_context(&headers, &state)?;
+    let auth_ctx = extract_auth_context(&headers, &state).await?;
 
     validate_entity_name(&entity)?;
 
@@ -2294,7 +2320,7 @@ async fn data_get(
     Path((entity, id)): Path<(String, Uuid)>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
-    let auth_ctx = extract_auth_context(&headers, &state)?;
+    let auth_ctx = extract_auth_context(&headers, &state).await?;
 
     validate_entity_name(&entity)?;
 
@@ -2394,7 +2420,7 @@ async fn data_patch(
     headers: HeaderMap,
     axum::Json(body): axum::Json<Value>,
 ) -> Result<Response, ApiError> {
-    let auth_ctx = extract_auth_context(&headers, &state)?;
+    let auth_ctx = extract_auth_context(&headers, &state).await?;
 
     validate_entity_name(&entity)?;
 
@@ -2587,7 +2613,7 @@ async fn data_delete(
     Path((entity, id)): Path<(String, Uuid)>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
-    let auth_ctx = extract_auth_context(&headers, &state)?;
+    let auth_ctx = extract_auth_context(&headers, &state).await?;
 
     validate_entity_name(&entity)?;
 
@@ -3449,7 +3475,10 @@ fn require_admin_role(headers: &HeaderMap) -> Result<(), ApiError> {
 }
 
 /// Extract an [`AuthContext`] by validating the JWT via the [`SessionManager`].
-fn extract_auth_context(headers: &HeaderMap, state: &AppState) -> Result<AuthContext, ApiError> {
+async fn extract_auth_context(
+    headers: &HeaderMap,
+    state: &AppState,
+) -> Result<AuthContext, ApiError> {
     let token = extract_bearer_token(headers)?;
     let ip = headers
         .get("x-forwarded-for")
@@ -3466,6 +3495,7 @@ fn extract_auth_context(headers: &HeaderMap, state: &AppState) -> Result<AuthCon
     state
         .session_manager
         .validate_token(&token, ip, ua, dfp)
+        .await
         .map_err(|e| ApiError::unauthenticated(format!("Invalid token: {e}")))
 }
 

@@ -109,6 +109,10 @@ pub enum AuthError {
     #[error("session revoked")]
     SessionRevoked,
 
+    /// The session has exceeded its absolute lifetime and was auto-revoked.
+    #[error("session expired")]
+    SessionExpired,
+
     /// MFA verification failed.
     #[error("MFA verification failed: {0}")]
     MfaFailed(String),
@@ -146,9 +150,10 @@ impl AuthError {
     pub fn status_code(&self) -> http::StatusCode {
         match self {
             Self::InvalidCredentials | Self::MfaFailed(_) => http::StatusCode::UNAUTHORIZED,
-            Self::TokenInvalid(_) | Self::DeviceMismatch | Self::SessionRevoked => {
-                http::StatusCode::UNAUTHORIZED
-            }
+            Self::TokenInvalid(_)
+            | Self::DeviceMismatch
+            | Self::SessionRevoked
+            | Self::SessionExpired => http::StatusCode::UNAUTHORIZED,
             Self::PermissionDenied(_) => http::StatusCode::FORBIDDEN,
             Self::RateLimited { .. } => http::StatusCode::TOO_MANY_REQUESTS,
             Self::OAuth2(_) | Self::Crypto(_) => http::StatusCode::BAD_REQUEST,

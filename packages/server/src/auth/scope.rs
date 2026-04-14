@@ -408,7 +408,9 @@ impl ScopeManager {
         if scope.max_concurrent_sessions > 0 {
             let active_count: (i64,) = sqlx::query_as(
                 "SELECT COUNT(*) FROM sessions
-                 WHERE user_id = $1 AND revoked = false AND refresh_expires_at > NOW()",
+                 WHERE user_id = $1
+                   AND revoked_at IS NULL
+                   AND absolute_expires_at > NOW()",
             )
             .bind(user_id)
             .fetch_one(&self.pool)
@@ -456,12 +458,34 @@ impl ScopeManager {
         let refresh_expires = now + scope.session_ttl();
         let dfp_hash = hex_sha256(device_fingerprint.as_bytes());
 
-        // Persist session with scope metadata.
+        // Evict any prior active session for this (user, device) pair so the
+        // partial unique index `idx_sessions_user_device` does not block the
+        // insert. Marked with reason `overflow` to mirror
+        // `SessionManager::create_session`.
+        sqlx::query(
+            "UPDATE sessions
+                SET revoked = true,
+                    revoked_at = now(),
+                    revoke_reason = 'overflow'
+              WHERE user_id = $1
+                AND device_fingerprint = $2
+                AND revoked_at IS NULL",
+        )
+        .bind(user_id)
+        .bind(&dfp_hash)
+        .execute(&self.pool)
+        .await?;
+
+        let absolute_expires = now + Duration::hours(24);
+        let ip_inet: Option<String> = ip.parse::<std::net::IpAddr>().ok().map(|i| i.to_string());
+
+        // Persist session with scope metadata + Phase 0.4 hardening fields.
         sqlx::query(
             "INSERT INTO sessions
                 (session_id, user_id, device_fingerprint, ip, user_agent,
-                 created_at, revoked, refresh_token_hash, refresh_expires_at)
-             VALUES ($1, $2, $3, $4, $5, $6, false, $7, $8)",
+                 created_at, revoked, refresh_token_hash, refresh_expires_at,
+                 ip_address, last_active_at, absolute_expires_at)
+             VALUES ($1, $2, $3, $4, $5, $6, false, $7, $8, $9::inet, $6, $10)",
         )
         .bind(session_id)
         .bind(user_id)
@@ -471,6 +495,8 @@ impl ScopeManager {
         .bind(now)
         .bind(&refresh_hash)
         .bind(refresh_expires)
+        .bind(ip_inet)
+        .bind(absolute_expires)
         .execute(&self.pool)
         .await?;
 
@@ -736,32 +762,62 @@ impl ScopeManager {
         let refresh_hash = hex_sha256(refresh_token.as_bytes());
         let dfp_hash = hex_sha256(device_fingerprint.as_bytes());
 
-        // Look up the session.
-        let session: Option<(Uuid, Uuid, String, bool, chrono::DateTime<Utc>)> = sqlx::query_as(
-            "SELECT session_id, user_id, device_fingerprint, revoked, refresh_expires_at
+        // Look up the session including the new hardening columns.
+        let session: Option<(
+            Uuid,
+            Uuid,
+            String,
+            Option<chrono::DateTime<Utc>>,
+            chrono::DateTime<Utc>,
+            chrono::DateTime<Utc>,
+        )> = sqlx::query_as(
+            "SELECT session_id, user_id, device_fingerprint,
+                    revoked_at, refresh_expires_at, absolute_expires_at
              FROM sessions WHERE refresh_token_hash = $1",
         )
         .bind(&refresh_hash)
         .fetch_optional(&self.pool)
         .await?;
 
-        let (session_id, user_id, stored_dfp, revoked, refresh_exp) =
+        let (session_id, user_id, stored_dfp, revoked_at, refresh_exp, absolute_exp) =
             session.ok_or_else(|| AuthError::TokenInvalid("refresh token not found".into()))?;
 
-        if revoked {
+        if revoked_at.is_some() {
             return Err(AuthError::SessionRevoked);
         }
 
-        if Utc::now() > refresh_exp {
+        let now_ts = Utc::now();
+        if now_ts >= absolute_exp {
+            let _ = sqlx::query(
+                "UPDATE sessions
+                    SET revoked = true,
+                        revoked_at = now(),
+                        revoke_reason = 'absolute_timeout'
+                  WHERE session_id = $1
+                    AND revoked_at IS NULL",
+            )
+            .bind(session_id)
+            .execute(&self.pool)
+            .await;
+            return Err(AuthError::SessionExpired);
+        }
+
+        if now_ts > refresh_exp {
             return Err(AuthError::TokenInvalid("refresh token expired".into()));
         }
 
         if stored_dfp != dfp_hash {
             // Potential token theft — revoke the session.
-            let _ = sqlx::query("UPDATE sessions SET revoked = true WHERE session_id = $1")
-                .bind(session_id)
-                .execute(&self.pool)
-                .await;
+            let _ = sqlx::query(
+                "UPDATE sessions
+                    SET revoked = true,
+                        revoked_at = now(),
+                        revoke_reason = 'device_mismatch'
+                  WHERE session_id = $1",
+            )
+            .bind(session_id)
+            .execute(&self.pool)
+            .await;
             return Err(AuthError::DeviceMismatch);
         }
 
@@ -773,8 +829,12 @@ impl ScopeManager {
         let new_expires = Utc::now() + scope.session_ttl();
 
         sqlx::query(
-            "UPDATE sessions SET refresh_token_hash = $1, refresh_expires_at = $2
-             WHERE session_id = $3 AND revoked = false",
+            "UPDATE sessions
+                SET refresh_token_hash = $1,
+                    refresh_expires_at = $2,
+                    last_active_at = now()
+              WHERE session_id = $3
+                AND revoked_at IS NULL",
         )
         .bind(&new_hash)
         .bind(new_expires)

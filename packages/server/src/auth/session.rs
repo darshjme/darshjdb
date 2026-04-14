@@ -213,18 +213,32 @@ pub struct SessionRecord {
     pub user_id: Uuid,
     /// SHA-256 of the device fingerprint.
     pub device_fingerprint: String,
-    /// Client IP at session creation.
+    /// Client IP at session creation (legacy text column).
     pub ip: String,
     /// User-Agent at session creation.
     pub user_agent: String,
     /// When the session was created.
     pub created_at: DateTime<Utc>,
-    /// Whether the session has been revoked.
+    /// Legacy boolean revocation flag — kept in lock-step with
+    /// [`Self::revoked_at`] so back-compat consumers keep working. The
+    /// canonical "is active" predicate is `revoked_at IS NULL`.
     pub revoked: bool,
     /// SHA-256 hash of the current refresh token.
     pub refresh_token_hash: String,
     /// When the refresh token expires.
     pub refresh_expires_at: DateTime<Utc>,
+    /// Last time the session was used to authenticate a request.
+    pub last_active_at: DateTime<Utc>,
+    /// Hard wall-clock cutoff after which the session is auto-revoked
+    /// regardless of activity. Defaults to 24 hours after creation.
+    pub absolute_expires_at: DateTime<Utc>,
+    /// Timestamp at which the session was revoked. `None` while the session
+    /// is active.
+    pub revoked_at: Option<DateTime<Utc>>,
+    /// Structured reason recorded alongside [`Self::revoked_at`]. One of
+    /// `logout`, `overflow`, `absolute_timeout`, `device_mismatch`, `manual`,
+    /// `legacy_revoked`, or `dedupe_on_migration`.
+    pub revoke_reason: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -259,6 +273,13 @@ impl SessionManager {
     const ACCESS_TTL_MINUTES: i64 = 15;
     /// Refresh token lifetime.
     const REFRESH_TTL_DAYS: i64 = 30;
+    /// Hard wall-clock lifetime for any session, regardless of refresh activity.
+    /// Matches the OWASP ASVS L2 recommendation for high-trust APIs.
+    const ABSOLUTE_LIFETIME_HOURS: i64 = 24;
+    /// Maximum number of concurrent active sessions per user. Older sessions
+    /// are evicted (revoked with reason `overflow`) when a new login pushes the
+    /// count past this limit.
+    const MAX_ACTIVE_SESSIONS_PER_USER: i64 = 5;
 
     /// Create a new session manager.
     pub fn new(pool: PgPool, keys: KeyManager) -> Self {
@@ -268,7 +289,9 @@ impl SessionManager {
     /// Create a new session and issue a token pair.
     ///
     /// The refresh token is a 32-byte random value; only its SHA-256
-    /// hash is stored in the database.
+    /// hash is stored in the database. Before insertion, this enforces the
+    /// per-user concurrency cap by revoking the oldest active session(s) with
+    /// reason `overflow` whenever the limit is reached.
     pub async fn create_session(
         &self,
         user_id: Uuid,
@@ -279,22 +302,79 @@ impl SessionManager {
     ) -> Result<TokenPair, AuthError> {
         let session_id = Uuid::new_v4();
         let now = Utc::now();
+        let dfp_hash = hex_sha256(device_fingerprint.as_bytes());
 
-        // Generate opaque refresh token.
+        let mut tx = self.pool.begin().await?;
+
+        // ── 1a. Evict any prior active session bound to this exact device ──
+        // The partial unique index `idx_sessions_user_device` would otherwise
+        // reject the insert for a re-login from the same (user, device) pair.
+        sqlx::query(
+            "UPDATE sessions
+                SET revoked = true,
+                    revoked_at = now(),
+                    revoke_reason = 'overflow'
+              WHERE user_id = $1
+                AND device_fingerprint = $2
+                AND revoked_at IS NULL",
+        )
+        .bind(user_id)
+        .bind(&dfp_hash)
+        .execute(&mut *tx)
+        .await?;
+
+        // ── 1b. Overflow eviction ────────────────────────────────────────
+        let active_count: (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM sessions
+              WHERE user_id = $1
+                AND revoked_at IS NULL
+                AND absolute_expires_at > now()",
+        )
+        .bind(user_id)
+        .fetch_one(&mut *tx)
+        .await?;
+
+        if active_count.0 >= Self::MAX_ACTIVE_SESSIONS_PER_USER {
+            let to_evict = active_count.0 - Self::MAX_ACTIVE_SESSIONS_PER_USER + 1;
+            sqlx::query(
+                "UPDATE sessions
+                    SET revoked = true,
+                        revoked_at = now(),
+                        revoke_reason = 'overflow'
+                  WHERE session_id IN (
+                      SELECT session_id FROM sessions
+                       WHERE user_id = $1
+                         AND revoked_at IS NULL
+                       ORDER BY created_at ASC
+                       LIMIT $2
+                  )",
+            )
+            .bind(user_id)
+            .bind(to_evict)
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        // ── 2. Mint refresh token + persist new session ──────────────────
+        // Only the SHA-256 hash is stored; the raw token never touches disk.
         let mut raw_refresh = [0u8; 32];
         rand::rngs::OsRng.fill_bytes(&mut raw_refresh);
         let refresh_token = data_encoding::BASE64URL_NOPAD.encode(&raw_refresh);
         let refresh_hash = hex_sha256(refresh_token.as_bytes());
         let refresh_expires = now + Duration::days(Self::REFRESH_TTL_DAYS);
+        let absolute_expires = now + Duration::hours(Self::ABSOLUTE_LIFETIME_HOURS);
 
-        let dfp_hash = hex_sha256(device_fingerprint.as_bytes());
+        // Validate the IP string. INET cast happens server-side; bad input is
+        // stored as NULL so we never fail logins because of a misconfigured
+        // proxy header.
+        let ip_inet: Option<String> = ip.parse::<std::net::IpAddr>().ok().map(|i| i.to_string());
 
-        // Persist session.
         sqlx::query(
             "INSERT INTO sessions
                 (session_id, user_id, device_fingerprint, ip, user_agent,
-                 created_at, revoked, refresh_token_hash, refresh_expires_at)
-             VALUES ($1, $2, $3, $4, $5, $6, false, $7, $8)",
+                 created_at, revoked, refresh_token_hash, refresh_expires_at,
+                 ip_address, last_active_at, absolute_expires_at)
+             VALUES ($1, $2, $3, $4, $5, $6, false, $7, $8, $9::inet, $6, $10)",
         )
         .bind(session_id)
         .bind(user_id)
@@ -304,8 +384,12 @@ impl SessionManager {
         .bind(now)
         .bind(&refresh_hash)
         .bind(refresh_expires)
-        .execute(&self.pool)
+        .bind(ip_inet)
+        .bind(absolute_expires)
+        .execute(&mut *tx)
         .await?;
+
+        tx.commit().await?;
 
         // Issue access token.
         let access_exp = now + Duration::minutes(Self::ACCESS_TTL_MINUTES);
@@ -332,8 +416,9 @@ impl SessionManager {
     /// Refresh an existing session, issuing a new token pair.
     ///
     /// The old refresh token is consumed and a new one is generated
-    /// (rotation). The device fingerprint must match the one stored
-    /// at session creation.
+    /// (rotation). The device fingerprint must match the one stored at session
+    /// creation. Sessions past their `absolute_expires_at` cutoff are
+    /// auto-revoked with reason `absolute_timeout`.
     pub async fn refresh_session(
         &self,
         refresh_token: &str,
@@ -344,7 +429,8 @@ impl SessionManager {
 
         let session: Option<SessionRecord> = sqlx::query_as(
             "SELECT session_id, user_id, device_fingerprint, ip, user_agent,
-                    created_at, revoked, refresh_token_hash, refresh_expires_at
+                    created_at, revoked, refresh_token_hash, refresh_expires_at,
+                    last_active_at, absolute_expires_at, revoked_at, revoke_reason
              FROM sessions WHERE refresh_token_hash = $1",
         )
         .bind(&refresh_hash)
@@ -354,20 +440,42 @@ impl SessionManager {
         let session =
             session.ok_or_else(|| AuthError::TokenInvalid("refresh token not found".into()))?;
 
-        if session.revoked {
+        if session.revoked_at.is_some() {
             return Err(AuthError::SessionRevoked);
         }
 
-        if Utc::now() > session.refresh_expires_at {
+        let now = Utc::now();
+        if now >= session.absolute_expires_at {
+            let _ = sqlx::query(
+                "UPDATE sessions
+                    SET revoked = true,
+                        revoked_at = now(),
+                        revoke_reason = 'absolute_timeout'
+                  WHERE session_id = $1
+                    AND revoked_at IS NULL",
+            )
+            .bind(session.session_id)
+            .execute(&self.pool)
+            .await;
+            return Err(AuthError::SessionExpired);
+        }
+
+        if now > session.refresh_expires_at {
             return Err(AuthError::TokenInvalid("refresh token expired".into()));
         }
 
         if session.device_fingerprint != dfp_hash {
             // Potential token theft — revoke the session entirely.
-            let _ = sqlx::query("UPDATE sessions SET revoked = true WHERE session_id = $1")
-                .bind(session.session_id)
-                .execute(&self.pool)
-                .await;
+            let _ = sqlx::query(
+                "UPDATE sessions
+                    SET revoked = true,
+                        revoked_at = now(),
+                        revoke_reason = 'device_mismatch'
+                  WHERE session_id = $1",
+            )
+            .bind(session.session_id)
+            .execute(&self.pool)
+            .await;
             return Err(AuthError::DeviceMismatch);
         }
 
@@ -379,8 +487,12 @@ impl SessionManager {
         let new_expires = Utc::now() + Duration::days(Self::REFRESH_TTL_DAYS);
 
         sqlx::query(
-            "UPDATE sessions SET refresh_token_hash = $1, refresh_expires_at = $2
-             WHERE session_id = $3 AND revoked = false",
+            "UPDATE sessions
+                SET refresh_token_hash = $1,
+                    refresh_expires_at = $2,
+                    last_active_at = now()
+              WHERE session_id = $3
+                AND revoked_at IS NULL",
         )
         .bind(&new_hash)
         .bind(new_expires)
@@ -421,17 +533,28 @@ impl SessionManager {
 
     /// Revoke a specific session (logout).
     pub async fn revoke_session(&self, session_id: Uuid) -> Result<(), AuthError> {
-        sqlx::query("UPDATE sessions SET revoked = true WHERE session_id = $1")
-            .bind(session_id)
-            .execute(&self.pool)
-            .await?;
+        sqlx::query(
+            "UPDATE sessions
+                SET revoked = true,
+                    revoked_at = COALESCE(revoked_at, now()),
+                    revoke_reason = COALESCE(revoke_reason, 'logout')
+              WHERE session_id = $1",
+        )
+        .bind(session_id)
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 
     /// Revoke all sessions for a user (password change, security event).
     pub async fn revoke_all_sessions(&self, user_id: Uuid) -> Result<u64, AuthError> {
         let result = sqlx::query(
-            "UPDATE sessions SET revoked = true WHERE user_id = $1 AND revoked = false",
+            "UPDATE sessions
+                SET revoked = true,
+                    revoked_at = now(),
+                    revoke_reason = 'manual'
+              WHERE user_id = $1
+                AND revoked_at IS NULL",
         )
         .bind(user_id)
         .execute(&self.pool)
@@ -443,9 +566,12 @@ impl SessionManager {
     pub async fn list_sessions(&self, user_id: Uuid) -> Result<Vec<SessionRecord>, AuthError> {
         let sessions: Vec<SessionRecord> = sqlx::query_as(
             "SELECT session_id, user_id, device_fingerprint, ip, user_agent,
-                    created_at, revoked, refresh_token_hash, refresh_expires_at
+                    created_at, revoked, refresh_token_hash, refresh_expires_at,
+                    last_active_at, absolute_expires_at, revoked_at, revoke_reason
              FROM sessions
-             WHERE user_id = $1 AND revoked = false AND refresh_expires_at > NOW()
+             WHERE user_id = $1
+               AND revoked_at IS NULL
+               AND absolute_expires_at > NOW()
              ORDER BY created_at DESC",
         )
         .bind(user_id)
@@ -456,8 +582,13 @@ impl SessionManager {
 
     /// Validate an access token and build an [`AuthContext`].
     ///
-    /// This is the primary entry point used by middleware.
-    pub fn validate_token(
+    /// This is the primary entry point used by middleware. In addition to
+    /// stateless JWT verification, it now performs a per-request DB lookup so
+    /// that revoked sessions and sessions past their absolute timeout are
+    /// rejected immediately (rather than living for up to 15 minutes until the
+    /// access token naturally expires). The cost is one indexed PK lookup +
+    /// one bounded `last_active_at` UPDATE per authenticated request.
+    pub async fn validate_token(
         &self,
         token: &str,
         ip: &str,
@@ -470,6 +601,46 @@ impl SessionManager {
             .map_err(|e| AuthError::TokenInvalid(format!("bad user id: {e}")))?;
         let session_id = Uuid::parse_str(&claims.sid)
             .map_err(|e| AuthError::TokenInvalid(format!("bad session id: {e}")))?;
+
+        // Stateful session check: revoked / absolute timeout.
+        let row: Option<(Option<DateTime<Utc>>, DateTime<Utc>)> = sqlx::query_as(
+            "SELECT revoked_at, absolute_expires_at
+               FROM sessions
+              WHERE session_id = $1",
+        )
+        .bind(session_id)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        let (revoked_at, absolute_expires_at) =
+            row.ok_or_else(|| AuthError::TokenInvalid("session not found".into()))?;
+
+        if revoked_at.is_some() {
+            return Err(AuthError::SessionRevoked);
+        }
+
+        if Utc::now() >= absolute_expires_at {
+            // Auto-revoke past the absolute cutoff and reject this request.
+            let _ = sqlx::query(
+                "UPDATE sessions
+                    SET revoked = true,
+                        revoked_at = now(),
+                        revoke_reason = 'absolute_timeout'
+                  WHERE session_id = $1
+                    AND revoked_at IS NULL",
+            )
+            .bind(session_id)
+            .execute(&self.pool)
+            .await;
+            return Err(AuthError::SessionExpired);
+        }
+
+        // Touch last_active_at. A failure here is a hard DB error and must
+        // propagate — silently swallowing it would mask connection issues.
+        sqlx::query("UPDATE sessions SET last_active_at = now() WHERE session_id = $1")
+            .bind(session_id)
+            .execute(&self.pool)
+            .await?;
 
         Ok(AuthContext {
             user_id,

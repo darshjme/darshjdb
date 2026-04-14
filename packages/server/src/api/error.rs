@@ -184,9 +184,10 @@ impl From<AuthError> for ApiError {
     fn from(err: AuthError) -> Self {
         let code = match &err {
             AuthError::InvalidCredentials | AuthError::MfaFailed(_) => ErrorCode::Unauthenticated,
-            AuthError::TokenInvalid(_) | AuthError::DeviceMismatch | AuthError::SessionRevoked => {
-                ErrorCode::Unauthenticated
-            }
+            AuthError::TokenInvalid(_)
+            | AuthError::DeviceMismatch
+            | AuthError::SessionRevoked
+            | AuthError::SessionExpired => ErrorCode::Unauthenticated,
             AuthError::PermissionDenied(_) => ErrorCode::PermissionDenied,
             AuthError::RateLimited { retry_after_secs } => {
                 return ApiError {
