@@ -3,7 +3,13 @@ name = "ddb-server"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "DarshJDB server — triple store, DarshJQL query engine, and reactive tracking"
+authors.workspace = true
+homepage.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "DarshJDB server — triple store, DarshJQL query engine, and reactive tracking. Created by Darshankumar Joshi."
+publish = true
 
 [dependencies]
 tokio.workspace = true
@@ -48,3 +54,59 @@ aws-credential-types.workspace = true
 aws-types.workspace = true
 async-trait.workspace = true
 csv.workspace = true
+config.workspace = true
+dotenvy.workspace = true
+dirs.workspace = true
+
+# Phase 10 — Observability (slice 29/30): Prometheus metrics + JSON logging + request_id.
+metrics.workspace = true
+metrics-exporter-prometheus.workspace = true
+
+# Slice 19/30 — embedded admin dashboard (Vite dist baked via include_dir!).
+include_dir.workspace = true
+mime_guess.workspace = true
+
+# Phase 7.2 (slice 26/30) — Image transform pipeline for /api/storage/*path.
+image.workspace = true
+
+# Phase 0.3 (slice 4/30) — magic link SMTP/HTTP email delivery.
+lettre.workspace = true
+
+# Phase 5.3 (slice 23/30) — Blockchain anchor: Keccak-256 batch roots.
+sha3.workspace = true
+
+# Optional anchor backends — gated by feature flags so the default build
+# stays dependency-light. When a flag is off, the anchor module falls
+# back to deterministic mock implementations for the same Anchorer API.
+ipfs-api-backend-hyper = { workspace = true, optional = true }
+ethers-core = { workspace = true, optional = true }
+
+# Cache layer (Slices 10-11) — L1 DashMap + L2 Postgres + DdbCache (RESP3).
+ddb-cache = { path = "../cache" }
+ddb-cache-server = { path = "../cache-server" }
+
+# Slice 12/13 — agent memory subsystem (context token counting).
+tiktoken-rs.workspace = true
+
+# Slice 16 — embedder crate (OpenAI-compatible embeddings for semantic tier).
+ddb-agent-memory = { path = "../agent-memory" }
+
+# Embedded Postgres (slice 18/30) — optional, gated by `embedded-db` feature
+# so default builds don't pull the ~40MB Postgres binary download layer.
+pg_embed = { workspace = true, optional = true }
+portpicker = { workspace = true, optional = true }
+
+[features]
+default = []
+# Enable IPFS-backed audit anchoring via `ipfs-api-backend-hyper`.
+anchor-ipfs = ["dep:ipfs-api-backend-hyper"]
+# Enable Ethereum-backed audit anchoring via `ethers-core`.
+anchor-eth = ["dep:ethers-core"]
+# Zero-dep dev mode: run DarshJDB with a bundled Postgres 16 instance.
+# Usage: `cargo run --features embedded-db`
+embedded-db = ["dep:pg_embed", "dep:portpicker"]
+
+[dev-dependencies]
+tokio-tungstenite = "0.28"
+futures-util = "0.3"
+tempfile = "3"

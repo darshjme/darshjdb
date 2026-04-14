@@ -26,7 +26,10 @@
 //! - [`query`] — DarshJQL parsing, planning, execution, and caching.
 
 pub mod activity;
+pub mod admin;
+pub mod agent_memory;
 pub mod aggregation;
+pub mod anchor;
 pub mod api;
 pub mod api_keys;
 pub mod audit;
@@ -35,6 +38,8 @@ pub mod automations;
 pub mod cache;
 pub mod collaboration;
 pub mod connectors;
+#[cfg(feature = "embedded-db")]
+pub mod embedded_pg;
 pub mod embeddings;
 pub mod error;
 pub mod events;
@@ -44,6 +49,8 @@ pub mod functions;
 pub mod graph;
 pub mod history;
 pub mod import_export;
+pub mod mcp;
+pub mod observability;
 pub mod plugins;
 pub mod query;
 pub mod relations;

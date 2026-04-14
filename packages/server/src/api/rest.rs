@@ -51,10 +51,13 @@ use crate::functions::runtime::FunctionRuntime;
 use crate::graph::{Edge, EdgeInput, GraphEngine, RecordId, TraversalConfig};
 use crate::query::{self, QueryResultRow};
 use crate::rules::RuleEngine;
+use crate::storage::transforms::{self as image_transforms, TransformOps};
 use crate::storage::{LocalFsBackend, StorageEngine, StorageError};
 use crate::sync::broadcaster::ChangeEvent;
 use crate::sync::pubsub::{PubSubEngine, PubSubEvent};
 use crate::triple_store::{PgTripleStore, TripleInput, TripleStore};
+// Slice 10: unified DdbCache (L1 DashMap + L2 durable + pub/sub + metrics).
+use ddb_cache::DdbCache;
 
 // ---------------------------------------------------------------------------
 // Application state
@@ -85,6 +88,12 @@ pub struct AppState {
     pub started_at: Instant,
     /// Whether dev mode is active (DDB_DEV=1).
     pub dev_mode: bool,
+    /// Random dev-mode bypass token (`dev.<16-hex>`), None in production.
+    /// Generated once at startup and logged to stderr — callers must send
+    /// this exact string in the `Authorization: Bearer …` header to get
+    /// admin+user roles without a real session. Bypass is also logged per
+    /// request so any accidental DDB_DEV=1 leak is immediately visible.
+    pub dev_token: Option<String>,
     /// Permission engine for row-level security and access control.
     pub permissions: Arc<PermissionEngine>,
     /// Rate limiter for per-request throttling.
@@ -113,6 +122,18 @@ pub struct AppState {
     pub graph_engine: Option<Arc<GraphEngine>>,
     /// Schema registry for SCHEMAFULL/SCHEMALESS/MIXED mode enforcement.
     pub schema_registry: Option<Arc<crate::schema::SchemaRegistry>>,
+    /// Unified two-tier cache (L1 DashMap + L2 durable) with read-through,
+    /// write-through, and Prometheus metrics. Slice 10, Phase 1.3.
+    pub ddb_cache: Arc<DdbCache>,
+    /// Slice 28/30 — Strict schema enforcer (Phase 9 SurrealDB parity).
+    /// Always constructed if the migration ran so admin routes can
+    /// list/edit definitions, but enforcement only fires when
+    /// `DdbConfig.schema.schema_mode == "strict"`.
+    pub strict_schema: Option<Arc<crate::schema::strict::StrictSchemaEnforcer>>,
+    /// Slice 28/30 — Shared live-query manager so the DarshanQL HTTP
+    /// handler can register `LIVE SELECT` subscriptions against the
+    /// same manager that powers the WebSocket channel.
+    pub live_queries: Option<Arc<crate::sync::live_query::LiveQueryManager>>,
 }
 
 /// Load OAuth2 provider configurations from environment variables.
@@ -311,6 +332,28 @@ impl AppState {
         let dev_mode = std::env::var("DDB_DEV")
             .map(|v| v == "1" || v == "true")
             .unwrap_or(false);
+        // Generate a random dev-bypass token so a leaked `DDB_DEV=1` env
+        // var alone is not enough to compromise the server — attackers
+        // would also need to observe the token from startup stderr.
+        let dev_token = if dev_mode {
+            use rand::RngCore;
+            let mut bytes = [0u8; 16];
+            rand::thread_rng().fill_bytes(&mut bytes);
+            let hex = bytes
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>();
+            let token = format!("dev.{hex}");
+            tracing::warn!(
+                dev_bypass_token = %token,
+                "DDB_DEV=1 is ACTIVE — any caller presenting \
+                 Authorization: Bearer {token} receives admin role. \
+                 NEVER expose this server outside loopback."
+            );
+            Some(token)
+        } else {
+            None
+        };
         let (sse_tx, _) = broadcast::channel(1024);
         let (pubsub, _) = PubSubEngine::new(4096);
         Self {
@@ -322,6 +365,7 @@ impl AppState {
             change_tx,
             started_at: Instant::now(),
             dev_mode,
+            dev_token,
             permissions: Arc::new(build_default_engine()),
             rate_limiter,
             storage_engine,
@@ -336,6 +380,9 @@ impl AppState {
             parallel_metrics: Arc::new(crate::query::parallel::ParallelMetrics::new()),
             graph_engine: None,
             schema_registry: None,
+            ddb_cache: Arc::new(DdbCache::new()),
+            strict_schema: None,
+            live_queries: None,
         }
     }
 
@@ -374,6 +421,29 @@ impl AppState {
         self
     }
 
+    /// Slice 28/30 — Attach the strict-mode schema enforcer. When the
+    /// enforcer was constructed with `strict_mode = true`, incoming
+    /// writes to collections with `schema_definitions` rows are
+    /// validated before they reach the triple store.
+    pub fn with_strict_schema(
+        mut self,
+        enforcer: Arc<crate::schema::strict::StrictSchemaEnforcer>,
+    ) -> Self {
+        self.strict_schema = Some(enforcer);
+        self
+    }
+
+    /// Slice 28/30 — Share the live-query manager with the DarshanQL
+    /// HTTP handler so `LIVE SELECT` statements submitted via REST
+    /// register against the same subscription pool as WS clients.
+    pub fn with_live_queries(
+        mut self,
+        manager: Arc<crate::sync::live_query::LiveQueryManager>,
+    ) -> Self {
+        self.live_queries = Some(manager);
+        self
+    }
+
     /// Create application state with default (test-only) configuration.
     /// Panics if called outside tests — production code must use `with_pool`.
     #[cfg(test)]
@@ -403,6 +473,7 @@ impl AppState {
             change_tx,
             started_at: Instant::now(),
             dev_mode: true,
+            dev_token: None,
             permissions: Arc::new(build_default_engine()),
             rate_limiter: Arc::new(RateLimiter::new()),
             storage_engine,
@@ -417,6 +488,9 @@ impl AppState {
             parallel_metrics: Arc::new(crate::query::parallel::ParallelMetrics::new()),
             graph_engine: None,
             schema_registry: None,
+            ddb_cache: Arc::new(DdbCache::new()),
+            strict_schema: None,
+            live_queries: None,
         }
     }
 }
@@ -612,8 +686,18 @@ pub fn build_router(state: AppState) -> Router {
     let protected_routes = Router::new()
         .route("/auth/signout", post(auth_signout))
         .route("/auth/me", get(auth_me))
-        // -- DarshQL -------------------------------------------------------
-        .route("/sql", post(darshql_handler))
+        // -- DarshanQL (SurrealQL-style superset) --------------------------
+        // Slice 28/30: DarshanQL moved off `/sql` so that path can host
+        // the raw SQL passthrough (Slice 9.3). The legacy path is kept
+        // as an alias so existing clients keep working — both route to
+        // the same handler.
+        .route("/darshql", post(darshql_handler))
+        .route("/sql/darshql", post(darshql_handler))
+        // Slice 28/30 (Slice 9.3): raw SQL passthrough gated by
+        // `require_admin_role` at handler level. Whitelists
+        // SELECT/INSERT/UPDATE/DELETE/WITH and writes every call to
+        // `admin_audit_log`.
+        .route("/sql", post(sql_passthrough_handler))
         // -- Data ----------------------------------------------------------
         .route("/query", post(query))
         .route("/mutate", post(mutate))
@@ -626,6 +710,19 @@ pub fn build_router(state: AppState) -> Router {
         .route("/fn/{name}", post(fn_invoke))
         // -- Storage -------------------------------------------------------
         .route("/storage/upload", post(storage_upload))
+        // Chunked / resumable uploads (VYASA 7.1 — see api::chunked_upload).
+        .route(
+            "/storage/upload/init",
+            post(super::chunked_upload::init_upload),
+        )
+        .route(
+            "/storage/upload/{upload_id}/chunk/{index}",
+            axum::routing::put(super::chunked_upload::put_chunk),
+        )
+        .route(
+            "/storage/upload/{upload_id}/status",
+            get(super::chunked_upload::upload_status),
+        )
         .route("/storage/{*path}", get(storage_get).delete(storage_delete))
         // -- SSE -----------------------------------------------------------
         .route("/subscribe", get(subscribe))
@@ -633,6 +730,13 @@ pub fn build_router(state: AppState) -> Router {
         .route("/events", get(events_sse))
         .route("/events/publish", post(events_publish))
         // -- Admin ---------------------------------------------------------
+        // Slice 28/30 (Slice 9.1): strict schema definitions CRUD per
+        // collection. List/upsert via the same path; deletion is left
+        // as future work.
+        .route(
+            "/admin/schema/{collection}",
+            get(admin_strict_schema_get).post(admin_strict_schema_post),
+        )
         .route("/admin/schema", get(admin_schema))
         .route("/admin/functions", get(admin_functions))
         .route("/admin/sessions", get(admin_sessions))
@@ -652,10 +756,19 @@ pub fn build_router(state: AppState) -> Router {
             "/admin/audit/proof/{entity_id}",
             get(crate::audit::handlers::audit_entity_proof),
         )
-        // -- Embeddings / Semantic Search (TODO: wire handlers) ------------
-        // .route("/embeddings", post(embeddings_store))
-        // .route("/embeddings/{entity_id}", get(embeddings_get))
-        // .route("/search/semantic", post(search_semantic))
+        // -- Audit (Blockchain anchor receipts, slice 23/30) --------------
+        .route(
+            "/admin/audit/anchors",
+            get(crate::anchor::handlers::admin_list_anchors),
+        )
+        // -- Embeddings / Vector + Full-text + Hybrid Search ---------------
+        // Phase 3 (slice 17/30) — pgvector-backed semantic search, Postgres
+        // FTS over triples.value, and Reciprocal Rank Fusion hybrid ranking.
+        .route("/embeddings", post(embeddings_store))
+        .route("/embeddings/{entity_id}", get(embeddings_get))
+        .route("/search/semantic", post(search_semantic))
+        .route("/search/text", get(search_text))
+        .route("/search/hybrid", post(search_hybrid))
         // -- Graph (SurrealDB-style record links) -------------------------
         .route("/graph/relate", post(graph_relate))
         .route("/graph/traverse", post(graph_traverse))
@@ -685,6 +798,8 @@ pub fn build_router(state: AppState) -> Router {
             "/schema/tables/{table}/migrations",
             get(schema_migration_history),
         )
+        // -- Time-series (Phase 5.1, TimescaleDB-backed) -------------------
+        .merge(super::ts::ts_routes())
         // -- Batch / Pipeline ---------------------------------------------
         .route("/batch", post(super::batch::batch_handler))
         .route(
@@ -875,6 +990,32 @@ pub fn build_router(state: AppState) -> Router {
             require_auth_middleware,
         ));
 
+    // ── Slice 11 — cache HTTP router (RESP3 twin at /api/cache/*) ──────
+    // Self-stated sub-router mounted alongside the other merges below.
+    // Uses a process-local `DdbCache` shared across requests; the RESP3
+    // protocol server (packages/cache-server binary) can be wired to the
+    // same instance when embedded in-process in a later slice.
+    let cache_http_routes = ddb_cache_server::cache_http_router(ddb_cache_http_handle().clone());
+
+    // -- Agent memory (slice 12/13/14) --------------------------------------
+    // Sub-router with its own AgentMemoryState; auth-gated like the other
+    // self-stated routers above.
+    let agent_memory_routes: Router = Router::new()
+        .nest(
+            "/agent",
+            crate::agent_memory::agent_memory_routes().with_state(
+                crate::agent_memory::AgentMemoryState::new(state.pool.clone()),
+            ),
+        )
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            require_auth_middleware,
+        ));
+
+    // -- MCP (slice 24) -----------------------------------------------------
+    // Model Context Protocol JSON-RPC + SSE streaming agent routes.
+    let mcp_routes = crate::mcp::mcp_routes(state.clone());
+
     // Merge all route groups.
     public_routes
         .merge(protected_routes)
@@ -892,6 +1033,19 @@ pub fn build_router(state: AppState) -> Router {
         .merge(api_key_routes)
         .merge(plugin_routes)
         .merge(automation_routes)
+        .merge(cache_http_routes)
+        .merge(agent_memory_routes)
+        .merge(mcp_routes)
+}
+
+/// Process-wide [`DdbCache`] shared by the HTTP REST cache API. The RESP3
+/// protocol server is packaged as a separate `ddb-cache-server` binary but
+/// may be embedded in-process in a later slice by pointing it at this same
+/// handle.
+fn ddb_cache_http_handle() -> &'static std::sync::Arc<ddb_cache::DdbCache> {
+    use std::sync::{Arc, OnceLock};
+    static CACHE: OnceLock<Arc<ddb_cache::DdbCache>> = OnceLock::new();
+    CACHE.get_or_init(|| Arc::new(ddb_cache::DdbCache::new()))
 }
 
 // ===========================================================================
@@ -923,8 +1077,28 @@ pub async fn ensure_auth_schema(pool: &PgPool) -> std::result::Result<(), sqlx::
             refresh_token_hash  TEXT NOT NULL,
             refresh_expires_at  TIMESTAMPTZ NOT NULL
         );
+        -- Phase 0.4 hardening: structured revocation, absolute timeout,
+        -- per-device IP/UA forensics. New columns are nullable / defaulted so
+        -- this block stays idempotent against legacy databases.
+        ALTER TABLE sessions
+            ADD COLUMN IF NOT EXISTS ip_address          INET,
+            ADD COLUMN IF NOT EXISTS last_active_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+            ADD COLUMN IF NOT EXISTS absolute_expires_at TIMESTAMPTZ NOT NULL DEFAULT (now() + INTERVAL '24 hours'),
+            ADD COLUMN IF NOT EXISTS revoked_at          TIMESTAMPTZ,
+            ADD COLUMN IF NOT EXISTS revoke_reason       TEXT;
+        UPDATE sessions
+           SET revoked_at = COALESCE(revoked_at, now()),
+               revoke_reason = COALESCE(revoke_reason, 'legacy_revoked')
+         WHERE revoked = true
+           AND revoked_at IS NULL;
         CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions (user_id) WHERE NOT revoked;
         CREATE INDEX IF NOT EXISTS idx_sessions_refresh ON sessions (refresh_token_hash) WHERE NOT revoked;
+        CREATE INDEX IF NOT EXISTS idx_sessions_user_active
+            ON sessions (user_id) WHERE revoked_at IS NULL;
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_user_device
+            ON sessions (user_id, device_fingerprint) WHERE revoked_at IS NULL;
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_refresh_hash
+            ON sessions (refresh_token_hash) WHERE revoked_at IS NULL;
         CREATE TABLE IF NOT EXISTS oauth_identities (
             id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
             user_id             UUID NOT NULL REFERENCES users(id),
@@ -940,21 +1114,191 @@ pub async fn ensure_auth_schema(pool: &PgPool) -> std::result::Result<(), sqlx::
         CREATE INDEX IF NOT EXISTS idx_oauth_provider_user
             ON oauth_identities (provider, provider_user_id);
         CREATE INDEX IF NOT EXISTS idx_oauth_user_id ON oauth_identities (user_id);
-        CREATE TABLE IF NOT EXISTS magic_links (
-            id              BIGSERIAL PRIMARY KEY,
-            token_hash      TEXT NOT NULL UNIQUE,
-            user_id         UUID NOT NULL REFERENCES users(id),
-            expires_at      TIMESTAMPTZ NOT NULL,
-            consumed        BOOLEAN NOT NULL DEFAULT false,
-            created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+        CREATE TABLE IF NOT EXISTS magic_link_tokens (
+            id           UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+            user_id      UUID        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            token_hash   TEXT        NOT NULL,
+            email        TEXT        NOT NULL,
+            created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+            expires_at   TIMESTAMPTZ NOT NULL DEFAULT (now() + INTERVAL '15 minutes'),
+            used_at      TIMESTAMPTZ,
+            ip_address   INET,
+            CONSTRAINT unique_unused_token UNIQUE (token_hash)
         );
-        CREATE INDEX IF NOT EXISTS idx_magic_links_hash
-            ON magic_links (token_hash) WHERE NOT consumed;
+        CREATE INDEX IF NOT EXISTS idx_magic_link_tokens_hash
+            ON magic_link_tokens (token_hash) WHERE used_at IS NULL;
+        CREATE TABLE IF NOT EXISTS login_attempts (
+            id            UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+            email         TEXT        NOT NULL,
+            ip_address    INET        NOT NULL,
+            attempted_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+            success       BOOLEAN     NOT NULL DEFAULT false
+        );
+        CREATE INDEX IF NOT EXISTS idx_login_attempts_email_time
+            ON login_attempts (email, attempted_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_login_attempts_ip_time
+            ON login_attempts (ip_address, attempted_at DESC);
         "#,
     )
     .execute(pool)
     .await?;
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Login rate limiting (exponential throttle + account lock)
+// ---------------------------------------------------------------------------
+
+/// Window (minutes) over which failed login attempts are counted.
+const LOGIN_ATTEMPT_WINDOW_MINUTES: i32 = 15;
+/// Number of recent failures before exponential throttling kicks in.
+const LOGIN_THROTTLE_THRESHOLD: i64 = 5;
+/// Number of recent failures before the account is hard-locked.
+const LOGIN_LOCK_THRESHOLD: i64 = 10;
+/// Retry-after (seconds) returned when the account is locked.
+const LOGIN_LOCK_RETRY_AFTER_SECS: u64 = 3600;
+
+/// Outcome of the pre-authentication rate-limit check.
+#[derive(Debug)]
+pub struct LoginAttemptGate {
+    /// UUID of the attempt row just inserted (for later success flip).
+    pub attempt_id: Uuid,
+}
+
+/// Error outcomes from the login rate-limit gate.
+///
+/// `Locked` / `Throttled` serialize to the spec-mandated body shape
+/// `{"error":"...","retry_after":"N"}` with a 429 status. `Internal`
+/// bubbles up a standard `ApiError` 500.
+#[derive(Debug)]
+pub enum LoginGateError {
+    /// Caller has hit ≥ 10 failures in the window → account locked.
+    Locked { retry_after_secs: u64 },
+    /// Caller has hit ≥ 5 failures in the window → exponential throttle.
+    Throttled { retry_after_secs: u64 },
+    /// DB or other server-side failure while recording/counting.
+    Internal(String),
+}
+
+impl LoginGateError {
+    fn into_response(self) -> Response {
+        match self {
+            LoginGateError::Locked { retry_after_secs } => {
+                let body = serde_json::json!({
+                    "error": "account_locked",
+                    "retry_after": retry_after_secs.to_string(),
+                });
+                let mut resp = (StatusCode::TOO_MANY_REQUESTS, axum::Json(body)).into_response();
+                if let Ok(v) = HeaderValue::from_str(&retry_after_secs.to_string()) {
+                    resp.headers_mut().insert("Retry-After", v);
+                }
+                resp
+            }
+            LoginGateError::Throttled { retry_after_secs } => {
+                let body = serde_json::json!({
+                    "error": "too_many_attempts",
+                    "retry_after": retry_after_secs.to_string(),
+                });
+                let mut resp = (StatusCode::TOO_MANY_REQUESTS, axum::Json(body)).into_response();
+                if let Ok(v) = HeaderValue::from_str(&retry_after_secs.to_string()) {
+                    resp.headers_mut().insert("Retry-After", v);
+                }
+                resp
+            }
+            LoginGateError::Internal(msg) => ApiError::internal(msg).into_response(),
+        }
+    }
+}
+
+/// Parse a client-supplied IP string into a canonical `IpAddr`.
+///
+/// Accepts both IPv4 and IPv6. Returns `400 Bad Request` on failure.
+fn parse_client_ip(raw: &str) -> Result<std::net::IpAddr, ApiError> {
+    raw.parse::<std::net::IpAddr>()
+        .map_err(|_| ApiError::bad_request(format!("Invalid client IP address: {raw}")))
+}
+
+/// Record a failed login attempt and enforce the exponential throttle.
+///
+/// Steps:
+/// 1. INSERT a `login_attempts` row with `success=false`.
+/// 2. COUNT failed attempts for this email in the last 15 minutes.
+/// 3. `>= 10` → return `429 {"error":"account_locked","retry_after":"3600"}`.
+/// 4. `>= 5`  → return `429 {"error":"too_many_attempts","retry_after":"2^(n-5)"}`.
+/// 5. Otherwise return the inserted row id so the caller can flip it on success.
+pub async fn record_login_attempt_and_check(
+    pool: &PgPool,
+    email: &str,
+    ip: std::net::IpAddr,
+) -> Result<LoginAttemptGate, LoginGateError> {
+    // 1. Insert the attempt row (success=false by default).
+    let attempt_id: Uuid = sqlx::query_scalar(
+        "INSERT INTO login_attempts (email, ip_address, success) \
+         VALUES ($1, $2::inet, false) RETURNING id",
+    )
+    .bind(email)
+    .bind(ip.to_string())
+    .fetch_one(pool)
+    .await
+    .map_err(|e| LoginGateError::Internal(format!("login_attempts insert failed: {e}")))?;
+
+    // 2. Count recent failures for this email.
+    let failed: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM login_attempts \
+         WHERE email = $1 \
+           AND success = false \
+           AND attempted_at > now() - make_interval(mins => $2)",
+    )
+    .bind(email)
+    .bind(LOGIN_ATTEMPT_WINDOW_MINUTES)
+    .fetch_one(pool)
+    .await
+    .map_err(|e| LoginGateError::Internal(format!("login_attempts count failed: {e}")))?;
+
+    // 3. Hard lock after LOGIN_LOCK_THRESHOLD failures.
+    if failed >= LOGIN_LOCK_THRESHOLD {
+        return Err(LoginGateError::Locked {
+            retry_after_secs: LOGIN_LOCK_RETRY_AFTER_SECS,
+        });
+    }
+
+    // 4. Exponential throttle between 5 and 9 failures: 2^(failed-5) seconds.
+    if failed >= LOGIN_THROTTLE_THRESHOLD {
+        let exp = (failed - LOGIN_THROTTLE_THRESHOLD) as u32;
+        let retry = 2u64.pow(exp);
+        return Err(LoginGateError::Throttled {
+            retry_after_secs: retry,
+        });
+    }
+
+    Ok(LoginAttemptGate { attempt_id })
+}
+
+/// Flip a previously-recorded attempt row to `success=true` after the
+/// password has been verified. Non-fatal — failures only warn.
+pub async fn mark_login_attempt_success(pool: &PgPool, attempt_id: Uuid) {
+    if let Err(e) = sqlx::query("UPDATE login_attempts SET success = true WHERE id = $1")
+        .bind(attempt_id)
+        .execute(pool)
+        .await
+    {
+        tracing::warn!(%attempt_id, error = %e, "failed to mark login attempt success");
+    }
+}
+
+/// Public wrapper around [`require_auth_middleware`] so sibling modules
+/// (e.g. `crate::mcp`) can attach the same JWT enforcement used by
+/// every other protected DarshJDB route. Keeping the core helper
+/// private preserves its invariants; the wrapper only exists to
+/// expose the trait-object-friendly shape the `middleware::from_fn_*`
+/// API requires when wiring from another module.
+pub async fn require_auth_middleware_public(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    request: Request<Body>,
+    next: Next,
+) -> Response {
+    require_auth_middleware(State(state), headers, request, next).await
 }
 
 /// Middleware that enforces JWT authentication on protected routes.
@@ -978,7 +1322,30 @@ async fn require_auth_middleware(
         }
     };
 
-    if state.dev_mode && token == "dev" {
+    if state.dev_mode
+        && let Some(expected) = state.dev_token.as_deref()
+        && token == expected
+    {
+        // Refuse the bypass if the request carries any proxy header —
+        // defense-in-depth against accidental exposure.
+        if headers.contains_key("x-forwarded-for")
+            || headers.contains_key("x-real-ip")
+            || headers.contains_key("forwarded")
+        {
+            let body = serde_json::json!({
+                "error": {
+                    "code": 401,
+                    "message": "dev bypass refused: request traversed a proxy"
+                }
+            });
+            return (StatusCode::UNAUTHORIZED, axum::Json(body)).into_response();
+        }
+        tracing::error!(
+            target: "ddb::security",
+            path = %request.uri().path(),
+            "DEV-MODE BYPASS FIRED — admin role granted without session. \
+             This should NEVER happen in production."
+        );
         let dev_ctx = AuthContext {
             user_id: Uuid::nil(),
             session_id: Uuid::nil(),
@@ -1007,7 +1374,11 @@ async fn require_auth_middleware(
         .unwrap_or("")
         .to_string();
 
-    match state.session_manager.validate_token(token, &ip, &ua, &dfp) {
+    match state
+        .session_manager
+        .validate_token(token, &ip, &ua, &dfp)
+        .await
+    {
         Ok(ctx) => {
             request.extensions_mut().insert(ctx);
             next.run(request).await
@@ -1155,8 +1526,22 @@ struct SigninRequest {
 async fn auth_signin(
     State(state): State<AppState>,
     headers: HeaderMap,
-    axum::Json(body): axum::Json<SigninRequest>,
+    request: Request<Body>,
 ) -> Result<Response, ApiError> {
+    // Extract ConnectInfo from request extensions (middleware-injected).
+    let connect_info_ip: Option<String> = request
+        .extensions()
+        .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+        .map(|ci| ci.0.ip().to_string());
+
+    // Parse JSON body manually so we don't compete with the body extractor.
+    let body: SigninRequest = {
+        let bytes = axum::body::to_bytes(request.into_body(), 64 * 1024)
+            .await
+            .map_err(|e| ApiError::bad_request(format!("Failed to read body: {e}")))?;
+        serde_json::from_slice(&bytes)
+            .map_err(|e| ApiError::bad_request(format!("Invalid signin JSON: {e}")))?
+    };
     let email = body.email.trim().to_lowercase();
     if email.is_empty() {
         return Err(ApiError::bad_request("Email is required"));
@@ -1165,16 +1550,31 @@ async fn auth_signin(
         return Err(ApiError::bad_request("Password is required"));
     }
 
+    // Resolve client IP: X-Forwarded-For (first hop) overrides ConnectInfo.
+    let ip_str = headers
+        .get("x-forwarded-for")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.split(',').next())
+        .map(|s| s.trim().to_string())
+        .or(connect_info_ip)
+        .unwrap_or_else(|| "0.0.0.0".to_string());
+    let client_ip = parse_client_ip(&ip_str)?;
+
+    // Gate: record the attempt (success=false) and enforce exponential throttle.
+    let gate = match record_login_attempt_and_check(&state.pool, &email, client_ip).await {
+        Ok(g) => g,
+        Err(e) => return Ok(e.into_response()),
+    };
+
     let outcome = PasswordProvider::authenticate(&state.pool, &email, &body.password)
         .await
         .map_err(|e| ApiError::internal(format!("Authentication error: {e}")))?;
 
     match outcome {
         AuthOutcome::Success { user_id, roles } => {
-            let ip = headers
-                .get("x-forwarded-for")
-                .and_then(|v| v.to_str().ok())
-                .unwrap_or("unknown");
+            // Flip the attempt row to success=true so future failures restart the counter.
+            mark_login_attempt_success(&state.pool, gate.attempt_id).await;
+
             let ua = headers
                 .get("user-agent")
                 .and_then(|v| v.to_str().ok())
@@ -1186,7 +1586,7 @@ async fn auth_signin(
 
             let token_pair = state
                 .session_manager
-                .create_session(user_id, roles, ip, ua, dfp)
+                .create_session(user_id, roles, &ip_str, ua, dfp)
                 .await
                 .map_err(|e| ApiError::internal(format!("Session creation failed: {e}")))?;
 
@@ -1200,6 +1600,8 @@ async fn auth_signin(
             Ok(negotiate_response(&headers, &response))
         }
         AuthOutcome::MfaRequired { user_id, mfa_token } => {
+            // MFA challenge issued — treat as password-verified for throttle counter.
+            mark_login_attempt_success(&state.pool, gate.attempt_id).await;
             let response = serde_json::json!({
                 "mfa_required": true,
                 "user_id": user_id,
@@ -1208,6 +1610,7 @@ async fn auth_signin(
             Ok(negotiate_response(&headers, &response))
         }
         AuthOutcome::Failed { reason: _ } => {
+            // Leave the attempt row as success=false.
             Err(ApiError::unauthenticated("Invalid email or password"))
         }
     }
@@ -1221,6 +1624,7 @@ struct MagicLinkRequest {
 
 async fn auth_magic_link(
     State(state): State<AppState>,
+    headers: HeaderMap,
     axum::Json(body): axum::Json<MagicLinkRequest>,
 ) -> Result<Response, ApiError> {
     let email = body.email.trim().to_lowercase();
@@ -1237,23 +1641,42 @@ async fn auth_magic_link(
             .map_err(|e| ApiError::internal(format!("Database error: {e}")))?;
 
     if let Some((user_id,)) = user_row {
-        let magic_link = MagicLinkProvider::generate(&state.pool, user_id)
+        let ip = headers
+            .get("x-forwarded-for")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.split(',').next())
+            .map(|s| s.trim())
+            .unwrap_or("");
+
+        let magic_link = MagicLinkProvider::generate(&state.pool, &email, user_id, ip)
             .await
             .map_err(|e| ApiError::internal(format!("Failed to generate magic link: {e}")))?;
 
-        tracing::debug!(user_id = %user_id, expires_at = %magic_link.expires_at, "magic link generated");
+        tracing::debug!(
+            user_id = %user_id,
+            expires_at = %magic_link.expires_at,
+            "magic link generated"
+        );
 
-        // In dev mode, include the token in the response for testing.
+        // Deliver via configured transport (SMTP, SendGrid, or dev log).
+        // Delivery failure is logged, not returned, to avoid leaking
+        // account existence.
+        if let Err(e) = MagicLinkProvider::send_email(&email, &magic_link.url).await {
+            tracing::warn!(error = %e, "magic link delivery failed");
+        }
+
+        // In dev mode, emit the token + URL to the server log so local
+        // testing flows can observe them, but NEVER return them in the
+        // HTTP response — a leaked DDB_DEV=1 on production would otherwise
+        // give any caller a valid magic-link URL directly.
         if state.dev_mode {
-            return Ok((
-                StatusCode::OK,
-                axum::Json(serde_json::json!({
-                    "message": "If an account exists, a magic link has been sent.",
-                    "_dev_token": magic_link.token,
-                    "_dev_expires_at": magic_link.expires_at.to_rfc3339(),
-                })),
-            )
-                .into_response());
+            tracing::warn!(
+                target: "ddb::security",
+                token = %magic_link.token,
+                url = %magic_link.url,
+                expires_at = %magic_link.expires_at.to_rfc3339(),
+                "DEV-MODE magic link issued (log-only, never in response body)"
+            );
         }
     }
 
@@ -1285,53 +1708,64 @@ async fn auth_verify(
         return Err(ApiError::bad_request("Token is required"));
     }
 
-    // Verify the magic-link token against the database.
-    let outcome = MagicLinkProvider::verify(&state.pool, &body.token)
+    // Verify the magic-link token. On success we get the owning user_id;
+    // invalid/expired/used tokens map to 401 responses.
+    let user_id = match MagicLinkProvider::verify(&state.pool, &body.token).await {
+        Ok(uid) => uid,
+        Err(crate::auth::AuthError::TokenAlreadyUsed) => {
+            return Err(ApiError::unauthenticated("Magic link already used"));
+        }
+        Err(crate::auth::AuthError::TokenInvalid(reason)) => {
+            return Err(ApiError::unauthenticated(format!(
+                "Invalid magic link: {reason}"
+            )));
+        }
+        Err(e) => {
+            return Err(ApiError::internal(format!(
+                "Token verification failed: {e}"
+            )));
+        }
+    };
+
+    // Fetch the user's roles so the issued JWT is properly scoped.
+    let roles_json: Option<serde_json::Value> =
+        sqlx::query_scalar("SELECT roles FROM users WHERE id = $1 AND deleted_at IS NULL")
+            .bind(user_id)
+            .fetch_optional(&state.pool)
+            .await
+            .map_err(|e| ApiError::internal(format!("Database error: {e}")))?;
+
+    let roles: Vec<String> = roles_json
+        .and_then(|v| serde_json::from_value(v).ok())
+        .unwrap_or_else(|| vec!["user".to_string()]);
+
+    let ip = headers
+        .get("x-forwarded-for")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("unknown");
+    let ua = headers
+        .get("user-agent")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("unknown");
+    let dfp = headers
+        .get("x-device-fingerprint")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+
+    let token_pair = state
+        .session_manager
+        .create_session(user_id, roles, ip, ua, dfp)
         .await
-        .map_err(|e| ApiError::internal(format!("Token verification failed: {e}")))?;
+        .map_err(|e| ApiError::internal(format!("Session creation failed: {e}")))?;
 
-    match outcome {
-        AuthOutcome::Success { user_id, roles } => {
-            let ip = headers
-                .get("x-forwarded-for")
-                .and_then(|v| v.to_str().ok())
-                .unwrap_or("unknown");
-            let ua = headers
-                .get("user-agent")
-                .and_then(|v| v.to_str().ok())
-                .unwrap_or("unknown");
-            let dfp = headers
-                .get("x-device-fingerprint")
-                .and_then(|v| v.to_str().ok())
-                .unwrap_or("");
-
-            let token_pair = state
-                .session_manager
-                .create_session(user_id, roles, ip, ua, dfp)
-                .await
-                .map_err(|e| ApiError::internal(format!("Session creation failed: {e}")))?;
-
-            let response = serde_json::json!({
-                "user_id": user_id,
-                "access_token": token_pair.access_token,
-                "refresh_token": token_pair.refresh_token,
-                "expires_in": token_pair.expires_in,
-                "token_type": token_pair.token_type,
-            });
-            Ok(negotiate_response(&headers, &response))
-        }
-        AuthOutcome::MfaRequired { user_id, mfa_token } => {
-            let response = serde_json::json!({
-                "mfa_required": true,
-                "user_id": user_id,
-                "mfa_token": mfa_token,
-            });
-            Ok(negotiate_response(&headers, &response))
-        }
-        AuthOutcome::Failed { reason } => Err(ApiError::unauthenticated(format!(
-            "Verification failed: {reason}"
-        ))),
-    }
+    let response = serde_json::json!({
+        "user_id": user_id,
+        "access_token": token_pair.access_token,
+        "refresh_token": token_pair.refresh_token,
+        "expires_in": token_pair.expires_in,
+        "token_type": token_pair.token_type,
+    });
+    Ok(negotiate_response(&headers, &response))
 }
 
 /// `POST /api/auth/oauth/:provider` — Generate an OAuth2 authorize URL with PKCE + HMAC state,
@@ -1628,6 +2062,7 @@ async fn auth_signout(
     let auth_ctx = state
         .session_manager
         .validate_token(&token, ip, ua, dfp)
+        .await
         .map_err(|e| ApiError::unauthenticated(format!("Invalid token: {e}")))?;
 
     state
@@ -1660,6 +2095,7 @@ async fn auth_me(State(state): State<AppState>, headers: HeaderMap) -> Result<Re
     let auth_ctx = state
         .session_manager
         .validate_token(&token, ip, ua, dfp)
+        .await
         .map_err(|e| ApiError::unauthenticated(format!("Invalid token: {e}")))?;
 
     // Fetch user record from the database.
@@ -1701,25 +2137,63 @@ struct DarshQLRequest {
     query: String,
 }
 
-/// `POST /api/sql` — Execute DarshQL statements.
+/// `POST /api/darshql` — Execute DarshanQL statements over HTTP.
 ///
 /// Accepts a `{ "query": "SELECT * FROM users WHERE age > 18" }` body
 /// and returns the results of each statement.
+///
+/// Slice 28/30 (Phase 9 SurrealDB parity, sub-slice 9.2): when the
+/// incoming query **starts with the `LIVE ` keyword**, this handler
+/// refuses to run it synchronously unless the caller explicitly opts
+/// in via the `X-Subscription-Upgrade` header. The rationale is that
+/// a LIVE subscription over plain HTTP has no delivery channel — the
+/// subscription ID would be stranded. Opt-in clients get the
+/// subscription registered against the shared
+/// [`crate::sync::live_query::LiveQueryManager`] and an
+/// `X-Subscription-Id` response header alongside the initial body;
+/// everyone else gets a clean 400 pointing at the WebSocket.
 async fn darshql_handler(
     State(state): State<AppState>,
     headers: HeaderMap,
     axum::Json(body): axum::Json<DarshQLRequest>,
 ) -> Result<Response, ApiError> {
-    let _auth_ctx = extract_auth_context(&headers, &state)?;
+    let auth_ctx = extract_auth_context(&headers, &state).await?;
 
     let start = Instant::now();
 
-    // Parse DarshQL into AST.
+    // ── Slice 9.2: LIVE SELECT detection ─────────────────────────────
+    // Strip a leading `LIVE ` / `LIVE\n` / `LIVE\t` keyword and route
+    // to the subscription path. We check the trimmed original body
+    // rather than the parsed AST so users who type `LIVE SELECT ...`
+    // still benefit from the parse-then-register flow without a
+    // second parse pass. `starts_with` is UTF-8 safe so non-ASCII
+    // preambles can't panic the handler.
+    let trimmed = body.query.trim_start();
+    let starts_with_live = {
+        let upper = trimmed.to_ascii_uppercase();
+        upper.starts_with("LIVE ") || upper.starts_with("LIVE\n") || upper.starts_with("LIVE\t")
+    };
+
+    if starts_with_live {
+        return handle_http_live_select(&state, &auth_ctx, &headers, &body.query, start);
+    }
+
+    // Parse DarshanQL into AST.
     let statements = crate::query::darshql::Parser::parse(&body.query)
         .map_err(|e| ApiError::bad_request(format!("DarshQL parse error: {e}")))?;
 
     if statements.is_empty() {
         return Err(ApiError::bad_request("empty query".to_string()));
+    }
+
+    // Defensive: if the parser extracted a LIVE statement (e.g. via a
+    // multi-statement batch that did not start with LIVE) we still
+    // require the subscription-upgrade header.
+    if statements
+        .iter()
+        .any(|s| matches!(s, crate::query::darshql::ast::Statement::LiveSelect(_)))
+    {
+        return handle_http_live_select(&state, &auth_ctx, &headers, &body.query, start);
     }
 
     // Execute all statements.
@@ -1734,6 +2208,235 @@ async fn darshql_handler(
     });
 
     Ok(negotiate_response(&headers, &response_body))
+}
+
+/// Handle a `LIVE SELECT ...` request that arrived over HTTP.
+///
+/// Returns 400 when the caller did not send `X-Subscription-Upgrade`.
+/// On success, registers the subscription with the shared
+/// [`crate::sync::live_query::LiveQueryManager`] and returns the
+/// initial empty result body plus an `X-Subscription-Id` response
+/// header so the caller can reconnect on the WebSocket channel and
+/// resume delivery.
+fn handle_http_live_select(
+    state: &AppState,
+    auth_ctx: &AuthContext,
+    headers: &HeaderMap,
+    raw_query: &str,
+    start: Instant,
+) -> Result<Response, ApiError> {
+    let wants_upgrade = headers
+        .get("x-subscription-upgrade")
+        .and_then(|v| v.to_str().ok())
+        .map(|v| !v.trim().is_empty() && v.trim() != "0" && !v.eq_ignore_ascii_case("false"))
+        .unwrap_or(false);
+
+    if !wants_upgrade {
+        return Err(ApiError::bad_request(
+            "LIVE SELECT requires a WebSocket channel; set 'X-Subscription-Upgrade: 1' \
+             to receive an X-Subscription-Id and then connect to /ws to consume events",
+        ));
+    }
+
+    let manager = state.live_queries.as_ref().ok_or_else(|| {
+        ApiError::internal("LIVE SELECT unavailable — live query manager not configured")
+    })?;
+
+    // Strip an optional leading `LIVE` keyword so the upstream
+    // manager — which also handles WS `live-select` payloads — can
+    // parse the tail as a regular `SELECT ...`.
+    let stripped = strip_leading_live_keyword(raw_query);
+
+    // LiveQueryManager registers queries against a SessionId. HTTP
+    // callers don't have a WS session id, so we reuse the
+    // authenticated session id so subsequent WS connections from
+    // the same caller can kill the subscription.
+    let session_id = auth_ctx.session_id;
+
+    let live_id = manager
+        .register(session_id, &stripped)
+        .map_err(|e| ApiError::bad_request(format!("LIVE SELECT registration failed: {e}")))?;
+
+    let elapsed = start.elapsed();
+    let body = serde_json::json!({
+        "subscription_id": live_id.to_string(),
+        "session_id": session_id.to_string(),
+        "notice": "subscription registered; connect to /ws and authenticate \
+                  with the same Bearer token to receive live events",
+        "time": format!("{}ms", elapsed.as_millis()),
+    });
+
+    // Build the response by hand so we can attach the
+    // `X-Subscription-Id` header alongside the negotiated body.
+    let mut response = negotiate_response(headers, &body);
+    match HeaderValue::from_str(&live_id.to_string()) {
+        Ok(hv) => {
+            response.headers_mut().insert("x-subscription-id", hv);
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to encode X-Subscription-Id header");
+        }
+    }
+    Ok(response)
+}
+
+/// Remove a leading `LIVE` keyword (with any trailing whitespace)
+/// from a query string. Case-insensitive and UTF-8 safe. Used by the
+/// HTTP LIVE SELECT path so the upstream parser sees a plain
+/// `SELECT ...`.
+fn strip_leading_live_keyword(q: &str) -> String {
+    let trimmed = q.trim_start();
+    if trimmed.len() >= 4
+        && trimmed.is_char_boundary(4)
+        && trimmed[..4].eq_ignore_ascii_case("LIVE")
+    {
+        let rest = &trimmed[4..];
+        // Require whitespace after LIVE so we don't clobber `LIVELINESS`.
+        if rest
+            .chars()
+            .next()
+            .map(|c| c.is_whitespace())
+            .unwrap_or(false)
+        {
+            return rest.trim_start().to_string();
+        }
+    }
+    q.to_string()
+}
+
+// ===========================================================================
+// Slice 28/30 — SQL passthrough + strict schema admin handlers
+// ===========================================================================
+
+/// `POST /api/sql` — Raw SQL passthrough for privileged operators.
+///
+/// Gated by [`require_admin_role`] (admin role required). The
+/// statement must be a SELECT / INSERT / UPDATE / DELETE / WITH; DDL
+/// is rejected with HTTP 400 before Postgres sees anything. Every
+/// call is written to `admin_audit_log` regardless of outcome.
+async fn sql_passthrough_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    axum::Json(body): axum::Json<super::sql_passthrough::SqlPassthroughRequest>,
+) -> Result<Response, ApiError> {
+    // Admin role check also hands us the full AuthContext so we have
+    // the actor user id for the audit row without re-decoding the JWT.
+    let actor = require_admin_auth(&headers, &state).await?;
+
+    match super::sql_passthrough::execute_passthrough(&state.pool, actor.user_id, &body).await {
+        Ok(result) => Ok(negotiate_response(&headers, &result)),
+        Err(crate::error::DarshJError::InvalidQuery(msg)) => Err(ApiError::bad_request(msg)),
+        Err(e) => Err(ApiError::internal(format!("SQL passthrough failed: {e}"))),
+    }
+}
+
+/// `GET /api/admin/schema/:collection` — List strict-schema definitions
+/// for a single collection. Returns an empty `definitions` array when
+/// no rows exist yet so the admin UI can render a blank editor without
+/// special-casing 404s.
+async fn admin_strict_schema_get(
+    State(state): State<AppState>,
+    Path(collection): Path<String>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    require_admin_role(&headers, &state).await?;
+
+    let enforcer = state.strict_schema.as_ref().ok_or_else(|| {
+        ApiError::internal("strict schema enforcer not configured for this server")
+    })?;
+
+    let defs = enforcer.get(&collection).unwrap_or_default();
+    let mut definitions: Vec<crate::schema::strict::StrictFieldDef> = defs.into_values().collect();
+    definitions.sort_by(|a, b| a.attribute.cmp(&b.attribute));
+
+    let response = serde_json::json!({
+        "collection": collection,
+        "strict_mode_active": enforcer.is_strict(),
+        "definitions": definitions,
+    });
+
+    Ok(negotiate_response(&headers, &response))
+}
+
+/// Request body for `POST /api/admin/schema/:collection`.
+#[derive(Deserialize)]
+struct StrictSchemaPutRequest {
+    /// Attribute definitions to upsert for this collection. Any
+    /// attribute omitted from this list is **retained**; to delete a
+    /// definition, the admin UI should call the delete endpoint
+    /// (future work — keeps this slice's surface minimal).
+    definitions: Vec<StrictSchemaPutEntry>,
+}
+
+/// A single inbound definition. Mirrors `StrictFieldDef` but omits
+/// the `collection` field (taken from the URL path) so clients don't
+/// have to repeat it per row.
+#[derive(Deserialize)]
+struct StrictSchemaPutEntry {
+    attribute: String,
+    value_type: String,
+    #[serde(default)]
+    required: bool,
+    #[serde(default)]
+    unique_index: bool,
+    #[serde(default)]
+    default_val: Option<Value>,
+    #[serde(default)]
+    validator: Option<String>,
+}
+
+/// `POST /api/admin/schema/:collection` — Upsert strict definitions.
+async fn admin_strict_schema_post(
+    State(state): State<AppState>,
+    Path(collection): Path<String>,
+    headers: HeaderMap,
+    axum::Json(body): axum::Json<StrictSchemaPutRequest>,
+) -> Result<Response, ApiError> {
+    require_admin_role(&headers, &state).await?;
+
+    let enforcer = state.strict_schema.as_ref().ok_or_else(|| {
+        ApiError::internal("strict schema enforcer not configured for this server")
+    })?;
+
+    if body.definitions.is_empty() {
+        return Err(ApiError::bad_request("at least one definition is required"));
+    }
+
+    let defs: Vec<crate::schema::strict::StrictFieldDef> = body
+        .definitions
+        .into_iter()
+        .map(|e| crate::schema::strict::StrictFieldDef {
+            collection: collection.clone(),
+            attribute: e.attribute,
+            value_type: e.value_type,
+            required: e.required,
+            unique_index: e.unique_index,
+            default_val: e.default_val,
+            validator: e.validator,
+        })
+        .collect();
+
+    enforcer
+        .upsert(&collection, &defs)
+        .await
+        .map_err(|e| ApiError::bad_request(format!("schema upsert failed: {e}")))?;
+
+    let updated = enforcer.get(&collection).unwrap_or_default();
+    let mut definitions: Vec<crate::schema::strict::StrictFieldDef> =
+        updated.into_values().collect();
+    definitions.sort_by(|a, b| a.attribute.cmp(&b.attribute));
+
+    let response = serde_json::json!({
+        "collection": collection,
+        "strict_mode_active": enforcer.is_strict(),
+        "definitions": definitions,
+    });
+
+    Ok(negotiate_response_status(
+        &headers,
+        StatusCode::OK,
+        &response,
+    ))
 }
 
 // ===========================================================================
@@ -1754,7 +2457,7 @@ async fn query(
     headers: HeaderMap,
     axum::Json(body): axum::Json<QueryRequest>,
 ) -> Result<Response, ApiError> {
-    let auth_ctx = extract_auth_context(&headers, &state)?;
+    let auth_ctx = extract_auth_context(&headers, &state).await?;
 
     let start = Instant::now();
 
@@ -1999,7 +2702,14 @@ async fn mutate(
                 }
             }
             MutationOp::Delete => {
-                let entity_id = m.id.expect("validated above");
+                // Validation 100 lines above guarantees m.id is Some for
+                // Delete ops, but let-else keeps that invariant local so a
+                // future MutationOp variant can't silently trigger a panic.
+                let Some(entity_id) = m.id else {
+                    return Err(ApiError::bad_request(
+                        "Delete mutation missing required `id` field",
+                    ));
+                };
                 entity_ids.push(entity_id);
 
                 let existing = PgTripleStore::get_entity_in_tx(&mut db_tx, entity_id)
@@ -2105,7 +2815,7 @@ async fn data_list(
     Query(params): Query<DataListParams>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
-    let auth_ctx = extract_auth_context(&headers, &state)?;
+    let auth_ctx = extract_auth_context(&headers, &state).await?;
     let limit = params.limit.unwrap_or(50).min(1000);
 
     validate_entity_name(&entity)?;
@@ -2153,7 +2863,7 @@ async fn data_create(
     headers: HeaderMap,
     axum::Json(body): axum::Json<Value>,
 ) -> Result<Response, ApiError> {
-    let auth_ctx = extract_auth_context(&headers, &state)?;
+    let auth_ctx = extract_auth_context(&headers, &state).await?;
 
     validate_entity_name(&entity)?;
 
@@ -2169,16 +2879,44 @@ async fn data_create(
         .as_object()
         .ok_or_else(|| ApiError::bad_request("Request body must be a JSON object"))?;
 
+    // ── Slice 28/30 — Strict schema enforcement ──────────────────
+    // When `DdbConfig.schema.schema_mode == "strict"` and the target
+    // collection has rows in `schema_definitions`, validate the
+    // incoming document against the per-attribute contract before it
+    // reaches the SurrealDB-style registry. Failures short-circuit
+    // with HTTP 422 and the slice-mandated error payload shape:
+    //   { "errors": [ { "field": "email", "code": "REQUIRED" }, ... ] }
+    let obj_for_strict: std::collections::HashMap<String, Value> = obj
+        .iter()
+        .filter(|(k, _)| !k.starts_with('$'))
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    let mut coerced_from_strict: Option<std::collections::HashMap<String, Value>> = None;
+    if let Some(ref strict) = state.strict_schema {
+        if strict.is_strict() {
+            let report = strict.validate_create(&entity, &obj_for_strict);
+            if !report.is_valid() {
+                return Err(ApiError::validation_with_payload(
+                    "Schema validation failed",
+                    report.error_payload(),
+                ));
+            }
+            coerced_from_strict = Some(report.document);
+        }
+    }
+
     // ── Schema validation (SCHEMAFULL / MIXED mode) ──────────────
     // If a schema registry is configured and the table has a schema
     // definition, validate the document before persisting triples.
     let obj = if let Some(ref registry) = state.schema_registry {
         if let Some(schema) = registry.get(&entity) {
-            let doc: std::collections::HashMap<String, Value> = obj
-                .iter()
-                .filter(|(k, _)| !k.starts_with('$'))
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect();
+            let doc: std::collections::HashMap<String, Value> =
+                coerced_from_strict.clone().unwrap_or_else(|| {
+                    obj.iter()
+                        .filter(|(k, _)| !k.starts_with('$'))
+                        .map(|(k, v)| (k.clone(), v.clone()))
+                        .collect()
+                });
             let result = crate::schema::validator::SchemaValidator::validate_insert(&schema, &doc);
             if !result.is_valid() {
                 return Err(ApiError::bad_request(format!(
@@ -2197,9 +2935,27 @@ async fn data_create(
             validated
                 .into_iter()
                 .collect::<serde_json::Map<String, Value>>()
+        } else if let Some(coerced) = coerced_from_strict.clone() {
+            // Strict enforcement injected defaults — promote those back
+            // onto the original Map, preserving $-meta keys.
+            let mut merged: serde_json::Map<String, Value> = coerced.into_iter().collect();
+            for (k, v) in obj.iter() {
+                if k.starts_with('$') {
+                    merged.insert(k.clone(), v.clone());
+                }
+            }
+            merged
         } else {
             obj.clone()
         }
+    } else if let Some(coerced) = coerced_from_strict {
+        let mut merged: serde_json::Map<String, Value> = coerced.into_iter().collect();
+        for (k, v) in obj.iter() {
+            if k.starts_with('$') {
+                merged.insert(k.clone(), v.clone());
+            }
+        }
+        merged
     } else {
         obj.clone()
     };
@@ -2294,7 +3050,7 @@ async fn data_get(
     Path((entity, id)): Path<(String, Uuid)>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
-    let auth_ctx = extract_auth_context(&headers, &state)?;
+    let auth_ctx = extract_auth_context(&headers, &state).await?;
 
     validate_entity_name(&entity)?;
 
@@ -2394,7 +3150,7 @@ async fn data_patch(
     headers: HeaderMap,
     axum::Json(body): axum::Json<Value>,
 ) -> Result<Response, ApiError> {
-    let auth_ctx = extract_auth_context(&headers, &state)?;
+    let auth_ctx = extract_auth_context(&headers, &state).await?;
 
     validate_entity_name(&entity)?;
 
@@ -2437,6 +3193,27 @@ async fn data_patch(
     let obj = body
         .as_object()
         .ok_or_else(|| ApiError::bad_request("Request body must be a JSON object"))?;
+
+    // ── Slice 28/30 — Strict schema type checks on PATCH ─────────
+    // Required-field checks are skipped for partial updates, but
+    // every supplied attribute is still type-checked against
+    // `schema_definitions`.
+    if let Some(ref strict) = state.strict_schema {
+        if strict.is_strict() {
+            let patch_doc: std::collections::HashMap<String, Value> = obj
+                .iter()
+                .filter(|(k, _)| !k.starts_with('$'))
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
+            let report = strict.validate_patch(&entity, &patch_doc);
+            if !report.is_valid() {
+                return Err(ApiError::validation_with_payload(
+                    "Schema validation failed",
+                    report.error_payload(),
+                ));
+            }
+        }
+    }
 
     // ── Schema validation for updates ────────────────────────────
     let obj = if let Some(ref registry) = state.schema_registry {
@@ -2587,7 +3364,7 @@ async fn data_delete(
     Path((entity, id)): Path<(String, Uuid)>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
-    let auth_ctx = extract_auth_context(&headers, &state)?;
+    let auth_ctx = extract_auth_context(&headers, &state).await?;
 
     validate_entity_name(&entity)?;
 
@@ -2812,7 +3589,16 @@ async fn storage_upload(
         return Err(ApiError::bad_request("Upload body is empty"));
     }
 
-    let path = upload_path.unwrap_or_else(|| format!("uploads/{}", Uuid::new_v4()));
+    // Phase 0 vuln fix (VYASA 7.1): validate the client-supplied `path`
+    // field the same way chunked uploads do. Before this patch the
+    // multipart handler accepted any text (including `../etc/passwd`
+    // and paths with NUL / control bytes) and handed it straight to
+    // the storage backend. Reuses the single source of truth in
+    // `super::chunked_upload::sanitize_storage_path`.
+    let path = match upload_path {
+        Some(raw) => super::chunked_upload::sanitize_storage_path(&raw)?,
+        None => format!("uploads/{}", Uuid::new_v4()),
+    };
 
     let result = state
         .storage_engine
@@ -2860,14 +3646,11 @@ async fn storage_get(
     Query(params): Query<StorageGetParams>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
-    if path.is_empty() {
-        return Err(ApiError::bad_request("Storage path is required"));
-    }
-
-    // Prevent path traversal.
-    if path.contains("..") {
-        return Err(ApiError::bad_request("Path traversal is not allowed"));
-    }
+    // Route every request through the canonical sanitizer so storage_get
+    // stays in lock-step with storage_upload and the chunked upload path.
+    // sanitize_storage_path rejects `..`, absolute paths, drive letters,
+    // null bytes, control characters, and >1024 byte paths.
+    let path = super::chunked_upload::sanitize_storage_path(&path)?;
 
     // If the request carries a signed URL signature, verify it.
     if let (Some(expires), Some(sig)) = (params.expires, &params.sig) {
@@ -2890,14 +3673,72 @@ async fn storage_get(
         return Ok(negotiate_response(&headers, &response));
     }
 
-    // Download the file from the storage engine.
+    // If the caller requested an image transform, decode + apply + re-encode
+    // and serve the transformed bytes (with an L1 byte cache keyed by
+    // path + sha256(transform)). This replaces the previous silent discard.
+    if let Some(transform_str) = params.transform.as_ref() {
+        use sha2::{Digest, Sha256};
+
+        let ops = TransformOps::parse(transform_str)
+            .map_err(|e| ApiError::bad_request(format!("invalid transform: {e}")))?;
+        let mime = ops.output_mime();
+
+        let cache_key = {
+            let mut hasher = Sha256::new();
+            hasher.update(transform_str.as_bytes());
+            let digest = hasher.finalize();
+            format!("img:{}:{}", path, hex::encode(digest))
+        };
+
+        if let Some((cached_bytes, cached_mime)) = image_transforms::cache_get(&cache_key) {
+            let mut response = (StatusCode::OK, cached_bytes).into_response();
+            response
+                .headers_mut()
+                .insert(CONTENT_TYPE, HeaderValue::from_static(cached_mime));
+            response
+                .headers_mut()
+                .insert("x-ddb-image-cache", HeaderValue::from_static("hit"));
+            return Ok(response);
+        }
+
+        let (original, _meta) = state
+            .storage_engine
+            .download(&path)
+            .await
+            .map_err(storage_err_to_api)?;
+
+        let img = image::load_from_memory(&original)
+            .map_err(|e| ApiError::bad_request(format!("not a decodable image: {e}")))?;
+        let transformed = ops
+            .apply(img)
+            .map_err(|e| ApiError::bad_request(format!("transform apply failed: {e}")))?;
+        let output_bytes = ops
+            .encode(transformed)
+            .map_err(|e| ApiError::internal(format!("transform encode failed: {e}")))?;
+
+        image_transforms::cache_set(
+            cache_key,
+            output_bytes.clone(),
+            mime,
+            Duration::from_secs(86_400),
+        );
+
+        let mut response = (StatusCode::OK, output_bytes).into_response();
+        response
+            .headers_mut()
+            .insert(CONTENT_TYPE, HeaderValue::from_static(mime));
+        response
+            .headers_mut()
+            .insert("x-ddb-image-cache", HeaderValue::from_static("miss"));
+        return Ok(response);
+    }
+
+    // Non-transformed path: download the file from the storage engine.
     let (data, meta) = state
         .storage_engine
         .download(&path)
         .await
         .map_err(storage_err_to_api)?;
-
-    let _ = params.transform; // TODO: apply image transforms when image processor is available.
 
     let mut response = (StatusCode::OK, data).into_response();
     response.headers_mut().insert(
@@ -2959,10 +3800,139 @@ struct SubscribeParams {
     q: String,
 }
 
+/// Collapse a list of triples (ordered newest-first per attribute by
+/// `get_entity`) into a single attribute -> latest-value map.
+///
+/// `get_entity` returns triples sorted by `(attribute, tx_id DESC)`, so
+/// the *first* triple for any given attribute is the current value. We
+/// walk the list once and keep the first occurrence of each attribute.
+fn triples_to_attr_map(triples: &[crate::triple_store::Triple]) -> HashMap<String, Value> {
+    let mut out: HashMap<String, Value> = HashMap::with_capacity(triples.len());
+    for t in triples {
+        out.entry(t.attribute.clone())
+            .or_insert_with(|| t.value.clone());
+    }
+    out
+}
+
+/// Evaluate a single DarshJQL `WhereClause` against a materialized
+/// attribute map.
+///
+/// This is a pure, in-memory re-check used by the SSE `subscribe`
+/// handler to drop pub/sub events whose target entity no longer (or
+/// never did) satisfy the query predicate. It mirrors the semantics of
+/// the SQL planner in [`query::plan_query`] for the operators that can
+/// be checked without a database round-trip.
+fn eval_where_clause(clause: &query::WhereClause, attrs: &HashMap<String, Value>) -> bool {
+    let Some(actual) = attrs.get(&clause.attribute) else {
+        // Missing attribute only satisfies explicit `!=` against a
+        // non-null literal; everything else fails closed.
+        return matches!(clause.op, query::WhereOp::Neq) && !clause.value.is_null();
+    };
+    let expected = &clause.value;
+
+    match clause.op {
+        query::WhereOp::Eq => actual == expected,
+        query::WhereOp::Neq => actual != expected,
+        query::WhereOp::Gt => compare_json(actual, expected)
+            .map(|o| o.is_gt())
+            .unwrap_or(false),
+        query::WhereOp::Gte => compare_json(actual, expected)
+            .map(|o| o.is_ge())
+            .unwrap_or(false),
+        query::WhereOp::Lt => compare_json(actual, expected)
+            .map(|o| o.is_lt())
+            .unwrap_or(false),
+        query::WhereOp::Lte => compare_json(actual, expected)
+            .map(|o| o.is_le())
+            .unwrap_or(false),
+        query::WhereOp::Contains => json_contains(actual, expected),
+        query::WhereOp::Like => match (actual.as_str(), expected.as_str()) {
+            (Some(haystack), Some(pattern)) => ilike_match(haystack, pattern),
+            _ => false,
+        },
+    }
+}
+
+/// Evaluate a set of `WhereClause` predicates with AND semantics.
+///
+/// Returns `true` only if every clause matches. An empty list trivially
+/// matches (the query has no WHERE filter at all).
+fn eval_where_clauses(clauses: &[query::WhereClause], attrs: &HashMap<String, Value>) -> bool {
+    clauses.iter().all(|c| eval_where_clause(c, attrs))
+}
+
+/// Compare two JSON values for ordering where that makes sense
+/// (numbers, strings, booleans). Returns `None` for mixed or
+/// unordered types.
+fn compare_json(a: &Value, b: &Value) -> Option<std::cmp::Ordering> {
+    match (a, b) {
+        (Value::Number(x), Value::Number(y)) => {
+            let xf = x.as_f64()?;
+            let yf = y.as_f64()?;
+            xf.partial_cmp(&yf)
+        }
+        (Value::String(x), Value::String(y)) => Some(x.cmp(y)),
+        (Value::Bool(x), Value::Bool(y)) => Some(x.cmp(y)),
+        _ => None,
+    }
+}
+
+/// Minimal JSONB `@>` containment check: `b` is contained in `a` when
+/// every key/value in `b` is present (recursively) in `a`. Scalars
+/// compare by equality. Matches PostgreSQL semantics closely enough
+/// for live-query re-evaluation.
+fn json_contains(a: &Value, b: &Value) -> bool {
+    match (a, b) {
+        (Value::Object(am), Value::Object(bm)) => bm
+            .iter()
+            .all(|(k, bv)| am.get(k).is_some_and(|av| json_contains(av, bv))),
+        (Value::Array(aa), Value::Array(ba)) => ba
+            .iter()
+            .all(|bv| aa.iter().any(|av| json_contains(av, bv))),
+        _ => a == b,
+    }
+}
+
+/// Tiny SQL-ish ILIKE matcher supporting `%` (any) and `_` (one char),
+/// case-insensitive. Sufficient for the subscribe re-check path.
+fn ilike_match(haystack: &str, pattern: &str) -> bool {
+    let hs: Vec<char> = haystack.to_lowercase().chars().collect();
+    let pt: Vec<char> = pattern.to_lowercase().chars().collect();
+    ilike_inner(&hs, &pt)
+}
+
+fn ilike_inner(hs: &[char], pt: &[char]) -> bool {
+    if pt.is_empty() {
+        return hs.is_empty();
+    }
+    match pt[0] {
+        '%' => {
+            if ilike_inner(hs, &pt[1..]) {
+                return true;
+            }
+            !hs.is_empty() && ilike_inner(&hs[1..], pt)
+        }
+        '_' => !hs.is_empty() && ilike_inner(&hs[1..], &pt[1..]),
+        c => !hs.is_empty() && hs[0] == c && ilike_inner(&hs[1..], &pt[1..]),
+    }
+}
+
 /// `GET /api/subscribe?q=...` — Server-Sent Events for live query updates.
 ///
-/// Authenticates via Bearer token, then streams events for the given query.
-/// A heartbeat comment is sent every 15 seconds to keep the connection alive.
+/// Authenticates via Bearer token, parses the DarshJQL query to extract
+/// the target entity type and any `$where` predicates, then streams
+/// change events from the pub/sub engine with server-side filtering:
+///
+/// 1. Entity-type filter: only events whose `entity_type` matches the
+///    query's target type are considered.
+/// 2. WHERE re-evaluation: for events that carry an `entity_id`, the
+///    handler fetches the current triples for that entity and checks
+///    the parsed `WhereClause` list in memory. Non-matching events are
+///    dropped before they reach the client.
+///
+/// A heartbeat comment is sent every 15 seconds to keep the connection
+/// alive through idle intermediaries.
 async fn subscribe(
     State(state): State<AppState>,
     Query(params): Query<SubscribeParams>,
@@ -2974,25 +3944,79 @@ async fn subscribe(
         return Err(ApiError::bad_request("Query parameter 'q' is required"));
     }
 
-    let rx = state.sse_tx.subscribe();
-    let stream = BroadcastStream::new(rx).filter_map(|msg| match msg {
-        Ok(payload) => {
-            let data = serde_json::to_string(&payload.data).unwrap_or_default();
-            Some(Ok(Event::default()
-                .event("update")
-                .data(data)
-                .id(payload.tx_id.to_string())))
-        }
-        Err(_) => None,
-    });
+    // Parse the DarshJQL query. Clients pass the query as a JSON string
+    // in the `q` query-param; decode it into a `serde_json::Value` and
+    // route through the canonical parser so we inherit all validation.
+    let q_json: Value = serde_json::from_str(&params.q)
+        .map_err(|e| ApiError::bad_request(format!("Query 'q' must be JSON: {e}")))?;
+    let ast = query::parse_darshan_ql(&q_json)
+        .map_err(|e| ApiError::bad_request(format!("Invalid DarshJQL: {e}")))?;
+
+    let target_entity_type = ast.entity_type.clone();
+    let where_clauses = ast.where_clauses.clone();
+    let triple_store = Arc::clone(&state.triple_store);
+
+    // Subscribe to the real change-event bus. Every mutation that
+    // touches a triple flows through `pubsub.subscribe_events()` as a
+    // `PubSubEvent` carrying entity_type/entity_id/tx_id.
+    let rx = state.pubsub.subscribe_events();
+
+    // The `subscribe` filter has to perform an async DB lookup when the
+    // query carries `$where` predicates, so we cannot use the synchronous
+    // `tokio_stream::StreamExt::filter_map` combinator. Instead we
+    // `.then()` each broadcast item into a future producing
+    // `Option<Result<Event, Infallible>>`, then drop the `None`s with a
+    // synchronous `filter_map(|x| x)`.
+    let stream = BroadcastStream::new(rx)
+        .then(move |msg| {
+            let target = target_entity_type.clone();
+            let where_clauses = where_clauses.clone();
+            let triple_store = Arc::clone(&triple_store);
+            async move {
+                let event = match msg {
+                    Ok(ev) => ev,
+                    Err(_) => return None,
+                };
+
+                // (c) Entity-type gate — drop events for any other type.
+                match event.entity_type.as_deref() {
+                    Some(et) if et == target => {}
+                    _ => return None,
+                }
+
+                // (d) WHERE re-evaluation: only when the event carries
+                // a concrete entity_id and the query has predicates.
+                if !where_clauses.is_empty() {
+                    let Some(ref eid_str) = event.entity_id else {
+                        // Collection-level event without an entity id
+                        // cannot be checked against WHERE — drop it to
+                        // avoid false positives.
+                        return None;
+                    };
+                    let Ok(eid) = Uuid::parse_str(eid_str) else {
+                        return None;
+                    };
+                    let triples = match triple_store.get_entity(eid).await {
+                        Ok(t) => t,
+                        Err(_) => return None,
+                    };
+                    let attrs = triples_to_attr_map(&triples);
+                    if !eval_where_clauses(&where_clauses, &attrs) {
+                        return None;
+                    }
+                }
+
+                let data = serde_json::to_string(&event).unwrap_or_default();
+                Some(Ok(Event::default()
+                    .event("update")
+                    .data(data)
+                    .id(event.tx_id.to_string())))
+            }
+        })
+        .filter_map(|opt| opt);
 
     // Use a comment-style keepalive (": heartbeat\n\n") so it does not
-    // trigger client `onmessage` handlers.  Axum's `KeepAlive::text` sends
-    // a data event; using an empty `Event::default().comment("heartbeat")`
-    // equivalent is achieved through the `text` method with a leading colon
-    // is not available, but the standard SSE comment prefix is what the
-    // `KeepAlive` default (no `.text()`) produces.  We omit `.text()` to
-    // get the default SSE comment keepalive behavior.
+    // trigger client `onmessage` handlers.
     Ok(Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15))))
 }
 
@@ -3111,8 +4135,7 @@ async fn admin_schema(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
-    let _token = extract_bearer_token(&headers)?;
-    require_admin_role(&headers)?;
+    let _auth = require_admin_auth(&headers, &state).await?;
 
     let schema = state
         .triple_store
@@ -3130,8 +4153,7 @@ async fn admin_functions(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
-    let _token = extract_bearer_token(&headers)?;
-    require_admin_role(&headers)?;
+    let _auth = require_admin_auth(&headers, &state).await?;
 
     let functions = match state.function_registry.as_ref() {
         Some(registry) => {
@@ -3161,42 +4183,34 @@ async fn admin_functions(
 }
 
 /// `GET /api/admin/sessions` — List active sessions across all users.
-#[allow(clippy::type_complexity)]
+///
+/// Routed through [`SessionManager::list_active`] so the admin view
+/// shares the same query path as the rest of the auth subsystem —
+/// keeping session-schema knowledge out of the HTTP handler.
 async fn admin_sessions(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
-    let _token = extract_bearer_token(&headers)?;
-    require_admin_role(&headers)?;
+    let _auth = require_admin_auth(&headers, &state).await?;
 
-    let rows: Vec<(
-        uuid::Uuid,
-        uuid::Uuid,
-        String,
-        String,
-        String,
-        chrono::DateTime<chrono::Utc>,
-        bool,
-    )> = sqlx::query_as(
-        "SELECT session_id, user_id, device_fingerprint, ip, user_agent, created_at, revoked \
-         FROM sessions WHERE revoked = false AND refresh_expires_at > NOW() \
-         ORDER BY created_at DESC LIMIT 500",
-    )
-    .fetch_all(&state.pool)
-    .await
-    .map_err(|e| ApiError::internal(format!("Failed to query sessions: {e}")))?;
+    let records = state
+        .session_manager
+        .list_active(50)
+        .await
+        .map_err(|e| ApiError::internal(format!("Failed to list sessions: {e}")))?;
 
-    let sessions: Vec<serde_json::Value> = rows
-        .into_iter()
-        .map(|(sid, uid, dfp, ip, ua, created, revoked)| {
+    let sessions: Vec<serde_json::Value> = records
+        .iter()
+        .map(|s| {
             serde_json::json!({
-                "session_id": sid,
-                "user_id": uid,
-                "device_fingerprint": dfp,
-                "ip": ip,
-                "user_agent": ua,
-                "created_at": created.to_rfc3339(),
-                "revoked": revoked,
+                "session_id": s.session_id,
+                "user_id": s.user_id,
+                "device_fingerprint": s.device_fingerprint,
+                "ip": s.ip,
+                "user_agent": s.user_agent,
+                "created_at": s.created_at.to_rfc3339(),
+                "revoked": s.revoked,
+                "refresh_expires_at": s.refresh_expires_at.to_rfc3339(),
             })
         })
         .collect();
@@ -3247,8 +4261,7 @@ async fn admin_cache(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
-    let _token = extract_bearer_token(&headers)?;
-    require_admin_role(&headers)?;
+    let _auth = require_admin_auth(&headers, &state).await?;
 
     let stats = state.query_cache.stats();
     let response = serde_json::json!({
@@ -3266,8 +4279,7 @@ async fn admin_storage_list(
     headers: HeaderMap,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<Response, ApiError> {
-    let _token = extract_bearer_token(&headers)?;
-    require_admin_role(&headers)?;
+    let _auth = require_admin_auth(&headers, &state).await?;
 
     let limit: usize = params
         .get("limit")
@@ -3317,8 +4329,7 @@ async fn admin_bulk_load(
     headers: HeaderMap,
     axum::Json(body): axum::Json<BulkLoadRequest>,
 ) -> Result<Response, ApiError> {
-    let _token = extract_bearer_token(&headers)?;
-    require_admin_role(&headers)?;
+    let _auth = require_admin_auth(&headers, &state).await?;
 
     if body.entities.is_empty() {
         return Err(ApiError::bad_request("At least one entity is required"));
@@ -3436,20 +4447,58 @@ fn extract_bearer_token(headers: &HeaderMap) -> Result<String, ApiError> {
     Ok(token)
 }
 
-/// Verify the authenticated user holds the "admin" role by decoding JWT claims.
-fn require_admin_role(headers: &HeaderMap) -> Result<(), ApiError> {
-    let ctx = decode_jwt_claims(headers)?;
-    if ctx.roles.iter().any(|r| r == "admin") {
-        Ok(())
+/// Public wrapper around [`extract_bearer_token`] for sibling modules
+/// under `api::` (e.g. `chunked_upload`) that reuse the same
+/// bearer-token parsing without duplicating the logic.
+pub fn extract_bearer_token_pub(headers: &HeaderMap) -> Result<String, ApiError> {
+    extract_bearer_token(headers)
+}
+
+/// Authenticate the caller against [`SessionManager`] and require the
+/// "admin" role. This is the extractor guarding every `/api/admin/*`
+/// route — it cryptographically verifies the JWT signature (rejecting
+/// forged tokens) and then enforces role-based authorization.
+///
+/// Returns `Err(ApiError)` with:
+/// - **401 Unauthenticated** if the bearer header is missing, malformed,
+///   or the signature fails validation.
+/// - **403 PermissionDenied** if the token is valid but the caller does
+///   not hold the `admin` role.
+///
+/// On success, the returned [`AuthContext`] is available to admin
+/// handlers if they need the caller's user id or session id.
+async fn require_admin_auth(
+    headers: &HeaderMap,
+    state: &AppState,
+) -> Result<AuthContext, ApiError> {
+    let auth_ctx = extract_auth_context(headers, state).await?;
+    if auth_ctx.roles.iter().any(|r| r == "admin") {
+        Ok(auth_ctx)
     } else {
-        Err(ApiError::permission_denied(
-            "Admin role required for this endpoint",
-        ))
+        Err(ApiError::permission_denied("admin role required"))
     }
 }
 
+/// Verify the authenticated user holds the "admin" role via cryptographic
+/// JWT validation. This is a convenience wrapper that sibling modules
+/// (e.g. [`crate::anchor::handlers`]) can call when they only need to
+/// gate on the admin role and don't require the full [`AuthContext`].
+///
+/// Delegates to [`require_admin_auth`] so forged tokens are rejected
+/// with the same hardened signature verification used by `/admin/*`
+/// handlers.
+pub(crate) async fn require_admin_role(
+    headers: &HeaderMap,
+    state: &AppState,
+) -> Result<(), ApiError> {
+    require_admin_auth(headers, state).await.map(|_| ())
+}
+
 /// Extract an [`AuthContext`] by validating the JWT via the [`SessionManager`].
-fn extract_auth_context(headers: &HeaderMap, state: &AppState) -> Result<AuthContext, ApiError> {
+async fn extract_auth_context(
+    headers: &HeaderMap,
+    state: &AppState,
+) -> Result<AuthContext, ApiError> {
     let token = extract_bearer_token(headers)?;
     let ip = headers
         .get("x-forwarded-for")
@@ -3466,10 +4515,16 @@ fn extract_auth_context(headers: &HeaderMap, state: &AppState) -> Result<AuthCon
     state
         .session_manager
         .validate_token(&token, ip, ua, dfp)
+        .await
         .map_err(|e| ApiError::unauthenticated(format!("Invalid token: {e}")))
 }
 
-/// Decode JWT claims from the Bearer token without full signature verification.
+/// Decode JWT claims from the Bearer token **without** signature
+/// verification. Kept for test-only sanity checks; production code paths
+/// must use `extract_auth_context` or `require_admin_auth`, both of
+/// which route through `SessionManager::validate_token` for real
+/// cryptographic verification.
+#[cfg(test)]
 fn decode_jwt_claims(headers: &HeaderMap) -> Result<AuthContext, ApiError> {
     let token = extract_bearer_token(headers)?;
     let parts: Vec<&str> = token.split('.').collect();
@@ -3605,27 +4660,135 @@ fn validate_entity_name(name: &str) -> Result<(), ApiError> {
 }
 
 // ===========================================================================
-// Embeddings / Semantic Search handlers
+// Embeddings / Vector + Full-text + Hybrid Search handlers
 // ===========================================================================
+//
+// Phase 3 (slice 16/30) — pgvector + Postgres FTS + Reciprocal Rank Fusion.
+// All handlers below are mounted by `build_router` and require the schema
+// added by `ensure_search_schema` (which mirrors the SQL in
+// `migrations/20260414003000_pgvector_bootstrap.sql`).
+//
+// Author: Darshankumar Joshi.
+
+/// Default embedding model recorded when callers do not provide one.
+/// Phase 3 standardises on OpenAI's `text-embedding-3-small` (1536 dims).
+fn default_embedding_model() -> String {
+    "text-embedding-3-small".to_string()
+}
+
+/// Default `limit` for any search endpoint when the caller omits it.
+fn default_search_limit() -> u32 {
+    10
+}
+
+/// Default attribute label stored alongside an embedding row when the
+/// caller does not specify one. Mirrors the SQL column default.
+fn default_embedding_attribute() -> String {
+    "default".to_string()
+}
+
+/// Reciprocal Rank Fusion `k` constant. Standard literature value (Cormack,
+/// Clarke & Buettcher, SIGIR '09). Larger `k` flattens the ranking curve.
+const RRF_K: f64 = 60.0;
+
+/// Ensure the Phase 3 search schema (pgvector extension, embeddings table
+/// constraints, vector indexes, and FTS index on `triples.value::text`)
+/// exists. Idempotent — safe to call on every startup or test setup.
+///
+/// Mirrors `migrations/20260414003000_pgvector_bootstrap.sql` so unit
+/// tests that bypass external migration tooling still get a usable schema.
+pub async fn ensure_search_schema(pool: &PgPool) -> std::result::Result<(), sqlx::Error> {
+    // ── Part 1: always-safe (full-text search index on triples) ────────────
+    // This works on any stock Postgres, including pg_embed's bundled builds
+    // that do not carry the pgvector extension.
+    sqlx::raw_sql(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_triples_fts_text
+            ON triples USING gin (to_tsvector('english', value::text))
+            WHERE value IS NOT NULL;
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    // ── Part 2: vector-dependent (pgvector extension + embeddings table) ───
+    // Best-effort. pg_embed's bundled Postgres 16 on some platforms (darwin
+    // arm64) ships without the `vector` extension; in that case we emit a
+    // warn log, leave the embeddings table absent, and let the semantic
+    // search handlers return a clean 503 / empty result rather than 500ing.
+    // Operators running pgvector-capable Postgres get the full schema.
+    let vector_sql = r#"
+        CREATE EXTENSION IF NOT EXISTS vector;
+
+        CREATE TABLE IF NOT EXISTS embeddings (
+            id          BIGSERIAL   PRIMARY KEY,
+            entity_id   UUID        NOT NULL,
+            attribute   TEXT        NOT NULL DEFAULT 'default',
+            embedding   vector(1536) NOT NULL,
+            model       TEXT        NOT NULL DEFAULT 'text-embedding-3-small',
+            created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+        );
+
+        ALTER TABLE embeddings
+            ALTER COLUMN attribute SET DEFAULT 'default';
+        ALTER TABLE embeddings
+            ALTER COLUMN model SET DEFAULT 'text-embedding-3-small';
+
+        DO $do$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM pg_indexes
+                WHERE schemaname = 'public'
+                  AND indexname  = 'uq_embeddings_entity_attribute'
+            ) THEN
+                BEGIN
+                    CREATE UNIQUE INDEX uq_embeddings_entity_attribute
+                        ON embeddings (entity_id, attribute);
+                EXCEPTION WHEN unique_violation THEN
+                    RAISE NOTICE 'uq_embeddings_entity_attribute skipped: pre-existing duplicates';
+                END;
+            END IF;
+        END$do$;
+
+        CREATE INDEX IF NOT EXISTS idx_embeddings_hnsw
+            ON embeddings USING hnsw (embedding vector_cosine_ops)
+            WITH (m = 16, ef_construction = 64);
+
+        CREATE INDEX IF NOT EXISTS idx_embeddings_ivfflat
+            ON embeddings USING ivfflat (embedding vector_l2_ops)
+            WITH (lists = 100);
+
+        CREATE INDEX IF NOT EXISTS idx_embeddings_entity
+            ON embeddings (entity_id, attribute);
+    "#;
+    if let Err(e) = sqlx::raw_sql(vector_sql).execute(pool).await {
+        tracing::warn!(
+            error = %e,
+            "pgvector extension unavailable on this Postgres build; \
+             semantic/hybrid search will return 503 until the database is \
+             upgraded to a pgvector-capable image. FTS search still works."
+        );
+    }
+
+    Ok(())
+}
 
 /// Request body for `POST /api/embeddings`.
-#[allow(dead_code)]
 #[derive(Deserialize)]
 struct EmbeddingStoreRequest {
     entity_id: Uuid,
+    #[serde(default = "default_embedding_attribute")]
     attribute: String,
     embedding: Vec<f32>,
     #[serde(default = "default_embedding_model")]
     model: String,
 }
 
-#[allow(dead_code)]
-fn default_embedding_model() -> String {
-    "text-embedding-ada-002".to_string()
-}
-
-#[allow(dead_code)]
 /// `POST /api/embeddings` — Store an embedding vector for an entity+attribute pair.
+///
+/// Upserts on `(entity_id, attribute)` so callers can re-embed without first
+/// deleting the prior row. Uses the unique index installed by
+/// `ensure_search_schema` / the `pgvector_bootstrap` migration.
 async fn embeddings_store(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -3644,6 +4807,10 @@ async fn embeddings_store(
     let result = sqlx::query_scalar::<_, i64>(
         "INSERT INTO embeddings (entity_id, attribute, embedding, model) \
          VALUES ($1, $2, $3::vector, $4) \
+         ON CONFLICT (entity_id, attribute) DO UPDATE \
+            SET embedding  = EXCLUDED.embedding, \
+                model      = EXCLUDED.model, \
+                created_at = now() \
          RETURNING id",
     )
     .bind(body.entity_id)
@@ -3668,7 +4835,6 @@ async fn embeddings_store(
     ))
 }
 
-#[allow(dead_code)]
 /// `GET /api/embeddings/:entity_id` — Get all embeddings for an entity.
 async fn embeddings_get(
     State(state): State<AppState>,
@@ -3707,7 +4873,6 @@ async fn embeddings_get(
 }
 
 /// Request body for `POST /api/search/semantic`.
-#[allow(dead_code)]
 #[derive(Deserialize)]
 struct SemanticSearchRequest {
     /// The entity type to search within (e.g. "Article").
@@ -3722,12 +4887,6 @@ struct SemanticSearchRequest {
     attribute: Option<String>,
 }
 
-#[allow(dead_code)]
-fn default_search_limit() -> u32 {
-    10
-}
-
-#[allow(dead_code)]
 /// `POST /api/search/semantic` — Search by vector similarity, return matched
 /// entities with their cosine distance scores.
 async fn search_semantic(
@@ -3742,58 +4901,14 @@ async fn search_semantic(
         return Err(ApiError::bad_request("entity_type must not be empty"));
     }
 
-    let vec_literal = format_pgvector_literal(&body.vector);
-
-    // Build the query dynamically to support optional attribute filter.
-    let (sql, has_attr_param) = if body.attribute.is_some() {
-        (
-            format!(
-                "SELECT e.entity_id, e.attribute, \
-                        (e.embedding <=> '{vec}'::vector) AS distance \
-                 FROM embeddings e \
-                 INNER JOIN triples t_type ON t_type.entity_id = e.entity_id \
-                   AND t_type.attribute = ':db/type' \
-                   AND t_type.value = $1::jsonb \
-                   AND NOT t_type.retracted \
-                 WHERE e.attribute = $2 \
-                 ORDER BY e.embedding <=> '{vec}'::vector \
-                 LIMIT $3",
-                vec = vec_literal,
-            ),
-            true,
-        )
-    } else {
-        (
-            format!(
-                "SELECT e.entity_id, e.attribute, \
-                        (e.embedding <=> '{vec}'::vector) AS distance \
-                 FROM embeddings e \
-                 INNER JOIN triples t_type ON t_type.entity_id = e.entity_id \
-                   AND t_type.attribute = ':db/type' \
-                   AND t_type.value = $1::jsonb \
-                   AND NOT t_type.retracted \
-                 ORDER BY e.embedding <=> '{vec}'::vector \
-                 LIMIT $2",
-                vec = vec_literal,
-            ),
-            false,
-        )
-    };
-
-    let rows: Vec<(Uuid, String, f64)> = if has_attr_param {
-        sqlx::query_as::<_, (Uuid, String, f64)>(&sql)
-            .bind(serde_json::Value::String(body.entity_type.clone()))
-            .bind(body.attribute.as_deref().unwrap_or(""))
-            .bind(body.limit as i32)
-            .fetch_all(&state.pool)
-            .await
-    } else {
-        sqlx::query_as::<_, (Uuid, String, f64)>(&sql)
-            .bind(serde_json::Value::String(body.entity_type.clone()))
-            .bind(body.limit as i32)
-            .fetch_all(&state.pool)
-            .await
-    }
+    let rows = run_semantic_search(
+        &state.pool,
+        &body.vector,
+        &body.entity_type,
+        body.attribute.as_deref(),
+        body.limit,
+    )
+    .await
     .map_err(|e| ApiError::internal(format!("Semantic search failed: {e}")))?;
 
     let results: Vec<serde_json::Value> = rows
@@ -3818,7 +4933,340 @@ async fn search_semantic(
     Ok(negotiate_response(&headers, &response))
 }
 
-#[allow(dead_code)]
+/// Internal helper that runs the cosine-distance ANN query and returns
+/// `(entity_id, attribute, distance)` rows in ascending-distance order.
+///
+/// Shared by `search_semantic` and `search_hybrid` so both endpoints stay
+/// in lockstep about the SQL shape, attribute filtering, and binding
+/// strategy. Pulls the embedding vector via a parameterized cast string
+/// because pgvector's `vector` type cannot be bound with a `Vec<f32>`
+/// directly through sqlx today.
+async fn run_semantic_search(
+    pool: &PgPool,
+    vector: &[f32],
+    entity_type: &str,
+    attribute: Option<&str>,
+    limit: u32,
+) -> std::result::Result<Vec<(Uuid, String, f64)>, sqlx::Error> {
+    let vec_literal = format_pgvector_literal(vector);
+
+    if let Some(attr) = attribute {
+        let sql = "SELECT e.entity_id, e.attribute, \
+                          (e.embedding <=> $4::vector) AS distance \
+                   FROM embeddings e \
+                   INNER JOIN triples t_type ON t_type.entity_id = e.entity_id \
+                     AND t_type.attribute = ':db/type' \
+                     AND t_type.value = $1::jsonb \
+                     AND NOT t_type.retracted \
+                   WHERE e.attribute = $2 \
+                   ORDER BY e.embedding <=> $4::vector \
+                   LIMIT $3";
+        sqlx::query_as::<_, (Uuid, String, f64)>(sql)
+            .bind(serde_json::Value::String(entity_type.to_string()))
+            .bind(attr)
+            .bind(limit as i32)
+            .bind(&vec_literal)
+            .fetch_all(pool)
+            .await
+    } else {
+        let sql = "SELECT e.entity_id, e.attribute, \
+                          (e.embedding <=> $3::vector) AS distance \
+                   FROM embeddings e \
+                   INNER JOIN triples t_type ON t_type.entity_id = e.entity_id \
+                     AND t_type.attribute = ':db/type' \
+                     AND t_type.value = $1::jsonb \
+                     AND NOT t_type.retracted \
+                   ORDER BY e.embedding <=> $3::vector \
+                   LIMIT $2";
+        sqlx::query_as::<_, (Uuid, String, f64)>(sql)
+            .bind(serde_json::Value::String(entity_type.to_string()))
+            .bind(limit as i32)
+            .bind(&vec_literal)
+            .fetch_all(pool)
+            .await
+    }
+}
+
+/// Query parameters for `GET /api/search/text`.
+#[derive(Deserialize)]
+struct TextSearchQuery {
+    /// User search string. Parsed via `plainto_tsquery('english', $1)`.
+    q: String,
+    /// Restrict matches to entities of this type (`:db/type` value).
+    entity_type: String,
+    /// Maximum number of results.
+    #[serde(default = "default_search_limit")]
+    limit: u32,
+}
+
+/// `GET /api/search/text` — Postgres full-text search across `triples.value`.
+///
+/// Joins each FTS hit back to its `:db/type` triple so the `entity_type`
+/// filter is enforced server-side. Uses `ts_rank` for relevance ordering.
+async fn search_text(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    axum::extract::Query(params): axum::extract::Query<TextSearchQuery>,
+) -> Result<Response, ApiError> {
+    if params.q.trim().is_empty() {
+        return Err(ApiError::bad_request("q (query string) must not be empty"));
+    }
+    if params.entity_type.is_empty() {
+        return Err(ApiError::bad_request("entity_type must not be empty"));
+    }
+
+    let rows = run_text_search(&state.pool, &params.q, &params.entity_type, params.limit)
+        .await
+        .map_err(|e| ApiError::internal(format!("Text search failed: {e}")))?;
+
+    let results: Vec<serde_json::Value> = rows
+        .iter()
+        .map(|(entity_id, rank)| {
+            serde_json::json!({
+                "entity_id": entity_id,
+                "rank": rank,
+            })
+        })
+        .collect();
+
+    let response = serde_json::json!({
+        "data": results,
+        "meta": {
+            "count": results.len(),
+            "entity_type": params.entity_type,
+            "q": params.q,
+        }
+    });
+    Ok(negotiate_response(&headers, &response))
+}
+
+/// Internal helper that runs the FTS query against `triples.value::text`,
+/// joined to `:db/type` so the entity_type filter is enforced.
+///
+/// Returns `(entity_id, rank)` rows ordered by descending `ts_rank`. We
+/// `MAX(rank)` because a single entity may match across many triples and
+/// we want one row per entity.
+async fn run_text_search(
+    pool: &PgPool,
+    q: &str,
+    entity_type: &str,
+    limit: u32,
+) -> std::result::Result<Vec<(Uuid, f64)>, sqlx::Error> {
+    let sql = "SELECT t.entity_id, \
+                      MAX(ts_rank(to_tsvector('english', t.value::text), \
+                                  plainto_tsquery('english', $1))::float8) AS rank \
+               FROM triples t \
+               INNER JOIN triples t_type ON t_type.entity_id = t.entity_id \
+                 AND t_type.attribute = ':db/type' \
+                 AND t_type.value = $2::jsonb \
+                 AND NOT t_type.retracted \
+               WHERE NOT t.retracted \
+                 AND t.value IS NOT NULL \
+                 AND to_tsvector('english', t.value::text) @@ plainto_tsquery('english', $1) \
+               GROUP BY t.entity_id \
+               ORDER BY rank DESC \
+               LIMIT $3";
+    sqlx::query_as::<_, (Uuid, f64)>(sql)
+        .bind(q)
+        .bind(serde_json::Value::String(entity_type.to_string()))
+        .bind(limit as i32)
+        .fetch_all(pool)
+        .await
+}
+
+/// Optional weight overrides for the hybrid RRF endpoint.
+#[derive(Deserialize, Default)]
+struct HybridWeights {
+    #[serde(default = "default_weight")]
+    semantic: f64,
+    #[serde(default = "default_weight")]
+    text: f64,
+}
+
+fn default_weight() -> f64 {
+    1.0
+}
+
+/// Request body for `POST /api/search/hybrid`.
+#[derive(Deserialize)]
+struct HybridSearchRequest {
+    /// User text query (used for FTS and, optionally, embedded by the caller).
+    query_text: String,
+    /// Pre-computed embedding vector for `query_text`. Required — Phase 3
+    /// keeps embedding generation client-side / via the embedding pipeline.
+    vector: Vec<f32>,
+    /// Restrict matches to this entity type.
+    entity_type: String,
+    /// Maximum number of fused results to return.
+    #[serde(default = "default_search_limit")]
+    limit: u32,
+    /// Optional attribute filter for the semantic side.
+    #[serde(default)]
+    attribute: Option<String>,
+    /// Optional weight overrides. Defaults to `{ semantic: 1.0, text: 1.0 }`.
+    #[serde(default)]
+    weights: HybridWeights,
+}
+
+/// `POST /api/search/hybrid` — Reciprocal Rank Fusion over semantic + text.
+///
+/// Runs both `run_semantic_search` and `run_text_search` and merges the
+/// rankings using the standard RRF formula:
+///
+/// ```text
+/// score(d) = Σ wᵢ / (k + rankᵢ(d))
+/// ```
+///
+/// where `k = 60` (Cormack et al.) and `wᵢ` is the per-list weight from
+/// the request body. Each candidate is then sorted by descending RRF
+/// score and the top `limit` rows are returned.
+async fn search_hybrid(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    axum::Json(body): axum::Json<HybridSearchRequest>,
+) -> Result<Response, ApiError> {
+    if body.query_text.trim().is_empty() {
+        return Err(ApiError::bad_request("query_text must not be empty"));
+    }
+    if body.vector.is_empty() {
+        return Err(ApiError::bad_request("vector must not be empty"));
+    }
+    if body.entity_type.is_empty() {
+        return Err(ApiError::bad_request("entity_type must not be empty"));
+    }
+
+    // Pull more candidates per side than the requested limit so the fusion
+    // step has room to reorder. A 4× window is a common heuristic.
+    let candidate_window = (body.limit.saturating_mul(4)).max(body.limit);
+
+    let semantic_rows = run_semantic_search(
+        &state.pool,
+        &body.vector,
+        &body.entity_type,
+        body.attribute.as_deref(),
+        candidate_window,
+    )
+    .await
+    .map_err(|e| ApiError::internal(format!("Hybrid semantic step failed: {e}")))?;
+
+    let text_rows = run_text_search(
+        &state.pool,
+        &body.query_text,
+        &body.entity_type,
+        candidate_window,
+    )
+    .await
+    .map_err(|e| ApiError::internal(format!("Hybrid text step failed: {e}")))?;
+
+    // Fuse the two rankings using Reciprocal Rank Fusion.
+    let fused = reciprocal_rank_fuse(
+        &semantic_rows,
+        &text_rows,
+        body.weights.semantic,
+        body.weights.text,
+    );
+
+    // Apply the requested limit after fusion.
+    let limited: Vec<&FusedHit> = fused.iter().take(body.limit as usize).collect();
+
+    let results: Vec<serde_json::Value> = limited
+        .iter()
+        .map(|hit| {
+            serde_json::json!({
+                "id": hit.entity_id,
+                "entity_type": body.entity_type,
+                "semantic_score": hit.semantic_score,
+                "text_score": hit.text_score,
+                "rrf_score": hit.rrf_score,
+            })
+        })
+        .collect();
+
+    let response = serde_json::json!({
+        "data": results,
+        "meta": {
+            "count": results.len(),
+            "entity_type": body.entity_type,
+            "k": RRF_K,
+            "weights": {
+                "semantic": body.weights.semantic,
+                "text": body.weights.text,
+            }
+        }
+    });
+    Ok(negotiate_response(&headers, &response))
+}
+
+/// One row of the fused output ranking.
+#[derive(Debug, Clone)]
+struct FusedHit {
+    entity_id: Uuid,
+    /// Cosine similarity (1 - distance) from the semantic side, if any.
+    semantic_score: Option<f64>,
+    /// `ts_rank` from the FTS side, if any.
+    text_score: Option<f64>,
+    /// Final fused RRF score (higher is better).
+    rrf_score: f64,
+}
+
+/// Apply Reciprocal Rank Fusion over the semantic and text result lists.
+///
+/// `semantic_rows` is `(entity_id, attribute, distance)` ordered by
+/// ascending distance; `text_rows` is `(entity_id, ts_rank)` ordered by
+/// descending rank. Returns hits sorted by descending RRF score.
+fn reciprocal_rank_fuse(
+    semantic_rows: &[(Uuid, String, f64)],
+    text_rows: &[(Uuid, f64)],
+    w_semantic: f64,
+    w_text: f64,
+) -> Vec<FusedHit> {
+    use std::collections::{HashMap, HashSet};
+
+    let mut hits: HashMap<Uuid, FusedHit> = HashMap::new();
+
+    // De-duplicate semantic_rows by entity_id (best — i.e. smallest distance —
+    // wins because the input is already sorted ascending).
+    let mut seen_semantic: HashSet<Uuid> = HashSet::new();
+    let mut semantic_rank = 0usize;
+    for (entity_id, _attr, distance) in semantic_rows {
+        if !seen_semantic.insert(*entity_id) {
+            continue;
+        }
+        semantic_rank += 1;
+        let contribution = w_semantic / (RRF_K + semantic_rank as f64);
+        let entry = hits.entry(*entity_id).or_insert_with(|| FusedHit {
+            entity_id: *entity_id,
+            semantic_score: None,
+            text_score: None,
+            rrf_score: 0.0,
+        });
+        entry.semantic_score = Some(1.0 - *distance);
+        entry.rrf_score += contribution;
+    }
+
+    let mut text_rank = 0usize;
+    for (entity_id, rank) in text_rows {
+        text_rank += 1;
+        let contribution = w_text / (RRF_K + text_rank as f64);
+        let entry = hits.entry(*entity_id).or_insert_with(|| FusedHit {
+            entity_id: *entity_id,
+            semantic_score: None,
+            text_score: None,
+            rrf_score: 0.0,
+        });
+        entry.text_score = Some(*rank);
+        entry.rrf_score += contribution;
+    }
+
+    let mut out: Vec<FusedHit> = hits.into_values().collect();
+    out.sort_by(|a, b| {
+        b.rrf_score
+            .partial_cmp(&a.rrf_score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    out
+}
+
 /// Format a slice of f32 values as a pgvector literal string: `[0.1,0.2,0.3]`.
 fn format_pgvector_literal(vec: &[f32]) -> String {
     let mut s = String::with_capacity(vec.len() * 8 + 2);
@@ -3831,6 +5279,97 @@ fn format_pgvector_literal(vec: &[f32]) -> String {
     }
     s.push(']');
     s
+}
+
+#[cfg(test)]
+mod search_unit_tests {
+    use super::*;
+
+    /// Pure-Rust unit test for the RRF fusion math. Does not require Postgres.
+    #[test]
+    fn rrf_fuses_two_lists_into_descending_ranking() {
+        // entity A is rank 1 in semantic and rank 2 in text — should win.
+        // entity B is rank 2 in semantic and rank 1 in text — close second.
+        // entity C only appears in semantic at rank 3.
+        // entity D only appears in text at rank 3.
+        let a = Uuid::from_u128(1);
+        let b = Uuid::from_u128(2);
+        let c = Uuid::from_u128(3);
+        let d = Uuid::from_u128(4);
+
+        let semantic = vec![
+            (a, "default".to_string(), 0.10), // similarity 0.90
+            (b, "default".to_string(), 0.20), // similarity 0.80
+            (c, "default".to_string(), 0.30), // similarity 0.70
+        ];
+        let text = vec![(b, 0.95), (a, 0.80), (d, 0.40)];
+
+        let fused = reciprocal_rank_fuse(&semantic, &text, 1.0, 1.0);
+
+        assert_eq!(fused.len(), 4);
+
+        // The top two entries must be A or B (they each appear in both lists),
+        // and they must outrank C and D (which only appear in one list).
+        let top_two: Vec<Uuid> = fused.iter().take(2).map(|h| h.entity_id).collect();
+        assert!(top_two.contains(&a));
+        assert!(top_two.contains(&b));
+
+        // Ranking must be strictly descending by rrf_score.
+        for win in fused.windows(2) {
+            assert!(win[0].rrf_score >= win[1].rrf_score);
+        }
+
+        // C only had a semantic score; D only had a text score — both
+        // populate exactly one side.
+        let c_hit = fused.iter().find(|h| h.entity_id == c).unwrap();
+        assert!(c_hit.semantic_score.is_some());
+        assert!(c_hit.text_score.is_none());
+        let d_hit = fused.iter().find(|h| h.entity_id == d).unwrap();
+        assert!(d_hit.semantic_score.is_none());
+        assert!(d_hit.text_score.is_some());
+    }
+
+    #[test]
+    fn rrf_weights_bias_toward_chosen_side() {
+        let a = Uuid::from_u128(1);
+        let b = Uuid::from_u128(2);
+
+        // A is rank 1 semantic, rank 5 text.
+        // B is rank 1 text, rank 5 semantic.
+        let semantic = vec![
+            (a, "default".to_string(), 0.05),
+            (Uuid::from_u128(10), "default".to_string(), 0.10),
+            (Uuid::from_u128(11), "default".to_string(), 0.20),
+            (Uuid::from_u128(12), "default".to_string(), 0.30),
+            (b, "default".to_string(), 0.40),
+        ];
+        let text = vec![
+            (b, 0.99),
+            (Uuid::from_u128(20), 0.80),
+            (Uuid::from_u128(21), 0.70),
+            (Uuid::from_u128(22), 0.60),
+            (a, 0.50),
+        ];
+
+        // Heavy semantic weighting should put A first.
+        let fused_sem = reciprocal_rank_fuse(&semantic, &text, 5.0, 1.0);
+        assert_eq!(fused_sem[0].entity_id, a);
+
+        // Heavy text weighting should put B first.
+        let fused_text = reciprocal_rank_fuse(&semantic, &text, 1.0, 5.0);
+        assert_eq!(fused_text[0].entity_id, b);
+    }
+
+    #[test]
+    fn pgvector_literal_round_trips() {
+        let v = vec![0.1, -0.25, 1.0];
+        let literal = format_pgvector_literal(&v);
+        assert!(literal.starts_with('['));
+        assert!(literal.ends_with(']'));
+        assert!(literal.contains("0.1"));
+        assert!(literal.contains("-0.25"));
+        assert!(literal.contains("1"));
+    }
 }
 
 // ===========================================================================
@@ -4558,6 +6097,78 @@ mod tests {
         assert!(result.is_err());
     }
 
+    // -----------------------------------------------------------------------
+    // Login rate-limit gate — pure logic / response shape
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn login_attempts_exponential_backoff_math() {
+        // The exponential throttle formula: retry_after = 2^(failed - 5).
+        // Spot-check the first few steps to catch regressions without a DB.
+        let cases = [(5, 1), (6, 2), (7, 4), (8, 8), (9, 16)];
+        for (failed, expected) in cases {
+            let exp = (failed - LOGIN_THROTTLE_THRESHOLD) as u32;
+            assert_eq!(
+                2u64.pow(exp),
+                expected,
+                "failed={failed} should map to {expected}s"
+            );
+        }
+    }
+
+    #[test]
+    fn login_attempts_constants_match_spec() {
+        assert_eq!(LOGIN_ATTEMPT_WINDOW_MINUTES, 15);
+        assert_eq!(LOGIN_THROTTLE_THRESHOLD, 5);
+        assert_eq!(LOGIN_LOCK_THRESHOLD, 10);
+        assert_eq!(LOGIN_LOCK_RETRY_AFTER_SECS, 3600);
+    }
+
+    #[test]
+    fn login_attempts_locked_response_shape() {
+        let resp = LoginGateError::Locked {
+            retry_after_secs: 3600,
+        }
+        .into_response();
+        assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+        let retry = resp
+            .headers()
+            .get("Retry-After")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default();
+        assert_eq!(retry, "3600");
+    }
+
+    #[test]
+    fn login_attempts_throttled_response_shape() {
+        let resp = LoginGateError::Throttled {
+            retry_after_secs: 4,
+        }
+        .into_response();
+        assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+        let retry = resp
+            .headers()
+            .get("Retry-After")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default();
+        assert_eq!(retry, "4");
+    }
+
+    #[test]
+    fn parse_client_ip_accepts_v4_and_v6() {
+        assert!(parse_client_ip("127.0.0.1").is_ok());
+        assert!(parse_client_ip("10.0.0.1").is_ok());
+        assert!(parse_client_ip("::1").is_ok());
+        assert!(parse_client_ip("2001:db8::1").is_ok());
+    }
+
+    #[test]
+    fn parse_client_ip_rejects_garbage() {
+        assert!(parse_client_ip("not an ip").is_err());
+        assert!(parse_client_ip("").is_err());
+        assert!(parse_client_ip("999.999.999.999").is_err());
+    }
+
     #[test]
     fn rate_limiter_enforces_authenticated_limit() {
         let limiter = RateLimiter::new();
@@ -4704,96 +6315,152 @@ mod tests {
     // -----------------------------------------------------------------------
     // Admin role check
     // -----------------------------------------------------------------------
+    //
+    // These tests exercise `require_admin_auth`, the real extractor
+    // guarding every `/api/admin/*` route. They construct a live
+    // `SessionManager` with a symmetric test key, sign real access
+    // tokens with it, and call the extractor directly — DB-free because
+    // `SessionManager::validate_token` is stateless JWT verification.
+    //
+    // `require_admin_auth_rejects_forged_signature` is the regression
+    // guard: the original stub only decoded claims and accepted any
+    // signature, which was a silent auth bypass.
 
-    /// Helper: build a fake JWT with the given claims payload (header.payload.sig).
-    fn fake_jwt(claims: &serde_json::Value) -> String {
-        let header = data_encoding::BASE64URL_NOPAD.encode(b"{\"alg\":\"HS256\"}");
-        let payload = data_encoding::BASE64URL_NOPAD
-            .encode(serde_json::to_string(claims).unwrap().as_bytes());
-        let sig = data_encoding::BASE64URL_NOPAD.encode(b"fake-signature-bytes");
-        format!("{header}.{payload}.{sig}")
+    use crate::auth::KeyManager;
+    use crate::auth::session::AccessClaims;
+    use chrono::{Duration as ChronoDuration, Utc};
+
+    /// Build a test `AppState` and a matching `KeyManager` so tests
+    /// can sign tokens that the embedded `SessionManager` will accept.
+    fn make_state_with_secret(secret: &[u8]) -> (AppState, KeyManager) {
+        let mut state = AppState::new();
+        let km_for_state = KeyManager::from_secret(secret);
+        state.session_manager = Arc::new(SessionManager::new(state.pool.clone(), km_for_state));
+        let km_for_signing = KeyManager::from_secret(secret);
+        (state, km_for_signing)
     }
 
-    #[test]
-    fn require_admin_role_allows_admin() {
-        let user_id = uuid::Uuid::new_v4();
-        let session_id = uuid::Uuid::new_v4();
-        let claims = serde_json::json!({
-            "sub": user_id.to_string(),
-            "sid": session_id.to_string(),
-            "roles": ["admin"],
-        });
-        let token = fake_jwt(&claims);
+    /// Sign a HS256 access token carrying `roles` using `km`.
+    fn sign_access_token(km: &KeyManager, roles: Vec<&str>) -> String {
+        let now = Utc::now();
+        let claims = AccessClaims {
+            sub: uuid::Uuid::new_v4().to_string(),
+            sid: uuid::Uuid::new_v4().to_string(),
+            roles: roles.into_iter().map(String::from).collect(),
+            iat: now.timestamp(),
+            exp: (now + ChronoDuration::minutes(15)).timestamp(),
+            iss: "darshjdb".into(),
+            aud: Some("darshjdb".into()),
+        };
+        km.sign_access_token(&claims).expect("sign access token")
+    }
+
+    fn bearer_headers(token: &str) -> HeaderMap {
         let mut headers = HeaderMap::new();
         headers.insert(
             http::header::AUTHORIZATION,
             format!("Bearer {token}").parse().unwrap(),
         );
-        assert!(require_admin_role(&headers).is_ok());
+        headers
     }
 
-    #[test]
-    fn require_admin_role_rejects_non_admin() {
-        let user_id = uuid::Uuid::new_v4();
-        let session_id = uuid::Uuid::new_v4();
-        let claims = serde_json::json!({
-            "sub": user_id.to_string(),
-            "sid": session_id.to_string(),
-            "roles": ["viewer"],
-        });
-        let token = fake_jwt(&claims);
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            http::header::AUTHORIZATION,
-            format!("Bearer {token}").parse().unwrap(),
-        );
-        let err = require_admin_role(&headers).unwrap_err();
+    #[tokio::test]
+    async fn require_admin_auth_allows_admin() {
+        let (state, km) = make_state_with_secret(b"require-admin-auth-test-secret-32!!");
+        let token = sign_access_token(&km, vec!["admin"]);
+        let headers = bearer_headers(&token);
+        let ctx = require_admin_auth(&headers, &state)
+            .await
+            .expect("admin allowed");
+        assert!(ctx.roles.iter().any(|r| r == "admin"));
+    }
+
+    #[tokio::test]
+    async fn require_admin_auth_allows_admin_among_multiple_roles() {
+        let (state, km) = make_state_with_secret(b"require-admin-auth-test-secret-32!!");
+        let token = sign_access_token(&km, vec!["viewer", "developer", "admin"]);
+        let headers = bearer_headers(&token);
+        assert!(require_admin_auth(&headers, &state).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn require_admin_auth_rejects_non_admin() {
+        let (state, km) = make_state_with_secret(b"require-admin-auth-test-secret-32!!");
+        let token = sign_access_token(&km, vec!["viewer"]);
+        let headers = bearer_headers(&token);
+        let err = require_admin_auth(&headers, &state).await.unwrap_err();
         assert!(matches!(err.code, ErrorCode::PermissionDenied));
     }
 
-    #[test]
-    fn require_admin_role_rejects_empty_roles() {
-        let user_id = uuid::Uuid::new_v4();
-        let session_id = uuid::Uuid::new_v4();
-        let claims = serde_json::json!({
-            "sub": user_id.to_string(),
-            "sid": session_id.to_string(),
-            "roles": [],
-        });
-        let token = fake_jwt(&claims);
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            http::header::AUTHORIZATION,
-            format!("Bearer {token}").parse().unwrap(),
-        );
-        assert!(require_admin_role(&headers).is_err());
+    #[tokio::test]
+    async fn require_admin_auth_rejects_empty_roles() {
+        let (state, km) = make_state_with_secret(b"require-admin-auth-test-secret-32!!");
+        let token = sign_access_token(&km, vec![]);
+        let headers = bearer_headers(&token);
+        let err = require_admin_auth(&headers, &state).await.unwrap_err();
+        assert!(matches!(err.code, ErrorCode::PermissionDenied));
     }
 
-    #[test]
-    fn require_admin_role_allows_admin_among_multiple_roles() {
-        let user_id = uuid::Uuid::new_v4();
-        let session_id = uuid::Uuid::new_v4();
-        let claims = serde_json::json!({
-            "sub": user_id.to_string(),
-            "sid": session_id.to_string(),
-            "roles": ["viewer", "developer", "admin"],
-        });
-        let token = fake_jwt(&claims);
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            http::header::AUTHORIZATION,
-            format!("Bearer {token}").parse().unwrap(),
-        );
-        assert!(require_admin_role(&headers).is_ok());
-    }
-
-    #[test]
-    fn require_admin_role_rejects_missing_token() {
+    #[tokio::test]
+    async fn require_admin_auth_rejects_missing_token() {
+        let (state, _km) = make_state_with_secret(b"require-admin-auth-test-secret-32!!");
         let headers = HeaderMap::new();
-        let err = require_admin_role(&headers).unwrap_err();
+        let err = require_admin_auth(&headers, &state).await.unwrap_err();
         assert!(matches!(err.code, ErrorCode::Unauthenticated));
     }
 
+    /// Regression guard: a JWT with a forged signature claiming the
+    /// admin role **must not** be accepted. The old stub only decoded
+    /// claims, which allowed anyone to craft an admin token. The new
+    /// extractor delegates to `SessionManager::validate_token`, which
+    /// cryptographically verifies the signature against the server's key.
+    #[tokio::test]
+    async fn require_admin_auth_rejects_forged_signature() {
+        let (state, _km) = make_state_with_secret(b"require-admin-auth-test-secret-32!!");
+
+        // Hand-craft a JWT: valid structure, legitimate-looking claims,
+        // but the signature bytes are garbage.
+        let header_b64 =
+            data_encoding::BASE64URL_NOPAD.encode(b"{\"alg\":\"HS256\",\"typ\":\"JWT\"}");
+        let payload_b64 = data_encoding::BASE64URL_NOPAD.encode(
+            serde_json::to_string(&serde_json::json!({
+                "sub": uuid::Uuid::new_v4().to_string(),
+                "sid": uuid::Uuid::new_v4().to_string(),
+                "roles": ["admin"],
+                "iat": 0,
+                "exp": 9_999_999_999_i64,
+                "iss": "darshjdb",
+                "aud": "darshjdb",
+            }))
+            .unwrap()
+            .as_bytes(),
+        );
+        let sig_b64 = data_encoding::BASE64URL_NOPAD.encode(b"forged-signature-bytes");
+        let forged = format!("{header_b64}.{payload_b64}.{sig_b64}");
+
+        let headers = bearer_headers(&forged);
+        let err = require_admin_auth(&headers, &state).await.unwrap_err();
+        assert!(
+            matches!(err.code, ErrorCode::Unauthenticated),
+            "forged signature must be 401, got {:?}",
+            err.code
+        );
+    }
+
+    /// A JWT signed by a *different* key than the server's — the
+    /// common token-confusion attack surface — must also be rejected.
+    #[tokio::test]
+    async fn require_admin_auth_rejects_token_signed_by_other_key() {
+        let (state, _km_server) = make_state_with_secret(b"server-real-secret-key-32-bytes!!aa");
+        let attacker_km = KeyManager::from_secret(b"attacker-other-secret-key-32byt!!b");
+        let attacker_token = sign_access_token(&attacker_km, vec!["admin"]);
+        let headers = bearer_headers(&attacker_token);
+        let err = require_admin_auth(&headers, &state).await.unwrap_err();
+        assert!(matches!(err.code, ErrorCode::Unauthenticated));
+    }
+
+    /// Sanity check for `decode_jwt_claims` (still used elsewhere in
+    /// the module for non-critical paths that need the subject id).
     #[test]
     fn decode_jwt_claims_extracts_user_id() {
         let user_id = uuid::Uuid::new_v4();
@@ -4803,7 +6470,13 @@ mod tests {
             "sid": session_id.to_string(),
             "roles": ["developer"],
         });
-        let token = fake_jwt(&claims);
+        // Build a syntactically-valid (unsigned) JWT: the helper is
+        // signature-free by design.
+        let header = data_encoding::BASE64URL_NOPAD.encode(b"{\"alg\":\"HS256\"}");
+        let payload = data_encoding::BASE64URL_NOPAD
+            .encode(serde_json::to_string(&claims).unwrap().as_bytes());
+        let sig = data_encoding::BASE64URL_NOPAD.encode(b"fake-signature-bytes");
+        let token = format!("{header}.{payload}.{sig}");
         let mut headers = HeaderMap::new();
         headers.insert(
             http::header::AUTHORIZATION,
@@ -4823,5 +6496,178 @@ mod tests {
             "Bearer not-a-jwt".parse().unwrap(),
         );
         assert!(decode_jwt_claims(&headers).is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // SSE subscribe filter helpers (Phase 0.6)
+    // -----------------------------------------------------------------------
+    //
+    // These tests cover the in-memory pieces the `subscribe` handler uses
+    // to gate change events. Hitting the live BroadcastStream path needs a
+    // running Postgres instance, so we test the pure logic here and rely
+    // on the integration suite for the streaming wiring.
+
+    use crate::query::{WhereClause, WhereOp};
+
+    fn wc(attribute: &str, op: WhereOp, value: serde_json::Value) -> WhereClause {
+        WhereClause {
+            attribute: attribute.to_string(),
+            op,
+            value,
+        }
+    }
+
+    #[test]
+    fn eval_where_eq_matches_when_attribute_present() {
+        let mut attrs = HashMap::new();
+        attrs.insert("status".to_string(), serde_json::json!("active"));
+        let clause = wc("status", WhereOp::Eq, serde_json::json!("active"));
+        assert!(eval_where_clause(&clause, &attrs));
+    }
+
+    #[test]
+    fn eval_where_eq_rejects_when_value_differs() {
+        let mut attrs = HashMap::new();
+        attrs.insert("status".to_string(), serde_json::json!("inactive"));
+        let clause = wc("status", WhereOp::Eq, serde_json::json!("active"));
+        assert!(!eval_where_clause(&clause, &attrs));
+    }
+
+    #[test]
+    fn eval_where_missing_attribute_fails_closed() {
+        let attrs = HashMap::new();
+        let clause = wc("status", WhereOp::Eq, serde_json::json!("active"));
+        assert!(!eval_where_clause(&clause, &attrs));
+    }
+
+    #[test]
+    fn eval_where_neq_against_missing_attribute_passes() {
+        let attrs = HashMap::new();
+        let clause = wc("status", WhereOp::Neq, serde_json::json!("inactive"));
+        // Field absent => "not equal to non-null literal" is true.
+        assert!(eval_where_clause(&clause, &attrs));
+    }
+
+    #[test]
+    fn eval_where_numeric_ordering() {
+        let mut attrs = HashMap::new();
+        attrs.insert("age".to_string(), serde_json::json!(30));
+        assert!(eval_where_clause(
+            &wc("age", WhereOp::Gt, serde_json::json!(25)),
+            &attrs
+        ));
+        assert!(eval_where_clause(
+            &wc("age", WhereOp::Gte, serde_json::json!(30)),
+            &attrs
+        ));
+        assert!(eval_where_clause(
+            &wc("age", WhereOp::Lt, serde_json::json!(40)),
+            &attrs
+        ));
+        assert!(eval_where_clause(
+            &wc("age", WhereOp::Lte, serde_json::json!(30)),
+            &attrs
+        ));
+        assert!(!eval_where_clause(
+            &wc("age", WhereOp::Lt, serde_json::json!(10)),
+            &attrs
+        ));
+    }
+
+    #[test]
+    fn eval_where_clauses_anded_together() {
+        let mut attrs = HashMap::new();
+        attrs.insert("status".to_string(), serde_json::json!("active"));
+        attrs.insert("age".to_string(), serde_json::json!(30));
+
+        let clauses = vec![
+            wc("status", WhereOp::Eq, serde_json::json!("active")),
+            wc("age", WhereOp::Gt, serde_json::json!(18)),
+        ];
+        assert!(eval_where_clauses(&clauses, &attrs));
+
+        let clauses_one_fails = vec![
+            wc("status", WhereOp::Eq, serde_json::json!("active")),
+            wc("age", WhereOp::Gt, serde_json::json!(40)),
+        ];
+        assert!(!eval_where_clauses(&clauses_one_fails, &attrs));
+    }
+
+    #[test]
+    fn eval_where_clauses_empty_list_matches() {
+        let attrs = HashMap::new();
+        assert!(eval_where_clauses(&[], &attrs));
+    }
+
+    #[test]
+    fn ilike_match_handles_wildcards_case_insensitively() {
+        assert!(ilike_match("hello world", "%WORLD%"));
+        assert!(ilike_match("alice@example.com", "%@example.com"));
+        assert!(ilike_match("alice", "a_ice"));
+        assert!(!ilike_match("alice", "bob"));
+    }
+
+    #[test]
+    fn json_contains_handles_objects_and_arrays() {
+        let haystack = serde_json::json!({"a": 1, "b": {"c": 2}});
+        assert!(json_contains(&haystack, &serde_json::json!({"a": 1})));
+        assert!(json_contains(
+            &haystack,
+            &serde_json::json!({"b": {"c": 2}})
+        ));
+        assert!(!json_contains(
+            &haystack,
+            &serde_json::json!({"b": {"c": 3}})
+        ));
+    }
+
+    #[test]
+    fn pubsub_event_entity_type_filter_matches_target() {
+        // Simulate the gate logic the SSE handler applies before
+        // executing the WHERE re-check. We construct a PubSubEvent and
+        // assert that the entity_type comparison produces the expected
+        // include/drop decision.
+        let target = "users".to_string();
+        let matching = PubSubEvent {
+            channel: "entity:users".into(),
+            event: "updated".into(),
+            entity_type: Some("users".into()),
+            entity_id: Some(uuid::Uuid::new_v4().to_string()),
+            changed: vec!["email".into()],
+            tx_id: 1,
+            payload: None,
+        };
+        let other = PubSubEvent {
+            channel: "entity:orders".into(),
+            event: "updated".into(),
+            entity_type: Some("orders".into()),
+            entity_id: Some(uuid::Uuid::new_v4().to_string()),
+            changed: vec!["total".into()],
+            tx_id: 2,
+            payload: None,
+        };
+
+        let pass = matches!(matching.entity_type.as_deref(), Some(et) if et == target);
+        let drop = matches!(other.entity_type.as_deref(), Some(et) if et == target);
+        assert!(pass, "matching entity_type should pass the gate");
+        assert!(!drop, "non-matching entity_type should be dropped");
+    }
+
+    #[test]
+    fn parse_darshan_ql_extracts_target_entity_type() {
+        // Confirm the shape the subscribe handler relies on: the parsed
+        // QueryAST exposes the target entity_type and an iterable list
+        // of WhereClauses.
+        let q = serde_json::json!({
+            "type": "users",
+            "$where": [
+                { "attribute": "status", "op": "Eq", "value": "active" }
+            ]
+        });
+        let ast = query::parse_darshan_ql(&q).expect("parses");
+        assert_eq!(ast.entity_type, "users");
+        assert_eq!(ast.where_clauses.len(), 1);
+        assert_eq!(ast.where_clauses[0].attribute, "status");
+        assert!(matches!(ast.where_clauses[0].op, WhereOp::Eq));
     }
 }

@@ -12,6 +12,7 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
+use ddb_server::admin::static_assets::admin_router;
 use ddb_server::api::rest::{AppState, build_router};
 use ddb_server::api::ws::{WsState, ws_routes};
 use ddb_server::auth::middleware::RateLimiter;
@@ -53,20 +54,63 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // -- Tracing / Logging ----------------------------------------------------
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
-        .init();
+    // -- Tracing / Logging (Phase 10: JSON + request_id) ----------------------
+    ddb_server::observability::init_json_logging().map_err(|e| {
+        ddb_server::error::DarshJError::Internal(format!("tracing init failed: {e}"))
+    })?;
 
-    tracing::info!("DarshJDB server starting");
+    tracing::info!(
+        version = env!("CARGO_PKG_VERSION"),
+        author = "Darshankumar Joshi",
+        "DarshJDB server starting"
+    );
+
+    // -- Prometheus recorder (Phase 10) ---------------------------------------
+    let (metrics_handle, metrics_allow_list) = ddb_server::observability::init_prometheus()
+        .map_err(|e| {
+            ddb_server::error::DarshJError::Internal(format!("prometheus init failed: {e}"))
+        })?;
+    tracing::info!(
+        allow_list = ?metrics_allow_list,
+        "Prometheus recorder installed"
+    );
 
     // -- Configuration from environment ---------------------------------------
-    let database_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| {
+    //
+    // Zero-dep dev mode (slice 17/30): if `DATABASE_URL` is unset AND the
+    // binary was compiled with `--features embedded-db`, launch a local
+    // Postgres 16 instance via `pg_embed` and use its URI. The `PgEmbed`
+    // handle is bound to `_embedded_pg` so the child process lives for the
+    // full server lifetime.
+    let configured_url = std::env::var("DATABASE_URL").ok();
+
+    #[cfg(feature = "embedded-db")]
+    let (database_url, _embedded_pg) = match configured_url {
+        Some(url) => (url, None),
+        None => {
+            let data_dir = dirs::home_dir()
+                .unwrap_or_else(|| std::path::PathBuf::from("."))
+                .join(".darshjdb")
+                .join("data");
+            tracing::info!(
+                data_dir = %data_dir.display(),
+                "no DATABASE_URL set — booting embedded Postgres 16 (zero-dep dev mode)"
+            );
+            let (pg, uri) = ddb_server::embedded_pg::start_embedded_postgres(&data_dir)
+                .await
+                .map_err(|e| {
+                    ddb_server::error::DarshJError::Internal(format!(
+                        "embedded Postgres startup failed: {e}"
+                    ))
+                })?;
+            (uri, Some(pg))
+        }
+    };
+
+    #[cfg(not(feature = "embedded-db"))]
+    let database_url = configured_url.unwrap_or_else(|| {
         tracing::warn!("DATABASE_URL not set, using default localhost connection");
-        "postgres://darshan:darshan@localhost:5432/darshjdb".to_string()
+        "postgres://ddb:ddb@localhost:5432/darshjdb".to_string()
     });
 
     let port: u16 = std::env::var("DDB_PORT")
@@ -141,6 +185,47 @@ async fn main() -> Result<()> {
             ddb_server::error::DarshJError::Database(e)
         })?;
     tracing::info!("auth schema ensured (users + sessions tables)");
+
+    // Phase 5.3 (slice 23/30) — ensure anchor_receipts exists so the
+    // background anchor task can write without a follow-up migration.
+    ddb_server::anchor::ensure_anchor_schema(&pool)
+        .await
+        .map_err(|e| {
+            tracing::error!("Failed to ensure anchor schema: {e}");
+            ddb_server::error::DarshJError::Database(e)
+        })?;
+    tracing::info!("anchor schema ensured (anchor_receipts table)");
+
+    // Phase 3 (slice 16) — ensure vector + embeddings + FTS indexes exist
+    // so /api/search/{semantic,text,hybrid} work without a separate migration.
+    ddb_server::api::rest::ensure_search_schema(&pool)
+        .await
+        .map_err(|e| {
+            tracing::error!("Failed to ensure search schema: {e}");
+            ddb_server::error::DarshJError::Database(e)
+        })?;
+    tracing::info!("search schema ensured (pgvector + embeddings + FTS)");
+
+    // Slice 14/30 — ensure agent memory tables (sessions + entries + facts)
+    // so the context builder / memory API can write on first request.
+    ddb_server::agent_memory::ensure_agent_memory_schema(&pool)
+        .await
+        .map_err(|e| {
+            tracing::error!("Failed to ensure agent memory schema: {e}");
+            ddb_server::error::DarshJError::Database(e)
+        })?;
+    tracing::info!("agent memory schema ensured (sessions + entries + facts tables)");
+
+    // Phase 7.1 (slice 25/30): ensure chunked_uploads table exists so
+    // resumable uploads and the cleanup task can run without a
+    // separate migrator step.
+    ddb_server::api::chunked_upload::ensure_chunked_uploads_schema(&pool)
+        .await
+        .map_err(|e| {
+            tracing::error!("Failed to ensure chunked_uploads schema: {e}");
+            ddb_server::error::DarshJError::Database(e)
+        })?;
+    tracing::info!("chunked_uploads schema ensured");
 
     sqlx::query("SELECT pg_advisory_unlock(42)")
         .execute(&pool)
@@ -242,6 +327,101 @@ async fn main() -> Result<()> {
         tracing::info!("TTL expiry background task started (30s interval)");
     }
 
+    // -- Blockchain Anchor Background Task (Phase 5.3, slice 23/30) -----------
+    // Every `DARSH_ANCHOR_EVERY_N_TX` transactions, compute the
+    // Keccak-256 batch root over the most recent N `tx_merkle_roots`
+    // rows and submit it to the configured anchor backend (IPFS,
+    // Ethereum, or `none`). The receipt is persisted regardless of
+    // outcome so operators always have a complete audit trail.
+    //
+    // Only spawned when `DARSH_BLOCKCHAIN_ANCHOR` is set to something
+    // other than `none` — with anchoring disabled we'd just be writing
+    // `skipped` rows on a timer, which wastes SQL round-trips for no
+    // operational benefit.
+    {
+        let anchor_chain =
+            std::env::var("DARSH_BLOCKCHAIN_ANCHOR").unwrap_or_else(|_| "none".to_string());
+        let every_n: u64 = std::env::var("DARSH_ANCHOR_EVERY_N_TX")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(100);
+
+        if anchor_chain != "none" && every_n > 0 {
+            let anchor_pool = pool.clone();
+            let chain_for_task = anchor_chain.clone();
+            tokio::spawn(async move {
+                let anchorer = ddb_server::anchor::build_anchorer(&chain_for_task);
+
+                // Baseline: the `tx_id` we saw last cycle. We trigger a
+                // new anchor run every time the current max exceeds
+                // `baseline + every_n`. Using a DB-side counter keeps
+                // the task stateless across process restarts.
+                let mut baseline: i64 = match sqlx::query_scalar::<_, Option<i64>>(
+                    "SELECT MAX(tx_id) FROM tx_merkle_roots",
+                )
+                .fetch_one(&anchor_pool)
+                .await
+                {
+                    Ok(v) => v.unwrap_or(0),
+                    Err(e) => {
+                        tracing::warn!(error = %e, "anchor task: failed to read tx_merkle_roots baseline");
+                        0
+                    }
+                };
+
+                let mut interval = tokio::time::interval(Duration::from_secs(15));
+                loop {
+                    interval.tick().await;
+                    let current: Option<i64> = match sqlx::query_scalar::<_, Option<i64>>(
+                        "SELECT MAX(tx_id) FROM tx_merkle_roots",
+                    )
+                    .fetch_one(&anchor_pool)
+                    .await
+                    {
+                        Ok(v) => v,
+                        Err(e) => {
+                            tracing::warn!(error = %e, "anchor task: tx_merkle_roots probe failed");
+                            continue;
+                        }
+                    };
+
+                    let Some(current) = current else { continue };
+                    if current.saturating_sub(baseline) < every_n as i64 {
+                        continue;
+                    }
+
+                    match ddb_server::anchor::run_anchor_cycle(
+                        &anchor_pool,
+                        anchorer.as_ref(),
+                        every_n,
+                    )
+                    .await
+                    {
+                        Ok(receipt) => {
+                            tracing::info!(
+                                chain = %receipt.chain,
+                                status = %receipt.status,
+                                tx_count = receipt.tx_count,
+                                "anchor cycle completed"
+                            );
+                            baseline = current;
+                        }
+                        Err(e) => {
+                            tracing::warn!(error = %e, "anchor cycle failed");
+                        }
+                    }
+                }
+            });
+            tracing::info!(
+                chain = %anchor_chain,
+                every_n,
+                "blockchain anchor background task started"
+            );
+        } else {
+            tracing::info!("blockchain anchor disabled (DARSH_BLOCKCHAIN_ANCHOR=none)");
+        }
+    }
+
     // -- Pool Utilization Monitor ------------------------------------------------
     {
         let monitor_pool = pool.clone();
@@ -271,6 +451,15 @@ async fn main() -> Result<()> {
             }
         });
         tracing::info!("pool utilization monitor started (10s interval, warn >80%)");
+    }
+
+    // -- Chunked Upload Cleanup (VYASA 7.1) -----------------------------------
+    // Every 5 minutes, delete `chunked_uploads` rows in `in_progress` state
+    // that are older than 24h and purge their `/tmp` staging directories.
+    {
+        let cleanup_pool = pool.clone();
+        ddb_server::api::chunked_upload::spawn_cleanup_task(cleanup_pool);
+        tracing::info!("chunked upload cleanup task started (5min interval, 24h stale threshold)");
     }
 
     // -- Postgres LISTEN/NOTIFY for multi-process sync -------------------------
@@ -337,8 +526,36 @@ async fn main() -> Result<()> {
     let (change_feed, _change_feed_rx) = ddb_server::sync::change_feed::ChangeFeed::with_defaults();
 
     // Live query manager for LIVE SELECT subscriptions.
+    // Slice 28/30 — the same Arc is shared between the WS handler and
+    // the REST DarshanQL handler so HTTP `LIVE SELECT` requests with
+    // `X-Subscription-Upgrade` register against the identical
+    // subscription pool that powers the WebSocket channel.
     let (live_query_manager, _live_query_rx) =
         ddb_server::sync::live_query::LiveQueryManager::new(4096);
+    let live_query_manager_for_rest = live_query_manager.clone();
+
+    // -- Rule Engine (built early so WS handler can fire it inside the same
+    //    transaction as user writes, matching the REST mutation path).
+    let rules_path = std::path::PathBuf::from(
+        std::env::var("DDB_RULES_FILE").unwrap_or_else(|_| "./darshan/rules.json".to_string()),
+    );
+    let rules = ddb_server::rules::load_rules_from_file(&rules_path).unwrap_or_else(|e| {
+        tracing::error!(error = %e, "failed to load rules, continuing without rule engine");
+        Vec::new()
+    });
+    let rule_engine: Option<Arc<ddb_server::rules::RuleEngine>> = if rules.is_empty() {
+        None
+    } else {
+        Some(Arc::new(ddb_server::rules::RuleEngine::new(
+            rules,
+            triple_store_arc.clone(),
+        )))
+    };
+
+    // Shared hot query cache — the same Arc is handed to both the WS handler
+    // (for invalidation on mutation) and the REST `AppState` (for reads), so
+    // a WS mutation evicts subsequent REST reads and vice versa.
+    let query_cache = Arc::new(ddb_server::cache::QueryCache::from_env());
 
     let ws_state = WsState {
         sessions: sync_sessions.clone(),
@@ -351,6 +568,9 @@ async fn main() -> Result<()> {
         pubsub: pubsub_engine.clone(),
         live_queries: live_query_manager,
         change_feed,
+        rule_engine: rule_engine.clone(),
+        query_cache: query_cache.clone(),
+        subscription_snapshots: Arc::new(dashmap::DashMap::new()),
     };
 
     tracing::info!("sync engine initialized");
@@ -420,6 +640,33 @@ async fn main() -> Result<()> {
         }
     } else {
         tracing::info!("embedding pipeline disabled (DDB_EMBEDDING_PROVIDER=none or unset)");
+    }
+
+    // -- Agent Memory Embedding Worker (Phase 2.5) ----------------------------
+    // Spawns a background task that fills `embedding`/`content_tokens` on
+    // `memory_entries` and `agent_facts` rows. The schema is assumed to exist
+    // from the Phase 2 migration (slice 12). If it doesn't, the worker logs a
+    // warning on its first tick and keeps retrying — it never crashes the
+    // server.
+    {
+        let provider_kind = std::env::var("DARSH_EMBEDDING_PROVIDER")
+            .unwrap_or_else(|_| "none".to_string())
+            .to_lowercase();
+        if provider_kind != "none" && !provider_kind.is_empty() {
+            let provider: std::sync::Arc<dyn ddb_agent_memory::EmbeddingProvider> =
+                std::sync::Arc::from(ddb_agent_memory::from_env());
+            tracing::info!(
+                provider = %provider_kind,
+                model = provider.model(),
+                dimensions = provider.dimensions(),
+                "agent-memory embedding worker starting"
+            );
+            let _handle = ddb_agent_memory::spawn_embedding_worker(pool.clone(), provider);
+        } else {
+            tracing::info!(
+                "agent-memory embedding worker disabled (DARSH_EMBEDDING_PROVIDER=none or unset)"
+            );
+        }
     }
 
     // -- Storage Engine -------------------------------------------------------
@@ -501,22 +748,8 @@ async fn main() -> Result<()> {
         (None, None)
     };
 
-    // -- Rule Engine ----------------------------------------------------------
-    let rules_path = std::path::PathBuf::from(
-        std::env::var("DDB_RULES_FILE").unwrap_or_else(|_| "./darshan/rules.json".to_string()),
-    );
-    let rules = ddb_server::rules::load_rules_from_file(&rules_path).unwrap_or_else(|e| {
-        tracing::error!(error = %e, "failed to load rules, continuing without rule engine");
-        Vec::new()
-    });
-    let rule_engine = if rules.is_empty() {
-        None
-    } else {
-        Some(Arc::new(ddb_server::rules::RuleEngine::new(
-            rules,
-            triple_store_arc.clone(),
-        )))
-    };
+    // Rule engine was built earlier (before ws_state) so the WS mutation
+    // handler can fire it inside the same transaction as user writes.
 
     // -- REST API State -------------------------------------------------------
     let mut app_state = AppState::with_pool(
@@ -527,6 +760,9 @@ async fn main() -> Result<()> {
         rate_limiter.clone(),
         storage_engine,
     );
+    // Share the same query cache with the WS handler so mutations over either
+    // channel invalidate reads on the other.
+    app_state.query_cache = query_cache.clone();
     if let Some(engine) = rule_engine {
         app_state = app_state.with_rules(engine);
     }
@@ -568,6 +804,52 @@ async fn main() -> Result<()> {
         Err(e) => {
             tracing::warn!(error = %e, "Failed to initialize schema migration engine");
         }
+    }
+
+    // -- Slice 28/30 — Strict Schema Enforcer (Phase 9 SurrealDB parity) -------
+    // Gated by `DdbConfig.schema.schema_mode`. When the mode is
+    // "strict" the enforcer short-circuits writes that violate
+    // `schema_definitions`; in any other mode it still loads
+    // definitions so the admin routes can manage them, but
+    // validation always passes.
+    // The slice's gating predicate is
+    // `DdbConfig.schema.schema_mode == "strict"`. The v0.2.0 baseline
+    // does not yet thread `DdbConfig` through `main.rs`, so we read
+    // the same value from `DARSH_SCHEMA__SCHEMA_MODE` (the canonical
+    // env var the typed loader would consume) with a `DDB_SCHEMA_MODE`
+    // alias for ergonomic ops use.
+    let schema_mode_env = std::env::var("DARSH_SCHEMA__SCHEMA_MODE")
+        .or_else(|_| std::env::var("DDB_SCHEMA_MODE"))
+        .unwrap_or_else(|_| "flexible".to_string());
+    let strict_mode_active = schema_mode_env.eq_ignore_ascii_case("strict");
+    match ddb_server::schema::strict::StrictSchemaEnforcer::new(pool.clone(), strict_mode_active)
+        .await
+    {
+        Ok(enforcer) => {
+            app_state = app_state.with_strict_schema(enforcer);
+            tracing::info!(
+                strict = strict_mode_active,
+                "Strict schema enforcer initialized (slice 28/30)"
+            );
+        }
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "Failed to initialize strict schema enforcer, continuing without strict mode"
+            );
+        }
+    }
+
+    // Slice 28/30 — share the live-query manager with the REST
+    // DarshanQL handler so `LIVE SELECT` statements submitted over
+    // HTTP (with the `X-Subscription-Upgrade` header) register
+    // against the same `LiveQueryManager` as WebSocket clients.
+    app_state = app_state.with_live_queries(live_query_manager_for_rest);
+
+    // Bootstrap the `admin_audit_log` table so the SQL passthrough
+    // handler can always append audit rows even on fresh installs.
+    if let Err(e) = ddb_server::api::sql_passthrough::ensure_audit_schema(&pool).await {
+        tracing::warn!(error = %e, "Failed to bootstrap admin_audit_log table");
     }
 
     // -- CORS Layer -----------------------------------------------------------
@@ -637,35 +919,58 @@ async fn main() -> Result<()> {
         .unwrap_or((0,));
     tracing::info!(triples = triple_count.0, "triple store stats");
 
-    // -- Shared state for health endpoints ------------------------------------
+    // -- Shared state for legacy health endpoints -----------------------------
     let server_started_at = Instant::now();
-    let health_pool = pool.clone();
     let health_pool_ready = pool.clone();
-    let health_ws_sessions = sync_sessions.clone();
     let health_ws_sessions_ready = sync_sessions.clone();
-    let health_pool_stats = app_state.pool_stats.clone();
+    let legacy_health_pool = pool.clone();
+    let legacy_ws_sessions = sync_sessions.clone();
+    let legacy_pool_stats = app_state.pool_stats.clone();
 
     // -- Router Assembly ------------------------------------------------------
     let api_router = build_router(app_state);
 
+    // Phase 10 observability router: /health, /ready, /live — mounted BEFORE
+    // auth middleware so load balancers and orchestrators can probe without a
+    // token. Rendered by `ddb_server::observability::health`.
+    let health_state = ddb_server::observability::HealthState::new(pool.clone());
+    let phase10_health = ddb_server::observability::health_router(health_state);
+
+    // Phase 10 metrics router: /metrics (Prometheus text exposition, IP
+    // allow-list enforced via DDB_METRICS_ALLOWED_IPS).
+    let phase10_metrics = ddb_server::observability::metrics_router(
+        metrics_handle.clone(),
+        metrics_allow_list.clone(),
+    );
+
     let app = axum::Router::new()
         // REST API routes under /api
         .nest("/api", api_router)
+        // Embedded admin dashboard (Vite SPA baked into the binary via
+        // include_dir!). Mounted at the top level so /admin/* serves the
+        // dashboard while /api/admin/{schema,functions,...} JSON endpoints
+        // remain reachable inside the build_router. — Slice 19/30
+        .merge(admin_router())
         // WebSocket route at /ws
         .merge(ws_routes(ws_state))
-        // Health check at root
+        // Phase 10: /health /ready /live — mounted before auth middleware.
+        .merge(phase10_health)
+        // Phase 10: /metrics (Prometheus text exposition).
+        .merge(phase10_metrics)
+        // Legacy rich health shape at /health/full for dashboards that still
+        // want pool/ws/triple counts.
         .route(
-            "/health",
+            "/health/full",
             axum::routing::get(move || {
                 health_check(
-                    health_pool.clone(),
-                    health_ws_sessions.clone(),
+                    legacy_health_pool.clone(),
+                    legacy_ws_sessions.clone(),
                     server_started_at,
-                    health_pool_stats.clone(),
+                    legacy_pool_stats.clone(),
                 )
             }),
         )
-        // Readiness probe for K8s
+        // Legacy readiness probe for K8s
         .route(
             "/health/ready",
             axum::routing::get(move || {
@@ -681,7 +986,15 @@ async fn main() -> Result<()> {
             }),
         )
         // -- Middleware stack (outermost = runs first) -------------------------
-        // Structured request logging
+        // Phase 10: HTTP Prometheus counter + histogram observer.
+        .layer(axum::middleware::from_fn(
+            ddb_server::observability::http_metrics_middleware,
+        ))
+        // Phase 10: request_id + JSON span per request.
+        .layer(axum::middleware::from_fn(
+            ddb_server::observability::request_id_middleware,
+        ))
+        // Structured request logging (legacy)
         .layer(middleware::from_fn(request_logging_middleware))
         // Catch panics in handlers -> 500
         .layer(CatchPanicLayer::custom(handle_panic))
@@ -694,7 +1007,35 @@ async fn main() -> Result<()> {
         .layer(cors);
 
     // -- Start Server ---------------------------------------------------------
-    let addr = SocketAddr::from(([0, 0, 0, 0], port));
+    // If DDB_BIND_ADDR is set, use it; else default to 0.0.0.0.
+    // Dev mode refuses to bind anything other than loopback so a leaked
+    // DDB_DEV=1 env var cannot accidentally expose the bearer-token bypass
+    // to a non-local caller.
+    let bind_host = std::env::var("DDB_BIND_ADDR").unwrap_or_else(|_| "0.0.0.0".into());
+    if dev_mode {
+        let is_loopback = matches!(
+            bind_host.as_str(),
+            "127.0.0.1" | "::1" | "localhost" | "0.0.0.0"
+        );
+        if !is_loopback {
+            return Err(ddb_server::error::DarshJError::Internal(format!(
+                "DDB_DEV=1 refuses to bind non-loopback address {bind_host}. \
+                 Unset DDB_DEV or set DDB_BIND_ADDR=127.0.0.1."
+            )));
+        }
+        if bind_host == "0.0.0.0" {
+            tracing::warn!(
+                "DDB_DEV=1 active with bind 0.0.0.0 — dev bypass token only \
+                 accepted from loopback sources (requests with proxy headers \
+                 are rejected)."
+            );
+        }
+    }
+    let bind_ip: std::net::IpAddr = bind_host
+        .parse()
+        .or_else(|_| "0.0.0.0".parse())
+        .expect("default bind parse");
+    let addr = SocketAddr::from((bind_ip, port));
 
     // Optional TLS termination: if DDB_TLS_CERT and DDB_TLS_KEY are set,
     // bind with rustls for native TLS 1.2/1.3 support. Otherwise, plain HTTP.

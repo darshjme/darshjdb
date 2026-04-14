@@ -432,7 +432,7 @@ mod tests {
     fn value_to_string_variants() {
         assert_eq!(value_to_string(&serde_json::json!("hello")), "hello");
         assert_eq!(value_to_string(&serde_json::json!(42)), "42");
-        assert_eq!(value_to_string(&serde_json::json!(3.14)), "3.14");
+        assert_eq!(value_to_string(&serde_json::json!(3.25)), "3.25");
         assert_eq!(value_to_string(&serde_json::json!(true)), "true");
         assert_eq!(value_to_string(&serde_json::Value::Null), "");
         assert_eq!(value_to_string(&serde_json::json!({"a": 1})), r#"{"a":1}"#);
@@ -441,7 +441,7 @@ mod tests {
     #[test]
     fn value_to_f64_variants() {
         assert_eq!(value_to_f64(&serde_json::json!(42)), Some(42.0));
-        assert_eq!(value_to_f64(&serde_json::json!(3.14)), Some(3.14));
+        assert_eq!(value_to_f64(&serde_json::json!(3.25)), Some(3.25));
         assert_eq!(value_to_f64(&serde_json::json!("99")), Some(99.0));
         assert_eq!(value_to_f64(&serde_json::json!("not_a_number")), None);
         assert_eq!(value_to_f64(&serde_json::json!(true)), None);

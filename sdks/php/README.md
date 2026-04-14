@@ -16,7 +16,7 @@ composer require darshan/darshan-php
 ## Quick Start (Plain PHP)
 
 ```php
-use Darshan\Client;
+use Darshjdb\Client;
 
 $db = new Client([
     'serverUrl' => 'https://db.example.com',
@@ -90,7 +90,7 @@ DDB_API_KEY=your-api-key
 ### Usage with Facade
 
 ```php
-use Darshan\Laravel\DarshanFacade as Darshan;
+use Darshjdb\Laravel\Facade as Darshan;
 
 // In a controller
 class PostController extends Controller
@@ -121,7 +121,7 @@ class PostController extends Controller
 ### Usage with Dependency Injection
 
 ```php
-use Darshan\Client;
+use Darshjdb\Client;
 
 class UserService
 {
@@ -144,7 +144,7 @@ class UserService
 ### Auth in Middleware
 
 ```php
-use Darshan\Client;
+use Darshjdb\Client;
 
 class DarshanAuthMiddleware
 {
@@ -166,14 +166,14 @@ class DarshanAuthMiddleware
 
 ## Error Handling
 
-All SDK methods throw `Darshan\DarshanException` on failure:
+All SDK methods throw `Darshjdb\Exception` on failure:
 
 ```php
-use Darshan\DarshanException;
+use Darshjdb\Exception;
 
 try {
     $db->auth()->signIn('user@example.com', 'wrong-password');
-} catch (DarshanException $e) {
+} catch (Exception $e) {
     echo $e->getMessage();        // "invalid credentials"
     echo $e->getStatusCode();     // 401
     print_r($e->getErrorBody());  // Full server error payload

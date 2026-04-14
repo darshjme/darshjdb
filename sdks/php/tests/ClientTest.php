@@ -2,13 +2,13 @@
 
 declare(strict_types=1);
 
-namespace Darshan\Tests;
+namespace Darshjdb\Tests;
 
-use Darshan\AuthClient;
-use Darshan\Client;
-use Darshan\DarshanException;
-use Darshan\QueryBuilder;
-use Darshan\StorageClient;
+use Darshjdb\AuthClient;
+use Darshjdb\Client;
+use Darshjdb\Exception;
+use Darshjdb\QueryBuilder;
+use Darshjdb\StorageClient;
 use PHPUnit\Framework\TestCase;
 
 final class ClientTest extends TestCase
@@ -176,12 +176,12 @@ final class ClientTest extends TestCase
 
     public function testExceptionExtendsRuntimeException(): void
     {
-        $this->assertTrue(is_subclass_of(DarshanException::class, \RuntimeException::class));
+        $this->assertTrue(is_subclass_of(Exception::class, \RuntimeException::class));
     }
 
     public function testExceptionWithStatusCodeAndBody(): void
     {
-        $ex = new DarshanException(
+        $ex = new Exception(
             message: 'Not found',
             code: 404,
             statusCode: 404,

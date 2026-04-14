@@ -645,7 +645,7 @@ mod tests {
 
     #[test]
     fn infer_value_type_float() {
-        assert_eq!(infer_triple_value_type(&serde_json::json!(3.14)), 2);
+        assert_eq!(infer_triple_value_type(&serde_json::json!(3.25)), 2);
     }
 
     #[test]

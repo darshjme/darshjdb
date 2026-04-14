@@ -575,9 +575,9 @@ mod tests {
                 format: "decimal".into(),
             }),
         );
-        let v = json!(3.14159);
+        let v = json!(5.67891);
         let result = validate_value(&f, &v).unwrap();
-        assert_eq!(result, json!(3.14));
+        assert_eq!(result, json!(5.68));
     }
 
     #[test]

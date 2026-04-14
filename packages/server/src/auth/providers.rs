@@ -1,21 +1,20 @@
 //! Authentication providers for DarshJDB.
 //!
-//! Supports three primary authentication flows:
+//! Supports two primary authentication flows in this module:
 //!
 //! - **Password**: Argon2id hashing with tuned parameters (64 MB memory,
 //!   3 iterations, parallelism 4).
-//! - **Magic Link**: 32-byte random token with hashed storage, 15-minute
-//!   expiry, and one-time use semantics.
 //! - **OAuth2**: Trait-based provider abstraction with concrete implementations
 //!   for Google, GitHub, Apple, Discord, Microsoft, Twitter/X, LinkedIn,
 //!   Slack, GitLab, Bitbucket, Facebook, and Spotify. PKCE is mandatory;
 //!   the state parameter is HMAC-signed to prevent CSRF.
+//!
+//! Magic-link authentication lives in [`super::magic_link`].
 
 use argon2::{
     Algorithm, Argon2, Params, Version,
     password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString, rand_core::OsRng},
 };
-use chrono::{DateTime, Duration, Utc};
 use hmac::{Hmac, Mac};
 use rand::RngCore;
 use sha2::Sha256;
@@ -116,130 +115,6 @@ impl PasswordProvider {
 
         let roles: Vec<String> = serde_json::from_value(roles_json)
             .map_err(|e| AuthError::Internal(format!("bad roles json: {e}")))?;
-
-        Ok(AuthOutcome::Success { user_id, roles })
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Magic link provider
-// ---------------------------------------------------------------------------
-
-/// One-time magic link authentication.
-///
-/// Flow:
-/// 1. Generate a 32-byte random token and store its SHA-256 hash with
-///    a 15-minute expiry.
-/// 2. Send the raw token to the user (via email — transport is external).
-/// 3. On verification, hash the presented token and match against the DB row.
-///    If valid and unexpired, mark as consumed and return the user identity.
-pub struct MagicLinkProvider;
-
-/// A newly created magic link ready to be delivered to the user.
-#[derive(Debug)]
-pub struct MagicLink {
-    /// The raw token to embed in the link URL. Never stored directly.
-    pub token: String,
-    /// When this token expires.
-    pub expires_at: DateTime<Utc>,
-}
-
-impl MagicLinkProvider {
-    /// Token validity window.
-    const EXPIRY_MINUTES: i64 = 15;
-
-    /// Generate a new magic link for the given user.
-    ///
-    /// The raw token is returned for embedding in a URL. Only its SHA-256
-    /// hash is persisted, so a database breach cannot reconstruct tokens.
-    pub async fn generate(pool: &PgPool, user_id: Uuid) -> Result<MagicLink, AuthError> {
-        let mut raw = [0u8; 32];
-        OsRng.fill_bytes(&mut raw);
-        let token = data_encoding::BASE64URL_NOPAD.encode(&raw);
-
-        let hash = {
-            use sha2::Digest;
-            let digest = sha2::Sha256::digest(token.as_bytes());
-            data_encoding::HEXLOWER.encode(&digest)
-        };
-
-        let expires_at = Utc::now() + Duration::minutes(Self::EXPIRY_MINUTES);
-
-        sqlx::query(
-            "INSERT INTO magic_links (token_hash, user_id, expires_at, consumed)
-             VALUES ($1, $2, $3, false)",
-        )
-        .bind(&hash)
-        .bind(user_id)
-        .bind(expires_at)
-        .execute(pool)
-        .await?;
-
-        Ok(MagicLink { token, expires_at })
-    }
-
-    /// Verify a magic link token.
-    ///
-    /// On success the token row is marked consumed (one-time use) and the
-    /// user identity is returned.
-    pub async fn verify(pool: &PgPool, token: &str) -> Result<AuthOutcome, AuthError> {
-        let hash = {
-            use sha2::Digest;
-            let digest = sha2::Sha256::digest(token.as_bytes());
-            data_encoding::HEXLOWER.encode(&digest)
-        };
-
-        let row: Option<(Uuid, DateTime<Utc>, bool)> = sqlx::query_as(
-            "SELECT user_id, expires_at, consumed FROM magic_links WHERE token_hash = $1",
-        )
-        .bind(&hash)
-        .fetch_optional(pool)
-        .await?;
-
-        let (user_id, expires_at, consumed) = match row {
-            Some(r) => r,
-            None => {
-                return Ok(AuthOutcome::Failed {
-                    reason: "invalid or expired magic link".into(),
-                });
-            }
-        };
-
-        if consumed {
-            return Ok(AuthOutcome::Failed {
-                reason: "magic link already used".into(),
-            });
-        }
-
-        if Utc::now() > expires_at {
-            return Ok(AuthOutcome::Failed {
-                reason: "magic link expired".into(),
-            });
-        }
-
-        // Mark consumed atomically.
-        let result = sqlx::query(
-            "UPDATE magic_links SET consumed = true
-             WHERE token_hash = $1 AND consumed = false",
-        )
-        .bind(&hash)
-        .execute(pool)
-        .await?;
-
-        if result.rows_affected() == 0 {
-            // Race condition: another request consumed it first.
-            return Ok(AuthOutcome::Failed {
-                reason: "magic link already used".into(),
-            });
-        }
-
-        // Fetch roles for the user.
-        let roles: Vec<String> = sqlx::query_scalar("SELECT roles FROM users WHERE id = $1")
-            .bind(user_id)
-            .fetch_optional(pool)
-            .await?
-            .and_then(|v: serde_json::Value| serde_json::from_value(v).ok())
-            .unwrap_or_default();
 
         Ok(AuthOutcome::Success { user_id, roles })
     }
@@ -1303,32 +1178,5 @@ mod tests {
         }
     }
 
-    // -----------------------------------------------------------------------
-    // Magic link token hashing
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn magic_link_token_hash_is_deterministic() {
-        use sha2::Digest;
-        let token = "test-magic-link-token-abc123";
-        let digest1 = sha2::Sha256::digest(token.as_bytes());
-        let hash1 = data_encoding::HEXLOWER.encode(&digest1);
-        let digest2 = sha2::Sha256::digest(token.as_bytes());
-        let hash2 = data_encoding::HEXLOWER.encode(&digest2);
-        assert_eq!(hash1, hash2, "same token must produce same hash");
-        assert_eq!(hash1.len(), 64, "SHA-256 hex output must be 64 chars");
-    }
-
-    #[test]
-    fn magic_link_different_tokens_produce_different_hashes() {
-        use sha2::Digest;
-        let hash1 = data_encoding::HEXLOWER.encode(&sha2::Sha256::digest(b"token-aaa"));
-        let hash2 = data_encoding::HEXLOWER.encode(&sha2::Sha256::digest(b"token-bbb"));
-        assert_ne!(hash1, hash2);
-    }
-
-    #[test]
-    fn magic_link_expiry_is_15_minutes() {
-        assert_eq!(MagicLinkProvider::EXPIRY_MINUTES, 15);
-    }
+    // Magic link tests moved to `super::magic_link::tests`.
 }

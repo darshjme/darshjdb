@@ -259,7 +259,7 @@ async fn test_field_validation_number() {
     );
 
     // Direct number.
-    let v = validate_value(&field, &json!(3.14)).expect("valid");
+    let v = validate_value(&field, &json!(3.25)).expect("valid");
     assert!(v.as_f64().is_some());
 
     // String that parses as number.
@@ -414,7 +414,7 @@ async fn test_field_conversion_text_to_number() {
 
 #[tokio::test]
 async fn test_field_conversion_number_to_text() {
-    let values = vec![json!(42), json!(3.14), json!(0), json!(null)];
+    let values = vec![json!(42), json!(3.25), json!(0), json!(null)];
 
     let results = convert_field_type(&values, FieldType::Number, FieldType::SingleLineText);
 
