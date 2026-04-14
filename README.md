@@ -78,6 +78,17 @@ DATABASE_URL=postgres://darshan:darshan@localhost:5432/darshjdb \
   cargo run --bin ddb-server
 ```
 
+### Zero-dep dev mode
+
+Don't want to run a separate Postgres? Build with the `embedded-db` feature and DarshJDB will download, launch, and shut down a portable Postgres 16 server for you on a free port. Data lives in `~/.darshjdb/data/pg` and persists across restarts.
+
+```bash
+# No DATABASE_URL, no docker, no `brew install postgresql`.
+cargo run --bin ddb-server --features embedded-db
+```
+
+First run downloads ~20 MB of Postgres binaries (one-time); subsequent runs are instant. If `DATABASE_URL` is set, the embedded server is skipped and the configured URL wins.
+
 ---
 
 ## Architecture

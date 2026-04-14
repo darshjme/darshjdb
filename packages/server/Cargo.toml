@@ -70,13 +70,23 @@ tiktoken-rs.workspace = true
 # Slice 16 — embedder crate (OpenAI-compatible embeddings for semantic tier).
 ddb-agent-memory = { path = "../agent-memory" }
 
+# Embedded Postgres (slice 18/30) — optional, gated by `embedded-db` feature
+# so default builds don't pull the ~40MB Postgres binary download layer.
+dirs.workspace = true
+pg_embed = { workspace = true, optional = true }
+portpicker = { workspace = true, optional = true }
+
 [features]
 default = []
 # Enable IPFS-backed audit anchoring via `ipfs-api-backend-hyper`.
 anchor-ipfs = ["dep:ipfs-api-backend-hyper"]
 # Enable Ethereum-backed audit anchoring via `ethers-core`.
 anchor-eth = ["dep:ethers-core"]
+# Zero-dep dev mode: run DarshJDB with a bundled Postgres 16 instance.
+# Usage: `cargo run --features embedded-db`
+embedded-db = ["dep:pg_embed", "dep:portpicker"]
 
 [dev-dependencies]
 tokio-tungstenite = "0.28"
 futures-util = "0.3"
+tempfile = "3"
