@@ -2446,6 +2446,134 @@ mod tests {
         }
     }
 
+    #[test]
+    fn parity_all_features_full_snapshot() {
+        // m-2 regression test. 12 of 13 parity tests use
+        // `contains(fragment)` substring assertions, which let
+        // between-fragment refactors (extra JOIN, reordered clauses,
+        // changed whitespace) slip through unnoticed. This test
+        // captures the full SQL string for an AST that exercises
+        // every planner feature the dialect layer covers:
+        //
+        //   - namespaced entity type
+        //   - multiple `$where` clauses (Eq + Contains on Pg, Eq only
+        //     on SQLite because Contains is refused by M-1)
+        //   - `$search` full-text term
+        //   - `$semantic.vector` similarity (Pg only; SQLite skips
+        //     the embeddings join because supports_vector is false)
+        //   - `$order` correlated sub-select
+        //   - `$limit` (applied at the Rust grouping layer)
+        //   - `$nested` sub-plan
+        //
+        // The two snapshots below are load-bearing: any refactor that
+        // changes SQL emission in any way will fail this test and
+        // force the author to review the diff before shipping.
+        let base_ast = QueryAST {
+            entity_type: "mystore.User".into(),
+            where_clauses: vec![
+                WhereClause {
+                    attribute: "email".into(),
+                    op: WhereOp::Eq,
+                    value: serde_json::json!("alice@example.com"),
+                },
+                WhereClause {
+                    attribute: "tags".into(),
+                    op: WhereOp::Contains,
+                    value: serde_json::json!(["rust"]),
+                },
+            ],
+            order: vec![OrderClause {
+                attribute: "created_at".into(),
+                direction: SortDirection::Desc,
+            }],
+            limit: Some(25),
+            offset: None,
+            search: Some("darshan".into()),
+            semantic: Some(SemanticQuery {
+                vector: Some(vec![0.1, 0.2, 0.3]),
+                query: None,
+                limit: 5,
+            }),
+            hybrid: None,
+            nested: vec![NestedQuery {
+                via_attribute: "org_id".into(),
+                sub_query: None,
+            }],
+        };
+
+        // Postgres: full feature set (Eq + Contains + $search +
+        // $semantic vector + $order + $nested).
+        let pg = plan_query_with_dialect(&base_ast, &PgDialect).unwrap();
+        let pg_expected = "SELECT t0.entity_id, t0.attribute, t0.value, t0.value_type, t0.tx_id, t0.created_at\n\
+FROM triples t0\n\
+INNER JOIN triples t_type ON t_type.entity_id = t0.entity_id\n  \
+AND t_type.attribute = ':db/type'\n  \
+AND NOT t_type.retracted\n  \
+AND t_type.value = to_jsonb($1::text)\n\
+INNER JOIN triples tw0 ON tw0.entity_id = t0.entity_id\n  \
+AND tw0.attribute = $2\n  \
+AND NOT tw0.retracted\n  \
+AND tw0.value = to_jsonb($3::text)\n\
+INNER JOIN triples tw1 ON tw1.entity_id = t0.entity_id\n  \
+AND tw1.attribute = $4\n  \
+AND NOT tw1.retracted\n  \
+AND tw1.value @> $5::jsonb\n\
+INNER JOIN triples t_search ON t_search.entity_id = t0.entity_id\n  \
+AND NOT t_search.retracted\n  \
+AND to_tsvector('english', t_search.value #>> '{}') @@ plainto_tsquery('english', $6)\n\
+INNER JOIN embeddings t_emb ON t_emb.entity_id = t0.entity_id\n  \
+AND t_emb.embedding <=> '[0.1,0.2,0.3]'::vector < 2.0\n\
+WHERE NOT t0.retracted\n\
+ORDER BY t_emb.embedding <=> '[0.1,0.2,0.3]'::vector ASC, (SELECT to0.value FROM triples to0 WHERE to0.entity_id = t0.entity_id AND to0.attribute = $7 AND NOT to0.retracted ORDER BY to0.tx_id DESC LIMIT 1) DESC\n";
+        assert_eq!(
+            pg.sql, pg_expected,
+            "Postgres SQL snapshot drift — review the full diff:\n--- expected ---\n{pg_expected}\n--- got ---\n{}",
+            pg.sql
+        );
+
+        // SQLite: the Contains-gated subset. Drop the Contains clause
+        // (M-1 refuses it on SQLite) and $semantic (SQLite has no
+        // native vector support, so the planner silently skips the
+        // embeddings join).
+        let sq_ast = QueryAST {
+            where_clauses: vec![WhereClause {
+                attribute: "email".into(),
+                op: WhereOp::Eq,
+                value: serde_json::json!("alice@example.com"),
+            }],
+            semantic: None,
+            ..base_ast.clone()
+        };
+        let sq = plan_query_with_dialect(&sq_ast, &SqliteDialect).unwrap();
+        let sq_expected = "SELECT t0.entity_id, t0.attribute, t0.value, t0.value_type, t0.tx_id, t0.created_at\n\
+FROM triples t0\n\
+INNER JOIN triples t_type ON t_type.entity_id = t0.entity_id\n  \
+AND t_type.attribute = ':db/type'\n  \
+AND NOT t_type.retracted\n  \
+AND t_type.value = json_quote(?1)\n\
+INNER JOIN triples tw0 ON tw0.entity_id = t0.entity_id\n  \
+AND tw0.attribute = ?2\n  \
+AND NOT tw0.retracted\n  \
+AND tw0.value = json_quote(?3)\n\
+INNER JOIN triples t_search ON t_search.entity_id = t0.entity_id\n  \
+AND NOT t_search.retracted\n  \
+AND t_search.value LIKE '%' || ?4 || '%'\n\
+WHERE NOT t0.retracted\n\
+ORDER BY (SELECT to0.value FROM triples to0 WHERE to0.entity_id = t0.entity_id AND to0.attribute = ?5 AND NOT to0.retracted ORDER BY to0.tx_id DESC LIMIT 1) DESC\n";
+        assert_eq!(
+            sq.sql, sq_expected,
+            "SQLite SQL snapshot drift — review the full diff:\n--- expected ---\n{sq_expected}\n--- got ---\n{}",
+            sq.sql
+        );
+
+        // Nested plan on both dialects — Postgres bakes the UUID
+        // array, SQLite emits the __UUID_LIST__ token (see M-3).
+        assert_eq!(pg.nested_plans.len(), 1);
+        assert_eq!(sq.nested_plans.len(), 1);
+        assert!(pg.nested_plans[0].sql.contains("ANY($1::uuid[])"));
+        assert!(sq.nested_plans[0].sql.contains("__UUID_LIST__"));
+    }
+
     #[tokio::test]
     async fn parity_plan_cache_works_with_both_dialects() {
         // The plan cache keys by AST shape and is pinned to a single
