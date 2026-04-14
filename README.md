@@ -678,13 +678,12 @@ export default async function Page() {
 ### Angular
 
 ```typescript
-import { DarshanService } from '@darshjdb/angular';
+import { injectDarshan } from '@darshjdb/angular';
 
 @Component({ /* ... */ })
 export class TaskComponent {
-  tasks = inject(DarshanService).query('task', {
-    where: { status: 'active' }
-  });
+  private readonly db = injectDarshan();
+  tasks = this.db.query('task', { where: { status: 'active' } });
 }
 ```
 
@@ -710,7 +709,7 @@ async def get_tasks():
 ### PHP
 
 ```php
-use Darshan\DarshJDB\Client;
+use Darshjdb\Client;
 
 $db = new Client('http://localhost:7700');
 $db->signin(['email' => 'dev@example.com', 'password' => 'changeme123']);

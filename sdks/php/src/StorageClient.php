@@ -2,10 +2,10 @@
 
 declare(strict_types=1);
 
-namespace Darshan;
+namespace Darshjdb;
 
 /**
- * File storage client for DarshanDB.
+ * File storage client for DarshJDB.
  *
  * Provides upload, URL retrieval, and deletion for files stored on the server.
  *
@@ -29,7 +29,7 @@ class StorageClient
     }
 
     /**
-     * Upload a file to DarshanDB storage.
+     * Upload a file to DarshJDB storage.
      *
      * @param string               $path        Remote storage path (e.g. '/avatars/photo.jpg').
      * @param string               $filePath    Local filesystem path to the file.
@@ -38,7 +38,7 @@ class StorageClient
      *   - metadata (array<string, string>): Custom metadata key-value pairs.
      * @return array{path: string, url: string, size: int, contentType: string}
      *
-     * @throws DarshanException On upload failure.
+     * @throws Exception On upload failure.
      * @throws \InvalidArgumentException If the local file does not exist.
      */
     public function upload(string $path, string $filePath, array $options = []): array
@@ -85,7 +85,7 @@ class StorageClient
      * @param array<string, mixed> $options     Optional settings (contentType, metadata).
      * @return array{path: string, url: string, size: int, contentType: string}
      *
-     * @throws DarshanException On upload failure.
+     * @throws Exception On upload failure.
      */
     public function uploadRaw(string $path, mixed $contents, string $filename, array $options = []): array
     {
@@ -125,7 +125,7 @@ class StorageClient
      * @param int    $expiry URL expiry time in seconds (default: 3600).
      * @return string The signed or public URL.
      *
-     * @throws DarshanException On server errors.
+     * @throws Exception On server errors.
      */
     public function getUrl(string $path, int $expiry = 3600): string
     {
@@ -143,7 +143,7 @@ class StorageClient
      * @param string $path Remote storage path.
      * @return array<string, mixed> Server acknowledgement.
      *
-     * @throws DarshanException On server errors.
+     * @throws Exception On server errors.
      */
     public function delete(string $path): array
     {
@@ -160,7 +160,7 @@ class StorageClient
      * @param string $cursor Pagination cursor from a previous response.
      * @return array{files: array<int, array{path: string, size: int, contentType: string, updatedAt: string}>, cursor?: string}
      *
-     * @throws DarshanException On server errors.
+     * @throws Exception On server errors.
      */
     public function list(string $prefix = '/', int $limit = 100, string $cursor = ''): array
     {

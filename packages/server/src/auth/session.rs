@@ -140,6 +140,14 @@ impl KeyManager {
     /// Suitable for single-node deployments or development. For production
     /// with key rotation, use [`KeyManager::new`] with RSA PEM keys.
     pub fn from_secret(secret: &[u8]) -> Self {
+        // RFC 7518 §3.2 mandates HS256 secrets be at least 32 bytes
+        // (256 bits). A 4-byte secret is brute-forceable in seconds.
+        // Refuse to start with anything weaker than the standard.
+        assert!(
+            secret.len() >= 32,
+            "HS256 secret must be at least 32 bytes per RFC 7518 §3.2 (got {} bytes)",
+            secret.len()
+        );
         Self {
             current_encoding: EncodingKey::from_secret(secret),
             current_decoding: DecodingKey::from_secret(secret),
@@ -884,8 +892,8 @@ mod tests {
 
     #[test]
     fn hmac_key_manager_wrong_secret_rejected() {
-        let km1 = KeyManager::from_secret(b"secret-one-for-signing-tokens!!");
-        let km2 = KeyManager::from_secret(b"secret-two-different-entirely!!");
+        let km1 = KeyManager::from_secret(b"secret-one-for-signing-tokens++32");
+        let km2 = KeyManager::from_secret(b"secret-two-different-entirely+32");
         let claims = make_claims(300);
         let token = km1.sign_access_token(&claims).expect("sign");
         assert!(
@@ -896,7 +904,7 @@ mod tests {
 
     #[test]
     fn hmac_key_manager_expired_rejected() {
-        let km = KeyManager::from_secret(b"test-secret-for-expiry-testing!");
+        let km = KeyManager::from_secret(b"test-secret-for-expiry-testing-long-enough");
         let claims = make_claims(-120); // well past leeway
         let token = km.sign_access_token(&claims).expect("sign");
         assert!(
@@ -917,7 +925,7 @@ mod tests {
     #[test]
     fn rsa_and_hmac_tokens_not_interchangeable() {
         let rsa_km = make_key_manager();
-        let hmac_km = KeyManager::from_secret(b"hmac-secret-key-for-testing-now");
+        let hmac_km = KeyManager::from_secret(b"hmac-secret-key-for-testing-now-long-enough");
         let claims = make_claims(300);
 
         let rsa_token = rsa_km.sign_access_token(&claims).expect("rsa sign");

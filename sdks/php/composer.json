@@ -1,5 +1,5 @@
 {
-    "name": "darshan/darshjdb-php",
+    "name": "darshjdb/darshjdb-php",
     "description": "Official PHP SDK for DarshJDB — real-time database with auth, storage, and server-side functions.",
     "type": "library",
     "license": "MIT",
@@ -14,21 +14,21 @@
     },
     "autoload": {
         "psr-4": {
-            "Darshan\\": "src/"
+            "Darshjdb\\": "src/"
         }
     },
     "autoload-dev": {
         "psr-4": {
-            "Darshan\\Tests\\": "tests/"
+            "Darshjdb\\Tests\\": "tests/"
         }
     },
     "extra": {
         "laravel": {
             "providers": [
-                "Darshan\\Laravel\\DarshanServiceProvider"
+                "Darshjdb\\Laravel\\ServiceProvider"
             ],
             "aliases": {
-                "Darshan": "Darshan\\Laravel\\DarshanFacade"
+                "Darshjdb": "Darshjdb\\Laravel\\Facade"
             }
         }
     },

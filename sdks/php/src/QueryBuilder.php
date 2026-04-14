@@ -2,10 +2,10 @@
 
 declare(strict_types=1);
 
-namespace Darshan;
+namespace Darshjdb;
 
 /**
- * Fluent query builder for DarshanDB collections.
+ * Fluent query builder for DarshJDB collections.
  *
  * Provides a chainable API for constructing queries, and CRUD shortcuts
  * for individual entities.
@@ -130,7 +130,7 @@ class QueryBuilder
      *
      * @return array{data: array<int, array<string, mixed>>, txId: string}
      *
-     * @throws DarshanException On server or network errors.
+     * @throws Exception On server or network errors.
      */
     public function get(): array
     {
@@ -143,7 +143,7 @@ class QueryBuilder
      * @param array<string, mixed> $data The record data.
      * @return array<string, mixed> The created record (with server-assigned id).
      *
-     * @throws DarshanException On validation or server errors.
+     * @throws Exception On validation or server errors.
      */
     public function create(array $data): array
     {
@@ -157,7 +157,7 @@ class QueryBuilder
      * @param array<string, mixed> $data Fields to update (merge semantics).
      * @return array<string, mixed> The updated record.
      *
-     * @throws DarshanException On not-found or server errors.
+     * @throws Exception On not-found or server errors.
      */
     public function update(string $id, array $data): array
     {
@@ -170,7 +170,7 @@ class QueryBuilder
      * @param string $id The record's unique identifier.
      * @return array<string, mixed> Server acknowledgement.
      *
-     * @throws DarshanException On not-found or server errors.
+     * @throws Exception On not-found or server errors.
      */
     public function delete(string $id): array
     {

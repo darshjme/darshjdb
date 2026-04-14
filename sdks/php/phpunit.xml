@@ -6,7 +6,7 @@
          failOnRisky="true"
          failOnWarning="true">
     <testsuites>
-        <testsuite name="DarshanDB PHP SDK">
+        <testsuite name="DarshJDB PHP SDK">
             <directory suffix="Test.php">tests</directory>
         </testsuite>
     </testsuites>

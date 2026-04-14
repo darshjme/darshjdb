@@ -88,6 +88,12 @@ pub struct AppState {
     pub started_at: Instant,
     /// Whether dev mode is active (DDB_DEV=1).
     pub dev_mode: bool,
+    /// Random dev-mode bypass token (`dev.<16-hex>`), None in production.
+    /// Generated once at startup and logged to stderr — callers must send
+    /// this exact string in the `Authorization: Bearer …` header to get
+    /// admin+user roles without a real session. Bypass is also logged per
+    /// request so any accidental DDB_DEV=1 leak is immediately visible.
+    pub dev_token: Option<String>,
     /// Permission engine for row-level security and access control.
     pub permissions: Arc<PermissionEngine>,
     /// Rate limiter for per-request throttling.
@@ -326,6 +332,28 @@ impl AppState {
         let dev_mode = std::env::var("DDB_DEV")
             .map(|v| v == "1" || v == "true")
             .unwrap_or(false);
+        // Generate a random dev-bypass token so a leaked `DDB_DEV=1` env
+        // var alone is not enough to compromise the server — attackers
+        // would also need to observe the token from startup stderr.
+        let dev_token = if dev_mode {
+            use rand::RngCore;
+            let mut bytes = [0u8; 16];
+            rand::thread_rng().fill_bytes(&mut bytes);
+            let hex = bytes
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>();
+            let token = format!("dev.{hex}");
+            tracing::warn!(
+                dev_bypass_token = %token,
+                "DDB_DEV=1 is ACTIVE — any caller presenting \
+                 Authorization: Bearer {token} receives admin role. \
+                 NEVER expose this server outside loopback."
+            );
+            Some(token)
+        } else {
+            None
+        };
         let (sse_tx, _) = broadcast::channel(1024);
         let (pubsub, _) = PubSubEngine::new(4096);
         Self {
@@ -337,6 +365,7 @@ impl AppState {
             change_tx,
             started_at: Instant::now(),
             dev_mode,
+            dev_token,
             permissions: Arc::new(build_default_engine()),
             rate_limiter,
             storage_engine,
@@ -444,6 +473,7 @@ impl AppState {
             change_tx,
             started_at: Instant::now(),
             dev_mode: true,
+            dev_token: None,
             permissions: Arc::new(build_default_engine()),
             rate_limiter: Arc::new(RateLimiter::new()),
             storage_engine,
@@ -1292,7 +1322,30 @@ async fn require_auth_middleware(
         }
     };
 
-    if state.dev_mode && token == "dev" {
+    if state.dev_mode
+        && let Some(expected) = state.dev_token.as_deref()
+        && token == expected
+    {
+        // Refuse the bypass if the request carries any proxy header —
+        // defense-in-depth against accidental exposure.
+        if headers.contains_key("x-forwarded-for")
+            || headers.contains_key("x-real-ip")
+            || headers.contains_key("forwarded")
+        {
+            let body = serde_json::json!({
+                "error": {
+                    "code": 401,
+                    "message": "dev bypass refused: request traversed a proxy"
+                }
+            });
+            return (StatusCode::UNAUTHORIZED, axum::Json(body)).into_response();
+        }
+        tracing::error!(
+            target: "ddb::security",
+            path = %request.uri().path(),
+            "DEV-MODE BYPASS FIRED — admin role granted without session. \
+             This should NEVER happen in production."
+        );
         let dev_ctx = AuthContext {
             user_id: Uuid::nil(),
             session_id: Uuid::nil(),
@@ -1612,18 +1665,18 @@ async fn auth_magic_link(
             tracing::warn!(error = %e, "magic link delivery failed");
         }
 
-        // In dev mode, include the token + URL in the response for testing.
+        // In dev mode, emit the token + URL to the server log so local
+        // testing flows can observe them, but NEVER return them in the
+        // HTTP response — a leaked DDB_DEV=1 on production would otherwise
+        // give any caller a valid magic-link URL directly.
         if state.dev_mode {
-            return Ok((
-                StatusCode::OK,
-                axum::Json(serde_json::json!({
-                    "message": "If an account exists, a magic link has been sent.",
-                    "_dev_token": magic_link.token,
-                    "_dev_url": magic_link.url,
-                    "_dev_expires_at": magic_link.expires_at.to_rfc3339(),
-                })),
-            )
-                .into_response());
+            tracing::warn!(
+                target: "ddb::security",
+                token = %magic_link.token,
+                url = %magic_link.url,
+                expires_at = %magic_link.expires_at.to_rfc3339(),
+                "DEV-MODE magic link issued (log-only, never in response body)"
+            );
         }
     }
 
@@ -2649,7 +2702,14 @@ async fn mutate(
                 }
             }
             MutationOp::Delete => {
-                let entity_id = m.id.expect("validated above");
+                // Validation 100 lines above guarantees m.id is Some for
+                // Delete ops, but let-else keeps that invariant local so a
+                // future MutationOp variant can't silently trigger a panic.
+                let Some(entity_id) = m.id else {
+                    return Err(ApiError::bad_request(
+                        "Delete mutation missing required `id` field",
+                    ));
+                };
                 entity_ids.push(entity_id);
 
                 let existing = PgTripleStore::get_entity_in_tx(&mut db_tx, entity_id)
@@ -3586,14 +3646,11 @@ async fn storage_get(
     Query(params): Query<StorageGetParams>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
-    if path.is_empty() {
-        return Err(ApiError::bad_request("Storage path is required"));
-    }
-
-    // Prevent path traversal.
-    if path.contains("..") {
-        return Err(ApiError::bad_request("Path traversal is not allowed"));
-    }
+    // Route every request through the canonical sanitizer so storage_get
+    // stays in lock-step with storage_upload and the chunked upload path.
+    // sanitize_storage_path rejects `..`, absolute paths, drive letters,
+    // null bytes, control characters, and >1024 byte paths.
+    let path = super::chunked_upload::sanitize_storage_path(&path)?;
 
     // If the request carries a signed URL signature, verify it.
     if let (Some(expires), Some(sig)) = (params.expires, &params.sig) {

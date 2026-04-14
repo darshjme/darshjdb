@@ -2,10 +2,10 @@
 
 declare(strict_types=1);
 
-namespace Darshan;
+namespace Darshjdb;
 
 /**
- * Authentication client for DarshanDB.
+ * Authentication client for DarshJDB.
  *
  * Handles user registration, login, logout, and current-user retrieval.
  * Tokens are managed automatically on the parent {@see Client} instance.
@@ -31,7 +31,7 @@ class AuthClient
      * @param array<string, mixed> $profile  Optional profile fields (displayName, avatarUrl, metadata).
      * @return array{user: array<string, mixed>, accessToken: string, refreshToken: string}
      *
-     * @throws DarshanException On validation or server errors.
+     * @throws Exception On validation or server errors.
      */
     public function signUp(string $email, string $password, array $profile = []): array
     {
@@ -54,7 +54,7 @@ class AuthClient
      * @param string $password User's password.
      * @return array{user: array<string, mixed>, accessToken: string, refreshToken: string}
      *
-     * @throws DarshanException On invalid credentials or server errors.
+     * @throws Exception On invalid credentials or server errors.
      */
     public function signIn(string $email, string $password): array
     {
@@ -78,7 +78,7 @@ class AuthClient
      * @param string $redirectUri The redirect URI used in the OAuth flow.
      * @return array{user: array<string, mixed>, accessToken: string, refreshToken: string}
      *
-     * @throws DarshanException On OAuth or server errors.
+     * @throws Exception On OAuth or server errors.
      */
     public function signInWithOAuth(string $provider, string $token, string $redirectUri = ''): array
     {
@@ -102,7 +102,7 @@ class AuthClient
      *
      * @return array<string, mixed> Server acknowledgement.
      *
-     * @throws DarshanException On server errors.
+     * @throws Exception On server errors.
      */
     public function signOut(): array
     {
@@ -118,13 +118,13 @@ class AuthClient
      * @return array{id: string, email: string, displayName?: string, avatarUrl?: string, metadata?: array<string, mixed>}|null
      *   Returns null if no valid session exists.
      *
-     * @throws DarshanException On server errors.
+     * @throws Exception On server errors.
      */
     public function getUser(): ?array
     {
         try {
             return $this->client->get('/api/auth/me');
-        } catch (DarshanException $e) {
+        } catch (Exception $e) {
             if ($e->getStatusCode() === 401) {
                 return null;
             }
@@ -138,7 +138,7 @@ class AuthClient
      * @param string $refreshToken The refresh token from a previous sign-in.
      * @return array{accessToken: string, refreshToken: string, expiresAt: int}
      *
-     * @throws DarshanException On invalid or expired refresh token.
+     * @throws Exception On invalid or expired refresh token.
      */
     public function refresh(string $refreshToken): array
     {

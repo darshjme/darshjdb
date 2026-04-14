@@ -2,20 +2,20 @@
 
 declare(strict_types=1);
 
-namespace Darshan;
+namespace Darshjdb;
 
 use GuzzleHttp\Client as HttpClient;
 use GuzzleHttp\Exception\GuzzleException;
 use GuzzleHttp\RequestOptions;
 
 /**
- * Main DarshanDB client for PHP applications.
+ * Main DarshJDB client for PHP applications.
  *
  * Provides access to auth, querying, transactions, server-side functions,
  * and file storage through a unified interface.
  *
  * Usage:
- *   $db = new \Darshan\Client([
+ *   $db = new \Darshjdb\Client([
  *       'serverUrl' => 'https://db.example.com',
  *       'apiKey'    => 'your-api-key',
  *   ]);
@@ -33,11 +33,11 @@ class Client
     private ?StorageClient $storageClient = null;
 
     /**
-     * Create a new DarshanDB client.
+     * Create a new DarshJDB client.
      *
      * @param array{serverUrl: string, apiKey: string, timeout?: int} $config
-     *   - serverUrl: Base URL of the DarshanDB server.
-     *   - apiKey:    Application API key from the DarshanDB dashboard.
+     *   - serverUrl: Base URL of the DarshJDB server.
+     *   - apiKey:    Application API key from the DarshJDB dashboard.
      *   - timeout:   HTTP request timeout in seconds (default: 30).
      */
     public function __construct(array $config)
@@ -82,7 +82,7 @@ class Client
      * @param array<string, mixed> $query The DarshanQL query descriptor.
      * @return array{data: array<int, array<string, mixed>>, txId: string}
      *
-     * @throws DarshanException On server or network errors.
+     * @throws Exception On server or network errors.
      */
     public function query(array $query): array
     {
@@ -109,7 +109,7 @@ class Client
      * @param array<int, array{kind: string, entity: string, id: string, data?: array}> $ops
      * @return array{txId: string}
      *
-     * @throws DarshanException On server or network errors.
+     * @throws Exception On server or network errors.
      */
     public function transact(array $ops): array
     {
@@ -123,7 +123,7 @@ class Client
      * @param array<string, mixed> $args Arguments to pass to the function.
      * @return mixed The function's return value.
      *
-     * @throws DarshanException On server or network errors.
+     * @throws Exception On server or network errors.
      */
     public function fn(string $name, array $args = []): mixed
     {
@@ -169,7 +169,7 @@ class Client
     }
 
     /**
-     * Send a POST request to the DarshanDB server.
+     * Send a POST request to the DarshJDB server.
      *
      * @internal
      *
@@ -177,7 +177,7 @@ class Client
      * @param array<string, mixed> $body   Request body (will be JSON-encoded).
      * @return array<string, mixed>
      *
-     * @throws DarshanException
+     * @throws Exception
      */
     public function post(string $path, array $body = []): array
     {
@@ -185,7 +185,7 @@ class Client
     }
 
     /**
-     * Send a GET request to the DarshanDB server.
+     * Send a GET request to the DarshJDB server.
      *
      * @internal
      *
@@ -193,7 +193,7 @@ class Client
      * @param array<string, string|int> $query Query string parameters.
      * @return array<string, mixed>
      *
-     * @throws DarshanException
+     * @throws Exception
      */
     public function get(string $path, array $query = []): array
     {
@@ -201,7 +201,7 @@ class Client
     }
 
     /**
-     * Send a DELETE request to the DarshanDB server.
+     * Send a DELETE request to the DarshJDB server.
      *
      * @internal
      *
@@ -209,7 +209,7 @@ class Client
      * @param array<string, mixed> $body Request body (will be JSON-encoded).
      * @return array<string, mixed>
      *
-     * @throws DarshanException
+     * @throws Exception
      */
     public function delete(string $path, array $body = []): array
     {
@@ -225,7 +225,7 @@ class Client
      * @param array<int, array{name: string, contents: mixed, filename?: string}> $multipart Multipart form data.
      * @return array<string, mixed>
      *
-     * @throws DarshanException
+     * @throws Exception
      */
     public function postMultipart(string $path, array $multipart): array
     {
@@ -240,9 +240,9 @@ class Client
 
             return $decoded;
         } catch (GuzzleException $e) {
-            throw DarshanException::fromGuzzle($e);
+            throw Exception::fromGuzzle($e);
         } catch (\JsonException $e) {
-            throw new DarshanException('Invalid JSON response from server.', 0, $e);
+            throw new Exception('Invalid JSON response from server.', 0, $e);
         }
     }
 
@@ -271,7 +271,7 @@ class Client
     }
 
     /**
-     * Execute an HTTP request against the DarshanDB server.
+     * Execute an HTTP request against the DarshJDB server.
      *
      * @param string              $method HTTP method.
      * @param string              $path   API endpoint path.
@@ -279,7 +279,7 @@ class Client
      * @param array<string, string|int> $query  Query string parameters for GET.
      * @return array<string, mixed>
      *
-     * @throws DarshanException
+     * @throws Exception
      */
     private function request(
         string $method,
@@ -307,9 +307,9 @@ class Client
 
             return $decoded;
         } catch (GuzzleException $e) {
-            throw DarshanException::fromGuzzle($e);
+            throw Exception::fromGuzzle($e);
         } catch (\JsonException $e) {
-            throw new DarshanException('Invalid JSON response from server.', 0, $e);
+            throw new Exception('Invalid JSON response from server.', 0, $e);
         }
     }
 }

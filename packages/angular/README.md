@@ -91,7 +91,7 @@ export class AuthComponent {
 
 ```typescript
 import { Component, inject } from '@angular/core';
-import { DarshanService } from '@darshjdb/angular';
+import { injectDarshan } from '@darshjdb/angular';
 
 @Component({
   template: `
@@ -102,7 +102,7 @@ import { DarshanService } from '@darshjdb/angular';
   `
 })
 export class AddTodoComponent {
-  private db = inject(DarshanService);
+  private db = injectDarshan();
 
   async addTodo(title: string) {
     await this.db.transact(
@@ -118,7 +118,7 @@ For traditional Angular patterns or Angular 16:
 
 ```typescript
 import { Component, inject } from '@angular/core';
-import { DarshanService } from '@darshjdb/angular';
+import { injectDarshan } from '@darshjdb/angular';
 import { AsyncPipe } from '@angular/common';
 
 @Component({
@@ -131,7 +131,7 @@ import { AsyncPipe } from '@angular/common';
   `,
 })
 export class TodosComponent {
-  private db = inject(DarshanService);
+  private db = injectDarshan();
   todos$ = this.db.query$({ todos: { $where: { done: false } } });
 }
 ```

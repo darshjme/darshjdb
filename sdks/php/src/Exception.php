@@ -2,18 +2,18 @@
 
 declare(strict_types=1);
 
-namespace Darshan;
+namespace Darshjdb;
 
 use GuzzleHttp\Exception\GuzzleException;
 use GuzzleHttp\Exception\RequestException;
 
 /**
- * Base exception for all DarshanDB SDK errors.
+ * Base exception for all DarshJDB SDK errors.
  *
  * Wraps Guzzle transport errors and provides structured access to
  * server-returned error details.
  */
-class DarshanException extends \RuntimeException
+class Exception extends \RuntimeException
 {
     private ?int $statusCode;
 
@@ -40,7 +40,7 @@ class DarshanException extends \RuntimeException
     }
 
     /**
-     * Create a DarshanException from a Guzzle exception.
+     * Create a Exception from a Guzzle exception.
      */
     public static function fromGuzzle(GuzzleException $e): self
     {

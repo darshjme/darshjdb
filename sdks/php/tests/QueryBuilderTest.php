@@ -2,10 +2,10 @@
 
 declare(strict_types=1);
 
-namespace Darshan\Tests;
+namespace Darshjdb\Tests;
 
-use Darshan\Client;
-use Darshan\QueryBuilder;
+use Darshjdb\Client;
+use Darshjdb\QueryBuilder;
 use PHPUnit\Framework\TestCase;
 
 /**

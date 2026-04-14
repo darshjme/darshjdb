@@ -2,9 +2,9 @@
 
 declare(strict_types=1);
 
-namespace Darshan\Tests;
+namespace Darshjdb\Tests;
 
-use Darshan\DarshanException;
+use Darshjdb\Exception;
 use PHPUnit\Framework\TestCase;
 
 final class ExceptionTest extends TestCase
@@ -15,7 +15,7 @@ final class ExceptionTest extends TestCase
 
     public function testExtendsRuntimeException(): void
     {
-        $ex = new DarshanException('test');
+        $ex = new Exception('test');
 
         $this->assertInstanceOf(\RuntimeException::class, $ex);
         $this->assertInstanceOf(\Exception::class, $ex);
@@ -28,7 +28,7 @@ final class ExceptionTest extends TestCase
 
     public function testDefaultValues(): void
     {
-        $ex = new DarshanException();
+        $ex = new Exception();
 
         $this->assertSame('', $ex->getMessage());
         $this->assertSame(0, $ex->getCode());
@@ -39,7 +39,7 @@ final class ExceptionTest extends TestCase
 
     public function testMessageOnly(): void
     {
-        $ex = new DarshanException('Something went wrong');
+        $ex = new Exception('Something went wrong');
 
         $this->assertSame('Something went wrong', $ex->getMessage());
         $this->assertNull($ex->getStatusCode());
@@ -52,14 +52,14 @@ final class ExceptionTest extends TestCase
 
     public function testGetStatusCode(): void
     {
-        $ex = new DarshanException('Not found', 404, null, 404);
+        $ex = new Exception('Not found', 404, null, 404);
 
         $this->assertSame(404, $ex->getStatusCode());
     }
 
     public function testStatusCodeNullWhenNotProvided(): void
     {
-        $ex = new DarshanException('Network error');
+        $ex = new Exception('Network error');
 
         $this->assertNull($ex->getStatusCode());
     }
@@ -69,7 +69,7 @@ final class ExceptionTest extends TestCase
         $codes = [400, 401, 403, 404, 409, 422, 429, 500, 502, 503];
 
         foreach ($codes as $code) {
-            $ex = new DarshanException("Error {$code}", $code, null, $code);
+            $ex = new Exception("Error {$code}", $code, null, $code);
             $this->assertSame($code, $ex->getStatusCode(), "Status code {$code} mismatch");
         }
     }
@@ -86,14 +86,14 @@ final class ExceptionTest extends TestCase
             'details' => ['field' => 'email'],
         ];
 
-        $ex = new DarshanException('Validation failed', 422, null, 422, $body);
+        $ex = new Exception('Validation failed', 422, null, 422, $body);
 
         $this->assertSame($body, $ex->getErrorBody());
     }
 
     public function testEmptyErrorBodyByDefault(): void
     {
-        $ex = new DarshanException('Error');
+        $ex = new Exception('Error');
 
         $this->assertSame([], $ex->getErrorBody());
         $this->assertIsArray($ex->getErrorBody());
@@ -106,7 +106,7 @@ final class ExceptionTest extends TestCase
     public function testPreviousException(): void
     {
         $prev = new \RuntimeException('Original error');
-        $ex = new DarshanException('Wrapped', 0, $prev);
+        $ex = new Exception('Wrapped', 0, $prev);
 
         $this->assertSame($prev, $ex->getPrevious());
     }
@@ -120,7 +120,7 @@ final class ExceptionTest extends TestCase
         $prev = new \Exception('inner');
         $body = ['error' => 'rate_limited', 'retryAfter' => 30];
 
-        $ex = new DarshanException(
+        $ex = new Exception(
             message: 'Rate limited',
             code: 429,
             previous: $prev,
@@ -144,13 +144,13 @@ final class ExceptionTest extends TestCase
         $caught = false;
 
         try {
-            throw new DarshanException('test', 500, null, 500);
+            throw new Exception('test', 500, null, 500);
         } catch (\RuntimeException $e) {
             $caught = true;
-            $this->assertInstanceOf(DarshanException::class, $e);
+            $this->assertInstanceOf(Exception::class, $e);
         }
 
-        $this->assertTrue($caught, 'DarshanException should be catchable as RuntimeException');
+        $this->assertTrue($caught, 'Exception should be catchable as RuntimeException');
     }
 
     public function testCatchableAsException(): void
@@ -158,12 +158,12 @@ final class ExceptionTest extends TestCase
         $caught = false;
 
         try {
-            throw new DarshanException('test');
+            throw new Exception('test');
         } catch (\Exception $e) {
             $caught = true;
         }
 
-        $this->assertTrue($caught, 'DarshanException should be catchable as Exception');
+        $this->assertTrue($caught, 'Exception should be catchable as Exception');
     }
 
     /* ---------------------------------------------------------------------- */
@@ -173,7 +173,7 @@ final class ExceptionTest extends TestCase
     public function testCodeAndStatusCodeCanDiffer(): void
     {
         // code comes from Guzzle's exception code, statusCode from HTTP response
-        $ex = new DarshanException('Error', 0, null, 503);
+        $ex = new Exception('Error', 0, null, 503);
 
         $this->assertSame(0, $ex->getCode());
         $this->assertSame(503, $ex->getStatusCode());
