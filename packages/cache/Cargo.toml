@@ -1,12 +1,12 @@
 # DarshJDB — created by Darshankumar Joshi (github.com/darshjme)
-# ddb-cache: L1 (DashMap) and higher-tier cache primitives for the DarshJDB engine.
-
+# ddb-cache: tiered cache primitives for the DarshJDB engine.
+# L1 in-memory DashMap + L2 Postgres-backed persistent tier (kv_streams).
 [package]
 name = "ddb-cache"
-version = "0.2.0"
-edition = "2024"
-license = "MIT"
-description = "DarshJDB cache crate — L1 in-memory DashMap cache with hash/list/zset/bloom/HLL"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "DarshJDB cache crate — L1 DashMap in-memory + L2 Postgres persistent tier with streams"
 authors = ["Darshankumar Joshi <github.com/darshjme>"]
 
 [lib]
@@ -14,16 +14,23 @@ name = "ddb_cache"
 path = "src/lib.rs"
 
 [dependencies]
-tokio = { version = "1", features = ["full"] }
-dashmap = "6"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-bytes = "1"
-tokio-util = { version = "0.7", features = ["codec"] }
-zstd = "0.13"
-lz4_flex = "0.11"
-probabilistic-collections = "0.7"
-uuid = { version = "1", features = ["v4", "v5", "serde"] }
-chrono = { version = "0.4", features = ["serde"] }
-tracing = "0.1"
-metrics = "0.23"
+tokio = { workspace = true }
+sqlx = { workspace = true }
+dashmap = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+async-trait = { workspace = true }
+bytes = { workspace = true }
+tokio-util = { workspace = true }
+zstd = { workspace = true }
+lz4_flex = { workspace = true }
+probabilistic-collections = { workspace = true }
+uuid = { workspace = true }
+metrics = { workspace = true }
+
+[dev-dependencies]
+sqlx = { workspace = true, features = ["runtime-tokio", "postgres", "uuid", "json", "chrono", "macros", "migrate"] }
+tokio = { workspace = true }
