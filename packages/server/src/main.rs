@@ -145,12 +145,34 @@ async fn main() -> Result<()> {
     // -- Database Pool --------------------------------------------------------
     tracing::info!(database_url = %mask_url(&database_url), "connecting to database");
 
+    // Max connection lifetime — conservative 30 min to recycle pooled
+    // conns in front of pgBouncer (transaction pooling mode drops
+    // server-side state between txs, but SQL-level caches drift).
+    const POOL_MAX_LIFETIME_SECS: u64 = 1800;
+
+    // NOTE: `max_connections` should be set to **at least 2x** the
+    // number of concurrent HTTP workers you expect. Each in-flight
+    // request may hold one connection across awaits (query + fanout),
+    // and background tasks (TTL sweeper, anchor batcher, embedder,
+    // WAL listener) each hold one. Underprovisioning leads to the
+    // `POOL_HIGH_WATER_MARK` warning log firing and eventual
+    // `acquire_timeout` errors under load. Scale horizontally via
+    // pgBouncer + multiple replicas (see docs/HORIZONTAL_SCALING.md).
     tracing::info!(
-        max_connections,
+        target: "ddb_server::pool",
+        db_pool_min = min_connections,
+        db_pool_max = max_connections,
+        db_pool_acquire_timeout_secs = acquire_timeout_secs,
+        db_pool_idle_timeout_secs = idle_timeout_secs,
+        db_pool_max_lifetime_secs = POOL_MAX_LIFETIME_SECS,
+        "effective database pool configuration \
+         (db.pool.min={} db.pool.max={} db.pool.acquire_timeout={}s \
+          db.pool.idle_timeout={}s db.pool.max_lifetime={}s)",
         min_connections,
+        max_connections,
         acquire_timeout_secs,
         idle_timeout_secs,
-        "database pool configuration"
+        POOL_MAX_LIFETIME_SECS,
     );
 
     let pool = PgPoolOptions::new()
@@ -158,7 +180,7 @@ async fn main() -> Result<()> {
         .min_connections(min_connections)
         .acquire_timeout(Duration::from_secs(acquire_timeout_secs))
         .idle_timeout(Duration::from_secs(idle_timeout_secs))
-        .max_lifetime(Duration::from_secs(1800))
+        .max_lifetime(Duration::from_secs(POOL_MAX_LIFETIME_SECS))
         .connect(&database_url)
         .await
         .map_err(|e| {

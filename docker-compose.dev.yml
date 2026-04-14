@@ -10,14 +10,20 @@
 
 services:
   # ── DarshJDB (dev mode) ─────────────────────────────────────────────
+  # NOTE: hot-reload of Rust code inside the container is NOT supported.
+  # The compiled binary is baked at build time; `DDB_WATCH=true` (previously
+  # set here) was misleading and has been removed. For live edit-compile-reload
+  # loops, run `cargo watch -x 'run -p ddb-server'` OUTSIDE the container with
+  # your local toolchain and point it at the dockerised Postgres/Redis/Qdrant
+  # on localhost:5432 / 6379 / 6333.
   darshjdb:
     build:
       context: .
       target: builder
     environment:
       DDB_JWT_SECRET: "dev-secret-not-for-production"
+      DARSH_CACHE_PASSWORD: "dev-cache-password-change-me"
       RUST_LOG: debug
-      DDB_WATCH: "true"
     read_only: false
     volumes:
       - ./packages/server/src:/build/packages/server/src:ro
