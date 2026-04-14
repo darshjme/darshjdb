@@ -196,6 +196,16 @@ async fn main() -> Result<()> {
         })?;
     tracing::info!("anchor schema ensured (anchor_receipts table)");
 
+    // Phase 3 (slice 16) — ensure vector + embeddings + FTS indexes exist
+    // so /api/search/{semantic,text,hybrid} work without a separate migration.
+    ddb_server::api::rest::ensure_search_schema(&pool)
+        .await
+        .map_err(|e| {
+            tracing::error!("Failed to ensure search schema: {e}");
+            ddb_server::error::DarshJError::Database(e)
+        })?;
+    tracing::info!("search schema ensured (pgvector + embeddings + FTS)");
+
     // Slice 14/30 — ensure agent memory tables (sessions + entries + facts)
     // so the context builder / memory API can write on first request.
     ddb_server::agent_memory::ensure_agent_memory_schema(&pool)

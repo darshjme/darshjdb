@@ -1277,8 +1277,8 @@ async fn stream_rows(
 /// Bearer-token auth middleware on every route.
 pub fn mcp_routes(state: AppState) -> Router {
     Router::new()
-        .route("/api/mcp", post(mcp_handler))
-        .route("/api/agent/stream", get(agent_stream_handler))
+        .route("/mcp", post(mcp_handler))
+        .route("/agent/stream", get(agent_stream_handler))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             crate::api::rest::require_auth_middleware_public,

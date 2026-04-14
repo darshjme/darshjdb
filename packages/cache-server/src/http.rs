@@ -50,20 +50,20 @@ pub struct CacheHttpState {
 pub fn cache_http_router(cache: Arc<DdbCache>) -> Router {
     let state = CacheHttpState { cache };
     Router::new()
-        .route("/api/cache/stats", get(get_stats))
-        .route("/api/cache/keys", get(list_keys))
+        .route("/cache/stats", get(get_stats))
+        .route("/cache/keys", get(list_keys))
         .route(
-            "/api/cache/{key}",
+            "/cache/{key}",
             get(get_value).put(put_value).delete(delete_value),
         )
-        .route("/api/cache/{key}/ttl", get(get_ttl))
-        .route("/api/cache/{key}/expire", post(post_expire))
-        .route("/api/cache/hash/{key}", post(hash_set).get(hash_get_all))
-        .route("/api/cache/list/{key}/push", post(list_push))
-        .route("/api/cache/list/{key}", get(list_range))
-        .route("/api/cache/zset/{key}", post(zset_add).get(zset_range))
+        .route("/cache/{key}/ttl", get(get_ttl))
+        .route("/cache/{key}/expire", post(post_expire))
+        .route("/cache/hash/{key}", post(hash_set).get(hash_get_all))
+        .route("/cache/list/{key}/push", post(list_push))
+        .route("/cache/list/{key}", get(list_range))
+        .route("/cache/zset/{key}", post(zset_add).get(zset_range))
         // Register delete/put aliases redundantly for clarity in tests.
-        .route("/api/cache/{key}/delete", delete(delete_value))
+        .route("/cache/{key}/delete", delete(delete_value))
         .with_state(state)
 }
 
@@ -342,7 +342,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("PUT")
-                    .uri("/api/cache/foo")
+                    .uri("/cache/foo")
                     .header("content-type", "application/json")
                     .body(Body::from(put_body.to_string()))
                     .unwrap(),
@@ -356,7 +356,7 @@ mod tests {
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri("/api/cache/foo")
+                    .uri("/cache/foo")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -378,7 +378,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("DELETE")
-                    .uri("/api/cache/drop")
+                    .uri("/cache/drop")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -399,7 +399,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/api/cache/hash/user:1")
+                    .uri("/cache/hash/user:1")
                     .header("content-type", "application/json")
                     .body(Body::from(body.to_string()))
                     .unwrap(),
@@ -411,7 +411,7 @@ mod tests {
         let resp = app
             .oneshot(
                 Request::builder()
-                    .uri("/api/cache/hash/user:1")
+                    .uri("/cache/hash/user:1")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -432,7 +432,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/api/cache/list/q/push")
+                    .uri("/cache/list/q/push")
                     .header("content-type", "application/json")
                     .body(Body::from(body.to_string()))
                     .unwrap(),
@@ -444,7 +444,7 @@ mod tests {
         let resp = app
             .oneshot(
                 Request::builder()
-                    .uri("/api/cache/list/q?start=0&stop=-1")
+                    .uri("/cache/list/q?start=0&stop=-1")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -466,7 +466,7 @@ mod tests {
                 .oneshot(
                     Request::builder()
                         .method("POST")
-                        .uri("/api/cache/zset/leader")
+                        .uri("/cache/zset/leader")
                         .header("content-type", "application/json")
                         .body(Body::from(body.to_string()))
                         .unwrap(),
@@ -479,7 +479,7 @@ mod tests {
         let resp = app
             .oneshot(
                 Request::builder()
-                    .uri("/api/cache/zset/leader")
+                    .uri("/cache/zset/leader")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -500,7 +500,7 @@ mod tests {
         let resp = app
             .oneshot(
                 Request::builder()
-                    .uri("/api/cache/stats")
+                    .uri("/cache/stats")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -522,7 +522,7 @@ mod tests {
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri("/api/cache/keys?pattern=user:*")
+                    .uri("/cache/keys?pattern=user:*")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -544,7 +544,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/api/cache/user:1/expire")
+                    .uri("/cache/user:1/expire")
                     .header("content-type", "application/json")
                     .body(Body::from(json!({ "ttl_seconds": 120 }).to_string()))
                     .unwrap(),
@@ -556,7 +556,7 @@ mod tests {
         let resp = app
             .oneshot(
                 Request::builder()
-                    .uri("/api/cache/user:1/ttl")
+                    .uri("/cache/user:1/ttl")
                     .body(Body::empty())
                     .unwrap(),
             )

@@ -18,7 +18,7 @@
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::routing::{delete, get, patch, post};
+use axum::routing::{get, patch, post};
 use axum::{Extension, Json, Router};
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
@@ -42,8 +42,10 @@ pub fn collaboration_router() -> Router<AppState> {
     Router::new()
         // Share links
         .route("/share", post(create_share))
-        .route("/share/{token}", get(access_share))
-        .route("/share/{id}", delete(revoke_share))
+        .route(
+            "/share/{token}",
+            get(access_share).delete(revoke_share),
+        )
         // Collaborators
         .route(
             "/collaborators",
@@ -195,28 +197,25 @@ async fn access_share(
     .into_response())
 }
 
-/// `DELETE /api/share/{id}` — Revoke a share link.
+/// `DELETE /api/share/{token}` — Revoke a share link by its token.
 async fn revoke_share(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
-    Path(id): Path<Uuid>,
+    Path(token): Path<String>,
 ) -> Result<Response, ApiError> {
-    // Verify ownership: only the creator can revoke.
-    let config = share::resolve_share_by_id(&state.triple_store, share::ShareId(id))
+    // Resolve the share by token so we can check ownership + reuse the id.
+    let config = share::resolve_share(&state.triple_store, &token)
         .await
-        .map_err(|e| ApiError::internal(format!("share lookup failed: {e}")))?;
+        .map_err(|e| ApiError::internal(format!("share lookup failed: {e}")))?
+        .ok_or_else(|| ApiError::not_found("Share link not found"))?;
 
-    match config {
-        Some(c) if c.created_by != ctx.user_id => {
-            return Err(ApiError::permission_denied(
-                "Only the share creator can revoke it",
-            ));
-        }
-        None => return Err(ApiError::not_found("Share link not found")),
-        _ => {}
+    if config.created_by != ctx.user_id {
+        return Err(ApiError::permission_denied(
+            "Only the share creator can revoke it",
+        ));
     }
 
-    share::revoke_share(&state.triple_store, share::ShareId(id))
+    share::revoke_share(&state.triple_store, config.id)
         .await
         .map_err(|e| ApiError::internal(format!("failed to revoke share: {e}")))?;
 
