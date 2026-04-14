@@ -652,6 +652,11 @@ pub fn build_router(state: AppState) -> Router {
             "/admin/audit/proof/{entity_id}",
             get(crate::audit::handlers::audit_entity_proof),
         )
+        // -- Audit (Blockchain anchor receipts, slice 23/30) --------------
+        .route(
+            "/admin/audit/anchors",
+            get(crate::anchor::handlers::admin_list_anchors),
+        )
         // -- Embeddings / Semantic Search (TODO: wire handlers) ------------
         // .route("/embeddings", post(embeddings_store))
         // .route("/embeddings/{entity_id}", get(embeddings_get))
@@ -3437,7 +3442,11 @@ fn extract_bearer_token(headers: &HeaderMap) -> Result<String, ApiError> {
 }
 
 /// Verify the authenticated user holds the "admin" role by decoding JWT claims.
-fn require_admin_role(headers: &HeaderMap) -> Result<(), ApiError> {
+///
+/// Exposed at `pub(crate)` so sibling modules (notably
+/// [`crate::anchor::handlers`]) can reuse the exact same role check as
+/// the rest of `/admin/*` instead of duplicating JWT parsing.
+pub(crate) fn require_admin_role(headers: &HeaderMap) -> Result<(), ApiError> {
     let ctx = decode_jwt_claims(headers)?;
     if ctx.roles.iter().any(|r| r == "admin") {
         Ok(())

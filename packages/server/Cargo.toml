@@ -48,3 +48,19 @@ aws-credential-types.workspace = true
 aws-types.workspace = true
 async-trait.workspace = true
 csv.workspace = true
+
+# Phase 5.3 (slice 23/30) — Blockchain anchor: Keccak-256 batch roots.
+sha3.workspace = true
+
+# Optional anchor backends — gated by feature flags so the default build
+# stays dependency-light. When a flag is off, the anchor module falls
+# back to deterministic mock implementations for the same Anchorer API.
+ipfs-api-backend-hyper = { workspace = true, optional = true }
+ethers-core = { workspace = true, optional = true }
+
+[features]
+default = []
+# Enable IPFS-backed audit anchoring via `ipfs-api-backend-hyper`.
+anchor-ipfs = ["dep:ipfs-api-backend-hyper"]
+# Enable Ethereum-backed audit anchoring via `ethers-core`.
+anchor-eth = ["dep:ethers-core"]

@@ -142,6 +142,16 @@ async fn main() -> Result<()> {
         })?;
     tracing::info!("auth schema ensured (users + sessions tables)");
 
+    // Phase 5.3 (slice 23/30) — ensure anchor_receipts exists so the
+    // background anchor task can write without a follow-up migration.
+    ddb_server::anchor::ensure_anchor_schema(&pool)
+        .await
+        .map_err(|e| {
+            tracing::error!("Failed to ensure anchor schema: {e}");
+            ddb_server::error::DarshJError::Database(e)
+        })?;
+    tracing::info!("anchor schema ensured (anchor_receipts table)");
+
     sqlx::query("SELECT pg_advisory_unlock(42)")
         .execute(&pool)
         .await
@@ -240,6 +250,101 @@ async fn main() -> Result<()> {
             }
         });
         tracing::info!("TTL expiry background task started (30s interval)");
+    }
+
+    // -- Blockchain Anchor Background Task (Phase 5.3, slice 23/30) -----------
+    // Every `DARSH_ANCHOR_EVERY_N_TX` transactions, compute the
+    // Keccak-256 batch root over the most recent N `tx_merkle_roots`
+    // rows and submit it to the configured anchor backend (IPFS,
+    // Ethereum, or `none`). The receipt is persisted regardless of
+    // outcome so operators always have a complete audit trail.
+    //
+    // Only spawned when `DARSH_BLOCKCHAIN_ANCHOR` is set to something
+    // other than `none` — with anchoring disabled we'd just be writing
+    // `skipped` rows on a timer, which wastes SQL round-trips for no
+    // operational benefit.
+    {
+        let anchor_chain = std::env::var("DARSH_BLOCKCHAIN_ANCHOR")
+            .unwrap_or_else(|_| "none".to_string());
+        let every_n: u64 = std::env::var("DARSH_ANCHOR_EVERY_N_TX")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(100);
+
+        if anchor_chain != "none" && every_n > 0 {
+            let anchor_pool = pool.clone();
+            let chain_for_task = anchor_chain.clone();
+            tokio::spawn(async move {
+                let anchorer = ddb_server::anchor::build_anchorer(&chain_for_task);
+
+                // Baseline: the `tx_id` we saw last cycle. We trigger a
+                // new anchor run every time the current max exceeds
+                // `baseline + every_n`. Using a DB-side counter keeps
+                // the task stateless across process restarts.
+                let mut baseline: i64 = match sqlx::query_scalar::<_, Option<i64>>(
+                    "SELECT MAX(tx_id) FROM tx_merkle_roots",
+                )
+                .fetch_one(&anchor_pool)
+                .await
+                {
+                    Ok(v) => v.unwrap_or(0),
+                    Err(e) => {
+                        tracing::warn!(error = %e, "anchor task: failed to read tx_merkle_roots baseline");
+                        0
+                    }
+                };
+
+                let mut interval = tokio::time::interval(Duration::from_secs(15));
+                loop {
+                    interval.tick().await;
+                    let current: Option<i64> = match sqlx::query_scalar::<_, Option<i64>>(
+                        "SELECT MAX(tx_id) FROM tx_merkle_roots",
+                    )
+                    .fetch_one(&anchor_pool)
+                    .await
+                    {
+                        Ok(v) => v,
+                        Err(e) => {
+                            tracing::warn!(error = %e, "anchor task: tx_merkle_roots probe failed");
+                            continue;
+                        }
+                    };
+
+                    let Some(current) = current else { continue };
+                    if current.saturating_sub(baseline) < every_n as i64 {
+                        continue;
+                    }
+
+                    match ddb_server::anchor::run_anchor_cycle(
+                        &anchor_pool,
+                        anchorer.as_ref(),
+                        every_n,
+                    )
+                    .await
+                    {
+                        Ok(receipt) => {
+                            tracing::info!(
+                                chain = %receipt.chain,
+                                status = %receipt.status,
+                                tx_count = receipt.tx_count,
+                                "anchor cycle completed"
+                            );
+                            baseline = current;
+                        }
+                        Err(e) => {
+                            tracing::warn!(error = %e, "anchor cycle failed");
+                        }
+                    }
+                }
+            });
+            tracing::info!(
+                chain = %anchor_chain,
+                every_n,
+                "blockchain anchor background task started"
+            );
+        } else {
+            tracing::info!("blockchain anchor disabled (DARSH_BLOCKCHAIN_ANCHOR=none)");
+        }
     }
 
     // -- Pool Utilization Monitor ------------------------------------------------
