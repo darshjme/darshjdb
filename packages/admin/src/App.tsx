@@ -5,6 +5,7 @@ import { TopBar } from "./components/TopBar";
 import { CommandPalette } from "./components/CommandPalette";
 import { DataExplorer } from "./pages/DataExplorer";
 import { Schema } from "./pages/Schema";
+import { Graph } from "./pages/Graph";
 import { Functions } from "./pages/Functions";
 import { AuthUsers } from "./pages/AuthUsers";
 import { Storage } from "./pages/Storage";
@@ -14,6 +15,7 @@ import { Settings } from "./pages/Settings";
 const pageTitles: Record<string, string> = {
   "/": "Data Explorer",
   "/schema": "Schema",
+  "/graph": "Graph Explorer",
   "/functions": "Functions",
   "/auth": "Auth & Users",
   "/storage": "Storage",
@@ -50,6 +52,7 @@ export function App() {
           <Routes>
             <Route path="/" element={<DataExplorer />} />
             <Route path="/schema" element={<Schema />} />
+            <Route path="/graph" element={<Graph />} />
             <Route path="/functions" element={<Functions />} />
             <Route path="/auth" element={<AuthUsers />} />
             <Route path="/storage" element={<Storage />} />
