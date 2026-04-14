@@ -340,6 +340,29 @@ async fn main() -> Result<()> {
     let (live_query_manager, _live_query_rx) =
         ddb_server::sync::live_query::LiveQueryManager::new(4096);
 
+    // -- Rule Engine (built early so WS handler can fire it inside the same
+    //    transaction as user writes, matching the REST mutation path).
+    let rules_path = std::path::PathBuf::from(
+        std::env::var("DDB_RULES_FILE").unwrap_or_else(|_| "./darshan/rules.json".to_string()),
+    );
+    let rules = ddb_server::rules::load_rules_from_file(&rules_path).unwrap_or_else(|e| {
+        tracing::error!(error = %e, "failed to load rules, continuing without rule engine");
+        Vec::new()
+    });
+    let rule_engine: Option<Arc<ddb_server::rules::RuleEngine>> = if rules.is_empty() {
+        None
+    } else {
+        Some(Arc::new(ddb_server::rules::RuleEngine::new(
+            rules,
+            triple_store_arc.clone(),
+        )))
+    };
+
+    // Shared hot query cache — the same Arc is handed to both the WS handler
+    // (for invalidation on mutation) and the REST `AppState` (for reads), so
+    // a WS mutation evicts subsequent REST reads and vice versa.
+    let query_cache = Arc::new(ddb_server::cache::QueryCache::from_env());
+
     let ws_state = WsState {
         sessions: sync_sessions.clone(),
         registry: subscription_registry,
@@ -351,6 +374,8 @@ async fn main() -> Result<()> {
         pubsub: pubsub_engine.clone(),
         live_queries: live_query_manager,
         change_feed,
+        rule_engine: rule_engine.clone(),
+        query_cache: query_cache.clone(),
     };
 
     tracing::info!("sync engine initialized");
@@ -501,22 +526,8 @@ async fn main() -> Result<()> {
         (None, None)
     };
 
-    // -- Rule Engine ----------------------------------------------------------
-    let rules_path = std::path::PathBuf::from(
-        std::env::var("DDB_RULES_FILE").unwrap_or_else(|_| "./darshan/rules.json".to_string()),
-    );
-    let rules = ddb_server::rules::load_rules_from_file(&rules_path).unwrap_or_else(|e| {
-        tracing::error!(error = %e, "failed to load rules, continuing without rule engine");
-        Vec::new()
-    });
-    let rule_engine = if rules.is_empty() {
-        None
-    } else {
-        Some(Arc::new(ddb_server::rules::RuleEngine::new(
-            rules,
-            triple_store_arc.clone(),
-        )))
-    };
+    // Rule engine was built earlier (before ws_state) so the WS mutation
+    // handler can fire it inside the same transaction as user writes.
 
     // -- REST API State -------------------------------------------------------
     let mut app_state = AppState::with_pool(
@@ -527,6 +538,9 @@ async fn main() -> Result<()> {
         rate_limiter.clone(),
         storage_engine,
     );
+    // Share the same query cache with the WS handler so mutations over either
+    // channel invalidate reads on the other.
+    app_state.query_cache = query_cache.clone();
     if let Some(engine) = rule_engine {
         app_state = app_state.with_rules(engine);
     }

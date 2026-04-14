@@ -48,3 +48,7 @@ aws-credential-types.workspace = true
 aws-types.workspace = true
 async-trait.workspace = true
 csv.workspace = true
+
+[dev-dependencies]
+tokio-tungstenite = "0.28"
+futures-util = "0.3"
