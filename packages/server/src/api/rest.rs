@@ -51,6 +51,7 @@ use crate::functions::runtime::FunctionRuntime;
 use crate::graph::{Edge, EdgeInput, GraphEngine, RecordId, TraversalConfig};
 use crate::query::{self, QueryResultRow};
 use crate::rules::RuleEngine;
+use crate::storage::transforms::{self as image_transforms, TransformOps};
 use crate::storage::{LocalFsBackend, StorageEngine, StorageError};
 use crate::sync::broadcaster::ChangeEvent;
 use crate::sync::pubsub::{PubSubEngine, PubSubEvent};
@@ -2890,14 +2891,72 @@ async fn storage_get(
         return Ok(negotiate_response(&headers, &response));
     }
 
-    // Download the file from the storage engine.
+    // If the caller requested an image transform, decode + apply + re-encode
+    // and serve the transformed bytes (with an L1 byte cache keyed by
+    // path + sha256(transform)). This replaces the previous silent discard.
+    if let Some(transform_str) = params.transform.as_ref() {
+        use sha2::{Digest, Sha256};
+
+        let ops = TransformOps::parse(transform_str)
+            .map_err(|e| ApiError::bad_request(format!("invalid transform: {e}")))?;
+        let mime = ops.output_mime();
+
+        let cache_key = {
+            let mut hasher = Sha256::new();
+            hasher.update(transform_str.as_bytes());
+            let digest = hasher.finalize();
+            format!("img:{}:{}", path, hex::encode(digest))
+        };
+
+        if let Some((cached_bytes, cached_mime)) = image_transforms::cache_get(&cache_key) {
+            let mut response = (StatusCode::OK, cached_bytes).into_response();
+            response
+                .headers_mut()
+                .insert(CONTENT_TYPE, HeaderValue::from_static(cached_mime));
+            response
+                .headers_mut()
+                .insert("x-ddb-image-cache", HeaderValue::from_static("hit"));
+            return Ok(response);
+        }
+
+        let (original, _meta) = state
+            .storage_engine
+            .download(&path)
+            .await
+            .map_err(storage_err_to_api)?;
+
+        let img = image::load_from_memory(&original)
+            .map_err(|e| ApiError::bad_request(format!("not a decodable image: {e}")))?;
+        let transformed = ops
+            .apply(img)
+            .map_err(|e| ApiError::bad_request(format!("transform apply failed: {e}")))?;
+        let output_bytes = ops
+            .encode(transformed)
+            .map_err(|e| ApiError::internal(format!("transform encode failed: {e}")))?;
+
+        image_transforms::cache_set(
+            cache_key,
+            output_bytes.clone(),
+            mime,
+            Duration::from_secs(86_400),
+        );
+
+        let mut response = (StatusCode::OK, output_bytes).into_response();
+        response
+            .headers_mut()
+            .insert(CONTENT_TYPE, HeaderValue::from_static(mime));
+        response
+            .headers_mut()
+            .insert("x-ddb-image-cache", HeaderValue::from_static("miss"));
+        return Ok(response);
+    }
+
+    // Non-transformed path: download the file from the storage engine.
     let (data, meta) = state
         .storage_engine
         .download(&path)
         .await
         .map_err(storage_err_to_api)?;
-
-    let _ = params.transform; // TODO: apply image transforms when image processor is available.
 
     let mut response = (StatusCode::OK, data).into_response();
     response.headers_mut().insert(
