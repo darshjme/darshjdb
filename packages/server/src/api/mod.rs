@@ -32,6 +32,7 @@
 //! and `X-RateLimit-Reset` headers.
 
 pub mod batch;
+pub mod chunked_upload;
 pub mod docs;
 pub mod error;
 pub mod openapi;

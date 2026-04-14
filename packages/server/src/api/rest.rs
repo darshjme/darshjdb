@@ -626,6 +626,19 @@ pub fn build_router(state: AppState) -> Router {
         .route("/fn/{name}", post(fn_invoke))
         // -- Storage -------------------------------------------------------
         .route("/storage/upload", post(storage_upload))
+        // Chunked / resumable uploads (VYASA 7.1 — see api::chunked_upload).
+        .route(
+            "/storage/upload/init",
+            post(super::chunked_upload::init_upload),
+        )
+        .route(
+            "/storage/upload/{upload_id}/chunk/{index}",
+            axum::routing::put(super::chunked_upload::put_chunk),
+        )
+        .route(
+            "/storage/upload/{upload_id}/status",
+            get(super::chunked_upload::upload_status),
+        )
         .route("/storage/{*path}", get(storage_get).delete(storage_delete))
         // -- SSE -----------------------------------------------------------
         .route("/subscribe", get(subscribe))
@@ -2812,7 +2825,16 @@ async fn storage_upload(
         return Err(ApiError::bad_request("Upload body is empty"));
     }
 
-    let path = upload_path.unwrap_or_else(|| format!("uploads/{}", Uuid::new_v4()));
+    // Phase 0 vuln fix (VYASA 7.1): validate the client-supplied `path`
+    // field the same way chunked uploads do. Before this patch the
+    // multipart handler accepted any text (including `../etc/passwd`
+    // and paths with NUL / control bytes) and handed it straight to
+    // the storage backend. Reuses the single source of truth in
+    // `super::chunked_upload::sanitize_storage_path`.
+    let path = match upload_path {
+        Some(raw) => super::chunked_upload::sanitize_storage_path(&raw)?,
+        None => format!("uploads/{}", Uuid::new_v4()),
+    };
 
     let result = state
         .storage_engine
@@ -3434,6 +3456,13 @@ fn extract_bearer_token(headers: &HeaderMap) -> Result<String, ApiError> {
     }
 
     Ok(token)
+}
+
+/// Public wrapper around [`extract_bearer_token`] for sibling modules
+/// under `api::` (e.g. `chunked_upload`) that reuse the same
+/// bearer-token parsing without duplicating the logic.
+pub fn extract_bearer_token_pub(headers: &HeaderMap) -> Result<String, ApiError> {
+    extract_bearer_token(headers)
 }
 
 /// Verify the authenticated user holds the "admin" role by decoding JWT claims.

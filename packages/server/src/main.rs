@@ -142,6 +142,17 @@ async fn main() -> Result<()> {
         })?;
     tracing::info!("auth schema ensured (users + sessions tables)");
 
+    // Phase 7.1 (slice 25/30): ensure chunked_uploads table exists so
+    // resumable uploads and the cleanup task can run without a
+    // separate migrator step.
+    ddb_server::api::chunked_upload::ensure_chunked_uploads_schema(&pool)
+        .await
+        .map_err(|e| {
+            tracing::error!("Failed to ensure chunked_uploads schema: {e}");
+            ddb_server::error::DarshJError::Database(e)
+        })?;
+    tracing::info!("chunked_uploads schema ensured");
+
     sqlx::query("SELECT pg_advisory_unlock(42)")
         .execute(&pool)
         .await
@@ -271,6 +282,17 @@ async fn main() -> Result<()> {
             }
         });
         tracing::info!("pool utilization monitor started (10s interval, warn >80%)");
+    }
+
+    // -- Chunked Upload Cleanup (VYASA 7.1) -----------------------------------
+    // Every 5 minutes, delete `chunked_uploads` rows in `in_progress` state
+    // that are older than 24h and purge their `/tmp` staging directories.
+    {
+        let cleanup_pool = pool.clone();
+        ddb_server::api::chunked_upload::spawn_cleanup_task(cleanup_pool);
+        tracing::info!(
+            "chunked upload cleanup task started (5min interval, 24h stale threshold)"
+        );
     }
 
     // -- Postgres LISTEN/NOTIFY for multi-process sync -------------------------
