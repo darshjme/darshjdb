@@ -157,7 +157,10 @@ fn legacy_flat_env_var_still_works() {
     let cfg = load_config().expect("should load");
     assert_eq!(cfg.server.port, 9090);
     assert!(cfg.dev.mode);
-    assert_eq!(cfg.database.url.as_deref(), Some("postgres://legacy/db"));
+    assert_eq!(
+        cfg.database.url.as_ref().map(|s| s.expose().as_str()),
+        Some("postgres://legacy/db")
+    );
     assert_eq!(
         cfg.cors.origins,
         vec!["https://a.test".to_string(), "https://b.test".to_string()]
@@ -236,4 +239,27 @@ fn secret_expose_returns_inner_value() {
     let s: Secret<String> = Secret::new("abc123".to_string());
     assert_eq!(s.expose(), "abc123");
     assert_eq!(s.into_inner(), "abc123");
+}
+
+#[test]
+fn database_url_does_not_leak_password_via_debug() {
+    // Security audit finding F1 (2026-04-15): DdbConfig derives Debug and
+    // main.rs logs `tracing::info!(?cfg, "loaded configuration")` at boot.
+    // DatabaseConfig::url must be a Secret<String>, not a bare String, or
+    // the embedded Postgres password ships to the tracing sink every
+    // startup.  This test guards the regression.
+    let mut cfg = DdbConfig::default();
+    cfg.database.url = Some(Secret::new(
+        "postgres://ddb:super-secret-password@db.prod.internal:5432/darshjdb".to_string(),
+    ));
+
+    let debug_str = format!("{cfg:?}");
+    assert!(
+        !debug_str.contains("super-secret-password"),
+        "DatabaseConfig::url leaked password through Debug: {debug_str}"
+    );
+    assert!(
+        debug_str.contains("<redacted>"),
+        "expected <redacted> marker in Debug output: {debug_str}"
+    );
 }

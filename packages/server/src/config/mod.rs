@@ -189,9 +189,15 @@ impl Default for ServerConfig {
 #[serde(deny_unknown_fields)]
 pub struct DatabaseConfig {
     /// Postgres connection URL.  When `None`, [`load_config`] falls back to
-    /// `postgres://darshan:darshan@localhost:5432/darshjdb`.
+    /// `postgres://ddb:ddb@localhost:5432/darshjdb`.
+    ///
+    /// Wrapped in [`Secret<T>`] because the URL typically embeds the password
+    /// (e.g. `postgres://user:password@host/db`).  Since `DdbConfig` derives
+    /// `Debug` and `main.rs` logs `?cfg` at startup, a bare `String` here
+    /// would ship the connection password to the tracing sink on every boot
+    /// (security audit finding F1, 2026-04-15).
     #[serde(default)]
-    pub url: Option<String>,
+    pub url: Option<Secret<String>>,
     /// Minimum idle pool connections.  Default **2**.
     #[serde(default = "defaults::db_pool_min")]
     pub pool_min: u32,

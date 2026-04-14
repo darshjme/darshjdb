@@ -88,7 +88,8 @@ async fn main() -> Result<()> {
     let configured_url = cfg
         .database
         .url
-        .clone()
+        .as_ref()
+        .map(|s| s.expose().clone())
         .or_else(|| std::env::var("DATABASE_URL").ok());
 
     #[cfg(feature = "embedded-db")]
