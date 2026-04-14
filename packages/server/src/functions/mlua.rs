@@ -143,6 +143,9 @@ impl MluaRuntime {
             .map_err(|e| RuntimeError::Internal(format!("sandbox install failed: {e}")))?;
         install_ddb_api(&lua)
             .map_err(|e| RuntimeError::Internal(format!("ddb api install failed: {e}")))?;
+        freeze_safe_globals(&lua).map_err(|e| {
+            RuntimeError::Internal(format!("safe_globals freeze failed: {e}"))
+        })?;
 
         Ok(Self {
             functions_dir,
@@ -178,6 +181,46 @@ impl MluaRuntime {
             .exec()
             .map_err(|e| RuntimeError::Internal(format!("lua load failed: {e}")))?;
         Ok(())
+    }
+
+    /// Test helper: run a user chunk under the same per-invocation env
+    /// isolation the production `execute` path uses, then invoke
+    /// `export_name` with `args`. Returns the deserialized JSON return
+    /// value. This is the supported way to exercise F4 isolation in
+    /// tests — going through `load_chunk` + `invoke_global` bypasses the
+    /// env entirely and mutates the shared `_G`.
+    #[cfg(test)]
+    async fn exec_in_fresh_env(
+        &self,
+        source: &str,
+        export_name: &str,
+        args: Value,
+    ) -> RuntimeResult<Value> {
+        let guard = self.lua.lock().await;
+
+        let env = build_per_call_env(&guard)
+            .map_err(|e| RuntimeError::Internal(format!("per-call env: {e}")))?;
+
+        guard
+            .load(source)
+            .set_mode(ChunkMode::Text)
+            .set_environment(env.clone())
+            .exec()
+            .map_err(|e| RuntimeError::Internal(format!("lua load failed: {e}")))?;
+
+        let func: mlua::Function = env.get(export_name).map_err(|e| {
+            RuntimeError::Internal(format!("export `{export_name}` missing: {e}"))
+        })?;
+        let lua_args: LuaValue = guard
+            .to_value(&args)
+            .map_err(|e| RuntimeError::Internal(format!("args -> lua: {e}")))?;
+        let ret: LuaValue = func
+            .call(lua_args)
+            .map_err(|e| RuntimeError::Internal(format!("lua call failed: {e}")))?;
+        let out: Value = guard
+            .from_value(ret)
+            .map_err(|e| RuntimeError::Internal(format!("lua -> json: {e}")))?;
+        Ok(out)
     }
 
     /// Invoke a global Lua function by name with JSON-serialized args and
@@ -240,9 +283,20 @@ impl RuntimeBackend for MluaRuntime {
 
             let guard = lua.lock().await;
 
-            // Load the chunk. Executing it is expected to produce a global
-            // with `function_def.export_name`, matching the shape the JS
-            // harness uses (`export const foo = () => ...`).
+            // F4: build a fresh per-invocation environment with per-call
+            // proxy tables for every mutable library (`string`, `table`,
+            // `math`, `os`, `ddb`). User top-level mutations like
+            // `string.sub = function() end` land on the proxy and are
+            // dropped when the call returns; the shared `_G` and the
+            // frozen `safe_globals` snapshot are never touched.
+            let env = build_per_call_env(&guard).map_err(|e| {
+                RuntimeError::Internal(format!("per-call env build failed: {e}"))
+            })?;
+
+            // Load the chunk. Executing it is expected to produce a
+            // global (in the per-call env) with `function_def.export_name`,
+            // matching the shape the JS harness uses
+            // (`export const foo = () => ...`).
             //
             // `ChunkMode::Text` refuses any chunk whose first byte is the
             // Lua bytecode marker (`\x1bLua`). Without this, crafted
@@ -253,10 +307,11 @@ impl RuntimeBackend for MluaRuntime {
                 .load(source)
                 .set_name(function_def.file_path.to_string_lossy().into_owned())
                 .set_mode(ChunkMode::Text)
+                .set_environment(env.clone())
                 .exec()
                 .map_err(|e| RuntimeError::Internal(format!("lua load failed: {e}")))?;
 
-            let func: mlua::Function = guard.globals().get(function_def.export_name.as_str()).map_err(|e| {
+            let func: mlua::Function = env.get(function_def.export_name.as_str()).map_err(|e| {
                 RuntimeError::Internal(format!(
                     "lua export `{}` not found after load: {e}",
                     function_def.export_name
@@ -389,6 +444,93 @@ pub fn install_sandbox(lua: &Lua) -> mlua::Result<()> {
     globals.set("rawlen", Nil)?;
 
     Ok(())
+}
+
+/// Registry slot under which the frozen safe-globals snapshot is stored.
+const SAFE_GLOBALS_REGISTRY_KEY: &str = "ddb_safe_globals";
+
+/// Scalar globals that are safe to copy by value into the per-call env —
+/// functions with no mutable state, so per-tenant drift is impossible.
+const SAFE_SCALAR_GLOBALS: &[&str] = &[
+    "ipairs",
+    "pairs",
+    "next",
+    "pcall",
+    "xpcall",
+    "error",
+    "assert",
+    "type",
+    "tostring",
+    "tonumber",
+    "select",
+    "setmetatable",
+    "getmetatable",
+];
+
+/// Library tables that MUST be wrapped in per-call proxy tables, because a
+/// user chunk doing `string.sub = function() end` at top level would
+/// otherwise mutate the shared library for every subsequent tenant.
+const SAFE_LIBRARY_GLOBALS: &[&str] = &["string", "table", "math", "os", "ddb"];
+
+/// Capture a frozen snapshot of every whitelisted global into a table held
+/// in the Lua registry. Each invocation pulls this table and builds a
+/// fresh per-call environment on top of it: scalar helpers are copied by
+/// reference, and each library table is wrapped in a fresh proxy whose
+/// `__index` falls through to the frozen original, so
+/// `string.sub = function() end` at the top level of a user chunk lands
+/// in the proxy and is dropped when the call returns. F4.
+///
+/// Must be called AFTER [`install_sandbox`] and [`install_ddb_api`] so
+/// the snapshot captures the stripped `os`, the `ddb` table, etc.
+fn freeze_safe_globals(lua: &Lua) -> mlua::Result<()> {
+    let globals = lua.globals();
+    let safe = lua.create_table()?;
+
+    for key in SAFE_SCALAR_GLOBALS {
+        let v: LuaValue = globals.get(*key)?;
+        safe.set(*key, v)?;
+    }
+    for key in SAFE_LIBRARY_GLOBALS {
+        let v: LuaValue = globals.get(*key)?;
+        safe.set(*key, v)?;
+    }
+    if let Ok(v) = globals.get::<LuaValue>("_VERSION") {
+        safe.set("_VERSION", v)?;
+    }
+
+    lua.set_named_registry_value(SAFE_GLOBALS_REGISTRY_KEY, safe)?;
+    Ok(())
+}
+
+/// Build a fresh per-invocation environment table whose `__index` falls
+/// through to the frozen `safe_globals` snapshot, AND whose library
+/// entries (`string`, `table`, `math`, `os`, `ddb`) are wrapped in
+/// per-call proxy tables. This is the F4 isolation contract: user code
+/// can rebind `string.sub` at the top level of its chunk without leaking
+/// into any other tenant's environment. See [`freeze_safe_globals`] for
+/// the snapshot lifecycle.
+fn build_per_call_env(lua: &Lua) -> mlua::Result<Table> {
+    let safe_globals: Table = lua.named_registry_value(SAFE_GLOBALS_REGISTRY_KEY)?;
+
+    let env = lua.create_table()?;
+    let env_meta = lua.create_table()?;
+    env_meta.set("__index", safe_globals.clone())?;
+    env.set_metatable(Some(env_meta));
+
+    // Wrap each library table in its own per-call proxy so that
+    // `string.sub = foo` lands in the proxy, not the shared original.
+    for key in SAFE_LIBRARY_GLOBALS {
+        let orig: LuaValue = safe_globals.get(*key)?;
+        if matches!(orig, LuaValue::Table(_)) {
+            let proxy = lua.create_table()?;
+            let proxy_meta = lua.create_table()?;
+            proxy_meta.set("__index", orig)?;
+            proxy.set_metatable(Some(proxy_meta));
+            env.set(*key, proxy)?;
+        }
+    }
+
+    Ok(env)
 }
 
 // ---------------------------------------------------------------------------
@@ -649,6 +791,43 @@ mod tests {
     async fn health_check_passes() {
         let rt = new_runtime();
         rt.health_check().await.unwrap();
+    }
+
+    /// F4 regression: user chunk mutations to stdlib functions must NOT
+    /// leak out of the per-invocation environment. User A reassigns
+    /// `string.sub` at top level; user B must still see the pristine
+    /// `string.sub`.
+    #[tokio::test]
+    async fn per_invocation_env_does_not_leak_globals() {
+        let rt = new_runtime();
+
+        // User A: mutate `string.sub` at the top level of its chunk.
+        // Under per-call env isolation, this assignment lands in A's
+        // fresh env table and is dropped when the call returns.
+        let a_src = r#"
+            string.sub = function() return "PWNED" end
+            function a() return "done" end
+        "#;
+        let a_out = rt
+            .exec_in_fresh_env(a_src, "a", serde_json::json!(null))
+            .await
+            .expect("user A runs");
+        assert_eq!(a_out, serde_json::json!("done"));
+
+        // User B: call the pristine string.sub. If A's mutation leaked,
+        // we'd see "PWNED"; with per-call env isolation we see "hel".
+        let b_src = r#"
+            function b() return string.sub("hello", 1, 3) end
+        "#;
+        let b_out = rt
+            .exec_in_fresh_env(b_src, "b", serde_json::json!(null))
+            .await
+            .expect("user B runs");
+        assert_eq!(
+            b_out,
+            serde_json::json!("hel"),
+            "per-invocation env MUST isolate stdlib mutations"
+        );
     }
 
     /// F5 regression: a chunk whose first byte is the Lua bytecode
