@@ -5,7 +5,13 @@ All notable changes to DarshJDB will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.3.2.1] - 2026-04-15 — Executor Rewire + SqliteStore::query
+## [0.3.3] - 2026-04-15 — Executor Rewire + SqliteStore::query + mlua ddb.kv
+
+> Sprint internally referred to as "v0.3.2.1" in agent SUMMARY files
+> and DEFERRED.md. Released as v0.3.3 because Cargo workspace versions
+> are strict three-part semver — the post-release "0.3.2.1" naming is
+> not a valid `cargo` version field. No semantic difference; this is
+> the patch release immediately following v0.3.2.
 
 Closes the two integration deferrals from the v0.3.2 sprint so the
 SQLite backend has a real read path and the DarshanQL executor knows
@@ -42,6 +48,36 @@ which dialects can run which statement types.
   `Store::query` path. Plus two matching `store::sqlite::tests`
   unit tests and three new `query::dialect::tests` capability checks.
 
+### Added — mlua `ddb.kv.*` host API
+
+- **`MluaContext.cache: Arc<DdbCache>`** — the v0.3.2 stub fields
+  for `ddb.kv.get/set/del` are gone. `MluaContext` now carries the
+  cache handle alongside the store + dialect, and `main.rs` wires
+  it from a single `shared_ddb_cache: Arc<DdbCache>` constructed
+  before `AppState::with_pool` so REST/RESP3 dispatchers and the
+  Lua function runtime hold the **same** Arc — Lua writes from a
+  server function are immediately visible to subsequent REST
+  cache GETs and vice versa.
+- **`ddb.kv.get(key)`** — returns a Lua string for UTF-8 values,
+  `nil` for missing keys, and raises a Lua `RuntimeError` if a
+  present value is not valid UTF-8 (binary blobs belong in object
+  storage, not the string-shaped Lua boundary).
+- **`ddb.kv.set(key, value [, ttl_seconds])`** — accepts an
+  optional trailing `Option<u64>` TTL. `0` is treated as
+  "no expiry" so dynamic-TTL callers don't need to special-case
+  the zero literal.
+- **`ddb.kv.del(key)`** — returns a `bool` indicating whether the
+  key existed across any cache tier prior to deletion.
+- **5 new mlua tests** exercising roundtrip, TTL expiry, deletion,
+  missing-key, and the non-UTF-8 error path. The total mlua test
+  count is now **30 passing** (up from 23 in v0.3.2).
+- **Stub-error assertion trimmed** — the v0.3.2 mlua hardening
+  sprint added a `ddb_stubs_all_raise_lua_error` test that loop-
+  asserted `ddb.kv.*` raised `NotYetImplemented`. That assertion
+  is now wrong; the kv methods are removed from the loop and the
+  test continues to guard the still-stubbed `ddb.notify` and
+  friends (if any).
+
 ### Changed
 
 - **DarshanQL executor — Tier 2 statement-type gates.** `DEFINE
@@ -51,6 +87,10 @@ which dialects can run which statement types.
   v0.3.3-tracking message on dialects that don't support them
   (SQLite today). PostgreSQL production behaviour is byte-for-byte
   unchanged because `PgDialect` inherits the default-true.
+- **Workspace version bumped `0.3.2` → `0.3.3`** (released as v0.3.3
+  because Cargo's strict three-part semver disallows a `0.3.2.1`
+  version field; sprint files and agent reports retain the
+  `v0.3.2.1` naming for traceability).
 
 ### Deferred to v0.3.2.2 / v0.3.3
 

@@ -1846,7 +1846,7 @@ dependencies = [
 
 [[package]]
 name = "ddb-agent-memory"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "anyhow",
  "async-openai",
@@ -1869,7 +1869,7 @@ dependencies = [
 
 [[package]]
 name = "ddb-cache"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "async-trait",
  "bytes",
@@ -1891,7 +1891,7 @@ dependencies = [
 
 [[package]]
 name = "ddb-cache-server"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "anyhow",
  "axum",
@@ -1912,7 +1912,7 @@ dependencies = [
 
 [[package]]
 name = "ddb-cli"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "anyhow",
  "axum",
@@ -1942,7 +1942,7 @@ dependencies = [
 
 [[package]]
 name = "ddb-server"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "anyhow",
  "argon2",

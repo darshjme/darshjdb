@@ -755,6 +755,13 @@ async fn main() -> Result<()> {
         std::env::var("DDB_FUNCTIONS_DIR").unwrap_or_else(|_| "./darshan/functions".to_string());
     let functions_dir_path = std::path::PathBuf::from(&functions_dir);
 
+    // v0.3.2.1: shared DdbCache instance — both AppState (REST/RESP3 dispatchers)
+    // and MluaContext (ddb.kv.* host API) hold this Arc, so Lua writes from a
+    // server function are visible to subsequent REST GETs and vice versa. Built
+    // here (before AppState construction) so the same handle threads into both
+    // the function runtime and AppState below.
+    let shared_ddb_cache = std::sync::Arc::new(ddb_cache::DdbCache::new());
+
     let (fn_registry, fn_runtime) = if functions_dir_path.is_dir() {
         // Harness lives next to the functions directory.
         let harness_path = functions_dir_path
@@ -815,6 +822,7 @@ async fn main() -> Result<()> {
                                 let mlua_ctx = ddb_server::functions::mlua::MluaContext {
                                     store: store_dyn.clone(),
                                     dialect: dialect_dyn.clone(),
+                                    cache: shared_ddb_cache.clone(),
                                 };
                                 Some(Box::new(
                                     ddb_server::functions::MluaRuntime::new_with_context(
@@ -921,6 +929,10 @@ async fn main() -> Result<()> {
     // Share the same query cache with the WS handler so mutations over either
     // channel invalidate reads on the other.
     app_state.query_cache = query_cache.clone();
+    // v0.3.2.1: replace AppState's freshly-constructed DdbCache with the shared
+    // handle that the function runtime (mlua ddb.kv.* API) also holds, so Lua
+    // writes are visible to subsequent REST GETs and vice versa.
+    app_state.ddb_cache = shared_ddb_cache.clone();
     if let Some(engine) = rule_engine {
         app_state = app_state.with_rules(engine);
     }
