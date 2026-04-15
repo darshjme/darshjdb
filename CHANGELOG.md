@@ -5,6 +5,69 @@ All notable changes to DarshJDB will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.2.1] - 2026-04-15 — Executor Rewire + SqliteStore::query
+
+Closes the two integration deferrals from the v0.3.2 sprint so the
+SQLite backend has a real read path and the DarshanQL executor knows
+which dialects can run which statement types.
+
+### Added
+
+- **`SqliteStore::query` real implementation** — the v0.3.2 stub that
+  returned `InvalidQuery` for every plan is gone. `SqliteStore::query`
+  now binds `serde_json::Value` params through a small `ToSql` adapter,
+  expands the v0.3.2 M-3 `__UUID_LIST__` token into per-uuid `?N`
+  placeholders for nested-plan resolution, executes via rusqlite on a
+  blocking task, and materialises rows in the same `QueryResultRow`
+  JSON shape `PgStore::query` returns so downstream consumers see no
+  shape drift across backends. Plans carrying the
+  `__SQLITE_VECTOR_UNSUPPORTED__` /
+  `__SQLITE_COSINE_DISTANCE_UNSUPPORTED__` sentinels are refused up
+  front with a clear `InvalidQuery` message.
+- **`SqlDialect` capability gates** — three new methods
+  (`supports_ddl`, `supports_graph_traversal`, `supports_hybrid_search`)
+  with default-true so `PgDialect` inherits the v0.3.1 surface
+  unchanged. `SqliteDialect` overrides all three to false. The
+  DarshanQL executor checks them at dispatch time.
+- **`darshql::ExecutorContext`** — a `{pool, Arc<dyn Store>,
+  Arc<dyn SqlDialect>}` bundle threaded through every executor
+  function. The HTTP entry point keeps the existing
+  `execute(&PgPool, …)` signature for backwards compatibility and
+  constructs the context internally; new call sites (tests, future
+  portable runners) use `execute_with_context` directly.
+- **`tests/sqlite_e2e_query.rs`** — six end-to-end integration tests
+  covering bare SELECT, `$where Eq`, `$where Neq`, `$limit + $offset`,
+  `$order ASC`, and the empty-result case against an in-memory
+  `SqliteStore` driven through `plan_query_with_dialect` + the new
+  `Store::query` path. Plus two matching `store::sqlite::tests`
+  unit tests and three new `query::dialect::tests` capability checks.
+
+### Changed
+
+- **DarshanQL executor — Tier 2 statement-type gates.** `DEFINE
+  TABLE`, `DEFINE FIELD`, `RELATE`, `SELECT` fields containing
+  `->edge` traversal, and `count(->edge)` computed fields now check
+  `ctx.dialect.supports_*()` and return `InvalidQuery` with a
+  v0.3.3-tracking message on dialects that don't support them
+  (SQLite today). PostgreSQL production behaviour is byte-for-byte
+  unchanged because `PgDialect` inherits the default-true.
+
+### Deferred to v0.3.2.2 / v0.3.3
+
+- The portable Pg-or-SQLite hookup for SELECT / CREATE / INSERT /
+  RETRACT through `ctx.store` (rather than `ctx.pool`) is plumbed
+  through `ExecutorContext` but the executor body still reaches for
+  the pool directly for the read/write SQL — the SurrealQL-shaped AST
+  consumed by `query/darshql/executor.rs` is independent of the
+  JSON-shaped `QueryAST` driven by `plan_query_with_dialect`, and the
+  v0.3.3 milestone tracks unifying the two planner surfaces so the
+  same `Store::query` path serves both. Until then the gates are the
+  safety net.
+- `INFO FOR` against `:schema/*` triples on SQLite — the storage
+  shape is portable but the planner pieces have not been ported.
+  Tracked alongside the DDL gate in v0.3.3.
+- See `DEFERRED.md` for the full deferral list with rationale.
+
 ## [0.3.2] - 2026-04-15 — SQLite Backend + mlua Runtime + Dialect Abstraction
 
 The v0.3.1 architecture wave laid the trait boundaries; v0.3.2 fills
