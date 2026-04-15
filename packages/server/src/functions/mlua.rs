@@ -1524,30 +1524,27 @@ mod tests {
         );
     }
 
-    /// Every `ddb.*` stub path must raise a Lua error (not panic in
-    /// Rust) when the v0.3.2 user invokes it. Covers query, kv.get,
-    /// kv.set, triples.get, triples.put.
+    /// Every still-stubbed `ddb.*` path (i.e. every host call that has
+    /// no live wiring when the runtime is constructed without an
+    /// `MluaContext`) must raise a clear `NotYetImplemented` Lua error
+    /// — never panic in Rust. Covers query + triples.{get,put}.
+    ///
+    /// `ddb.kv.{get,set,del}` were wired in v0.3.2.1 and are exercised
+    /// by `ddb_kv_*` below against a real `DdbCache` handle, so they
+    /// no longer belong in this stub-fallback assertion.
     #[tokio::test]
     async fn ddb_stubs_all_raise_lua_error() {
         let rt = new_runtime();
         rt.load_chunk(
             r#"
             function call_query()       return ddb.query("SELECT 1") end
-            function call_kv_get()      return ddb.kv.get("k") end
-            function call_kv_set()      return ddb.kv.set("k", "v") end
             function call_triples_get() return ddb.triples.get("s", "p") end
             function call_triples_put() return ddb.triples.put("s", "p", "o") end
             "#,
         )
         .await
         .unwrap();
-        for name in [
-            "call_query",
-            "call_kv_get",
-            "call_kv_set",
-            "call_triples_get",
-            "call_triples_put",
-        ] {
+        for name in ["call_query", "call_triples_get", "call_triples_put"] {
             let err = rt
                 .invoke_global(name, serde_json::json!(null))
                 .await
