@@ -723,9 +723,14 @@ fn truncate_log(msg: String) -> String {
 /// - `ddb.triples.put(entity_id_uuid, attribute, value)` allocates a
 ///   new tx id via [`Store::next_tx_id`] and calls [`Store::set_triples`]
 ///   with a single-triple batch.
-/// - `ddb.kv.{get,set}` stay `NotYetImplemented`. The cache-server
-///   boundary is not exposed to the function runtime in v0.3.2; tracking
-///   for v0.3.2.1.
+/// - `ddb.kv.get(key)` reads the in-process [`DdbCache`] string tier and
+///   returns the UTF-8 value, `nil` for misses, or a Lua error for
+///   non-UTF-8 bytes. Wired in v0.3.2.1.
+/// - `ddb.kv.set(key, value [, ttl_seconds])` writes through to the same
+///   tier with an optional TTL. `0` is treated as "no expiry". Wired in
+///   v0.3.2.1.
+/// - `ddb.kv.del(key)` deletes the key across every typed tier and
+///   returns a boolean indicating prior presence. Wired in v0.3.2.1.
 ///
 /// **Without an [`MluaContext`]** (tests, or runtime constructed before
 /// the host wiring lands): every host call raises a Lua
@@ -779,29 +784,107 @@ pub fn install_ddb_api(lua: &Lua, ctx: Option<&MluaContext>) -> mlua::Result<()>
         )?;
     }
 
-    // ddb.kv.{get,set} — NotYetImplemented in v0.3.2.
+    // ddb.kv.{get,set,del} — wired in v0.3.2.1 against the in-process
+    // DdbCache string tier (the same backing store as the REST
+    // /api/cache/* router and the RESP3 dispatcher's STRING commands).
     //
-    // Rationale: the cache layer (DdbCache, slice 10) is keyed on the
-    // HTTP request boundary and is not exposed to the function runtime
-    // yet. Wiring it through requires a tenant-scoped cache handle
-    // which lands in v0.3.2.1.
+    // Without an MluaContext (test default) the calls keep raising
+    // NotYetImplemented so unit tests that never need a real cache stay
+    // hermetic.
     let kv = lua.create_table()?;
-    kv.set(
-        "get",
-        lua.create_function(|_, _key: String| -> mlua::Result<LuaValue> {
-            Err(mlua::Error::RuntimeError(
-                "ddb.kv.get: NotYetImplemented — cache boundary not exposed to mlua runtime yet, tracked for v0.3.2.1".into(),
-            ))
-        })?,
-    )?;
-    kv.set(
-        "set",
-        lua.create_function(|_, (_key, _val): (String, LuaValue)| -> mlua::Result<()> {
-            Err(mlua::Error::RuntimeError(
-                "ddb.kv.set: NotYetImplemented — cache boundary not exposed to mlua runtime yet, tracked for v0.3.2.1".into(),
-            ))
-        })?,
-    )?;
+    if let Some(ctx) = ctx {
+        // ddb.kv.get(key) -> string | nil
+        //
+        // Returns a Lua string for UTF-8 cache values, nil for a miss
+        // (key absent or expired), and a Lua RuntimeError for a present
+        // key whose bytes are not valid UTF-8 — Lua strings are byte
+        // sequences but DDB's user-facing convention for ddb.kv.* is
+        // text-typed values, matching the RESP3 GET command's documented
+        // shape. Binary blobs belong in object storage, not the hot KV.
+        let cache_for_get = Arc::clone(&ctx.cache);
+        kv.set(
+            "get",
+            lua.create_function(move |lua, key: String| -> mlua::Result<LuaValue> {
+                match cache_for_get.get(&key) {
+                    Some(value_bytes) => {
+                        let s = String::from_utf8(value_bytes).map_err(|e| {
+                            mlua::Error::RuntimeError(format!(
+                                "ddb.kv.get({key}): non-utf8 value: {e}"
+                            ))
+                        })?;
+                        Ok(LuaValue::String(lua.create_string(&s)?))
+                    }
+                    None => Ok(LuaValue::Nil),
+                }
+            })?,
+        )?;
+
+        // ddb.kv.set(key, value) -> nil
+        // ddb.kv.set(key, value, ttl_seconds) -> nil
+        //
+        // ttl_seconds is an optional trailing arg matching the SETEX
+        // shape RESP3 callers expect. A `0` ttl is treated as "no
+        // expiry" (same as omitting the argument) so user code that
+        // computes a ttl dynamically can pass through 0 without
+        // special-casing.
+        let cache_for_set = Arc::clone(&ctx.cache);
+        kv.set(
+            "set",
+            lua.create_function(
+                move |_, (key, value, ttl_seconds): (String, String, Option<u64>)|
+                      -> mlua::Result<()> {
+                    let ttl = match ttl_seconds {
+                        Some(0) | None => None,
+                        Some(secs) => Some(std::time::Duration::from_secs(secs)),
+                    };
+                    cache_for_set.set(key, value.into_bytes(), ttl);
+                    Ok(())
+                },
+            )?,
+        )?;
+
+        // ddb.kv.del(key) -> bool
+        //
+        // Returns true if the key existed before deletion across any
+        // of the typed cache tiers (string/hash/list/zset/stream),
+        // matching DdbCache::del's union semantics. Lua callers that
+        // only care about a fire-and-forget delete can ignore the
+        // return value.
+        let cache_for_del = Arc::clone(&ctx.cache);
+        kv.set(
+            "del",
+            lua.create_function(move |_, key: String| -> mlua::Result<bool> {
+                Ok(cache_for_del.del(&key))
+            })?,
+        )?;
+    } else {
+        kv.set(
+            "get",
+            lua.create_function(|_, _key: String| -> mlua::Result<LuaValue> {
+                Err(mlua::Error::RuntimeError(
+                    "ddb.kv.get: NotYetImplemented — runtime constructed without MluaContext".into(),
+                ))
+            })?,
+        )?;
+        kv.set(
+            "set",
+            lua.create_function(
+                |_, (_key, _val, _ttl): (String, String, Option<u64>)| -> mlua::Result<()> {
+                    Err(mlua::Error::RuntimeError(
+                        "ddb.kv.set: NotYetImplemented — runtime constructed without MluaContext".into(),
+                    ))
+                },
+            )?,
+        )?;
+        kv.set(
+            "del",
+            lua.create_function(|_, _key: String| -> mlua::Result<bool> {
+                Err(mlua::Error::RuntimeError(
+                    "ddb.kv.del: NotYetImplemented — runtime constructed without MluaContext".into(),
+                ))
+            })?,
+        )?;
+    }
     ddb.set("kv", kv)?;
 
     // ddb.log.* — fully live, forwards into tracing.
@@ -1719,18 +1802,159 @@ mod tests {
         );
     }
 
+    // ── ddb.kv.* wired host API tests (v0.3.2.1) ──────────────────
+    //
+    // These tests exercise the live-context path of `install_ddb_api`
+    // for the cache tier. They reuse `new_runtime_with_sqlite_context`
+    // (gated on `sqlite-store`) because that helper wires up a real
+    // `DdbCache` alongside the in-memory SqliteStore — the sqlite
+    // dependency is incidental, the cache is what these tests care
+    // about.
+    //
+    // DdbCache is in-process (DashMap-backed), so each test gets a
+    // fresh isolated cache via the per-test runtime construction.
+
     #[cfg(feature = "sqlite-store")]
     #[tokio::test]
-    async fn ddb_kv_stays_stubbed_with_context() {
-        // ddb.kv.* is intentionally unwired in v0.3.2 — assert the
-        // tracking message is honest about the v0.3.2.1 deferral.
+    async fn ddb_kv_get_returns_nil_for_missing_key() {
         let rt = new_runtime_with_sqlite_context();
         rt.load_chunk(
             r#"
             function go()
-                local ok, err = pcall(function()
-                    return ddb.kv.get("k")
-                end)
+                local v = ddb.kv.get("never_set")
+                return v == nil
+            end
+            "#,
+        )
+        .await
+        .unwrap();
+        let out = rt
+            .invoke_global("go", serde_json::json!(null))
+            .await
+            .expect("missing-key lookup must succeed");
+        assert_eq!(
+            out,
+            serde_json::json!(true),
+            "ddb.kv.get on a missing key must return nil"
+        );
+    }
+
+    #[cfg(feature = "sqlite-store")]
+    #[tokio::test]
+    async fn ddb_kv_set_then_get_roundtrip() {
+        let rt = new_runtime_with_sqlite_context();
+        rt.load_chunk(
+            r#"
+            function go()
+                ddb.kv.set("hello", "world")
+                return ddb.kv.get("hello")
+            end
+            "#,
+        )
+        .await
+        .unwrap();
+        let out = rt
+            .invoke_global("go", serde_json::json!(null))
+            .await
+            .expect("set/get roundtrip must succeed");
+        assert_eq!(out, serde_json::json!("world"));
+    }
+
+    #[cfg(feature = "sqlite-store")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn ddb_kv_set_with_ttl_expires() {
+        let rt = new_runtime_with_sqlite_context();
+
+        // Step 1: set with a 1-second TTL and confirm it's readable.
+        rt.load_chunk(
+            r#"
+            function set_ttl() ddb.kv.set("eph", "x", 1) end
+            function read()    return ddb.kv.get("eph") end
+            "#,
+        )
+        .await
+        .unwrap();
+        rt.invoke_global("set_ttl", serde_json::json!(null))
+            .await
+            .expect("set_ttl must succeed");
+        let immediate = rt
+            .invoke_global("read", serde_json::json!(null))
+            .await
+            .expect("immediate read must succeed");
+        assert_eq!(
+            immediate,
+            serde_json::json!("x"),
+            "value must be present immediately after SETEX"
+        );
+
+        // Step 2: sleep past the TTL boundary in Rust land so the
+        // DdbCache expiry sweep can drop the entry on the next get.
+        tokio::time::sleep(std::time::Duration::from_millis(1_200)).await;
+
+        // Step 3: re-read and assert nil.
+        let after = rt
+            .invoke_global("read", serde_json::json!(null))
+            .await
+            .expect("post-expiry read must succeed");
+        assert_eq!(
+            after,
+            serde_json::json!(null),
+            "value must be nil after TTL expiry"
+        );
+    }
+
+    #[cfg(feature = "sqlite-store")]
+    #[tokio::test]
+    async fn ddb_kv_del_removes_value() {
+        let rt = new_runtime_with_sqlite_context();
+        rt.load_chunk(
+            r#"
+            function go()
+                ddb.kv.set("k", "v")
+                local existed = ddb.kv.del("k")
+                local after   = ddb.kv.get("k")
+                return { existed = existed, after_is_nil = (after == nil) }
+            end
+            "#,
+        )
+        .await
+        .unwrap();
+        let out = rt
+            .invoke_global("go", serde_json::json!(null))
+            .await
+            .expect("set/del/get sequence must succeed");
+        assert_eq!(out["existed"], serde_json::json!(true));
+        assert_eq!(out["after_is_nil"], serde_json::json!(true));
+    }
+
+    #[cfg(feature = "sqlite-store")]
+    #[tokio::test]
+    async fn ddb_kv_get_non_utf8_errors() {
+        // Construct the runtime ourselves so we can keep a handle on
+        // the cache and seed it with non-UTF-8 bytes that bypass the
+        // Lua text-only `set` path entirely.
+        use crate::query::dialect::SqliteDialect;
+        use crate::store::sqlite::SqliteStore;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.keep();
+        let cache = Arc::new(DdbCache::new());
+        // Invalid UTF-8: a stray 0xFF byte.
+        cache.set("binkey", vec![0xff_u8, 0xfe, 0xfd], None);
+
+        let sqlite = SqliteStore::open(":memory:").expect("open sqlite :memory:");
+        let ctx = MluaContext {
+            store: Arc::new(sqlite),
+            dialect: Arc::new(SqliteDialect),
+            cache: Arc::clone(&cache),
+        };
+        let rt = MluaRuntime::new_with_context(path, 4, Some(ctx))
+            .expect("mlua runtime with context must construct");
+
+        rt.load_chunk(
+            r#"
+            function go()
+                local ok, err = pcall(function() return ddb.kv.get("binkey") end)
                 if ok then return "unexpectedly-ok" end
                 return tostring(err)
             end
@@ -1744,8 +1968,8 @@ mod tests {
             .expect("pcall wrapper must return a string");
         let msg = out.as_str().unwrap_or("");
         assert!(
-            msg.contains("v0.3.2.1") && msg.contains("cache boundary"),
-            "expected ddb.kv.get to surface v0.3.2.1 deferral message, got: {msg}"
+            msg.contains("ddb.kv.get") && msg.contains("non-utf8"),
+            "expected non-utf8 error from ddb.kv.get, got: {msg}"
         );
     }
 }
