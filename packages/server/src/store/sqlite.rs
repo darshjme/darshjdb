@@ -59,7 +59,7 @@ use uuid::Uuid;
 use rusqlite::{Connection, TransactionBehavior, params};
 
 use crate::error::{DarshJError, Result};
-use crate::query::QueryPlan;
+use crate::query::{NestedPlan, QueryPlan};
 use crate::triple_store::schema::{AttributeInfo, EntityType, ReferenceInfo, Schema, ValueType};
 use crate::triple_store::{Triple, TripleInput};
 
@@ -285,6 +285,239 @@ fn map_rq(err: rusqlite::Error) -> DarshJError {
     DarshJError::Internal(format!("sqlite: {err}"))
 }
 
+/// Maximum nesting depth for nested-plan resolution. Mirrors the
+/// planner-side `MAX_NESTING_DEPTH` constant — we re-state it here
+/// (private) because the planner's constant is `pub(crate)`-scoped
+/// to that module and we want a hard guard at the executor too.
+const MAX_NESTED_DEPTH: usize = 3;
+
+/// Translate the planner's `params: Vec<serde_json::Value>` into a
+/// `Vec` of rusqlite-bindable values. The planner stores params as
+/// JSON values:
+///   - String → bind as TEXT (the SqliteDialect emits `json_quote(?N)`
+///     so the on-disk JSON-encoded TEXT comparison matches)
+///   - Number (i64) → bind as INTEGER
+///   - Number (f64) → bind as REAL
+///   - Bool → bind as INTEGER 0/1
+///   - Null → bind as NULL
+///   - Array / Object → bind as the JSON-serialised TEXT
+///
+/// This matches the v0.3.2 PgStore::query bind contract closely enough
+/// that round-trip equality tests pass for the simple SELECT path.
+fn build_rusqlite_params(
+    params: &[serde_json::Value],
+) -> Result<Vec<rusqlite::types::Value>> {
+    use rusqlite::types::Value as RV;
+    let mut out = Vec::with_capacity(params.len());
+    for p in params {
+        let v = match p {
+            serde_json::Value::Null => RV::Null,
+            serde_json::Value::Bool(b) => RV::Integer(if *b { 1 } else { 0 }),
+            serde_json::Value::Number(n) => {
+                if let Some(i) = n.as_i64() {
+                    RV::Integer(i)
+                } else if let Some(f) = n.as_f64() {
+                    RV::Real(f)
+                } else {
+                    return Err(DarshJError::Internal(format!(
+                        "sqlite: unsupported number param: {n:?}"
+                    )));
+                }
+            }
+            serde_json::Value::String(s) => RV::Text(s.clone()),
+            serde_json::Value::Array(_) | serde_json::Value::Object(_) => {
+                let text = serde_json::to_string(p).map_err(DarshJError::Serialization)?;
+                RV::Text(text)
+            }
+        };
+        out.push(v);
+    }
+    Ok(out)
+}
+
+/// Expand the planner's `__UUID_LIST__` token into a comma-separated
+/// list of `?N` placeholders, returning the rewritten SQL plus the
+/// final placeholder count so the caller can bind the UUIDs in order.
+///
+/// The token appears in nested-plan SQL emitted by the SqliteDialect
+/// (see `build_nested_plans` in `query/mod.rs`) because SQLite has no
+/// array type and `IN (...)` requires one placeholder per element.
+fn expand_uuid_list_token(sql: &str, count: usize) -> String {
+    if !sql.contains("__UUID_LIST__") {
+        return sql.to_string();
+    }
+    let mut placeholders = String::with_capacity(count * 4);
+    for i in 0..count {
+        if i > 0 {
+            placeholders.push_str(", ");
+        }
+        let _ = write_placeholder(&mut placeholders, i + 1);
+    }
+    sql.replace("__UUID_LIST__", &placeholders)
+}
+
+#[inline]
+fn write_placeholder(out: &mut String, idx: usize) -> std::fmt::Result {
+    use std::fmt::Write as _;
+    write!(out, "?{idx}")
+}
+
+/// Recursively resolve nested plans for a SQLite store.
+///
+/// For each `NestedPlan`:
+///   1. Collect every distinct UUID referenced via `np.via_attribute`
+///      across the parent entity set.
+///   2. Expand the SQL template's `__UUID_LIST__` token into one `?N`
+///      per UUID, prepare, bind, execute.
+///   3. Group fetched (entity_id, attribute, value) rows into
+///      `HashMap<Uuid, attr_map>` so the caller can attach them to the
+///      parent rows by UUID.
+///   4. Recurse into `np.sub_nested` with the freshly-fetched entities
+///      as the new parent set.
+///
+/// Returns one map per nested plan, in the same order. Empty parent
+/// sets short-circuit to an empty map for that slot.
+#[allow(clippy::type_complexity)]
+fn resolve_nested_sqlite(
+    conn: &rusqlite::Connection,
+    parent_entities: &HashMap<Uuid, serde_json::Map<String, serde_json::Value>>,
+    nested_plans: &[NestedPlan],
+    depth_remaining: usize,
+) -> Result<Vec<HashMap<Uuid, serde_json::Map<String, serde_json::Value>>>> {
+    if depth_remaining == 0 || nested_plans.is_empty() {
+        return Ok(nested_plans
+            .iter()
+            .map(|_| HashMap::new())
+            .collect::<Vec<_>>());
+    }
+
+    let mut results = Vec::with_capacity(nested_plans.len());
+
+    for np in nested_plans {
+        // Gather distinct referenced UUIDs from the parent attribute set.
+        let mut uuid_set: std::collections::BTreeSet<Uuid> = std::collections::BTreeSet::new();
+        for attrs in parent_entities.values() {
+            if let Some(v) = attrs.get(&np.via_attribute)
+                && let Some(s) = v.as_str()
+                && let Ok(uid) = s.parse::<Uuid>()
+            {
+                uuid_set.insert(uid);
+            }
+        }
+
+        if uuid_set.is_empty() {
+            results.push(HashMap::new());
+            continue;
+        }
+
+        let uuids: Vec<Uuid> = uuid_set.into_iter().collect();
+
+        // Pick the SQLite template if present; otherwise fall back to
+        // the baked Postgres SQL (which the SqliteStore can't run, so
+        // surface a clear error).
+        let template = np.sql_template.as_ref().ok_or_else(|| {
+            DarshJError::InvalidQuery(format!(
+                "nested plan for via_attribute={:?} has no sql_template; \
+                 SqliteStore cannot run the Postgres-baked form (`ANY($1::uuid[])`)",
+                np.via_attribute
+            ))
+        })?;
+
+        let expanded = expand_uuid_list_token(template, uuids.len());
+
+        // Bind UUIDs as TEXT in the same order they were placed in.
+        let bound: Vec<rusqlite::types::Value> = uuids
+            .iter()
+            .map(|u| rusqlite::types::Value::Text(u.to_string()))
+            .collect();
+
+        // Inspect column count once via a transient prepare so we can
+        // pick the right materialisation path. The planner currently
+        // emits the 2-column form (`SELECT attribute, value FROM …`),
+        // but a v0.3.3 plan upgrade may emit 3 columns including
+        // entity_id; we handle both shapes.
+        let col_count = {
+            let probe = conn.prepare(&expanded).map_err(map_rq)?;
+            probe.column_count()
+        };
+
+        let mut grouped: HashMap<Uuid, serde_json::Map<String, serde_json::Value>> =
+            HashMap::new();
+
+        if col_count == 2 {
+            // Per-UUID re-query — slower but matches the planner's
+            // existing template shape exactly. Acceptable for v0.3.2.1
+            // because the typical batch size is small (one UUID per
+            // parent row, deduped). The v0.3.3 planner will emit a
+            // 3-column form so the single-statement path becomes
+            // viable.
+            let single_sql = "SELECT attribute, value FROM triples \
+                              WHERE entity_id = ?1 AND retracted = 0 \
+                              ORDER BY attribute, tx_id DESC";
+            let mut sstmt = conn.prepare(single_sql).map_err(map_rq)?;
+            for uid in &uuids {
+                let mut srows = sstmt
+                    .query(rusqlite::params![uid.to_string()])
+                    .map_err(map_rq)?;
+                let mut attrs: serde_json::Map<String, serde_json::Value> =
+                    serde_json::Map::new();
+                while let Some(row) = srows.next().map_err(map_rq)? {
+                    let attr: String = row.get(0).map_err(map_rq)?;
+                    let val_str: String = row.get(1).map_err(map_rq)?;
+                    let val: serde_json::Value =
+                        serde_json::from_str(&val_str).map_err(DarshJError::Serialization)?;
+                    attrs.entry(attr).or_insert(val);
+                }
+                if !attrs.is_empty() {
+                    grouped.insert(*uid, attrs);
+                }
+            }
+        } else {
+            // 3-column path: (entity_id, attribute, value).
+            let mut stmt = conn.prepare(&expanded).map_err(map_rq)?;
+            let bound_refs: Vec<&dyn rusqlite::ToSql> =
+                bound.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
+            let mut rows = stmt
+                .query(rusqlite::params_from_iter(bound_refs.iter().copied()))
+                .map_err(map_rq)?;
+            while let Some(row) = rows.next().map_err(map_rq)? {
+                let eid_str: String = row.get(0).map_err(map_rq)?;
+                let attr: String = row.get(1).map_err(map_rq)?;
+                let val_str: String = row.get(2).map_err(map_rq)?;
+                let eid = Uuid::parse_str(&eid_str).map_err(|e| {
+                    DarshJError::Internal(format!("sqlite: bad nested entity_id {eid_str:?}: {e}"))
+                })?;
+                let val: serde_json::Value =
+                    serde_json::from_str(&val_str).map_err(DarshJError::Serialization)?;
+                grouped.entry(eid).or_default().entry(attr).or_insert(val);
+            }
+        }
+
+        // Recurse into sub-nested plans.
+        if !np.sub_nested.is_empty() {
+            let sub_maps =
+                resolve_nested_sqlite(conn, &grouped, &np.sub_nested, depth_remaining - 1)?;
+            for (eid, attrs) in grouped.iter_mut() {
+                for (sub_idx, sub_np) in np.sub_nested.iter().enumerate() {
+                    if let Some(ref_value) = attrs.get(&sub_np.via_attribute)
+                        && let Some(ref_str) = ref_value.as_str()
+                        && let Ok(ref_uuid) = ref_str.parse::<Uuid>()
+                        && let Some(sub_entity) = sub_maps[sub_idx].get(&ref_uuid)
+                    {
+                        let nested_key = format!("_nested:{}", sub_np.via_attribute);
+                        attrs.insert(nested_key, serde_json::Value::Object(sub_entity.clone()));
+                    }
+                    let _ = eid;
+                }
+            }
+        }
+
+        results.push(grouped);
+    }
+
+    Ok(results)
+}
+
 #[async_trait]
 impl Store for SqliteStore {
     fn backend_name(&self) -> &'static str {
@@ -390,18 +623,119 @@ impl Store for SqliteStore {
         .await
     }
 
-    async fn query(&self, _plan: &QueryPlan) -> Result<Vec<serde_json::Value>> {
-        // DarshanQL currently emits Postgres-flavoured SQL — JSONB
-        // operators, `::uuid` casts, `DISTINCT ON`, array UNNEST. The
-        // SQLite adapter refuses rather than silently returning wrong
-        // results. The portable IR that emits SQLite-compatible SQL
-        // is tracked as v0.4 work.
-        Err(DarshJError::InvalidQuery(
-            "SqliteStore::query is not yet supported — DarshanQL emits Postgres-specific SQL. \
-             Portable IR lands in v0.4; for now use direct triple-level APIs \
-             (set_triples / get_entity / retract)."
-                .into(),
-        ))
+    async fn query(&self, plan: &QueryPlan) -> Result<Vec<serde_json::Value>> {
+        // v0.3.2.1 — execute the dialect-aware plan against rusqlite.
+        //
+        // Contract: `plan.sql` was produced by
+        // `plan_query_with_dialect(ast, &SqliteDialect)`, so the SQL is
+        // already SQLite-compatible (`json_quote`, `?N` placeholders,
+        // no `::uuid` casts, no `@>` containment). Anything emitting
+        // Postgres tokens — vector sentinels, hybrid-search CTEs —
+        // refuses at statement-prepare time, which is the intended
+        // behaviour of the v0.3.2 M-3 sentinel design.
+        //
+        // The function clones the plan into the blocking task and
+        // serializes results as `QueryResultRow` JSON values so the
+        // shape matches `PgStore::query` byte-for-byte.
+
+        // Reject hybrid-search and vector-search plans up-front so the
+        // error message points at the gate rather than a rusqlite
+        // prepare failure on the sentinel tokens.
+        if plan.sql.contains("__SQLITE_VECTOR_UNSUPPORTED__")
+            || plan.sql.contains("__SQLITE_COSINE_DISTANCE_UNSUPPORTED__")
+        {
+            return Err(DarshJError::InvalidQuery(
+                "vector / hybrid search is not supported on the sqlite dialect; \
+                 use $search for text-only queries"
+                    .into(),
+            ));
+        }
+
+        let sql = plan.sql.clone();
+        let params = plan.params.clone();
+        let nested_plans = plan.nested_plans.clone();
+        let limit = plan.limit;
+        let offset = plan.offset;
+
+        self.with_conn(move |conn| {
+            // ── Step 1: bind + execute the root plan ──────────────────
+            let mut stmt = conn.prepare(&sql).map_err(map_rq)?;
+            let bound = build_rusqlite_params(&params)?;
+            let bound_refs: Vec<&dyn rusqlite::ToSql> =
+                bound.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
+            let mut rows = stmt
+                .query(rusqlite::params_from_iter(bound_refs.iter().copied()))
+                .map_err(map_rq)?;
+
+            // ── Step 2: group rows by entity_id ───────────────────────
+            // The plan SELECTs (entity_id, attribute, value, value_type,
+            // tx_id, created_at) — column 0 is the UUID text, 1 is the
+            // attribute name, 2 is the JSON-encoded value text. Latest
+            // tx_id wins per attribute (rows arrive ordered by
+            // entity_id ASC, but within an entity we want first-write
+            // semantics — match the PgStore behaviour by using
+            // `entry.or_insert_with`).
+            let mut entities: HashMap<Uuid, serde_json::Map<String, serde_json::Value>> =
+                HashMap::new();
+            while let Some(row) = rows.next().map_err(map_rq)? {
+                let eid_str: String = row.get(0).map_err(map_rq)?;
+                let attr: String = row.get(1).map_err(map_rq)?;
+                let val_str: String = row.get(2).map_err(map_rq)?;
+                let entity_id = Uuid::parse_str(&eid_str).map_err(|e| {
+                    DarshJError::Internal(format!("sqlite: bad entity_id {eid_str:?}: {e}"))
+                })?;
+                let value: serde_json::Value =
+                    serde_json::from_str(&val_str).map_err(DarshJError::Serialization)?;
+                let entry = entities.entry(entity_id).or_default();
+                entry.entry(attr).or_insert(value);
+            }
+
+            // ── Step 3: stable pagination after grouping ─────────────
+            let mut entity_keys: Vec<Uuid> = entities.keys().copied().collect();
+            entity_keys.sort();
+            if let Some(off) = offset {
+                let off = off as usize;
+                if off < entity_keys.len() {
+                    entity_keys = entity_keys.split_off(off);
+                } else {
+                    entity_keys.clear();
+                }
+            }
+            if let Some(lim) = limit {
+                entity_keys.truncate(lim as usize);
+            }
+
+            // ── Step 4: resolve nested plans in batches ──────────────
+            let nested_maps =
+                resolve_nested_sqlite(conn, &entities, &nested_plans, MAX_NESTED_DEPTH)?;
+
+            // ── Step 5: materialise QueryResultRow-shaped JSON ───────
+            let mut out = Vec::with_capacity(entity_keys.len());
+            for eid in &entity_keys {
+                let attributes = entities.get(eid).cloned().unwrap_or_default();
+                let mut nested = serde_json::Map::new();
+                for (np_idx, np) in nested_plans.iter().enumerate() {
+                    if let Some(ref_value) = attributes.get(&np.via_attribute)
+                        && let Some(ref_str) = ref_value.as_str()
+                        && let Ok(ref_uuid) = ref_str.parse::<Uuid>()
+                        && let Some(child) = nested_maps[np_idx].get(&ref_uuid)
+                    {
+                        nested.insert(
+                            np.via_attribute.clone(),
+                            serde_json::Value::Object(child.clone()),
+                        );
+                    }
+                }
+                let row = serde_json::json!({
+                    "entity_id": eid.to_string(),
+                    "attributes": attributes,
+                    "nested": nested,
+                });
+                out.push(row);
+            }
+            Ok(out)
+        })
+        .await
     }
 
     async fn get_schema(&self) -> Result<Schema> {
@@ -781,25 +1115,133 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn query_returns_invalid_query() {
-        // QueryPlan requires a populated SQL — the SQLite adapter
-        // refuses anyway, so we feed it a minimal plan and assert
-        // the error shape.
+    async fn query_rejects_pgvector_sentinel() {
+        // v0.3.2.1 — the sqlite query path now actually executes plans.
+        // A vector-search plan that slipped through without a
+        // supports_vector() gate carries the `__SQLITE_VECTOR_UNSUPPORTED__`
+        // sentinel; SqliteStore::query must refuse with InvalidQuery
+        // BEFORE asking rusqlite to prepare it (which would also fail,
+        // but with a less helpful message).
         let store = SqliteStore::open(":memory:").expect("open");
         let plan = QueryPlan {
-            sql: "SELECT 1".to_string(),
+            sql: "SELECT * FROM triples WHERE __SQLITE_VECTOR_UNSUPPORTED__".to_string(),
             params: vec![],
             nested_plans: vec![],
             limit: None,
             offset: None,
         };
-        let err = store.query(&plan).await.expect_err("error");
+        let err = store.query(&plan).await.expect_err("vector sentinel rejected");
         match err {
             DarshJError::InvalidQuery(msg) => {
-                assert!(msg.contains("SqliteStore"), "message: {msg}");
+                assert!(
+                    msg.contains("vector") || msg.contains("hybrid"),
+                    "message should explain refusal: {msg}"
+                );
             }
             other => panic!("expected InvalidQuery, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn query_executes_simple_select_via_dialect_planner() {
+        use crate::query::dialect::SqliteDialect;
+        use crate::query::{QueryAST, plan_query_with_dialect};
+
+        let store = SqliteStore::open(":memory:").expect("open");
+        let alice = Uuid::new_v4();
+        let bob = Uuid::new_v4();
+        let tx = store.next_tx_id().await.unwrap();
+        store
+            .set_triples(
+                tx,
+                &[
+                    sample_triple(alice, ":db/type", serde_json::json!("user")),
+                    sample_triple(alice, "user/email", serde_json::json!("alice@example.com")),
+                    sample_triple(alice, "user/name", serde_json::json!("Alice")),
+                    sample_triple(bob, ":db/type", serde_json::json!("user")),
+                    sample_triple(bob, "user/email", serde_json::json!("bob@example.com")),
+                    sample_triple(bob, "user/name", serde_json::json!("Bob")),
+                ],
+            )
+            .await
+            .unwrap();
+
+        // Plan a simple SELECT user via the dialect-aware planner.
+        let ast = QueryAST {
+            entity_type: "user".to_string(),
+            where_clauses: vec![],
+            order: vec![],
+            limit: None,
+            offset: None,
+            nested: vec![],
+            search: None,
+            semantic: None,
+            hybrid: None,
+        };
+        let plan = plan_query_with_dialect(&ast, &SqliteDialect).expect("plan");
+        let rows = store.query(&plan).await.expect("query");
+
+        assert_eq!(rows.len(), 2, "two users present");
+        // Each row is a QueryResultRow JSON object.
+        for r in &rows {
+            let obj = r.as_object().expect("row is object");
+            assert!(obj.contains_key("entity_id"));
+            assert!(obj.contains_key("attributes"));
+            let attrs = obj.get("attributes").unwrap().as_object().unwrap();
+            assert!(attrs.contains_key("user/email"));
+            assert!(attrs.contains_key("user/name"));
+        }
+    }
+
+    #[tokio::test]
+    async fn query_filters_with_eq_where_clause() {
+        use crate::query::dialect::SqliteDialect;
+        use crate::query::{QueryAST, WhereClause, WhereOp, plan_query_with_dialect};
+
+        let store = SqliteStore::open(":memory:").expect("open");
+        let alice = Uuid::new_v4();
+        let bob = Uuid::new_v4();
+        let tx = store.next_tx_id().await.unwrap();
+        store
+            .set_triples(
+                tx,
+                &[
+                    sample_triple(alice, ":db/type", serde_json::json!("user")),
+                    sample_triple(alice, "user/email", serde_json::json!("alice@example.com")),
+                    sample_triple(bob, ":db/type", serde_json::json!("user")),
+                    sample_triple(bob, "user/email", serde_json::json!("bob@example.com")),
+                ],
+            )
+            .await
+            .unwrap();
+
+        let ast = QueryAST {
+            entity_type: "user".to_string(),
+            where_clauses: vec![WhereClause {
+                attribute: "user/email".to_string(),
+                op: WhereOp::Eq,
+                value: serde_json::json!("alice@example.com"),
+            }],
+            order: vec![],
+            limit: None,
+            offset: None,
+            nested: vec![],
+            search: None,
+            semantic: None,
+            hybrid: None,
+        };
+        let plan = plan_query_with_dialect(&ast, &SqliteDialect).expect("plan");
+        let rows = store.query(&plan).await.expect("query");
+
+        assert_eq!(rows.len(), 1, "exactly alice matches");
+        let attrs = rows[0]
+            .get("attributes")
+            .and_then(|v| v.as_object())
+            .expect("attributes object");
+        assert_eq!(
+            attrs.get("user/email").unwrap(),
+            &serde_json::json!("alice@example.com")
+        );
     }
 
     #[tokio::test]

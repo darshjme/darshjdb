@@ -232,6 +232,50 @@ pub trait SqlDialect: Send + Sync + std::fmt::Debug {
     /// - Postgres: `NOW()`
     /// - SQLite: `datetime('now')`
     fn now_expr(&self) -> &'static str;
+
+    // ── v0.3.2.1 — DarshanQL statement-type capability gates ────────
+    //
+    // The DarshanQL executor (packages/server/src/query/darshql/executor.rs)
+    // ships with several statement types whose Pg implementation reaches
+    // for features SQLite does not have today (recursive CTEs over JSONB
+    // edges, schema DDL stored as triples with Pg-flavoured updates,
+    // hybrid full-text + vector search). Until v0.3.3 lands a portable
+    // form for each, the executor checks these capability methods at
+    // dispatch time and refuses with a clear InvalidQuery error on
+    // dialects that don't support them.
+    //
+    // Default is `true` so any new dialect inherits the v0.3.1 Postgres
+    // shape and only needs to override the methods it cannot honour.
+
+    /// Whether this dialect supports DDL statements emitted by the
+    /// DarshanQL executor (`DEFINE TABLE`, `DEFINE FIELD`).
+    ///
+    /// The current Pg implementation persists schema as triples with
+    /// `:schema/*` attributes and uses Pg-specific UPDATE forms. SQLite
+    /// can replicate the storage but the executor's SQL has not been
+    /// translated yet; v0.3.3 carries the rewrite.
+    fn supports_ddl(&self) -> bool {
+        true
+    }
+
+    /// Whether this dialect supports graph traversal queries
+    /// (`->edge`, `<-edge`) emitted by the DarshanQL executor.
+    ///
+    /// The current implementation walks `:edge/in` / `:edge/out`
+    /// triples via per-step Pg subqueries that depend on
+    /// `to_jsonb` / `::uuid` casts. The portable variant lands in
+    /// v0.3.3 once the planner emits a dialect-aware traversal plan.
+    fn supports_graph_traversal(&self) -> bool {
+        true
+    }
+
+    /// Whether this dialect supports hybrid (text + vector) search.
+    ///
+    /// Implies `supports_vector()`. Default reuses the vector capability
+    /// so any dialect adding vectors automatically opts in.
+    fn supports_hybrid_search(&self) -> bool {
+        self.supports_vector()
+    }
 }
 
 // ── PgDialect ───────────────────────────────────────────────────────
@@ -444,6 +488,22 @@ impl SqlDialect for SqliteDialect {
     fn now_expr(&self) -> &'static str {
         "datetime('now')"
     }
+
+    // v0.3.2.1 — explicit refusal for the DarshanQL executor statement
+    // types that still bake Postgres-only SQL. These return false on
+    // SQLite so the executor's dispatch layer raises InvalidQuery
+    // instead of attempting to run Pg syntax against rusqlite.
+    fn supports_ddl(&self) -> bool {
+        false
+    }
+
+    fn supports_graph_traversal(&self) -> bool {
+        false
+    }
+
+    fn supports_hybrid_search(&self) -> bool {
+        false
+    }
 }
 
 #[cfg(test)]
@@ -638,5 +698,35 @@ mod tests {
     fn names_are_stable_identifiers() {
         assert_eq!(PgDialect.name(), "postgres");
         assert_eq!(SqliteDialect.name(), "sqlite");
+    }
+
+    // ── v0.3.2.1 capability gates ──────────────────────────────────
+
+    #[test]
+    fn pg_supports_all_executor_statement_types() {
+        assert!(PgDialect.supports_ddl());
+        assert!(PgDialect.supports_graph_traversal());
+        assert!(PgDialect.supports_hybrid_search());
+    }
+
+    #[test]
+    fn sqlite_refuses_executor_pg_only_paths() {
+        assert!(!SqliteDialect.supports_ddl());
+        assert!(!SqliteDialect.supports_graph_traversal());
+        assert!(!SqliteDialect.supports_hybrid_search());
+    }
+
+    #[test]
+    fn supports_hybrid_search_implies_vector_by_default() {
+        // Default impl on the trait wires hybrid through vector;
+        // overriding either independently is allowed.
+        assert_eq!(
+            PgDialect.supports_hybrid_search(),
+            PgDialect.supports_vector()
+        );
+        assert_eq!(
+            SqliteDialect.supports_hybrid_search(),
+            SqliteDialect.supports_vector()
+        );
     }
 }
