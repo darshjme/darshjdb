@@ -1,17 +1,97 @@
-//! Execute DarshQL statements against PostgreSQL via sqlx.
+//! Execute DarshQL statements against the configured `Store` backend.
 //!
-//! Translates the DarshQL AST into operations against DarshJDB's triple store.
-//! Graph traversals follow edge relationships stored as triples with a
-//! `:db/edge` attribute pattern. LIVE SELECT returns subscription IDs
-//! through the existing reactive dependency tracker.
+//! Translates the DarshQL AST into operations against DarshJDB's triple
+//! store. Graph traversals follow edge relationships stored as triples
+//! with a `:db/edge` attribute pattern. LIVE SELECT returns subscription
+//! IDs through the existing reactive dependency tracker.
+//!
+//! # v0.3.2.1 — ExecutorContext + dialect gating
+//!
+//! Every executor entry point now takes an [`ExecutorContext`] holding
+//! the Postgres pool (for the legacy raw-SQL paths that have not been
+//! ported yet), an `Arc<dyn Store>` (for portable triple operations),
+//! and an `Arc<dyn SqlDialect>` (for capability gating). Statement
+//! types whose Pg implementation depends on Postgres-only features —
+//! DEFINE TABLE / DEFINE FIELD (DDL stored as triples with Pg-flavoured
+//! UPDATEs), graph traversal (recursive Pg subqueries on `:edge/in` /
+//! `:edge/out`) — check the dialect capability up front and refuse with
+//! `InvalidQuery` on dialects that don't support them. The portable
+//! rewrite of those paths is tracked for v0.3.3.
+//!
+//! For the v0.3.2.1 sprint the Pg call sites still go through
+//! `ctx.pool` directly. The portable hookup for SELECT / CREATE /
+//! INSERT / RETRACT through `ctx.store` lands as the planner gains the
+//! needed shape (v0.3.3); today the gates are the safety net.
+
+use std::sync::Arc;
 
 use serde_json::{Map, Value, json};
 use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::error::{DarshJError, Result};
+use crate::query::dialect::{PgDialect, SqlDialect};
+use crate::store::Store;
 
 use super::ast::*;
+
+/// Context handed to every executor function.
+///
+/// Holds the three handles the executor needs to run a statement:
+/// - `pool`: the Postgres pool used by the legacy raw-SQL paths that
+///   have not been ported through the dialect/Store boundary yet.
+/// - `store`: the object-safe triple store. Portable paths (the v0.3.3
+///   target) call this instead of touching the pool directly.
+/// - `dialect`: the SQL dialect, used to gate Pg-only statement types
+///   at dispatch time.
+///
+/// Construction is cheap (`Arc` clones); the executor takes a `&` so
+/// the caller still owns the handles for the rest of the request.
+#[derive(Clone)]
+pub struct ExecutorContext {
+    /// Postgres pool for legacy raw-SQL paths.
+    pub pool: PgPool,
+    /// Object-safe triple store handle for portable triple operations.
+    pub store: Arc<dyn Store>,
+    /// SQL dialect, used for capability gating in `execute_one`.
+    pub dialect: Arc<dyn SqlDialect>,
+}
+
+impl ExecutorContext {
+    /// Backwards-compatible constructor used by the HTTP entry point.
+    ///
+    /// Wraps the pool in a `PgStore` adapter so the `Arc<dyn Store>`
+    /// surface is populated even though the request path is still
+    /// Pg-only. Callers that already hold a `PgTripleStore` should use
+    /// [`ExecutorContext::new`] to avoid the extra triple-store
+    /// construction.
+    pub fn from_pool(pool: PgPool) -> Self {
+        // The PgStore adapter wants a PgTripleStore. The HTTP request
+        // path has already migrated the schema at boot, so we use the
+        // lighter-weight `new_lazy` constructor which skips re-running
+        // ensure_schema on every executor call.
+        let triple_store = crate::triple_store::PgTripleStore::new_lazy(pool.clone());
+        Self {
+            pool,
+            store: Arc::new(crate::store::pg::PgStore::new(triple_store)),
+            dialect: Arc::new(PgDialect),
+        }
+    }
+
+    /// Direct constructor for callers that already have the three
+    /// handles materialised (tests, future portable call sites).
+    pub fn new(
+        pool: PgPool,
+        store: Arc<dyn Store>,
+        dialect: Arc<dyn SqlDialect>,
+    ) -> Self {
+        Self {
+            pool,
+            store,
+            dialect,
+        }
+    }
+}
 
 /// Result of executing a DarshQL statement.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -46,33 +126,83 @@ pub enum ExecResult {
     Inserted { count: u64, time: String },
 }
 
-/// Execute a list of DarshQL statements.
+/// Execute a list of DarshQL statements against the supplied Postgres
+/// pool.
+///
+/// Backwards-compatible entry point kept for the HTTP request handler
+/// in `api/rest.rs`. Internally constructs an [`ExecutorContext`] from
+/// the pool and forwards to [`execute_with_context`]. New call sites
+/// that already hold a `Store + SqlDialect` pair should use
+/// [`execute_with_context`] directly.
 pub async fn execute(pool: &PgPool, statements: Vec<Statement>) -> Result<Vec<ExecResult>> {
+    let ctx = ExecutorContext::from_pool(pool.clone());
+    execute_with_context(&ctx, statements).await
+}
+
+/// Execute a list of DarshQL statements against the supplied executor
+/// context.
+///
+/// This is the v0.3.2.1 hookup point — every function in the executor
+/// takes `&ExecutorContext` so capability gates and (eventually) the
+/// portable Store hookup share the same plumbing.
+pub async fn execute_with_context(
+    ctx: &ExecutorContext,
+    statements: Vec<Statement>,
+) -> Result<Vec<ExecResult>> {
     let mut results = Vec::with_capacity(statements.len());
     for stmt in statements {
         let start = std::time::Instant::now();
-        let result = execute_one(pool, &stmt, start).await?;
+        let result = execute_one(ctx, &stmt, start).await?;
         results.push(result);
     }
     Ok(results)
 }
 
+/// Refuse a Tier 2 statement type on a dialect that does not support it.
+///
+/// Centralises the error message so every gate site reads identically
+/// and the v0.3.3 unblock note is in one place.
+fn refuse_unsupported(dialect_name: &'static str, feature: &str) -> DarshJError {
+    DarshJError::InvalidQuery(format!(
+        "{feature} is not supported on the {dialect_name} dialect yet \
+         (tracked for v0.3.3); use the postgres backend for this statement"
+    ))
+}
+
 async fn execute_one(
-    pool: &PgPool,
+    ctx: &ExecutorContext,
     stmt: &Statement,
     start: std::time::Instant,
 ) -> Result<ExecResult> {
     match stmt {
-        Statement::Select(s) => exec_select(pool, s, start).await,
-        Statement::Create(c) => exec_create(pool, c, start).await,
-        Statement::Update(u) => exec_update(pool, u, start).await,
-        Statement::Delete(d) => exec_delete(pool, d, start).await,
-        Statement::Insert(i) => exec_insert(pool, i, start).await,
-        Statement::Relate(r) => exec_relate(pool, r, start).await,
+        Statement::Select(s) => exec_select(ctx, s, start).await,
+        Statement::Create(c) => exec_create(ctx, c, start).await,
+        Statement::Update(u) => exec_update(ctx, u, start).await,
+        Statement::Delete(d) => exec_delete(ctx, d, start).await,
+        Statement::Insert(i) => exec_insert(ctx, i, start).await,
+        Statement::Relate(r) => {
+            // RELATE creates a graph edge — refuse on dialects that
+            // don't support graph traversal because the read path
+            // (->edge) won't be runnable anyway.
+            if !ctx.dialect.supports_graph_traversal() {
+                return Err(refuse_unsupported(ctx.dialect.name(), "RELATE / graph edges"));
+            }
+            exec_relate(ctx, r, start).await
+        }
         Statement::LiveSelect(ls) => exec_live_select(ls, start).await,
-        Statement::DefineTable(dt) => exec_define_table(pool, dt, start).await,
-        Statement::DefineField(df) => exec_define_field(pool, df, start).await,
-        Statement::InfoFor(info) => exec_info(pool, info, start).await,
+        Statement::DefineTable(dt) => {
+            if !ctx.dialect.supports_ddl() {
+                return Err(refuse_unsupported(ctx.dialect.name(), "DEFINE TABLE"));
+            }
+            exec_define_table(ctx, dt, start).await
+        }
+        Statement::DefineField(df) => {
+            if !ctx.dialect.supports_ddl() {
+                return Err(refuse_unsupported(ctx.dialect.name(), "DEFINE FIELD"));
+            }
+            exec_define_field(ctx, df, start).await
+        }
+        Statement::InfoFor(info) => exec_info(ctx, info, start).await,
     }
 }
 
@@ -88,10 +218,11 @@ fn elapsed(start: std::time::Instant) -> String {
 // ── SELECT ─────────────────────────────────────────────────────────
 
 async fn exec_select(
-    pool: &PgPool,
+    ctx: &ExecutorContext,
     stmt: &SelectStatement,
     start: std::time::Instant,
 ) -> Result<ExecResult> {
+    let pool = &ctx.pool;
     let table = stmt.from.table_name();
     let mut sql = String::with_capacity(512);
     let mut params: Vec<Value> = Vec::new();
@@ -223,13 +354,21 @@ async fn exec_select(
                     }
                 }
                 Field::Graph(trav) => {
-                    // Graph traversal: follow edges.
-                    let traversed = exec_graph_traversal(pool, *eid, trav).await?;
+                    // Graph traversal: follow edges. Pg-only today;
+                    // refuse on dialects that don't support it so the
+                    // SELECT fails cleanly with a useful message.
+                    if !ctx.dialect.supports_graph_traversal() {
+                        return Err(refuse_unsupported(
+                            ctx.dialect.name(),
+                            "SELECT with graph traversal",
+                        ));
+                    }
+                    let traversed = exec_graph_traversal(ctx, *eid, trav).await?;
                     let key = format_graph_key(trav);
                     obj.insert(key, json!(traversed));
                 }
                 Field::Computed { func, args, alias } => {
-                    let val = exec_computed(pool, *eid, func, args).await?;
+                    let val = exec_computed(ctx, *eid, func, args).await?;
                     obj.insert(alias.clone(), val);
                 }
             }
@@ -247,10 +386,11 @@ async fn exec_select(
 // ── CREATE ─────────────────────────────────────────────────────────
 
 async fn exec_create(
-    pool: &PgPool,
+    ctx: &ExecutorContext,
     stmt: &CreateStatement,
     start: std::time::Instant,
 ) -> Result<ExecResult> {
+    let pool = &ctx.pool;
     let table = stmt.target.table_name();
     let entity_id = match &stmt.target {
         Target::Record(rec) => record_id_to_uuid(rec),
@@ -282,10 +422,11 @@ async fn exec_create(
 // ── UPDATE ─────────────────────────────────────────────────────────
 
 async fn exec_update(
-    pool: &PgPool,
+    ctx: &ExecutorContext,
     stmt: &UpdateStatement,
     start: std::time::Instant,
 ) -> Result<ExecResult> {
+    let pool = &ctx.pool;
     let table = stmt.target.table_name();
 
     // Find matching entity ids.
@@ -315,10 +456,11 @@ async fn exec_update(
 // ── DELETE ─────────────────────────────────────────────────────────
 
 async fn exec_delete(
-    pool: &PgPool,
+    ctx: &ExecutorContext,
     stmt: &DeleteStatement,
     start: std::time::Instant,
 ) -> Result<ExecResult> {
+    let pool = &ctx.pool;
     let table = stmt.target.table_name();
     let entity_ids = find_entities(pool, table, stmt.condition.as_ref(), &stmt.target).await?;
 
@@ -338,10 +480,11 @@ async fn exec_delete(
 // ── INSERT ─────────────────────────────────────────────────────────
 
 async fn exec_insert(
-    pool: &PgPool,
+    ctx: &ExecutorContext,
     stmt: &InsertStatement,
     start: std::time::Instant,
 ) -> Result<ExecResult> {
+    let pool = &ctx.pool;
     let mut count = 0u64;
 
     for row_values in &stmt.values {
@@ -364,10 +507,11 @@ async fn exec_insert(
 // ── RELATE ─────────────────────────────────────────────────────────
 
 async fn exec_relate(
-    pool: &PgPool,
+    ctx: &ExecutorContext,
     stmt: &RelateStatement,
     start: std::time::Instant,
 ) -> Result<ExecResult> {
+    let pool = &ctx.pool;
     let edge_id = Uuid::new_v4();
     let from_id = record_id_to_uuid(&stmt.from);
     let to_id = record_id_to_uuid(&stmt.to);
@@ -426,10 +570,11 @@ async fn exec_live_select(
 // ── DEFINE TABLE ───────────────────────────────────────────────────
 
 async fn exec_define_table(
-    pool: &PgPool,
+    ctx: &ExecutorContext,
     stmt: &DefineTableStatement,
     start: std::time::Instant,
 ) -> Result<ExecResult> {
+    let pool = &ctx.pool;
     // Store table definition as a schema triple.
     let schema_id = Uuid::new_v5(
         &Uuid::NAMESPACE_DNS,
@@ -469,10 +614,11 @@ async fn exec_define_table(
 // ── DEFINE FIELD ───────────────────────────────────────────────────
 
 async fn exec_define_field(
-    pool: &PgPool,
+    ctx: &ExecutorContext,
     stmt: &DefineFieldStatement,
     start: std::time::Instant,
 ) -> Result<ExecResult> {
+    let pool = &ctx.pool;
     let field_id = Uuid::new_v5(
         &Uuid::NAMESPACE_DNS,
         format!("field:{}:{}", stmt.table, stmt.name).as_bytes(),
@@ -508,10 +654,11 @@ async fn exec_define_field(
 // ── INFO FOR ───────────────────────────────────────────────────────
 
 async fn exec_info(
-    pool: &PgPool,
+    ctx: &ExecutorContext,
     stmt: &InfoForStatement,
     start: std::time::Instant,
 ) -> Result<ExecResult> {
+    let pool = &ctx.pool;
     match &stmt.target {
         InfoTarget::Db => {
             // List all defined tables.
@@ -750,11 +897,17 @@ fn binop_to_sql(op: &BinOp) -> &'static str {
 }
 
 /// Execute a graph traversal from a starting entity.
+///
+/// Pg-only today — callers MUST gate on
+/// `ctx.dialect.supports_graph_traversal()` first. The function still
+/// reads from `ctx.pool` directly because the recursive subquery shape
+/// has not been ported to the dialect/Store boundary yet (v0.3.3).
 async fn exec_graph_traversal(
-    pool: &PgPool,
+    ctx: &ExecutorContext,
     start_id: Uuid,
     traversal: &GraphTraversal,
 ) -> Result<Vec<Value>> {
+    let pool = &ctx.pool;
     let mut current_ids = vec![start_id];
 
     for step in &traversal.steps {
@@ -819,7 +972,7 @@ async fn exec_graph_traversal(
 
 /// Execute a computed field (e.g., count(->posts)).
 async fn exec_computed(
-    pool: &PgPool,
+    ctx: &ExecutorContext,
     entity_id: Uuid,
     func: &str,
     args: &[Field],
@@ -828,7 +981,13 @@ async fn exec_computed(
         "count" => {
             // count(->edge) — count outgoing edges of a type.
             if let Some(Field::Graph(trav)) = args.first() {
-                let results = exec_graph_traversal(pool, entity_id, trav).await?;
+                if !ctx.dialect.supports_graph_traversal() {
+                    return Err(refuse_unsupported(
+                        ctx.dialect.name(),
+                        "computed count() over graph traversal",
+                    ));
+                }
+                let results = exec_graph_traversal(ctx, entity_id, trav).await?;
                 Ok(json!(results.len()))
             } else {
                 Ok(json!(0))
