@@ -92,6 +92,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Instant;
 
+use ddb_cache::DdbCache;
 use mlua::{ChunkMode, Function, Lua, LuaSerdeExt, Nil, Table, Value as LuaValue};
 use serde_json::Value;
 use tokio::sync::Mutex;
@@ -129,6 +130,13 @@ pub struct MluaContext {
     /// SQL dialect used by `ddb.query` to plan parser ASTs into the
     /// matching backend's SQL flavour.
     pub dialect: Arc<dyn SqlDialect + Send + Sync>,
+
+    /// In-process L1 hot cache backing the `ddb.kv.*` host API. Shared with
+    /// the REST `/api/cache/*` router and the RESP3 dispatcher so writes
+    /// from a Lua function are immediately visible to other tenants of the
+    /// same DDB instance.
+    // v0.3.2.1-mlua-kv
+    pub cache: Arc<DdbCache>,
 }
 
 impl std::fmt::Debug for MluaContext {
@@ -136,6 +144,8 @@ impl std::fmt::Debug for MluaContext {
         f.debug_struct("MluaContext")
             .field("store_backend", &self.store.backend_name())
             .field("dialect", &self.dialect.name())
+            // v0.3.2.1-mlua-kv: cache identity is opaque; report presence only.
+            .field("cache", &"Arc<DdbCache>")
             .finish()
     }
 }
@@ -1636,6 +1646,8 @@ mod tests {
         let ctx = MluaContext {
             store: Arc::new(sqlite),
             dialect: Arc::new(SqliteDialect),
+            // v0.3.2.1-mlua-kv: in-process cache for ddb.kv.* host calls.
+            cache: Arc::new(DdbCache::new()),
         };
         MluaRuntime::new_with_context(path, 4, Some(ctx))
             .expect("mlua runtime with context must construct")

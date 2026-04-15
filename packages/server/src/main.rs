@@ -812,9 +812,11 @@ async fn main() -> Result<()> {
                                     store_dyn.backend_name(),
                                     dialect_dyn.name()
                                 );
+                                // TODO(v0.3.2.1-merge): replace with the AppState-shared Arc<DdbCache> once main.rs is rewired post-merge so Lua writes land in the same cache as the REST/RESP3 dispatchers.
                                 let mlua_ctx = ddb_server::functions::mlua::MluaContext {
                                     store: store_dyn.clone(),
                                     dialect: dialect_dyn.clone(),
+                                    cache: std::sync::Arc::new(ddb_cache::DdbCache::new()),
                                 };
                                 Some(Box::new(
                                     ddb_server::functions::MluaRuntime::new_with_context(
