@@ -47,6 +47,9 @@ jobs:
         env:
           DATABASE_URL: postgres://darshan:darshan@localhost:5432/darshjdb_test
 
+      - name: Compile benchmarks
+        run: cargo bench --bench darshql_parser --no-run
+
       - name: Smoke test (build server binary and verify it starts)
         run: |
           cargo build --release --bin ddb-server
