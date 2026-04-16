@@ -33,6 +33,7 @@
 
 pub mod batch;
 pub mod error;
+pub mod handlers;
 pub mod openapi;
 pub mod pool_stats;
 pub mod rest;
