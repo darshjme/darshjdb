@@ -6,6 +6,9 @@
 use anyhow::{Context, Result};
 use colored::Colorize;
 
+/// Namespaced advisory lock ID for schema migration serialization ("DBJDSHMI").
+const SCHEMA_LOCK_ID: i64 = 0x4442_4A44_5348_4D49;
+
 /// Storage backend selection for `ddb start`.
 #[derive(Clone, Debug, Default, clap::ValueEnum)]
 pub enum StorageBackend {
@@ -49,12 +52,9 @@ pub async fn run(
         .with_context(|| format!("Invalid bind address: {bind}"))?;
 
     // Resolve the database URL based on storage backend
+    let is_memory_mode = matches!(storage, StorageBackend::Memory);
     let database_url = match storage {
         StorageBackend::Memory => {
-            // For memory mode, we still need Postgres but use a temp approach.
-            // Set an env flag so the server knows to skip persistence guarantees.
-            // SAFETY: called before spawning any threads.
-            unsafe { std::env::set_var("DDB_MEMORY_MODE", "true") };
             conn.unwrap_or_else(|| {
                 "postgres://postgres:darshan@localhost:5432/darshjdb_mem".to_string()
             })
@@ -64,32 +64,17 @@ pub async fn run(
         }),
     };
 
-    // Set environment variables that the server reads.
-    // SAFETY: called at startup before spawning worker threads.
-    unsafe {
-        std::env::set_var("DATABASE_URL", &database_url);
-        std::env::set_var("DDB_PORT", addr.port().to_string());
-        std::env::set_var("RUST_LOG", &log_level);
-
-        if let Some(ref u) = user {
-            std::env::set_var("DDB_ROOT_USER", u);
-        }
-        if let Some(ref p) = pass {
-            std::env::set_var("DDB_ROOT_PASS", p);
-        }
-
-        if strict {
-            std::env::set_var("DDB_STRICT", "true");
-        }
-    }
-
-    // Initialize tracing with the configured level
+    // Initialize tracing with the configured level (passed directly, no env mutation)
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(&log_level)),
+            tracing_subscriber::EnvFilter::new(&log_level),
         )
         .init();
+
+    if is_memory_mode {
+        tracing::warn!("running in memory mode — data will be lost on restart");
+    }
+    let _ = (user, pass, strict); // CLI args reserved for future config-based auth
 
     tracing::info!("DarshJDB server starting");
     tracing::info!(storage = %storage, bind = %addr, "configuration");
@@ -114,7 +99,7 @@ pub async fn run(
     tracing::info!("database connection pool established");
 
     // ── Schema Creation (serialized with advisory lock) ─────────────
-    sqlx::query("SELECT pg_advisory_lock(42)")
+    sqlx::query(&format!("SELECT pg_advisory_lock({})", SCHEMA_LOCK_ID))
         .execute(&pool)
         .await
         .context("Failed to acquire advisory lock")?;
@@ -130,7 +115,7 @@ pub async fn run(
         .context("Failed to ensure auth schema")?;
     tracing::info!("auth schema ensured");
 
-    sqlx::query("SELECT pg_advisory_unlock(42)")
+    sqlx::query(&format!("SELECT pg_advisory_unlock({})", SCHEMA_LOCK_ID))
         .execute(&pool)
         .await
         .context("Failed to release advisory lock")?;
@@ -368,8 +353,20 @@ pub async fn run(
                 .expect("fallback storage")
         }),
     );
-    let storage_signing_key =
-        std::env::var("DDB_STORAGE_KEY").unwrap_or_else(|_| "dev-signing-key".to_string());
+    let storage_signing_key = match std::env::var("DDB_STORAGE_KEY") {
+        Ok(key) => key,
+        Err(_) => {
+            let is_dev = std::env::var("DDB_DEV")
+                .map(|v| v == "1" || v == "true")
+                .unwrap_or(false);
+            if is_dev {
+                tracing::warn!("DDB_STORAGE_KEY not set — using insecure dev fallback. Do NOT use in production.");
+                "dev-signing-key-insecure".to_string()
+            } else {
+                panic!("DDB_STORAGE_KEY must be set in production. Set DDB_DEV=1 for development mode.");
+            }
+        }
+    };
     let storage_engine = Arc::new(ddb_server::storage::StorageEngine::new(
         storage_backend,
         storage_signing_key.into_bytes(),

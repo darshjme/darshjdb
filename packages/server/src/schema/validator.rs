@@ -12,7 +12,7 @@
 use serde_json::Value;
 use std::collections::HashMap;
 
-use super::{FieldDefinition, FieldType, SchemaMode, TableSchema};
+use super::{FieldType, SchemaMode, TableSchema};
 
 // ── Validation result ──────────────────────────────────────────────
 
@@ -527,6 +527,7 @@ fn evaluate_assert(value: &Value, expr: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::schema::FieldDefinition;
 
     fn make_schemafull_users() -> TableSchema {
         TableSchema::schemafull("users")

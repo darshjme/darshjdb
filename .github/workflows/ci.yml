@@ -38,6 +38,10 @@ jobs:
         run: cargo fmt --all -- --check
       - name: Clippy lints
         run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Security audit
+        run: |
+          cargo install cargo-audit --locked
+          cargo audit
       - name: Run tests
         run: cargo test --workspace
         env:
@@ -95,6 +99,8 @@ jobs:
         run: npm run lint --workspaces --if-present
       - name: Test
         run: npm test --workspaces --if-present
+      - name: Security audit
+        run: npm audit --omit=dev
 
   php:
     name: PHP (test)

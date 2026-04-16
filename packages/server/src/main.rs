@@ -51,6 +51,9 @@ const RATE_LIMIT_CLEANUP_INTERVAL: Duration = Duration::from_secs(60);
 /// Request timeout for all REST handlers.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Namespaced advisory lock ID for schema migration serialization ("DBJDSHMI").
+const SCHEMA_LOCK_ID: i64 = 0x4442_4A44_5348_4D49;
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // -- Tracing / Logging ----------------------------------------------------
@@ -126,7 +129,7 @@ async fn main() -> Result<()> {
 
     // -- Schema Creation (serialized with advisory lock) -----------------------
     // Prevent concurrent connections from deadlocking on DDL.
-    sqlx::query("SELECT pg_advisory_lock(42)")
+    sqlx::query(&format!("SELECT pg_advisory_lock({})", SCHEMA_LOCK_ID))
         .execute(&pool)
         .await
         .map_err(ddb_server::error::DarshJError::Database)?;
@@ -142,7 +145,7 @@ async fn main() -> Result<()> {
         })?;
     tracing::info!("auth schema ensured (users + sessions tables)");
 
-    sqlx::query("SELECT pg_advisory_unlock(42)")
+    sqlx::query(&format!("SELECT pg_advisory_unlock({})", SCHEMA_LOCK_ID))
         .execute(&pool)
         .await
         .map_err(ddb_server::error::DarshJError::Database)?;
@@ -431,8 +434,20 @@ async fn main() -> Result<()> {
                 .expect("fallback storage backend")
         }),
     );
-    let storage_signing_key =
-        std::env::var("DDB_STORAGE_KEY").unwrap_or_else(|_| "dev-signing-key".to_string());
+    let storage_signing_key = match std::env::var("DDB_STORAGE_KEY") {
+        Ok(key) => key,
+        Err(_) => {
+            let is_dev = std::env::var("DDB_DEV")
+                .map(|v| v == "1" || v == "true")
+                .unwrap_or(false);
+            if is_dev {
+                tracing::warn!("DDB_STORAGE_KEY not set — using insecure dev fallback. Do NOT use in production.");
+                "dev-signing-key-insecure".to_string()
+            } else {
+                panic!("DDB_STORAGE_KEY must be set in production. Set DDB_DEV=1 for development mode.");
+            }
+        }
+    };
     let storage_engine = Arc::new(ddb_server::storage::StorageEngine::new(
         storage_backend,
         storage_signing_key.into_bytes(),

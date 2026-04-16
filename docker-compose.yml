@@ -18,7 +18,7 @@ services:
     ports:
       - "${DDB_HOST_PORT:-7700}:7700"
     environment:
-      DATABASE_URL: "postgres://darshan:${POSTGRES_PASSWORD:-darshan}@postgres:5432/darshjdb"
+      DATABASE_URL: "postgres://darshan:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@postgres:5432/darshjdb"
       DDB_PORT: "7700"
       DDB_ADMIN_DIR: /usr/share/darshan/admin
       DDB_JWT_SECRET: ${DDB_JWT_SECRET:?Set DDB_JWT_SECRET in .env}
@@ -57,7 +57,7 @@ services:
     image: pgvector/pgvector:pg16
     environment:
       POSTGRES_USER: darshan
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-darshan}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
       POSTGRES_DB: darshjdb
       POSTGRES_INITDB_ARGS: "--data-checksums"
     volumes:
@@ -92,7 +92,7 @@ services:
         --maxmemory-policy allkeys-lru
         --save 60 1000
         --appendonly yes
-        --requirepass ${REDIS_PASSWORD:-}
+        --requirepass ${REDIS_PASSWORD:?Set REDIS_PASSWORD}
     volumes:
       - redis_data:/data
     healthcheck:

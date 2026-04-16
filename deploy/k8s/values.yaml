@@ -55,8 +55,8 @@ env:
   DDB_ADMIN_DIR: /usr/share/darshan/admin
 
 secrets:
-  # Override in production: --set secrets.jwtSecret=<secure-value>
-  jwtSecret: change-me-in-production
+  # REQUIRED: set via --set secrets.jwtSecret=<secure-value> (minimum 32 chars)
+  jwtSecret: ""  # Empty forces override — Helm template must reject blank values
 
 nodeSelector: {}
 tolerations: []

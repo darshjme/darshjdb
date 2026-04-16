@@ -423,7 +423,7 @@ impl ScopeManager {
         }
 
         // Fetch custom claim fields.
-        let custom_claims = if !scope.custom_claim_fields.is_empty() {
+        let _custom_claims = if !scope.custom_claim_fields.is_empty() {
             self.fetch_custom_claims(
                 &scope.auth_table,
                 user_id,
