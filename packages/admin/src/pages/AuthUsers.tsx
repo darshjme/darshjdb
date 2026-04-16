@@ -17,7 +17,8 @@ import {
   AlertTriangle,
 } from "lucide-react";
 import { Badge } from "../components/Badge";
-import { fetchEntities, fetchSchema, createUser, ApiError } from "../lib/api";
+import { fetchEntities, fetchSchema, fetchSessions, createUser, ApiError } from "../lib/api";
+import type { AdminSessionsResponse } from "../lib/api";
 import { cn, formatRelativeTime, formatTimestamp } from "../lib/utils";
 import type { User } from "../types";
 
@@ -28,9 +29,33 @@ const roleBadge: Record<User["role"], { variant: "amber" | "emerald" | "sky"; ic
 };
 
 /** Map a raw entity record from the API into the User shape the UI expects. */
-function entityToUser(rec: Record<string, unknown>, index: number): User {
+function entityToUser(
+  rec: Record<string, unknown>,
+  index: number,
+  sessionsData?: AdminSessionsResponse,
+): User {
+  const userId = (rec._id as string) ?? `api_${index}`;
+
+  // Match sessions from admin sessions endpoint by user_id.
+  const userSessions: User["sessions"] = [];
+  if (sessionsData) {
+    for (const s of sessionsData.sessions as Record<string, unknown>[]) {
+      if (String(s.user_id) === userId) {
+        userSessions.push({
+          id: String(s.session_id ?? ""),
+          device: String(s.user_agent ?? "Unknown"),
+          ip: String(s.ip ?? ""),
+          lastActive: s.created_at
+            ? new Date(String(s.created_at)).getTime()
+            : Date.now(),
+          current: false,
+        });
+      }
+    }
+  }
+
   return {
-    id: (rec._id as string) ?? `api_${index}`,
+    id: userId,
     email: (rec.email as string) ?? "",
     name: (rec.name as string) ?? (rec.email as string) ?? "Unknown",
     role: (["admin", "developer", "viewer"].includes(rec.role as string)
@@ -43,8 +68,10 @@ function entityToUser(rec: Record<string, unknown>, index: number): User {
         : (rec._creationTime as number) ?? Date.now(),
     lastLogin: typeof rec.lastLogin === "number"
       ? (rec.lastLogin as number)
-      : Date.now(),
-    sessions: [], // API does not expose per-user sessions yet
+      : userSessions.length > 0
+        ? Math.max(...userSessions.map((s) => s.lastActive))
+        : Date.now(),
+    sessions: userSessions,
   };
 }
 
@@ -70,8 +97,13 @@ export function AuthUsers() {
     setLoading(true);
     setError(null);
     try {
+      // Fetch sessions in parallel with schema+entities.
+      const sessionsPromise = fetchSessions().catch(() => ({
+        sessions: [],
+        count: 0,
+      } as AdminSessionsResponse));
+
       // Try fetching "users" entity type from the data API.
-      // First check if a "users" or "user" entity type exists in schema.
       const schema = await fetchSchema();
       const userType = schema.find(
         (et) => et.name === "users" || et.name === "user",
@@ -84,8 +116,12 @@ export function AuthUsers() {
         return;
       }
 
-      const res = await fetchEntities(userType.name, 200);
-      setUsers(res.data.map((r, i) => entityToUser(r, i)));
+      const [res, sessionsData] = await Promise.all([
+        fetchEntities(userType.name, 200),
+        sessionsPromise,
+      ]);
+
+      setUsers(res.data.map((r, i) => entityToUser(r, i, sessionsData)));
     } catch (err) {
       setUsers([]);
       if (err instanceof ApiError) {

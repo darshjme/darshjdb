@@ -10,7 +10,7 @@ use uuid::Uuid;
 use crate::api::error::ApiError;
 use crate::api::rest::AppState;
 use crate::auth::{
-    AuthOutcome, MagicLinkProvider, OAuth2Provider, OAuthProviderKind, OAuthUserInfo,
+    MagicLinkProvider, OAuth2Provider, OAuthProviderKind, OAuthUserInfo,
 };
 
 use super::helpers::negotiate_response;
@@ -27,6 +27,7 @@ pub struct MagicLinkRequest {
 /// `POST /api/auth/magic-link` -- Send a passwordless sign-in link.
 pub async fn auth_magic_link(
     State(state): State<AppState>,
+    headers: HeaderMap,
     axum::Json(body): axum::Json<MagicLinkRequest>,
 ) -> Result<Response, ApiError> {
     let email = body.email.trim().to_lowercase();
@@ -43,7 +44,11 @@ pub async fn auth_magic_link(
             .map_err(|e| ApiError::internal(format!("Database error: {e}")))?;
 
     if let Some((user_id,)) = user_row {
-        let magic_link = MagicLinkProvider::generate(&state.pool, user_id)
+        let ip = headers
+            .get("x-forwarded-for")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("unknown");
+        let magic_link = MagicLinkProvider::generate(&state.pool, &email, user_id, ip)
             .await
             .map_err(|e| ApiError::internal(format!("Failed to generate magic link: {e}")))?;
 
@@ -95,52 +100,48 @@ pub async fn auth_verify(
         return Err(ApiError::bad_request("Token is required"));
     }
 
-    let outcome = MagicLinkProvider::verify(&state.pool, &body.token)
+    let user_id = MagicLinkProvider::verify(&state.pool, &body.token)
         .await
-        .map_err(|e| ApiError::internal(format!("Token verification failed: {e}")))?;
+        .map_err(|e| ApiError::unauthenticated(format!("Token verification failed: {e}")))?;
 
-    match outcome {
-        AuthOutcome::Success { user_id, roles } => {
-            let ip = headers
-                .get("x-forwarded-for")
-                .and_then(|v| v.to_str().ok())
-                .unwrap_or("unknown");
-            let ua = headers
-                .get("user-agent")
-                .and_then(|v| v.to_str().ok())
-                .unwrap_or("unknown");
-            let dfp = headers
-                .get("x-device-fingerprint")
-                .and_then(|v| v.to_str().ok())
-                .unwrap_or("");
+    // Fetch roles for the verified user.
+    let roles: Vec<String> = sqlx::query_scalar::<_, serde_json::Value>(
+        "SELECT roles FROM users WHERE id = $1",
+    )
+    .bind(user_id)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(|e| ApiError::internal(format!("Database error: {e}")))?
+    .and_then(|v| serde_json::from_value::<Vec<String>>(v).ok())
+    .unwrap_or_else(|| vec!["user".to_string()]);
 
-            let token_pair = state
-                .session_manager
-                .create_session(user_id, roles, ip, ua, dfp)
-                .await
-                .map_err(|e| ApiError::internal(format!("Session creation failed: {e}")))?;
+    let ip = headers
+        .get("x-forwarded-for")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("unknown");
+    let ua = headers
+        .get("user-agent")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("unknown");
+    let dfp = headers
+        .get("x-device-fingerprint")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
 
-            let response = serde_json::json!({
-                "user_id": user_id,
-                "access_token": token_pair.access_token,
-                "refresh_token": token_pair.refresh_token,
-                "expires_in": token_pair.expires_in,
-                "token_type": token_pair.token_type,
-            });
-            Ok(negotiate_response(&headers, &response))
-        }
-        AuthOutcome::MfaRequired { user_id, mfa_token } => {
-            let response = serde_json::json!({
-                "mfa_required": true,
-                "user_id": user_id,
-                "mfa_token": mfa_token,
-            });
-            Ok(negotiate_response(&headers, &response))
-        }
-        AuthOutcome::Failed { reason } => Err(ApiError::unauthenticated(format!(
-            "Verification failed: {reason}"
-        ))),
-    }
+    let token_pair = state
+        .session_manager
+        .create_session(user_id, roles, ip, ua, dfp)
+        .await
+        .map_err(|e| ApiError::internal(format!("Session creation failed: {e}")))?;
+
+    let response = serde_json::json!({
+        "user_id": user_id,
+        "access_token": token_pair.access_token,
+        "refresh_token": token_pair.refresh_token,
+        "expires_in": token_pair.expires_in,
+        "token_type": token_pair.token_type,
+    });
+    Ok(negotiate_response(&headers, &response))
 }
 
 // ---------------------------------------------------------------------------

@@ -46,19 +46,23 @@
 //! { "type": "error",          "error": "<reason>" }
 //! ```
 
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
 use axum::extract::State;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::response::IntoResponse;
+use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::mpsc;
 use tokio::time::timeout;
 use tracing::{debug, info};
 
+use crate::cache::QueryCache;
 use crate::query;
+use crate::rules::RuleEngine;
 use crate::sync::broadcaster::{ChangeEvent, OutboundDiff};
 use crate::sync::change_feed::ChangeFeed;
 use crate::sync::live_query::{LiveAction, LiveQueryId, LiveQueryManager};
@@ -107,6 +111,18 @@ pub struct WsState {
     pub live_queries: Arc<LiveQueryManager>,
     /// Change feed for mutation logging and cursor-based replay.
     pub change_feed: Arc<ChangeFeed>,
+    /// Optional forward-chaining rule engine — when present, mutations fire
+    /// inference inside the same DB transaction so derived triples are atomic
+    /// with the user's writes. Mirrors the REST mutation path for parity.
+    pub rule_engine: Option<Arc<RuleEngine>>,
+    /// Hot query cache shared with the REST handler. Mutations invalidate
+    /// touched entity types post-commit so subsequent reads see fresh data.
+    pub query_cache: Arc<QueryCache>,
+    /// Cached previous result set per subscription, keyed by `(session_id,
+    /// sub_id)`. The WS diff engine consults this on every change event to
+    /// emit precise `added`/`removed`/`updated` deltas instead of naive
+    /// re-sends. Cleared on WS disconnect.
+    pub subscription_snapshots: Arc<DashMap<(SessionId, String), Vec<Value>>>,
 }
 
 /// Inbound client message (deserialized from JSON or MessagePack).
@@ -191,6 +207,18 @@ enum ServerMessage {
         sub_id: String,
         tx: i64,
         changes: Value,
+    },
+    /// Structured subscription diff emitted by the WS diff engine. Holds
+    /// the authoritative `added` / `removed` / `updated` row lists computed
+    /// against the last cached snapshot for this `(session, sub)` pair.
+    Sub {
+        sub_id: String,
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        added: Vec<Value>,
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        removed: Vec<Value>,
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        updated: Vec<Value>,
     },
     UnsubOk {
         id: String,
@@ -951,6 +979,36 @@ async fn handle_mutation(
         .await;
         return;
     }
+
+    // Forward-chaining rule engine: implied triples are written in the same
+    // transaction so the user's mutation + inferred facts commit atomically.
+    // Mirrors the REST mutation path to keep WS clients and REST clients in
+    // parity with respect to derived knowledge. Dropping `db_tx` on the
+    // error path causes an implicit rollback of the user writes above.
+    let mut implied_triples: Vec<TripleInput> = Vec::new();
+    if !all_triples.is_empty()
+        && let Some(ref rule_engine) = state.rule_engine
+    {
+        match rule_engine
+            .evaluate_and_write_in_tx(&mut db_tx, &all_triples, tx_id)
+            .await
+        {
+            Ok(implied) => implied_triples = implied,
+            Err(e) => {
+                let _ = send_message(
+                    socket,
+                    &ServerMessage::MutErr {
+                        id: req_id,
+                        error: format!("rule engine: {e}"),
+                    },
+                    codec,
+                )
+                .await;
+                return;
+            }
+        }
+    }
+
     if let Err(e) = db_tx.commit().await {
         let _ = send_message(
             socket,
@@ -964,11 +1022,26 @@ async fn handle_mutation(
         return;
     }
 
-    let attrs: Vec<String> = all_triples.iter().map(|t| t.attribute.clone()).collect();
+    // Invalidate hot cache for every entity type touched by this mutation so
+    // subsequent reads on those types recompute against fresh triples.
+    for et in &entity_types {
+        state.query_cache.invalidate_by_entity_type(et);
+    }
+
+    // Collect attributes touched (including rule-implied) for the change
+    // notification so live queries see the full effect of the transaction.
+    let mut touched_attributes: Vec<String> = all_triples
+        .iter()
+        .chain(implied_triples.iter())
+        .map(|t| t.attribute.clone())
+        .collect();
+    touched_attributes.sort();
+    touched_attributes.dedup();
+
     let change_event = ChangeEvent {
         tx_id,
         entity_ids: entity_ids.clone(),
-        attributes: attrs,
+        attributes: touched_attributes,
         entity_type: entity_types.into_iter().next(),
         actor_id: None,
     };
@@ -1142,33 +1215,118 @@ async fn handle_change_event(
             Err(_) => continue,
         };
 
-        // Compute diff against empty (first notification) or previous results.
-        // For simplicity, we send the full new result set as "added" on the
-        // first change. A production implementation would cache previous results
-        // per (session, sub) in the Broadcaster's result_cache.
-        let diff_value = serde_json::json!({
-            "added": new_results,
-            "removed": [],
-            "updated": []
-        });
+        // Real diff engine: compare against cached snapshot for this
+        // `(session, sub)` pair, compute added/removed/updated buckets,
+        // persist the fresh snapshot, and only emit if something changed.
+        let sub_key = (session_id, sub_id.to_string());
+        let old_results: Vec<Value> = state
+            .subscription_snapshots
+            .get(&sub_key)
+            .map(|r| r.clone())
+            .unwrap_or_default();
 
-        if send_message(
-            socket,
-            &ServerMessage::Diff {
-                sub_id: sub_id.to_string(),
-                tx: event.tx_id,
-                changes: diff_value,
-            },
-            codec,
-        )
-        .await
-        .is_err()
+        let diff = compute_subscription_diff(&old_results, &new_results);
+
+        state
+            .subscription_snapshots
+            .insert(sub_key, new_results.clone());
+
+        if !diff.is_empty()
+            && send_message(
+                socket,
+                &ServerMessage::Sub {
+                    sub_id: sub_id.to_string(),
+                    added: diff.added,
+                    removed: diff.removed,
+                    updated: diff.updated,
+                },
+                codec,
+            )
+            .await
+            .is_err()
         {
             return true;
         }
     }
 
     false
+}
+
+/// Result of diffing two subscription result sets by stable `_id` key.
+#[derive(Debug, Default, Clone, PartialEq)]
+pub(crate) struct SubscriptionDiff {
+    pub added: Vec<Value>,
+    pub removed: Vec<Value>,
+    pub updated: Vec<Value>,
+}
+
+impl SubscriptionDiff {
+    fn is_empty(&self) -> bool {
+        self.added.is_empty() && self.removed.is_empty() && self.updated.is_empty()
+    }
+}
+
+/// Extract the stable row identity for diffing. Query results produced by
+/// [`handle_subscribe`] carry `_id` (UUID string) as the canonical row key,
+/// so we prefer `_id` and fall back to `id` to stay tolerant of alternate
+/// result shapes in future planners.
+fn row_id(v: &Value) -> Option<&str> {
+    v.get("_id")
+        .and_then(|x| x.as_str())
+        .or_else(|| v.get("id").and_then(|x| x.as_str()))
+}
+
+/// Pure diff engine: compare two result sets by row `_id` and bucket rows
+/// into `added` (present in new only), `removed` (present in old only),
+/// and `updated` (present in both, value differs). Rows without a stable
+/// identity are skipped by the bucketer — a production planner always
+/// materialises `_id`, so in practice this only guards against malformed
+/// test fixtures.
+pub(crate) fn compute_subscription_diff(old: &[Value], new: &[Value]) -> SubscriptionDiff {
+    let old_ids: HashSet<&str> = old.iter().filter_map(row_id).collect();
+    let new_ids: HashSet<&str> = new.iter().filter_map(row_id).collect();
+
+    let added: Vec<Value> = new
+        .iter()
+        .filter(|r| match row_id(r) {
+            Some(id) => !old_ids.contains(id),
+            None => false,
+        })
+        .cloned()
+        .collect();
+
+    let removed: Vec<Value> = old
+        .iter()
+        .filter(|r| match row_id(r) {
+            Some(id) => !new_ids.contains(id),
+            None => false,
+        })
+        .cloned()
+        .collect();
+
+    let updated: Vec<Value> = new
+        .iter()
+        .filter(|r| {
+            let id = match row_id(r) {
+                Some(id) => id,
+                None => return false,
+            };
+            if !old_ids.contains(id) {
+                return false;
+            }
+            old.iter()
+                .find(|o| row_id(o) == Some(id))
+                .map(|o| o != *r)
+                .unwrap_or(false)
+        })
+        .cloned()
+        .collect();
+
+    SubscriptionDiff {
+        added,
+        removed,
+        updated,
+    }
 }
 
 /// Clean up all resources for a disconnected session.
@@ -1180,6 +1338,13 @@ fn cleanup(session_id: SessionId, state: &WsState) {
         removed_queries = removed_hashes.len(),
         "cleaned up subscriptions"
     );
+
+    // Evict all cached subscription snapshots for this session from the
+    // WS diff engine so a reconnecting client always rebuilds against a
+    // fresh initial result set.
+    state
+        .subscription_snapshots
+        .retain(|(sid, _), _| *sid != session_id);
 
     // Kill all live queries for this session.
     let removed_live = state.live_queries.kill_session(&session_id);
@@ -1340,11 +1505,8 @@ async fn handle_live_query_change(
                             obj.insert("_id".to_string(), Value::String(eid.to_string()));
                             for t in &triples {
                                 // Strip the entity-type prefix from attribute names.
-                                let attr_name = t
-                                    .attribute
-                                    .split('/')
-                                    .next_back()
-                                    .unwrap_or(&t.attribute);
+                                let attr_name =
+                                    t.attribute.split('/').next_back().unwrap_or(&t.attribute);
                                 if attr_name != ":db/type" && !t.attribute.starts_with(":db/") {
                                     obj.insert(attr_name.to_string(), t.value.clone());
                                 }
@@ -1369,9 +1531,10 @@ async fn handle_live_query_change(
     }
 
     // Determine the action type from the event heuristics.
-    let action = if entity_data.values().all(|v| {
-        v.as_object().is_none_or(|o| o.len() <= 1)
-    }) {
+    let action = if entity_data
+        .values()
+        .all(|v| v.as_object().is_none_or(|o| o.len() <= 1))
+    {
         LiveAction::Delete
     } else if event.tx_id > 0 && event.entity_ids.len() == 1 {
         // Heuristic: single entity with data is likely create or update.
@@ -1767,4 +1930,90 @@ pub fn ws_routes(state: WsState) -> axum::Router {
     axum::Router::new()
         .route("/ws", any(ws_handler))
         .with_state(state)
+}
+
+#[cfg(test)]
+mod ws_diff_tests {
+    //! Pure-function tests for the WS subscription diff engine. These
+    //! exercise [`compute_subscription_diff`] directly so the logic can be
+    //! validated without a live Postgres pool or websocket harness.
+
+    use super::{SubscriptionDiff, compute_subscription_diff};
+    use serde_json::{Value, json};
+
+    fn row(id: &str, name: &str) -> Value {
+        json!({ "_id": id, "name": name })
+    }
+
+    #[test]
+    fn ws_diff_insert_is_added() {
+        let old: Vec<Value> = vec![row("a", "Alice")];
+        let new: Vec<Value> = vec![row("a", "Alice"), row("b", "Bob")];
+
+        let diff = compute_subscription_diff(&old, &new);
+
+        assert_eq!(diff.added, vec![row("b", "Bob")]);
+        assert!(diff.removed.is_empty());
+        assert!(diff.updated.is_empty());
+        assert!(!diff.is_empty());
+    }
+
+    #[test]
+    fn ws_diff_modify_is_updated() {
+        let old: Vec<Value> = vec![row("a", "Alice"), row("b", "Bob")];
+        let new: Vec<Value> = vec![row("a", "Alice"), row("b", "Robert")];
+
+        let diff = compute_subscription_diff(&old, &new);
+
+        assert!(diff.added.is_empty());
+        assert!(diff.removed.is_empty());
+        assert_eq!(diff.updated, vec![row("b", "Robert")]);
+    }
+
+    #[test]
+    fn ws_diff_delete_is_removed() {
+        let old: Vec<Value> = vec![row("a", "Alice"), row("b", "Bob")];
+        let new: Vec<Value> = vec![row("a", "Alice")];
+
+        let diff = compute_subscription_diff(&old, &new);
+
+        assert!(diff.added.is_empty());
+        assert_eq!(diff.removed, vec![row("b", "Bob")]);
+        assert!(diff.updated.is_empty());
+    }
+
+    #[test]
+    fn ws_diff_unchanged_emits_nothing() {
+        let old: Vec<Value> = vec![row("a", "Alice"), row("b", "Bob")];
+        let new: Vec<Value> = vec![row("a", "Alice"), row("b", "Bob")];
+
+        let diff = compute_subscription_diff(&old, &new);
+
+        assert_eq!(diff, SubscriptionDiff::default());
+        assert!(diff.is_empty());
+    }
+
+    #[test]
+    fn ws_diff_initial_subscribe_treats_all_new_rows_as_added() {
+        let old: Vec<Value> = Vec::new();
+        let new: Vec<Value> = vec![row("a", "Alice"), row("b", "Bob")];
+
+        let diff = compute_subscription_diff(&old, &new);
+
+        assert_eq!(diff.added.len(), 2);
+        assert!(diff.removed.is_empty());
+        assert!(diff.updated.is_empty());
+    }
+
+    #[test]
+    fn ws_diff_combined_add_remove_update() {
+        let old: Vec<Value> = vec![row("a", "Alice"), row("b", "Bob"), row("c", "Carol")];
+        let new: Vec<Value> = vec![row("a", "Alice"), row("b", "Robert"), row("d", "Dave")];
+
+        let diff = compute_subscription_diff(&old, &new);
+
+        assert_eq!(diff.added, vec![row("d", "Dave")]);
+        assert_eq!(diff.removed, vec![row("c", "Carol")]);
+        assert_eq!(diff.updated, vec![row("b", "Robert")]);
+    }
 }

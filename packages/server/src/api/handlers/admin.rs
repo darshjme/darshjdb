@@ -160,15 +160,15 @@ pub async fn admin_cache(
 
 #[derive(Deserialize)]
 pub struct BulkLoadRequest {
-    entities: Vec<BulkLoadEntity>,
+    pub entities: Vec<BulkLoadEntity>,
 }
 
 #[derive(Deserialize)]
 pub struct BulkLoadEntity {
     #[serde(rename = "type")]
-    entity_type: String,
-    id: Option<Uuid>,
-    data: HashMap<String, Value>,
+    pub entity_type: String,
+    pub id: Option<Uuid>,
+    pub data: HashMap<String, Value>,
 }
 
 /// `POST /api/admin/bulk-load` -- High-throughput data import.

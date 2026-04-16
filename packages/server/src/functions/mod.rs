@@ -32,7 +32,24 @@ pub mod runtime;
 pub mod scheduler;
 pub mod validator;
 
+// VYASA (Tier-1 Prometheus) — embedded V8 isolate runtime.
+// Darshankumar Joshi. Behind the `v8` Cargo feature so the default build
+// does not link V8.
+#[cfg(feature = "v8")]
+pub mod v8_runtime;
+
+// v0.3.2 — embedded mlua 0.10 Lua runtime. Behind the `mlua-runtime`
+// Cargo feature so default builds do not compile vendored Lua 5.4.
+#[cfg(feature = "mlua-runtime")]
+pub mod mlua;
+
 pub use registry::{FunctionDef, FunctionKind, FunctionRegistry};
 pub use runtime::{FunctionRuntime, ResourceLimits, RuntimeBackend};
 pub use scheduler::{ScheduledJob, Scheduler};
 pub use validator::{ArgSchema, validate_args};
+
+#[cfg(feature = "v8")]
+pub use v8_runtime::V8Runtime;
+
+#[cfg(feature = "mlua-runtime")]
+pub use self::mlua::MluaRuntime;

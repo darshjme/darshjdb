@@ -12,10 +12,14 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
+use ddb_server::admin::static_assets::admin_router;
 use ddb_server::api::rest::{AppState, build_router};
 use ddb_server::api::ws::{WsState, ws_routes};
 use ddb_server::auth::middleware::RateLimiter;
 use ddb_server::auth::session::{KeyManager, SessionManager};
+use ddb_server::cluster::status::{ClusterStatusState, router as cluster_status_router};
+use ddb_server::cluster::{self, ClusterState, LOCK_EXPIRY_SWEEPER, NodeId, spawn_singleton_task};
+use ddb_server::config::{DdbConfig, load_config};
 use ddb_server::error::Result;
 use ddb_server::sync::presence::PresenceManager;
 use ddb_server::sync::registry::SubscriptionRegistry;
@@ -26,21 +30,6 @@ use tokio::signal;
 use tower_http::catch_panic::CatchPanicLayer;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::timeout::TimeoutLayer;
-
-/// Default server port when `DDB_PORT` is not set.
-const DEFAULT_PORT: u16 = 7700;
-
-/// Maximum database connections in the pool.
-const DEFAULT_MAX_CONNECTIONS: u32 = 20;
-
-/// Minimum idle connections in the pool.
-const DEFAULT_MIN_CONNECTIONS: u32 = 2;
-
-/// Timeout (seconds) to acquire a connection from the pool.
-const DEFAULT_ACQUIRE_TIMEOUT_SECS: u64 = 5;
-
-/// Idle timeout (seconds) before a connection is released.
-const DEFAULT_IDLE_TIMEOUT_SECS: u64 = 600;
 
 /// Pool utilization percentage that triggers a warning log.
 const POOL_HIGH_WATER_MARK: f64 = 0.80;
@@ -56,60 +45,153 @@ const SCHEMA_LOCK_ID: i64 = 0x4442_4A44_5348_4D49;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // -- Tracing / Logging ----------------------------------------------------
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
-        .init();
+    // -- Typed configuration (Slice 17) ---------------------------------------
+    // Load defaults + config.toml + env vars into a strongly-typed tree.
+    // Loaded first so downstream subsystems can consume `cfg` without
+    // touching `std::env::var` directly.
+    let cfg: DdbConfig = load_config().map_err(|e| {
+        // cfg failed — fall back to stderr since tracing isn't wired yet.
+        eprintln!("failed to load DdbConfig: {e}");
+        ddb_server::error::DarshJError::Internal(format!("failed to load configuration: {e}"))
+    })?;
 
-    tracing::info!("DarshJDB server starting");
+    // -- Tracing / Logging (Phase 10: JSON + request_id) ----------------------
+    // `init_json_logging` honors `RUST_LOG`; seed it from `cfg.server.log_level`
+    // when the env var is unset so the typed config still wins by default.
+    if std::env::var("RUST_LOG").is_err() && !cfg.server.log_level.is_empty() {
+        // SAFETY: called during startup, before any code that reads
+        // RUST_LOG concurrently. The tokio runtime has already started
+        // its worker threads by the time `main` executes, but no worker
+        // task inspects RUST_LOG until `init_json_logging` runs a few
+        // lines below. This remains non-racy as long as no Rust 2024
+        // lint-gated callsite is added earlier in main().
+        unsafe {
+            std::env::set_var("RUST_LOG", &cfg.server.log_level);
+        }
+    }
+    ddb_server::observability::init_json_logging().map_err(|e| {
+        ddb_server::error::DarshJError::Internal(format!("tracing init failed: {e}"))
+    })?;
 
-    // -- Configuration from environment ---------------------------------------
-    let database_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| {
-        tracing::warn!("DATABASE_URL not set, using default localhost connection");
-        "postgres://darshan:darshan@localhost:5432/darshjdb".to_string()
+    tracing::info!(
+        version = env!("CARGO_PKG_VERSION"),
+        author = "Darshankumar Joshi",
+        "DarshJDB server starting"
+    );
+    tracing::info!(?cfg, "loaded configuration");
+
+    // -- Prometheus recorder (Phase 10) ---------------------------------------
+    let (metrics_handle, metrics_allow_list) = ddb_server::observability::init_prometheus()
+        .map_err(|e| {
+            ddb_server::error::DarshJError::Internal(format!("prometheus init failed: {e}"))
+        })?;
+    tracing::info!(
+        allow_list = ?metrics_allow_list,
+        "Prometheus recorder installed"
+    );
+
+    // -- Database URL resolution ----------------------------------------------
+    // Priority: cfg.database.url (typed config / env) → embedded Postgres
+    // (if the `embedded-db` feature is on) → localhost default.
+    let configured_url = cfg
+        .database
+        .url
+        .as_ref()
+        .map(|s| s.expose().clone())
+        .or_else(|| std::env::var("DATABASE_URL").ok());
+
+    #[cfg(feature = "embedded-db")]
+    let (database_url, _embedded_pg) = match configured_url {
+        Some(url) => (url, None),
+        None => {
+            let data_dir = dirs::home_dir()
+                .unwrap_or_else(|| std::path::PathBuf::from("."))
+                .join(".darshjdb")
+                .join("data");
+            tracing::info!(
+                data_dir = %data_dir.display(),
+                "no database.url set — booting embedded Postgres 16 (zero-dep dev mode)"
+            );
+            let (pg, uri) = ddb_server::embedded_pg::start_embedded_postgres(&data_dir)
+                .await
+                .map_err(|e| {
+                    ddb_server::error::DarshJError::Internal(format!(
+                        "embedded Postgres startup failed: {e}"
+                    ))
+                })?;
+            (uri, Some(pg))
+        }
+    };
+
+    #[cfg(not(feature = "embedded-db"))]
+    let database_url = configured_url.unwrap_or_else(|| {
+        tracing::warn!("database.url not set, using default localhost connection");
+        "postgres://ddb:ddb@localhost:5432/darshjdb".to_string()
     });
 
-    let port: u16 = std::env::var("DDB_PORT")
-        .ok()
-        .and_then(|p| p.parse().ok())
-        .unwrap_or(DEFAULT_PORT);
+    // v0.3.2 — backend dispatch on DATABASE_URL scheme.
+    //
+    // The library backends (`SqliteStore`, gated on `--features
+    // sqlite-store`) are wired into the `Store` trait and exercised by
+    // the embedded function runtime (`ddb.triples.*` from Lua), but
+    // the HTTP server's auth/anchor/search/agent_memory/chunked_uploads
+    // bootstraps still call Postgres-specific schema migrations. A full
+    // SQLite-only HTTP boot path lands in v0.3.3. For now we refuse
+    // `sqlite:` URLs at the front door so misconfiguration surfaces
+    // immediately instead of as a cryptic `pg_advisory_lock` panic.
+    if database_url.starts_with("sqlite:") {
+        return Err(ddb_server::error::DarshJError::Internal(
+            "sqlite: URLs are accepted by the SqliteStore library backend \
+             but the HTTP server's auth/anchor/search/agent_memory bootstraps \
+             are still Postgres-only. Use a postgres:// URL for the HTTP \
+             server in v0.3.2; sqlite-only HTTP boot lands in v0.3.3. \
+             SqliteStore is exercised end-to-end by the embedded mlua \
+             function runtime today (see ddb.triples.* in Lua functions)."
+                .into(),
+        ));
+    }
 
-    let max_connections: u32 = std::env::var("DDB_DB_MAX_CONNECTIONS")
-        .ok()
-        .and_then(|p| p.parse().ok())
-        .unwrap_or(DEFAULT_MAX_CONNECTIONS);
+    let port: u16 = cfg.server.port;
+    let max_connections: u32 = cfg.database.pool_max;
+    let min_connections: u32 = cfg.database.pool_min;
+    let acquire_timeout_secs: u64 = cfg.database.acquire_timeout_secs;
+    let idle_timeout_secs: u64 = cfg.database.idle_timeout_secs;
+    let max_lifetime_sec: u64 = cfg.database.max_lifetime_sec;
 
-    let min_connections: u32 = std::env::var("DDB_DB_MIN_CONNECTIONS")
-        .ok()
-        .and_then(|p| p.parse().ok())
-        .unwrap_or(DEFAULT_MIN_CONNECTIONS);
-
-    let acquire_timeout_secs: u64 = std::env::var("DDB_DB_ACQUIRE_TIMEOUT_SECS")
-        .ok()
-        .and_then(|p| p.parse().ok())
-        .unwrap_or(DEFAULT_ACQUIRE_TIMEOUT_SECS);
-
-    let idle_timeout_secs: u64 = std::env::var("DDB_DB_IDLE_TIMEOUT_SECS")
-        .ok()
-        .and_then(|p| p.parse().ok())
-        .unwrap_or(DEFAULT_IDLE_TIMEOUT_SECS);
-
-    let jwt_secret = std::env::var("DDB_JWT_SECRET").ok();
-    let jwt_private_key_path = std::env::var("DDB_JWT_PRIVATE_KEY").ok();
-    let jwt_public_key_path = std::env::var("DDB_JWT_PUBLIC_KEY").ok();
+    let jwt_secret: Option<String> = cfg.auth.jwt_secret.as_ref().map(|s| s.expose().clone());
+    let jwt_private_key_path: Option<String> = cfg.auth.jwt_private_key_path.clone();
+    let jwt_public_key_path: Option<String> = cfg.auth.jwt_public_key_path.clone();
 
     // -- Database Pool --------------------------------------------------------
     tracing::info!(database_url = %mask_url(&database_url), "connecting to database");
 
+    // NOTE: `max_connections` should be set to **at least 2x** the
+    // number of concurrent HTTP workers you expect. Each in-flight
+    // request may hold one connection across awaits (query + fanout),
+    // and background tasks (TTL sweeper, anchor batcher, embedder,
+    // WAL listener) each hold one. Underprovisioning leads to the
+    // `POOL_HIGH_WATER_MARK` warning log firing and eventual
+    // `acquire_timeout` errors under load. Scale horizontally via
+    // pgBouncer + multiple replicas (see docs/HORIZONTAL_SCALING.md).
+    //
+    // `max_lifetime` is read from `cfg.database.max_lifetime_sec`
+    // (default 1800s) so operator overrides flow through to both
+    // PgPoolOptions and the log line below — see WR-01.
     tracing::info!(
-        max_connections,
+        target: "ddb_server::pool",
+        db_pool_min = min_connections,
+        db_pool_max = max_connections,
+        db_pool_acquire_timeout_secs = acquire_timeout_secs,
+        db_pool_idle_timeout_secs = idle_timeout_secs,
+        db_pool_max_lifetime_secs = max_lifetime_sec,
+        "effective database pool configuration \
+         (db.pool.min={} db.pool.max={} db.pool.acquire_timeout={}s \
+          db.pool.idle_timeout={}s db.pool.max_lifetime={}s)",
         min_connections,
+        max_connections,
         acquire_timeout_secs,
         idle_timeout_secs,
-        "database pool configuration"
+        max_lifetime_sec,
     );
 
     let pool = PgPoolOptions::new()
@@ -117,7 +199,7 @@ async fn main() -> Result<()> {
         .min_connections(min_connections)
         .acquire_timeout(Duration::from_secs(acquire_timeout_secs))
         .idle_timeout(Duration::from_secs(idle_timeout_secs))
-        .max_lifetime(Duration::from_secs(1800))
+        .max_lifetime(Duration::from_secs(max_lifetime_sec))
         .connect(&database_url)
         .await
         .map_err(|e| {
@@ -144,6 +226,52 @@ async fn main() -> Result<()> {
             ddb_server::error::DarshJError::Database(e)
         })?;
     tracing::info!("auth schema ensured (users + sessions tables)");
+
+    // Phase 5.3 (slice 23/30) — ensure anchor_receipts exists so the
+    // background anchor task can write without a follow-up migration.
+    ddb_server::anchor::ensure_anchor_schema(&pool)
+        .await
+        .map_err(|e| {
+            tracing::error!("Failed to ensure anchor schema: {e}");
+            ddb_server::error::DarshJError::Database(e)
+        })?;
+    tracing::info!("anchor schema ensured (anchor_receipts table)");
+
+    // Phase 3 (slice 16) — ensure vector + embeddings + FTS indexes exist
+    // so /api/search/{semantic,text,hybrid} work without a separate migration.
+    ddb_server::api::rest::ensure_search_schema(&pool)
+        .await
+        .map_err(|e| {
+            tracing::error!("Failed to ensure search schema: {e}");
+            ddb_server::error::DarshJError::Database(e)
+        })?;
+    tracing::info!("search schema ensured (pgvector + embeddings + FTS)");
+
+    // Slice 14/30 — ensure agent memory tables (sessions + entries + facts)
+    // so the context builder / memory API can write on first request.
+    // Best-effort: some CI Postgres service containers ship without the
+    // legacy `users` table the agent_facts FK references. Emit a warn and
+    // continue so /health can still respond — memory endpoints will then
+    // return 503 on first call until a proper migration runs.
+    if let Err(e) = ddb_server::agent_memory::ensure_agent_memory_schema(&pool).await {
+        tracing::warn!(
+            error = %e,
+            "agent memory schema bootstrap failed — memory endpoints disabled until schema lands"
+        );
+    } else {
+        tracing::info!("agent memory schema ensured (sessions + entries + facts tables)");
+    }
+
+    // Phase 7.1 (slice 25/30): ensure chunked_uploads table exists so
+    // resumable uploads and the cleanup task can run without a
+    // separate migrator step.
+    ddb_server::api::chunked_upload::ensure_chunked_uploads_schema(&pool)
+        .await
+        .map_err(|e| {
+            tracing::error!("Failed to ensure chunked_uploads schema: {e}");
+            ddb_server::error::DarshJError::Database(e)
+        })?;
+    tracing::info!("chunked_uploads schema ensured");
 
     sqlx::query(&format!("SELECT pg_advisory_unlock({})", SCHEMA_LOCK_ID))
         .execute(&pool)
@@ -207,42 +335,195 @@ async fn main() -> Result<()> {
 
     let triple_store_arc = Arc::new(triple_store);
 
-    // -- TTL Expiry Background Task -------------------------------------------
+    // v0.3.2 — backend-agnostic Store + SqlDialect handles.
+    //
+    // These wrap the existing PgTripleStore + PgPool path through the
+    // object-safe Store trait so the embedded function runtime (mlua)
+    // and any other component that wants to live above the
+    // Postgres-specific surface can hold dyn references without
+    // reaching for the concrete pool. The HTTP request path is
+    // unchanged — it still uses the Pg pool directly.
+    //
+    // When v0.3.3 lands the sqlite: URL boot path, this construction
+    // moves into the URL-scheme dispatch branch so the same
+    // `Arc<dyn Store>` flows out of either backend. The dialect is
+    // pinned to PgDialect today because that's what the HTTP planner
+    // emits; the SqliteDialect path is exercised by the SqliteStore
+    // unit tests and is the v0.3.3 target.
+    let store_dyn: Arc<dyn ddb_server::store::Store + Send + Sync> = Arc::new(
+        ddb_server::store::pg::PgStore::new((*triple_store_arc).clone()),
+    );
+    let dialect_dyn: Arc<dyn ddb_server::query::dialect::SqlDialect + Send + Sync> =
+        Arc::new(ddb_server::query::dialect::PgDialect);
+    tracing::info!(
+        backend = store_dyn.backend_name(),
+        dialect = dialect_dyn.name(),
+        "v0.3.2 Store + SqlDialect handles initialized"
+    );
+
+    // -- Cluster state (v0.3.1 horizontal scaling) ----------------------------
+    // A stable per-process node id (random UUID) and a shared set describing
+    // which singleton background tasks this replica currently leads. Both are
+    // exposed via `GET /cluster/status`. See `docs/HORIZONTAL_SCALING.md` for
+    // the full multi-replica deployment story.
+    let node_id = Arc::new(NodeId::new());
+    let cluster_state = ClusterState::new();
+    tracing::info!(
+        node_id = %node_id.uuid(),
+        "cluster node identity generated"
+    );
+
+    // Wrap a pool Arc once so every singleton task can share it without
+    // having to clone the inner `PgPool` for every spawn.
+    let cluster_pool = Arc::new(pool.clone());
+
+    // -- TTL Expiry Background Task (singleton via advisory lock) --------------
     // Every 30 seconds, scan for expired triples and retract them.
     // Uses the idx_triples_expiry partial index for efficient scans.
+    //
+    // Wrapped through `spawn_singleton_task` so that in a multi-replica
+    // deployment only ONE `ddb-server` process holds
+    // `pg_try_advisory_lock(LOCK_EXPIRY_SWEEPER)` at a time and actually
+    // runs the scan. The other replicas poll the lock every 30 s and wait
+    // for leadership. Single-node deployments are a trivial case: the one
+    // replica wins the lock immediately on startup.
     {
         let ttl_store = triple_store_arc.clone();
         let ttl_change_tx = change_tx.clone();
-        tokio::spawn(async move {
-            let mut interval = tokio::time::interval(Duration::from_secs(30));
-            loop {
-                interval.tick().await;
-                match ttl_store.expire_triples().await {
-                    Ok(expired_ids) => {
-                        if !expired_ids.is_empty() {
-                            tracing::info!(
-                                count = expired_ids.len(),
-                                "TTL expiry: retracted expired entities"
-                            );
-                            // Emit change events so WebSocket subscriptions update.
-                            for entity_id in &expired_ids {
-                                let _ = ttl_change_tx.send(ddb_server::sync::ChangeEvent {
-                                    tx_id: 0,
-                                    entity_ids: vec![entity_id.to_string()],
-                                    attributes: vec![":ttl/expired".to_string()],
-                                    entity_type: None,
-                                    actor_id: None,
-                                });
+        let _handle = spawn_singleton_task(
+            cluster_pool.clone(),
+            cluster_state.clone(),
+            LOCK_EXPIRY_SWEEPER,
+            Duration::from_secs(30),
+            "expiry_sweeper",
+            move |_pool| {
+                let ttl_store = ttl_store.clone();
+                let ttl_change_tx = ttl_change_tx.clone();
+                async move {
+                    match ttl_store.expire_triples().await {
+                        Ok(expired_ids) => {
+                            if !expired_ids.is_empty() {
+                                tracing::info!(
+                                    count = expired_ids.len(),
+                                    "TTL expiry: retracted expired entities"
+                                );
+                                for entity_id in &expired_ids {
+                                    let _ = ttl_change_tx.send(ddb_server::sync::ChangeEvent {
+                                        tx_id: 0,
+                                        entity_ids: vec![entity_id.to_string()],
+                                        attributes: vec![":ttl/expired".to_string()],
+                                        entity_type: None,
+                                        actor_id: None,
+                                    });
+                                }
                             }
                         }
-                    }
-                    Err(e) => {
-                        tracing::warn!(error = %e, "TTL expiry scan failed");
+                        Err(e) => {
+                            tracing::warn!(error = %e, "TTL expiry scan failed");
+                        }
                     }
                 }
-            }
-        });
-        tracing::info!("TTL expiry background task started (30s interval)");
+            },
+        );
+        tracing::info!(
+            "TTL expiry background task registered as singleton (30s interval, lock={:#x})",
+            LOCK_EXPIRY_SWEEPER
+        );
+    }
+
+    // -- Blockchain Anchor Background Task (Phase 5.3, slice 23/30) -----------
+    // Every `DARSH_ANCHOR_EVERY_N_TX` transactions, compute the
+    // Keccak-256 batch root over the most recent N `tx_merkle_roots`
+    // rows and submit it to the configured anchor backend (IPFS,
+    // Ethereum, or `none`). The receipt is persisted regardless of
+    // outcome so operators always have a complete audit trail.
+    //
+    // Only spawned when `DARSH_BLOCKCHAIN_ANCHOR` is set to something
+    // other than `none` — with anchoring disabled we'd just be writing
+    // `skipped` rows on a timer, which wastes SQL round-trips for no
+    // operational benefit.
+    {
+        let anchor_chain =
+            std::env::var("DARSH_BLOCKCHAIN_ANCHOR").unwrap_or_else(|_| "none".to_string());
+        let every_n: u64 = std::env::var("DARSH_ANCHOR_EVERY_N_TX")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(100);
+
+        if anchor_chain != "none" && every_n > 0 {
+            let anchor_pool = pool.clone();
+            let chain_for_task = anchor_chain.clone();
+            tokio::spawn(async move {
+                let anchorer = ddb_server::anchor::build_anchorer(&chain_for_task);
+
+                // Baseline: the `tx_id` we saw last cycle. We trigger a
+                // new anchor run every time the current max exceeds
+                // `baseline + every_n`. Using a DB-side counter keeps
+                // the task stateless across process restarts.
+                let mut baseline: i64 = match sqlx::query_scalar::<_, Option<i64>>(
+                    "SELECT MAX(tx_id) FROM tx_merkle_roots",
+                )
+                .fetch_one(&anchor_pool)
+                .await
+                {
+                    Ok(v) => v.unwrap_or(0),
+                    Err(e) => {
+                        tracing::warn!(error = %e, "anchor task: failed to read tx_merkle_roots baseline");
+                        0
+                    }
+                };
+
+                let mut interval = tokio::time::interval(Duration::from_secs(15));
+                loop {
+                    interval.tick().await;
+                    let current: Option<i64> = match sqlx::query_scalar::<_, Option<i64>>(
+                        "SELECT MAX(tx_id) FROM tx_merkle_roots",
+                    )
+                    .fetch_one(&anchor_pool)
+                    .await
+                    {
+                        Ok(v) => v,
+                        Err(e) => {
+                            tracing::warn!(error = %e, "anchor task: tx_merkle_roots probe failed");
+                            continue;
+                        }
+                    };
+
+                    let Some(current) = current else { continue };
+                    if current.saturating_sub(baseline) < every_n as i64 {
+                        continue;
+                    }
+
+                    match ddb_server::anchor::run_anchor_cycle(
+                        &anchor_pool,
+                        anchorer.as_ref(),
+                        every_n,
+                    )
+                    .await
+                    {
+                        Ok(receipt) => {
+                            tracing::info!(
+                                chain = %receipt.chain,
+                                status = %receipt.status,
+                                tx_count = receipt.tx_count,
+                                "anchor cycle completed"
+                            );
+                            baseline = current;
+                        }
+                        Err(e) => {
+                            tracing::warn!(error = %e, "anchor cycle failed");
+                        }
+                    }
+                }
+            });
+            tracing::info!(
+                chain = %anchor_chain,
+                every_n,
+                "blockchain anchor background task started"
+            );
+        } else {
+            tracing::info!("blockchain anchor disabled (DARSH_BLOCKCHAIN_ANCHOR=none)");
+        }
     }
 
     // -- Pool Utilization Monitor ------------------------------------------------
@@ -276,62 +557,28 @@ async fn main() -> Result<()> {
         tracing::info!("pool utilization monitor started (10s interval, warn >80%)");
     }
 
-    // -- Postgres LISTEN/NOTIFY for multi-process sync -------------------------
-    // A background task LISTENs on the `ddb_changes` channel. When another
-    // process mutates via set_triples, the NOTIFY fires and this task parses
-    // the payload (`{tx_id}:{entity_type}`) into ChangeEvents, feeding the
-    // existing broadcast channel so WebSocket subscribers get updates.
+    // -- Chunked Upload Cleanup (VYASA 7.1) -----------------------------------
+    // Every 5 minutes, delete `chunked_uploads` rows in `in_progress` state
+    // that are older than 24h and purge their `/tmp` staging directories.
     {
-        let listen_change_tx = change_tx.clone();
-        let listen_db_url = database_url.clone();
-        tokio::spawn(async move {
-            // Use a dedicated connection (not from the pool) for LISTEN.
-            let mut listener = match sqlx::postgres::PgListener::connect(&listen_db_url).await {
-                Ok(l) => l,
-                Err(e) => {
-                    tracing::error!(error = %e, "failed to create PgListener for ddb_changes");
-                    return;
-                }
-            };
-            if let Err(e) = listener.listen("ddb_changes").await {
-                tracing::error!(error = %e, "failed to LISTEN on ddb_changes channel");
-                return;
-            }
-            tracing::info!("LISTEN/NOTIFY: subscribed to ddb_changes channel");
-
-            loop {
-                match listener.recv().await {
-                    Ok(notification) => {
-                        let payload = notification.payload();
-                        // Parse "{tx_id}:{entity_type}"
-                        let (tx_id, entity_type) = match payload.split_once(':') {
-                            Some((tid, etype)) => {
-                                let tid: i64 = tid.parse().unwrap_or(0);
-                                (tid, Some(etype.to_string()))
-                            }
-                            None => {
-                                let tid: i64 = payload.parse().unwrap_or(0);
-                                (tid, None)
-                            }
-                        };
-                        tracing::debug!(tx_id, entity_type = ?entity_type, "received ddb_changes notification");
-                        let _ = listen_change_tx.send(ddb_server::sync::ChangeEvent {
-                            tx_id,
-                            entity_ids: vec![],
-                            attributes: vec![],
-                            entity_type,
-                            actor_id: None,
-                        });
-                    }
-                    Err(e) => {
-                        tracing::warn!(error = %e, "PgListener recv error, reconnecting in 1s");
-                        tokio::time::sleep(Duration::from_secs(1)).await;
-                    }
-                }
-            }
-        });
-        tracing::info!("LISTEN/NOTIFY background task started for multi-process sync");
+        let cleanup_pool = pool.clone();
+        ddb_server::api::chunked_upload::spawn_cleanup_task(cleanup_pool);
+        tracing::info!("chunked upload cleanup task started (5min interval, 24h stale threshold)");
     }
+
+    // -- Postgres LISTEN/NOTIFY for multi-process / multi-replica sync --------
+    // A background task LISTENs on the `ddb_changes` channel. When another
+    // process (or replica) mutates via set_triples, the NOTIFY fires and
+    // the payload is parsed into a ChangeEvent that feeds the local
+    // broadcast channel so WebSocket subscribers attached to THIS replica
+    // see the event — giving us cross-replica WS fanout for free.
+    //
+    // The listener lives in `cluster::notify_listener` so the horizontal-
+    // scaling primitives all sit in one module. Unlike the prior inline
+    // version, the extracted task reconnects automatically if the
+    // listener session dies. See `docs/HORIZONTAL_SCALING.md`.
+    let _notify_handle = cluster::notify_listener::spawn(database_url.clone(), change_tx.clone());
+    tracing::info!("LISTEN/NOTIFY background task started (cluster::notify_listener)");
 
     // Pub/sub engine for keyspace notifications (shared between WS and REST).
     let (pubsub_engine, _pubsub_rx) = ddb_server::sync::pubsub::PubSubEngine::new(4096);
@@ -340,7 +587,40 @@ async fn main() -> Result<()> {
     let (change_feed, _change_feed_rx) = ddb_server::sync::change_feed::ChangeFeed::with_defaults();
 
     // Live query manager for LIVE SELECT subscriptions.
-    let (live_query_manager, _live_query_rx) = ddb_server::sync::live_query::LiveQueryManager::new(4096);
+    // Slice 28/30 — the same Arc is shared between the WS handler and
+    // the REST DarshanQL handler so HTTP `LIVE SELECT` requests with
+    // `X-Subscription-Upgrade` register against the identical
+    // subscription pool that powers the WebSocket channel.
+    let (live_query_manager, _live_query_rx) =
+        ddb_server::sync::live_query::LiveQueryManager::new(4096);
+    let live_query_manager_for_rest = live_query_manager.clone();
+
+    // -- Rule Engine (built early so WS handler can fire it inside the same
+    //    transaction as user writes, matching the REST mutation path).
+    //    Path comes from typed DdbConfig (Slice 17), falling back to the
+    //    legacy DDB_RULES_FILE env var for backward compatibility.
+    let rules_path = std::path::PathBuf::from(if !cfg.rules.file_path.is_empty() {
+        cfg.rules.file_path.clone()
+    } else {
+        std::env::var("DDB_RULES_FILE").unwrap_or_else(|_| "./darshan/rules.json".to_string())
+    });
+    let rules = ddb_server::rules::load_rules_from_file(&rules_path).unwrap_or_else(|e| {
+        tracing::error!(error = %e, "failed to load rules, continuing without rule engine");
+        Vec::new()
+    });
+    let rule_engine: Option<Arc<ddb_server::rules::RuleEngine>> = if rules.is_empty() {
+        None
+    } else {
+        Some(Arc::new(ddb_server::rules::RuleEngine::new(
+            rules,
+            triple_store_arc.clone(),
+        )))
+    };
+
+    // Shared hot query cache — the same Arc is handed to both the WS handler
+    // (for invalidation on mutation) and the REST `AppState` (for reads), so
+    // a WS mutation evicts subsequent REST reads and vice versa.
+    let query_cache = Arc::new(ddb_server::cache::QueryCache::from_env());
 
     let ws_state = WsState {
         sessions: sync_sessions.clone(),
@@ -353,6 +633,9 @@ async fn main() -> Result<()> {
         pubsub: pubsub_engine.clone(),
         live_queries: live_query_manager,
         change_feed,
+        rule_engine: rule_engine.clone(),
+        query_cache: query_cache.clone(),
+        subscription_snapshots: Arc::new(dashmap::DashMap::new()),
     };
 
     tracing::info!("sync engine initialized");
@@ -424,9 +707,37 @@ async fn main() -> Result<()> {
         tracing::info!("embedding pipeline disabled (DDB_EMBEDDING_PROVIDER=none or unset)");
     }
 
+    // -- Agent Memory Embedding Worker (Phase 2.5) ----------------------------
+    // Spawns a background task that fills `embedding`/`content_tokens` on
+    // `memory_entries` and `agent_facts` rows. The schema is assumed to exist
+    // from the Phase 2 migration (slice 12). If it doesn't, the worker logs a
+    // warning on its first tick and keeps retrying — it never crashes the
+    // server.
+    {
+        let provider_kind = std::env::var("DARSH_EMBEDDING_PROVIDER")
+            .unwrap_or_else(|_| "none".to_string())
+            .to_lowercase();
+        if provider_kind != "none" && !provider_kind.is_empty() {
+            let provider: std::sync::Arc<dyn ddb_agent_memory::EmbeddingProvider> =
+                std::sync::Arc::from(ddb_agent_memory::from_env());
+            tracing::info!(
+                provider = %provider_kind,
+                model = provider.model(),
+                dimensions = provider.dimensions(),
+                "agent-memory embedding worker starting"
+            );
+            let _handle = ddb_agent_memory::spawn_embedding_worker(pool.clone(), provider);
+        } else {
+            tracing::info!(
+                "agent-memory embedding worker disabled (DARSH_EMBEDDING_PROVIDER=none or unset)"
+            );
+        }
+    }
+
     // -- Storage Engine -------------------------------------------------------
-    let storage_dir =
-        std::env::var("DDB_STORAGE_DIR").unwrap_or_else(|_| "./darshan/storage".to_string());
+    // `storage.path` is the typed setting; `DDB_STORAGE_DIR` stays as an
+    // escape hatch until the storage subsystem is migrated.
+    let storage_dir = std::env::var("DDB_STORAGE_DIR").unwrap_or_else(|_| cfg.storage.path.clone());
     let storage_backend = Arc::new(
         ddb_server::storage::LocalFsBackend::new(&storage_dir).unwrap_or_else(|e| {
             tracing::warn!("Failed to create storage backend at {storage_dir}: {e}, using /tmp");
@@ -459,6 +770,13 @@ async fn main() -> Result<()> {
         std::env::var("DDB_FUNCTIONS_DIR").unwrap_or_else(|_| "./darshan/functions".to_string());
     let functions_dir_path = std::path::PathBuf::from(&functions_dir);
 
+    // v0.3.2.1: shared DdbCache instance — both AppState (REST/RESP3 dispatchers)
+    // and MluaContext (ddb.kv.* host API) hold this Arc, so Lua writes from a
+    // server function are visible to subsequent REST GETs and vice versa. Built
+    // here (before AppState construction) so the same handle threads into both
+    // the function runtime and AppState below.
+    let shared_ddb_cache = std::sync::Arc::new(ddb_cache::DdbCache::new());
+
     let (fn_registry, fn_runtime) = if functions_dir_path.is_dir() {
         // Harness lives next to the functions directory.
         let harness_path = functions_dir_path
@@ -482,16 +800,112 @@ async fn main() -> Result<()> {
                         "function registry initialized"
                     );
 
-                    let process_runtime = ddb_server::functions::runtime::ProcessRuntime::new(
-                        ddb_server::functions::runtime::ProcessKind::Node,
-                        harness_path,
-                        functions_dir_path,
-                        ddb_server::functions::ResourceLimits::default().max_concurrency,
-                    );
+                    // Function runtime backend selection.
+                    //
+                    // DDB_FUNCTION_RUNTIME picks one of:
+                    //   - "v8"  : embedded V8 isolate (requires --features v8)
+                    //   - "mlua": embedded Lua 5.4 VM   (requires --features mlua-runtime)
+                    //   - default / unset / unknown: subprocess (Deno or Node) — the
+                    //     production-safe path that has always been the v0.3.x
+                    //     default.
+                    //
+                    // VYASA (V8) was the v0.3.1 contribution from
+                    // Darshankumar Joshi. mlua landed in v0.3.2 and ships
+                    // the embedded Lua 5.4 path with a hardened sandbox
+                    // and the wired `ddb.triples.*` host API.
+                    let runtime_choice = std::env::var("DDB_FUNCTION_RUNTIME")
+                        .map(|v| v.to_ascii_lowercase())
+                        .unwrap_or_default();
+                    let want_v8 = runtime_choice == "v8";
+                    let want_mlua = runtime_choice == "mlua";
+
+                    let default_limits = ddb_server::functions::ResourceLimits::default();
+                    let max_conc = default_limits.max_concurrency;
+
+                    let backend: Box<dyn ddb_server::functions::RuntimeBackend> = {
+                        // mlua path — gated on the cargo feature.
+                        #[cfg(feature = "mlua-runtime")]
+                        {
+                            if want_mlua {
+                                tracing::info!(
+                                    backend = "mlua-embedded",
+                                    "v0.3.2: using embedded Lua 5.4 runtime for server functions \
+                                     (ddb.triples.* wired against {}, dialect={})",
+                                    store_dyn.backend_name(),
+                                    dialect_dyn.name()
+                                );
+                                let mlua_ctx = ddb_server::functions::mlua::MluaContext {
+                                    store: store_dyn.clone(),
+                                    dialect: dialect_dyn.clone(),
+                                    cache: shared_ddb_cache.clone(),
+                                };
+                                Some(Box::new(
+                                    ddb_server::functions::MluaRuntime::new_with_context(
+                                        functions_dir_path.clone(),
+                                        max_conc,
+                                        Some(mlua_ctx),
+                                    )
+                                    .map_err(|e| {
+                                        ddb_server::error::DarshJError::Internal(format!(
+                                            "MluaRuntime construction failed: {e}"
+                                        ))
+                                    })?,
+                                )
+                                    as Box<dyn ddb_server::functions::RuntimeBackend>)
+                            } else {
+                                None
+                            }
+                        }
+                        #[cfg(not(feature = "mlua-runtime"))]
+                        {
+                            if want_mlua {
+                                tracing::warn!(
+                                    "DDB_FUNCTION_RUNTIME=mlua requested but binary was built without --features mlua-runtime; falling back to subprocess"
+                                );
+                            }
+                            None::<Box<dyn ddb_server::functions::RuntimeBackend>>
+                        }
+                    }
+                    .or_else(|| {
+                        // v8 path — gated on the cargo feature.
+                        #[cfg(feature = "v8")]
+                        {
+                            if want_v8 {
+                                tracing::info!(
+                                    backend = "v8-embedded",
+                                    "VYASA: using embedded V8 isolate runtime for server functions"
+                                );
+                                return Some(Box::new(ddb_server::functions::V8Runtime::new(
+                                    functions_dir_path.clone(),
+                                    max_conc,
+                                ))
+                                    as Box<dyn ddb_server::functions::RuntimeBackend>);
+                            }
+                            None
+                        }
+                        #[cfg(not(feature = "v8"))]
+                        {
+                            if want_v8 {
+                                tracing::warn!(
+                                    "DDB_FUNCTION_RUNTIME=v8 requested but binary was built without --features v8; falling back to subprocess"
+                                );
+                            }
+                            None::<Box<dyn ddb_server::functions::RuntimeBackend>>
+                        }
+                    })
+                    .unwrap_or_else(|| {
+                        // Default: subprocess.
+                        Box::new(ddb_server::functions::runtime::ProcessRuntime::new(
+                            ddb_server::functions::runtime::ProcessKind::Node,
+                            harness_path.clone(),
+                            functions_dir_path.clone(),
+                            max_conc,
+                        ))
+                    });
 
                     let runtime = ddb_server::functions::FunctionRuntime::new(
-                        Box::new(process_runtime),
-                        ddb_server::functions::ResourceLimits::default(),
+                        backend,
+                        default_limits,
                         database_url.clone(),
                         format!("http://127.0.0.1:{port}"),
                     );
@@ -515,22 +929,8 @@ async fn main() -> Result<()> {
         (None, None)
     };
 
-    // -- Rule Engine ----------------------------------------------------------
-    let rules_path = std::path::PathBuf::from(
-        std::env::var("DDB_RULES_FILE").unwrap_or_else(|_| "./darshan/rules.json".to_string()),
-    );
-    let rules = ddb_server::rules::load_rules_from_file(&rules_path).unwrap_or_else(|e| {
-        tracing::error!(error = %e, "failed to load rules, continuing without rule engine");
-        Vec::new()
-    });
-    let rule_engine = if rules.is_empty() {
-        None
-    } else {
-        Some(Arc::new(ddb_server::rules::RuleEngine::new(
-            rules,
-            triple_store_arc.clone(),
-        )))
-    };
+    // Rule engine was built earlier (before ws_state) so the WS mutation
+    // handler can fire it inside the same transaction as user writes.
 
     // -- REST API State -------------------------------------------------------
     let mut app_state = AppState::with_pool(
@@ -541,6 +941,13 @@ async fn main() -> Result<()> {
         rate_limiter.clone(),
         storage_engine,
     );
+    // Share the same query cache with the WS handler so mutations over either
+    // channel invalidate reads on the other.
+    app_state.query_cache = query_cache.clone();
+    // v0.3.2.1: replace AppState's freshly-constructed DdbCache with the shared
+    // handle that the function runtime (mlua ddb.kv.* API) also holds, so Lua
+    // writes are visible to subsequent REST GETs and vice versa.
+    app_state.ddb_cache = shared_ddb_cache.clone();
     if let Some(engine) = rule_engine {
         app_state = app_state.with_rules(engine);
     }
@@ -584,14 +991,58 @@ async fn main() -> Result<()> {
         }
     }
 
-    // -- CORS Layer -----------------------------------------------------------
-    let dev_mode = std::env::var("DDB_DEV")
-        .map(|v| v == "1" || v == "true")
-        .unwrap_or(false);
+    // -- Slice 28/30 — Strict Schema Enforcer (Phase 9 SurrealDB parity) -------
+    // Gated by `DdbConfig.schema.schema_mode`. When the mode is
+    // "strict" the enforcer short-circuits writes that violate
+    // `schema_definitions`; in any other mode it still loads
+    // definitions so the admin routes can manage them, but
+    // validation always passes.
+    // The slice's gating predicate is
+    // `DdbConfig.schema.schema_mode == "strict"`. The v0.2.0 baseline
+    // does not yet thread `DdbConfig` through `main.rs`, so we read
+    // the same value from `DARSH_SCHEMA__SCHEMA_MODE` (the canonical
+    // env var the typed loader would consume) with a `DDB_SCHEMA_MODE`
+    // alias for ergonomic ops use.
+    let schema_mode_env = std::env::var("DARSH_SCHEMA__SCHEMA_MODE")
+        .or_else(|_| std::env::var("DDB_SCHEMA_MODE"))
+        .unwrap_or_else(|_| "flexible".to_string());
+    let strict_mode_active = schema_mode_env.eq_ignore_ascii_case("strict");
+    match ddb_server::schema::strict::StrictSchemaEnforcer::new(pool.clone(), strict_mode_active)
+        .await
+    {
+        Ok(enforcer) => {
+            app_state = app_state.with_strict_schema(enforcer);
+            tracing::info!(
+                strict = strict_mode_active,
+                "Strict schema enforcer initialized (slice 28/30)"
+            );
+        }
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "Failed to initialize strict schema enforcer, continuing without strict mode"
+            );
+        }
+    }
 
-    // Determine allowed origins: DDB_CORS_ORIGINS takes precedence, then
+    // Slice 28/30 — share the live-query manager with the REST
+    // DarshanQL handler so `LIVE SELECT` statements submitted over
+    // HTTP (with the `X-Subscription-Upgrade` header) register
+    // against the same `LiveQueryManager` as WebSocket clients.
+    app_state = app_state.with_live_queries(live_query_manager_for_rest);
+
+    // Bootstrap the `admin_audit_log` table so the SQL passthrough
+    // handler can always append audit rows even on fresh installs.
+    if let Err(e) = ddb_server::api::sql_passthrough::ensure_audit_schema(&pool).await {
+        tracing::warn!(error = %e, "Failed to bootstrap admin_audit_log table");
+    }
+
+    // -- CORS Layer -----------------------------------------------------------
+    let dev_mode = cfg.dev.mode;
+
+    // Determine allowed origins: cfg.cors.origins takes precedence, then
     // dev-mode defaults to localhost, production defaults to deny-all.
-    let cors_origins = std::env::var("DDB_CORS_ORIGINS").unwrap_or_default();
+    let cors_origins = cfg.cors.origins.join(",");
 
     let cors = if cors_origins.trim() == "*" {
         // Explicit wildcard: allow all origins regardless of mode.
@@ -651,35 +1102,68 @@ async fn main() -> Result<()> {
         .unwrap_or((0,));
     tracing::info!(triples = triple_count.0, "triple store stats");
 
-    // -- Shared state for health endpoints ------------------------------------
+    // -- Shared state for legacy health endpoints -----------------------------
     let server_started_at = Instant::now();
-    let health_pool = pool.clone();
     let health_pool_ready = pool.clone();
-    let health_ws_sessions = sync_sessions.clone();
     let health_ws_sessions_ready = sync_sessions.clone();
-    let health_pool_stats = app_state.pool_stats.clone();
+    let legacy_health_pool = pool.clone();
+    let legacy_ws_sessions = sync_sessions.clone();
+    let legacy_pool_stats = app_state.pool_stats.clone();
 
     // -- Router Assembly ------------------------------------------------------
     let api_router = build_router(app_state);
 
+    // Phase 10 observability router: /health, /ready, /live — mounted BEFORE
+    // auth middleware so load balancers and orchestrators can probe without a
+    // token. Rendered by `ddb_server::observability::health`.
+    let health_state = ddb_server::observability::HealthState::new(pool.clone());
+    let phase10_health = ddb_server::observability::health_router(health_state);
+
+    // Phase 10 metrics router: /metrics (Prometheus text exposition, IP
+    // allow-list enforced via DDB_METRICS_ALLOWED_IPS).
+    let phase10_metrics = ddb_server::observability::metrics_router(
+        metrics_handle.clone(),
+        metrics_allow_list.clone(),
+    );
+
+    // Cluster status router (v0.3.1 horizontal scaling). Mounted at the
+    // top level, next to /health, so operators and load balancers can
+    // probe without an auth token.
+    let cluster_status = cluster_status_router(ClusterStatusState {
+        node_id: node_id.clone(),
+        cluster_state: cluster_state.clone(),
+    });
+
     let app = axum::Router::new()
         // REST API routes under /api
         .nest("/api", api_router)
+        // Embedded admin dashboard (Vite SPA baked into the binary via
+        // include_dir!). Mounted at the top level so /admin/* serves the
+        // dashboard while /api/admin/{schema,functions,...} JSON endpoints
+        // remain reachable inside the build_router. — Slice 19/30
+        .merge(admin_router())
         // WebSocket route at /ws
         .merge(ws_routes(ws_state))
-        // Health check at root
+        // Phase 10: /health /ready /live — mounted before auth middleware.
+        .merge(phase10_health)
+        // Phase 10: /metrics (Prometheus text exposition).
+        .merge(phase10_metrics)
+        // Cluster status at /cluster/status (v0.3.1 horizontal scaling).
+        .merge(cluster_status)
+        // Legacy rich health shape at /health/full for dashboards that still
+        // want pool/ws/triple counts.
         .route(
-            "/health",
+            "/health/full",
             axum::routing::get(move || {
                 health_check(
-                    health_pool.clone(),
-                    health_ws_sessions.clone(),
+                    legacy_health_pool.clone(),
+                    legacy_ws_sessions.clone(),
                     server_started_at,
-                    health_pool_stats.clone(),
+                    legacy_pool_stats.clone(),
                 )
             }),
         )
-        // Readiness probe for K8s
+        // Legacy readiness probe for K8s
         .route(
             "/health/ready",
             axum::routing::get(move || {
@@ -695,7 +1179,15 @@ async fn main() -> Result<()> {
             }),
         )
         // -- Middleware stack (outermost = runs first) -------------------------
-        // Structured request logging
+        // Phase 10: HTTP Prometheus counter + histogram observer.
+        .layer(axum::middleware::from_fn(
+            ddb_server::observability::http_metrics_middleware,
+        ))
+        // Phase 10: request_id + JSON span per request.
+        .layer(axum::middleware::from_fn(
+            ddb_server::observability::request_id_middleware,
+        ))
+        // Structured request logging (legacy)
         .layer(middleware::from_fn(request_logging_middleware))
         // Catch panics in handlers -> 500
         .layer(CatchPanicLayer::custom(handle_panic))
@@ -708,14 +1200,61 @@ async fn main() -> Result<()> {
         .layer(cors);
 
     // -- Start Server ---------------------------------------------------------
-    let addr = SocketAddr::from(([0, 0, 0, 0], port));
+    // Resolve the bind address from the typed config tree first
+    // (Slice 17, PR #3): in dev mode, `cfg.dev.bind_addr` takes
+    // precedence; otherwise `cfg.server.bind_addr`.  Fall back to the
+    // legacy flat `DDB_BIND_ADDR` env var only if neither typed field
+    // is populated, mirroring the priority pattern used for
+    // `database.url` earlier in main().
+    //
+    // Dev mode refuses to bind anything other than loopback so a leaked
+    // DDB_DEV=1 env var cannot accidentally expose the bearer-token bypass
+    // to a non-local caller.
+    let bind_host: String = if dev_mode {
+        if !cfg.dev.bind_addr.is_empty() {
+            cfg.dev.bind_addr.clone()
+        } else if !cfg.server.bind_addr.is_empty() {
+            cfg.server.bind_addr.clone()
+        } else {
+            std::env::var("DDB_BIND_ADDR").unwrap_or_else(|_| "127.0.0.1".into())
+        }
+    } else if !cfg.server.bind_addr.is_empty() {
+        cfg.server.bind_addr.clone()
+    } else {
+        std::env::var("DDB_BIND_ADDR").unwrap_or_else(|_| "0.0.0.0".into())
+    };
+    if dev_mode {
+        let is_loopback = matches!(
+            bind_host.as_str(),
+            "127.0.0.1" | "::1" | "localhost" | "0.0.0.0"
+        );
+        if !is_loopback {
+            return Err(ddb_server::error::DarshJError::Internal(format!(
+                "DDB_DEV=1 refuses to bind non-loopback address {bind_host}. \
+                 Unset DDB_DEV or set DDB_BIND_ADDR=127.0.0.1."
+            )));
+        }
+        if bind_host == "0.0.0.0" {
+            tracing::warn!(
+                "DDB_DEV=1 active with bind 0.0.0.0 — dev bypass token only \
+                 accepted from loopback sources (requests with proxy headers \
+                 are rejected)."
+            );
+        }
+    }
+    let bind_ip: std::net::IpAddr = bind_host
+        .parse()
+        .or_else(|_| "0.0.0.0".parse())
+        .expect("default bind parse");
+    let addr = SocketAddr::from((bind_ip, port));
 
-    // Optional TLS termination: if DDB_TLS_CERT and DDB_TLS_KEY are set,
-    // bind with rustls for native TLS 1.2/1.3 support. Otherwise, plain HTTP.
-    let tls_cert = std::env::var("DDB_TLS_CERT");
-    let tls_key = std::env::var("DDB_TLS_KEY");
+    // Optional TLS termination: if both `server.tls_cert_path` and
+    // `server.tls_key_path` are configured, bind with rustls. Otherwise,
+    // plain HTTP.
+    let tls_cert = cfg.server.tls_cert_path.clone();
+    let tls_key = cfg.server.tls_key_path.clone();
 
-    if let (Ok(cert_path), Ok(key_path)) = (tls_cert, tls_key) {
+    if let (Some(cert_path), Some(key_path)) = (tls_cert, tls_key) {
         tracing::info!("TLS enabled: loading certificate from {cert_path}");
 
         let rustls_config =

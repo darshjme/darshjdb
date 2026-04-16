@@ -3,12 +3,21 @@ resolver = "2"
 members = [
     "packages/server",
     "packages/cli",
+    "packages/cache",
+    "packages/cache-server",
+    "packages/agent-memory",
 ]
 
 [workspace.package]
 version = "0.4.0"
 edition = "2024"
 license = "MIT"
+authors = ["Darshankumar Joshi <darshjme@gmail.com>"]
+homepage = "https://db.darshj.me"
+repository = "https://github.com/darshjme/darshjdb"
+keywords = ["database", "baas", "agent-memory", "redis", "vector-search"]
+categories = ["database", "web-programming", "asynchronous"]
+description = "Self-hosted BaaS: replaces PostgreSQL+Redis+Pinecone+MCP memory. Agent LLM unlimited context. Single Rust binary. Created by Darshankumar Joshi."
 
 [workspace.dependencies]
 tokio = { version = "1", features = ["full"] }
@@ -21,13 +30,13 @@ thiserror = "2"
 anyhow = "1"
 lru = "0.12"
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "fmt"] }
 chrono = { version = "0.4", features = ["serde"] }
 sha2 = "0.10"
 sha1 = "0.10"
 argon2 = "0.5"
 jsonwebtoken = "9"
-oauth2 = "5.0.0-rc.1"
+oauth2 = "5.0.0"
 data-encoding = "2"
 rand = "0.8"
 dashmap = "6"
@@ -36,10 +45,13 @@ base64 = "0.22"
 url = "2"
 http = "1"
 tower = { version = "0.5", features = ["util"] }
-tower-http = { version = "0.6", features = ["cors", "catch-panic", "timeout", "trace"] }
+tower-http = { version = "0.6", features = ["cors", "catch-panic", "timeout", "trace", "compression-gzip"] }
 axum-extra = { version = "0.10", features = ["typed-header"] }
 pin-project-lite = "0.2"
-notify = { version = "7", features = ["macos_fsevent"] }
+# `notify` picks the right platform backend automatically — no platform-specific
+# feature should ever be forced here or the crate fails to compile on the other
+# OSes. macos_fsevent was set explicitly prior to v0.3.1 and broke Linux builds.
+notify = "7"
 cron = "0.15"
 rmp-serde = "1"
 tokio-stream = { version = "0.1", features = ["sync"] }
@@ -62,3 +74,45 @@ comfy-table = "7"
 ctrlc = { version = "3", features = ["termination"] }
 self_update = "0.41"
 async-trait = "0.1"
+csv = "1.3"
+
+# Slices 8-11 — cache tier (DashMap L1, DdbCache + RESP3 server + HTTP REST)
+tokio-util = { version = "0.7", features = ["codec"] }
+bytes = "1"
+zstd = "0.13"
+lz4_flex = "0.11"
+probabilistic-collections = "0.7"
+metrics = "0.23"
+
+# Grand Transformation dependencies (slice 1/30 — dependency manifest)
+pgvector = { version = "0.4", features = ["sqlx"] }
+rusqlite = { version = "0.31", features = ["bundled", "serde_json"] }
+pg_embed = { package = "pg-embed", version = "1", default-features = false, features = ["rt_tokio_migrate"] }
+tiktoken-rs = "0.6"
+# Slice 16 upgrades async-openai to 0.34 with the rustls `embedding` feature
+# and opts out of native-tls defaults for cross-platform rustls-only builds.
+async-openai = { version = "0.34", default-features = false, features = ["full", "rustls"] }
+image = { version = "0.25", features = ["jpeg", "png", "webp", "avif"] }
+imagesize = "0.13"
+infer = "0.16"
+petgraph = { version = "0.6", features = ["serde-1"] }
+sha3 = "0.10"
+ethers-core = { version = "2" }
+tiny-keccak = { version = "2", features = ["keccak"] }
+ipfs-api-backend-hyper = { version = "0.6" }
+include_dir = "0.7"
+mime_guess = "2"
+# Slice 17 typed DdbConfig hierarchy needs config 0.15 with the `convert-case`
+# feature so enum deserialisation works from TOML and env var sources.
+config = { version = "0.15", default-features = false, features = ["toml", "convert-case"] }
+dotenvy = "0.15"
+metrics-exporter-prometheus = "0.15"
+# Phase 0.3 (slice 4/30) — SMTP delivery for magic-link authentication.
+# Declared with rustls features for cross-slice SMTP usage.
+lettre = { version = "0.11", default-features = false, features = ["smtp-transport", "tokio1-rustls-tls", "builder", "tokio1", "hostname"] }
+portpicker = "0.1"
+
+# Dev / test deps (workspace-shared, activated via member crates' [dev-dependencies])
+wiremock = "0.6"
+fake = { version = "2", features = ["derive"] }
+proptest = "1"

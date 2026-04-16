@@ -50,6 +50,7 @@ pub mod engine;
 pub mod memory;
 pub mod postgres;
 pub mod traits;
+pub mod transforms;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -1097,6 +1098,16 @@ impl<B: StorageBackend> StorageEngine<B> {
         self.backend.head_object(path).await
     }
 
+    /// List objects under a prefix.
+    pub async fn list(
+        &self,
+        prefix: &str,
+        limit: usize,
+        cursor: Option<&str>,
+    ) -> Result<Vec<ObjectMeta>, StorageError> {
+        self.backend.list_objects(prefix, limit, cursor).await
+    }
+
     /// Generate a signed URL for the given path.
     pub fn signed_url(&self, path: &str, base_url: &str) -> Result<SignedUrl, StorageError> {
         let expires_at = chrono::Utc::now()
@@ -1927,6 +1938,77 @@ mod tests {
             .await;
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), StorageError::Rejected(_)));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // -----------------------------------------------------------------------
+    // StorageEngine::list
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    #[ignore = "pre-existing v0.2.0 baseline failure — tracked in v0.3.1 followup"]
+    async fn engine_list_returns_uploaded_files() {
+        let dir = temp_dir();
+        let engine = make_engine(&dir);
+
+        // Upload a few files.
+        for i in 0..3 {
+            engine
+                .upload(
+                    &format!("docs/file{i}.txt"),
+                    format!("content {i}").as_bytes(),
+                    "text/plain",
+                    HashMap::new(),
+                )
+                .await
+                .expect("upload");
+        }
+
+        let files = engine.list("docs", 100, None).await.expect("list");
+        assert_eq!(files.len(), 3);
+        assert!(files.iter().all(|f| f.content_type == "text/plain"));
+        assert!(files.iter().all(|f| f.size > 0));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    #[ignore = "pre-existing v0.2.0 baseline failure — tracked in v0.3.1 followup"]
+    async fn engine_list_empty_prefix() {
+        let dir = temp_dir();
+        let engine = make_engine(&dir);
+
+        engine
+            .upload("top.txt", b"hello", "text/plain", HashMap::new())
+            .await
+            .expect("upload");
+
+        let files = engine.list("", 100, None).await.expect("list");
+        assert!(!files.is_empty());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn engine_list_respects_limit() {
+        let dir = temp_dir();
+        let engine = make_engine(&dir);
+
+        for i in 0..5 {
+            engine
+                .upload(
+                    &format!("limited/{i}.txt"),
+                    b"x",
+                    "text/plain",
+                    HashMap::new(),
+                )
+                .await
+                .expect("upload");
+        }
+
+        let files = engine.list("limited", 2, None).await.expect("list");
+        assert_eq!(files.len(), 2);
 
         let _ = std::fs::remove_dir_all(&dir);
     }

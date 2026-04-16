@@ -115,7 +115,7 @@ pub fn require_admin_role(headers: &HeaderMap) -> Result<(), ApiError> {
 }
 
 /// Extract an [`AuthContext`] by validating the JWT via the [`SessionManager`].
-pub fn extract_auth_context(headers: &HeaderMap, state: &AppState) -> Result<AuthContext, ApiError> {
+pub async fn extract_auth_context(headers: &HeaderMap, state: &AppState) -> Result<AuthContext, ApiError> {
     let token = extract_bearer_token(headers)?;
     let ip = headers
         .get("x-forwarded-for")
@@ -132,6 +132,7 @@ pub fn extract_auth_context(headers: &HeaderMap, state: &AppState) -> Result<Aut
     state
         .session_manager
         .validate_token(&token, ip, ua, dfp)
+        .await
         .map_err(|e| ApiError::unauthenticated(format!("Invalid token: {e}")))
 }
 

@@ -32,6 +32,9 @@ pub struct ActiveSubscription {
 
     /// Transaction ID of the last result sent, for cursor-based catch-up.
     pub last_tx: i64,
+
+    /// When this subscription was created (epoch millis for serde compatibility).
+    pub created_at_ms: u64,
 }
 
 /// Per-connection session state.
@@ -82,6 +85,10 @@ impl SyncSession {
     /// Add a subscription. Returns the assigned [`SubId`].
     pub fn add_subscription(&mut self, query_hash: u64, query_ast: Value) -> SubId {
         let sub_id = SubId::new_v4();
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
         self.subscriptions.insert(
             sub_id,
             ActiveSubscription {
@@ -89,6 +96,7 @@ impl SyncSession {
                 query_ast,
                 last_result_hash: 0,
                 last_tx: self.last_tx,
+                created_at_ms: now_ms,
             },
         );
         sub_id

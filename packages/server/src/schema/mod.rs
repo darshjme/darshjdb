@@ -22,6 +22,9 @@
 //! in-memory via [`SchemaRegistry`].
 
 pub mod migration;
+// Slice 28/30 — Phase 9 SurrealDB parity: strict-mode schema enforcement
+// gated by `DdbConfig.schema.schema_mode == "strict"`.
+pub mod strict;
 pub mod validator;
 
 use serde::{Deserialize, Serialize};
@@ -534,11 +537,7 @@ impl SchemaRegistry {
     }
 
     /// Remove a field definition from a table.
-    pub async fn remove_field(
-        &self,
-        table: &str,
-        field_name: &str,
-    ) -> crate::error::Result<()> {
+    pub async fn remove_field(&self, table: &str, field_name: &str) -> crate::error::Result<()> {
         if let Some(mut entry) = self.tables.get_mut(table) {
             let schema = entry.value_mut();
             schema.fields.remove(field_name);
@@ -666,7 +665,10 @@ mod tests {
     #[test]
     fn field_type_parse_union() {
         let ft = FieldType::parse("string | int").unwrap();
-        assert_eq!(ft, FieldType::Union(vec![FieldType::String, FieldType::Int]));
+        assert_eq!(
+            ft,
+            FieldType::Union(vec![FieldType::String, FieldType::Int])
+        );
     }
 
     #[test]
@@ -701,8 +703,7 @@ mod tests {
         let schema = TableSchema::schemafull("users")
             .define_field(FieldDefinition::new("name", FieldType::String).required())
             .define_field(
-                FieldDefinition::new("age", FieldType::Int)
-                    .with_default(serde_json::json!(0)),
+                FieldDefinition::new("age", FieldType::Int).with_default(serde_json::json!(0)),
             )
             .define_index(IndexDefinition {
                 name: "idx_email".into(),

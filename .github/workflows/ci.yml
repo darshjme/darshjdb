@@ -33,7 +33,21 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
       - uses: Swatinem/rust-cache@v2
+      # Slice 19/30: the admin dashboard is embedded into ddb-server at
+      # compile time via include_dir!, so it must be built before any
+      # cargo command that touches the lib (clippy, test, build). Build
+      # it once here and let every rust step reuse the dist.
+      - name: Build admin dashboard (embedded into ddb-server)
+        run: |
+          npm ci --workspace=packages/client-core \
+                 --workspace=packages/react \
+                 --workspace=packages/admin
+          npm run build --workspace=packages/admin
       - name: Check formatting
         run: cargo fmt --all -- --check
       - name: Clippy lints

@@ -358,6 +358,7 @@ pub async fn auth_signout(
     let auth_ctx = state
         .session_manager
         .validate_token(&token, ip, ua, dfp)
+        .await
         .map_err(|e| ApiError::unauthenticated(format!("Invalid token: {e}")))?;
 
     state
@@ -396,6 +397,7 @@ pub async fn auth_me(
     let auth_ctx = state
         .session_manager
         .validate_token(&token, ip, ua, dfp)
+        .await
         .map_err(|e| ApiError::unauthenticated(format!("Invalid token: {e}")))?;
 
     let user_row: Option<(

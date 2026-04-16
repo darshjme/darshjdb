@@ -41,7 +41,7 @@ pub async fn query_handler(
     headers: HeaderMap,
     axum::Json(body): axum::Json<QueryRequest>,
 ) -> Result<Response, ApiError> {
-    let auth_ctx = extract_auth_context(&headers, &state)?;
+    let auth_ctx = extract_auth_context(&headers, &state).await?;
 
     let start = Instant::now();
 

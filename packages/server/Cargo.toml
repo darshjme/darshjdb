@@ -3,7 +3,13 @@ name = "ddb-server"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "DarshJDB server — triple store, DarshJQL query engine, and reactive tracking"
+authors.workspace = true
+homepage.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "DarshJDB server — triple store, DarshJQL query engine, and reactive tracking. Created by Darshankumar Joshi."
+publish = true
 
 [dependencies]
 tokio.workspace = true
@@ -47,9 +53,92 @@ aws-config.workspace = true
 aws-credential-types.workspace = true
 aws-types.workspace = true
 async-trait.workspace = true
+csv.workspace = true
+config.workspace = true
+dotenvy.workspace = true
+dirs.workspace = true
+
+# Phase 10 — Observability (slice 29/30): Prometheus metrics + JSON logging + request_id.
+metrics.workspace = true
+metrics-exporter-prometheus.workspace = true
+
+# Slice 19/30 — embedded admin dashboard (Vite dist baked via include_dir!).
+include_dir.workspace = true
+mime_guess.workspace = true
+
+# Phase 7.2 (slice 26/30) — Image transform pipeline for /api/storage/*path.
+image.workspace = true
+
+# Phase 0.3 (slice 4/30) — magic link SMTP/HTTP email delivery.
+lettre.workspace = true
+
+# Phase 5.3 (slice 23/30) — Blockchain anchor: Keccak-256 batch roots.
+sha3.workspace = true
+
+# Optional anchor backends — gated by feature flags so the default build
+# stays dependency-light. When a flag is off, the anchor module falls
+# back to deterministic mock implementations for the same Anchorer API.
+ipfs-api-backend-hyper = { workspace = true, optional = true }
+ethers-core = { workspace = true, optional = true }
+
+# Cache layer (Slices 10-11) — L1 DashMap + L2 Postgres + DdbCache (RESP3).
+ddb-cache = { path = "../cache" }
+ddb-cache-server = { path = "../cache-server" }
+
+# Slice 12/13 — agent memory subsystem (context token counting).
+tiktoken-rs.workspace = true
+
+# Slice 16 — embedder crate (OpenAI-compatible embeddings for semantic tier).
+ddb-agent-memory = { path = "../agent-memory" }
+
+# Embedded Postgres (slice 18/30) — optional, gated by `embedded-db` feature
+# so default builds don't pull the ~40MB Postgres binary download layer.
+pg_embed = { workspace = true, optional = true }
+portpicker = { workspace = true, optional = true }
+
+# VYASA (Tier-1 Prometheus) — embedded V8 isolate runtime for server functions.
+# Optional so default builds don't link ~30MB of V8 + deno_core.
+# Created by Darshankumar Joshi (github.com/darshjme).
+deno_core = { version = "0.398", optional = true }
+
+# v0.3.2 — SQLite backend. Gated behind the `sqlite-store` feature so
+# default builds stay Postgres-only. See packages/server/src/store/sqlite.rs.
+rusqlite = { version = "0.31", optional = true, features = ["bundled"] }
+
+# v0.3.2 — embedded mlua 0.10 Lua runtime for server functions. Gated behind
+# the `mlua-runtime` Cargo feature so default builds skip the vendored Lua
+# compilation. `vendored` avoids a system Lua dependency; `async` lets Lua
+# callbacks await DDB host calls; `serialize` bridges serde_json <-> Lua.
+mlua = { version = "0.10", features = ["lua54", "vendored", "async", "serialize", "send"], optional = true }
+
+[features]
+default = []
+# Enable IPFS-backed audit anchoring via `ipfs-api-backend-hyper`.
+anchor-ipfs = ["dep:ipfs-api-backend-hyper"]
+# Enable Ethereum-backed audit anchoring via `ethers-core`.
+anchor-eth = ["dep:ethers-core"]
+# Zero-dep dev mode: run DarshJDB with a bundled Postgres 16 instance.
+# Usage: `cargo run --features embedded-db`
+embedded-db = ["dep:pg_embed", "dep:portpicker"]
+# VYASA — embedded V8 isolate function runtime (sub-millisecond cold start).
+# Usage: `cargo run --features v8`. Selects V8 when DDB_FUNCTION_RUNTIME=v8.
+v8 = ["dep:deno_core"]
+# v0.3.2 — SQLite backend via rusqlite. Full Store trait implementation
+# over a bundled SQLite database. Usage:
+#   `cargo run -p ddb-server --features sqlite-store`
+# Selected when DATABASE_URL uses the `sqlite:` scheme.
+sqlite-store = ["dep:rusqlite"]
+# v0.3.2 — embedded mlua 0.10 Lua runtime for server functions.
+# Usage: `cargo run -p ddb-server --features mlua-runtime`.
+# Selects MluaRuntime when DDB_FUNCTION_RUNTIME=mlua; falls back to
+# ProcessRuntime otherwise.
+mlua-runtime = ["dep:mlua"]
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports", "async_tokio"] }
+tokio-tungstenite = "0.28"
+futures-util = "0.3"
+tempfile = "3"
 
 [[bench]]
 name = "darshql_parser"

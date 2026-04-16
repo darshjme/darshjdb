@@ -15,9 +15,10 @@ import {
   Eye,
   Loader2,
   AlertTriangle,
+  RefreshCw,
 } from "lucide-react";
 import { Badge } from "../components/Badge";
-import { fetchHealth } from "../lib/api";
+import { fetchHealth, fetchStorageFiles } from "../lib/api";
 import { cn, formatBytes, formatRelativeTime } from "../lib/utils";
 import type { StorageFile } from "../types";
 
@@ -38,28 +39,38 @@ export function Storage() {
   const [search, setSearch] = useState("");
   const [dragOver, setDragOver] = useState(false);
   const [selectedFile, setSelectedFile] = useState<StorageFile | null>(null);
-  const [files] = useState<StorageFile[]>([]);
+  const [files, setFiles] = useState<StorageFile[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    (async () => {
-      setLoading(true);
-      setError(null);
-      try {
-        const healthy = await fetchHealth();
-        if (!healthy) {
-          setError("Cannot connect to DarshJDB server. Is the server running?");
-        }
-        // Storage API endpoint not yet implemented on server.
-        // When it is, fetch files here.
-      } catch {
-        setError("Cannot connect to DarshJDB server. Is the server running?");
-      } finally {
-        setLoading(false);
-      }
-    })();
+  const loadFiles = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetchStorageFiles();
+      setFiles(
+        res.files.map((f) => ({
+          id: f.id,
+          name: f.name,
+          size: f.size,
+          mimeType: f.mimeType,
+          url: `/api/storage/${f.path}`,
+          uploadedAt: f.uploadedAt,
+          uploadedBy: f.metadata?.["uploaded-by"] ?? "Unknown",
+        })),
+      );
+    } catch {
+      setFiles([]);
+      setError("Cannot connect to DarshJDB server. Is the server running?");
+    } finally {
+      setLoading(false);
+    }
   }, []);
+
+  useEffect(() => {
+    loadFiles();
+  }, [loadFiles]);
+
 
   const filtered = files.filter((f) =>
     f.name.toLowerCase().includes(search.toLowerCase()),
@@ -88,7 +99,7 @@ export function Storage() {
       <div className="flex items-center justify-between mb-6">
         <div>
           <h2 className="text-lg font-semibold text-zinc-100">Storage</h2>
-          <p className="text-sm text-zinc-500 mt-0.5">
+          <p className="text-sm text-zinc-500 mt-0.5 flex items-center gap-2">
             {loading ? (
               <span className="flex items-center gap-1.5">
                 <Loader2 className="w-3 h-3 animate-spin" />
@@ -99,10 +110,19 @@ export function Storage() {
             )}
           </p>
         </div>
-        <button className="btn-primary text-sm" disabled={!!error}>
-          <Upload className="w-4 h-4" />
-          Upload Files
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={loadFiles}
+            className="btn-ghost text-xs"
+            title="Refresh"
+          >
+            <RefreshCw className={cn("w-3.5 h-3.5", loading && "animate-spin")} />
+          </button>
+          <button className="btn-primary text-sm" disabled={!!error}>
+            <Upload className="w-4 h-4" />
+            Upload Files
+          </button>
+        </div>
       </div>
 
       {error && (

@@ -43,7 +43,7 @@ pub async fn data_list(
     Query(params): Query<DataListParams>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
-    let auth_ctx = extract_auth_context(&headers, &state)?;
+    let auth_ctx = extract_auth_context(&headers, &state).await?;
     let limit = params.limit.unwrap_or(50).min(1000);
 
     validate_entity_name(&entity)?;
@@ -92,7 +92,7 @@ pub async fn data_create(
     headers: HeaderMap,
     axum::Json(body): axum::Json<Value>,
 ) -> Result<Response, ApiError> {
-    let auth_ctx = extract_auth_context(&headers, &state)?;
+    let auth_ctx = extract_auth_context(&headers, &state).await?;
 
     validate_entity_name(&entity)?;
 
@@ -224,7 +224,7 @@ pub async fn data_get(
     Path((entity, id)): Path<(String, Uuid)>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
-    let auth_ctx = extract_auth_context(&headers, &state)?;
+    let auth_ctx = extract_auth_context(&headers, &state).await?;
 
     validate_entity_name(&entity)?;
 
@@ -315,7 +315,7 @@ pub async fn data_patch(
     headers: HeaderMap,
     axum::Json(body): axum::Json<Value>,
 ) -> Result<Response, ApiError> {
-    let auth_ctx = extract_auth_context(&headers, &state)?;
+    let auth_ctx = extract_auth_context(&headers, &state).await?;
 
     validate_entity_name(&entity)?;
 
@@ -500,7 +500,7 @@ pub async fn data_delete(
     Path((entity, id)): Path<(String, Uuid)>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
-    let auth_ctx = extract_auth_context(&headers, &state)?;
+    let auth_ctx = extract_auth_context(&headers, &state).await?;
 
     validate_entity_name(&entity)?;
 

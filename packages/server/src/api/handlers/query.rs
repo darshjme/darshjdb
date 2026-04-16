@@ -32,7 +32,7 @@ pub async fn darshql_handler(
     headers: HeaderMap,
     axum::Json(body): axum::Json<DarshQLRequest>,
 ) -> Result<Response, ApiError> {
-    let _auth_ctx = extract_auth_context(&headers, &state)?;
+    let _auth_ctx = extract_auth_context(&headers, &state).await?;
 
     let start = Instant::now();
 

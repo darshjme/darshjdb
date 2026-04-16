@@ -248,6 +248,11 @@ impl PgTripleStore {
             .await
             .map_err(DarshJError::Database)?;
 
+        // Ensure the history/snapshots table exists.
+        crate::history::ensure_history_schema(&self.pool)
+            .await
+            .map_err(DarshJError::Database)?;
+
         Ok(())
     }
 
@@ -549,13 +554,16 @@ impl TripleStore for PgTripleStore {
             .first()
             .and_then(|t| t.attribute.split('/').next())
             .unwrap_or("unknown");
-        let notify_payload = format!("{}:{}", tx_id, entity_type);
-        sqlx::query(&format!(
-            "NOTIFY ddb_changes, '{}'",
-            notify_payload.replace('\'', "''")
-        ))
-        .execute(&mut *tx)
-        .await?;
+        // Use pg_notify() with a bound parameter instead of NOTIFY with a
+        // literal so caller data never reaches the SQL text layer. Defense-
+        // in-depth: the `entity_type` derivation already rejects non-safe
+        // characters upstream, but this keeps the single-source-of-truth
+        // "every SQL string is parameterized" invariant intact.
+        let notify_payload = format!("{tx_id}:{entity_type}");
+        sqlx::query("SELECT pg_notify('ddb_changes', $1)")
+            .bind(&notify_payload)
+            .execute(&mut *tx)
+            .await?;
 
         tx.commit().await?;
 

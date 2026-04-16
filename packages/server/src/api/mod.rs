@@ -32,11 +32,17 @@
 //! and `X-RateLimit-Reset` headers.
 
 pub mod batch;
+pub mod chunked_upload;
+pub mod docs;
 pub mod error;
 pub mod handlers;
 pub mod openapi;
 pub mod pool_stats;
 pub mod rest;
+pub mod sdk_types;
+// Slice 28/30 — Phase 9 SurrealDB parity: raw SQL passthrough handler.
+pub mod sql_passthrough;
+pub mod ts;
 pub mod ws;
 
 pub use error::ApiError;

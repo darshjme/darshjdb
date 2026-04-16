@@ -288,7 +288,6 @@ pub enum SortDir {
     Desc,
 }
 
-
 /// Expression node for WHERE clauses, SET values, and assertions.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Expr {
@@ -311,10 +310,7 @@ pub enum Expr {
         right: Box<Expr>,
     },
     /// A function call: `count(->posts)`.
-    FnCall {
-        name: String,
-        args: Vec<Expr>,
-    },
+    FnCall { name: String, args: Vec<Expr> },
     /// A graph traversal expression (used inside functions).
     GraphExpr(GraphTraversal),
     /// A type cast expression: `<int>field`.
