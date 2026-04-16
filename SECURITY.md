@@ -4,7 +4,7 @@
 
 | Version | Supported          |
 | ------- | ------------------ |
-| 0.1.x   | Yes                |
+| 0.4.x   | Yes                |
 
 We release patches for security vulnerabilities in the latest minor version. Older versions do not receive backported fixes.
 
@@ -48,18 +48,25 @@ DarshJDB implements 11 layers of defense-in-depth security. See [docs/security.m
 
 Key highlights:
 
-- **TLS 1.3 mandatory** -- no plaintext, no TLS 1.2 fallback
+- **TLS 1.3 recommended** (via reverse proxy)
 - **Argon2id** password hashing (PHC winner)
-- **RS256 + Ed25519** JWT signing
-- **AES-256-GCM** encryption at rest
+- **RS256** JWT signing
 - **Row-level security** -- unauthorized data never leaves the database
-- **V8 sandboxing** -- server functions isolated from the system
+- **Lua sandboxing** -- server functions isolated from the system
 - **Zero-trust default** -- everything denied unless explicitly allowed
+
+### Security Roadmap
+
+The following security features are planned but not yet implemented:
+
+- **AES-256-GCM** encryption at rest
+- **Ed25519** JWT signing (in addition to RS256)
+- Automated `cargo audit` and `npm audit` in CI on every pull request
 
 ## Dependency Policy
 
 - All dependencies are pinned to exact versions in lock files.
-- We run `cargo audit` and `npm audit` in CI on every pull request.
+- We plan to add `cargo audit` and `npm audit` to CI.
 - Critical dependency vulnerabilities are treated as project security issues.
 
 ## Scope

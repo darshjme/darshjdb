@@ -1,6 +1,6 @@
 {
   "name": "darshjdb",
-  "version": "0.2.0",
+  "version": "0.4.0",
   "description": "Official TypeScript/JavaScript SDK for DarshJDB — real-time database with graph, live queries, auth, and storage.",
   "main": "./dist/cjs/index.js",
   "module": "./dist/esm/index.js",

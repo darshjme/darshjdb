@@ -40,7 +40,7 @@ Three weeks of plumbing before writing one line of business logic. Postgres setu
 
 Firebase gives you NoSQL spaghetti. Supabase bolts real-time onto REST. InstantDB is cloud-only. Convex is a black box. None of them let you run a single binary on a $5 VPS in Mumbai and own your data completely.
 
-So I built what I wanted. I called it DarshJDB.
+So in April 2026, I built what I wanted — rapidly, using AI-assisted development tools, as a proof-of-concept exploring whether one Rust binary can replace the entire modern backend stack. I called it DarshJDB.
 
 *"Darshan"* means to see, to perceive the complete picture. The database sees every change, every query, every permission boundary. It sees what each user is allowed to see. And it shows them exactly that — in real-time, the moment anything changes.
 
@@ -966,7 +966,7 @@ Focused on what matters next, in order.
 | 6 | File storage (S3-compatible) | API designed |
 | 7 | Horizontal scaling | Architecture planned |
 
-Longer-term thinking on AI/ML integration (MCP server, embeddings, RAG), Web3 (wallet auth, token-gated permissions), and enterprise features (multi-tenancy, SOC2) lives in [`docs/strategy/`](docs/strategy/).
+Longer-term thinking on AI/ML integration (MCP server, embeddings, RAG) and enterprise features (multi-tenancy, SOC2) lives in [`docs/strategy/`](docs/strategy/).
 
 ---
 
@@ -983,6 +983,12 @@ composer test            # 52 tests
 Read [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on code style, PR process, and architecture decisions.
 
 The project is alpha. There's real work to do. If you care about self-hosted infrastructure and developer tools, pull requests are welcome.
+
+---
+
+## Built With AI
+
+This project was scaffolded using AI-assisted development tools (Claude Code) and is being hardened into production-grade software. The architecture is intentional, the code compiles and passes CI, but this is alpha software built in weeks, not years. Contributions that improve production-readiness are especially welcome.
 
 ---
 
