@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "darshjdb"
-version = "0.2.0"
+version = "0.4.0"
 description = "Official Python SDK for DarshJDB — real-time database with graph, live queries, auth, and storage."
 readme = "README.md"
 license = "MIT"

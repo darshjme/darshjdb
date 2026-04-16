@@ -1,6 +1,6 @@
 {
   "name": "darshjdb",
-  "version": "0.1.0",
+  "version": "0.4.0",
   "private": true,
   "description": "DarshJDB — A reactive database with triple store, real-time sync, and server-side functions",
   "author": "Darsh Joshi",

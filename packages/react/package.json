@@ -1,6 +1,6 @@
 {
   "name": "@darshjdb/react",
-  "version": "0.1.0",
+  "version": "0.4.0",
   "description": "React bindings for DarshJDB \u2014 hooks, provider, and real-time primitives",
   "type": "module",
   "main": "./dist/index.cjs",

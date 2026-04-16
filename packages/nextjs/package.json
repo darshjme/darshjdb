@@ -1,6 +1,6 @@
 {
   "name": "@darshjdb/nextjs",
-  "version": "0.1.0",
+  "version": "0.4.0",
   "description": "Next.js SDK for DarshJDB \u2014 Server Components, App Router, Pages Router, and Middleware",
   "type": "module",
   "main": "./dist/index.cjs",

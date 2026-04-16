@@ -1,6 +1,6 @@
 {
   "name": "@darshjdb/angular",
-  "version": "0.1.0",
+  "version": "0.4.0",
   "description": "Angular SDK for DarshJDB \u2014 Signals, Observables, SSR, and standalone component support",
   "type": "module",
   "main": "./dist/public-api.cjs",
