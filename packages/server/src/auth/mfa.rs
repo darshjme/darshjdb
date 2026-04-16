@@ -1,13 +1,11 @@
 //! Multi-factor authentication for DarshJDB.
 //!
-//! Supports three MFA mechanisms:
+//! Supports two MFA mechanisms:
 //!
 //! - **TOTP** (RFC 6238): Time-based one-time passwords with a +/-1 step
 //!   window to accommodate clock skew.
 //! - **Recovery codes**: 10 one-time-use codes, each Argon2id-hashed before
 //!   storage so a database breach does not reveal unused codes.
-//! - **WebAuthn**: Registration and assertion stubs for future FIDO2/passkey
-//!   integration.
 
 use argon2::{
     Algorithm, Argon2, Params, Version,
@@ -284,123 +282,7 @@ impl RecoveryCodeManager {
     }
 }
 
-// ---------------------------------------------------------------------------
-// WebAuthn stubs
-// ---------------------------------------------------------------------------
-
-/// Stub for WebAuthn (FIDO2/passkey) registration and assertion.
-///
-/// Full WebAuthn implementation requires a dedicated library (e.g.,
-/// `webauthn-rs`). These stubs define the interface contract so that
-/// the rest of the auth system can reference WebAuthn without blocking
-/// on the full implementation.
-pub struct WebAuthnStub;
-
-/// Data needed to complete a WebAuthn registration ceremony.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct WebAuthnRegistrationChallenge {
-    /// The challenge bytes (base64url encoded).
-    pub challenge: String,
-    /// The relying party ID (typically the domain).
-    pub rp_id: String,
-    /// The user handle.
-    pub user_id: String,
-    /// The user display name.
-    pub user_name: String,
-}
-
-/// Data needed to complete a WebAuthn assertion ceremony.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct WebAuthnAssertionChallenge {
-    /// The challenge bytes (base64url encoded).
-    pub challenge: String,
-    /// The relying party ID.
-    pub rp_id: String,
-    /// Allowed credential IDs (base64url encoded).
-    pub allowed_credentials: Vec<String>,
-}
-
-impl WebAuthnStub {
-    /// Begin a WebAuthn registration ceremony.
-    ///
-    /// Returns a challenge that the client should pass to
-    /// `navigator.credentials.create()`.
-    pub fn begin_registration(
-        rp_id: &str,
-        user_id: Uuid,
-        user_name: &str,
-    ) -> Result<WebAuthnRegistrationChallenge, AuthError> {
-        let mut challenge_bytes = [0u8; 32];
-        OsRng.fill_bytes(&mut challenge_bytes);
-        let challenge = data_encoding::BASE64URL_NOPAD.encode(&challenge_bytes);
-
-        Ok(WebAuthnRegistrationChallenge {
-            challenge,
-            rp_id: rp_id.to_string(),
-            user_id: user_id.to_string(),
-            user_name: user_name.to_string(),
-        })
-    }
-
-    /// Complete a WebAuthn registration ceremony.
-    ///
-    /// Stub: validates input shape but does not perform full attestation
-    /// verification. Wire in `webauthn-rs` for production use.
-    pub async fn complete_registration(
-        _pool: &PgPool,
-        _user_id: Uuid,
-        _challenge: &WebAuthnRegistrationChallenge,
-        _response_json: &serde_json::Value,
-    ) -> Result<(), AuthError> {
-        // TODO: Implement with webauthn-rs crate.
-        Err(AuthError::Internal(
-            "WebAuthn registration not yet implemented — use webauthn-rs".into(),
-        ))
-    }
-
-    /// Begin a WebAuthn assertion ceremony.
-    ///
-    /// Returns a challenge that the client should pass to
-    /// `navigator.credentials.get()`.
-    pub async fn begin_assertion(
-        pool: &PgPool,
-        rp_id: &str,
-        user_id: Uuid,
-    ) -> Result<WebAuthnAssertionChallenge, AuthError> {
-        let mut challenge_bytes = [0u8; 32];
-        OsRng.fill_bytes(&mut challenge_bytes);
-        let challenge = data_encoding::BASE64URL_NOPAD.encode(&challenge_bytes);
-
-        // Fetch stored credential IDs for this user.
-        let cred_ids: Vec<String> =
-            sqlx::query_scalar("SELECT credential_id FROM webauthn_credentials WHERE user_id = $1")
-                .bind(user_id)
-                .fetch_all(pool)
-                .await?;
-
-        Ok(WebAuthnAssertionChallenge {
-            challenge,
-            rp_id: rp_id.to_string(),
-            allowed_credentials: cred_ids,
-        })
-    }
-
-    /// Complete a WebAuthn assertion ceremony.
-    ///
-    /// Stub: validates input shape but does not perform full signature
-    /// verification. Wire in `webauthn-rs` for production use.
-    pub async fn complete_assertion(
-        _pool: &PgPool,
-        _user_id: Uuid,
-        _challenge: &WebAuthnAssertionChallenge,
-        _response_json: &serde_json::Value,
-    ) -> Result<bool, AuthError> {
-        // TODO: Implement with webauthn-rs crate.
-        Err(AuthError::Internal(
-            "WebAuthn assertion not yet implemented — use webauthn-rs".into(),
-        ))
-    }
-}
+// WebAuthn: planned for v0.5.0
 
 /// Minimal percent-encoding for URI components.
 fn urlencoding(s: &str) -> String {
