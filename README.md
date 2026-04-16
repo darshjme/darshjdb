@@ -9,7 +9,7 @@
 [![PostgreSQL 16+](https://img.shields.io/badge/PostgreSQL-16+-336791.svg?style=for-the-badge&logo=postgresql&logoColor=white)](https://www.postgresql.org)
 [![Status: Alpha](https://img.shields.io/badge/Status-Alpha-orange.svg?style=for-the-badge)](https://github.com/darshjme/darshjdb)
 [![CI](https://img.shields.io/github/actions/workflow/status/darshjme/darshjdb/ci.yml?style=for-the-badge&label=CI)](https://github.com/darshjme/darshjdb/actions)
-[![Tests: 731](https://img.shields.io/badge/Tests-731_passing-86efac.svg?style=for-the-badge)](https://github.com/darshjme/darshjdb)
+[![Tests: 1090](https://img.shields.io/badge/Tests-1090_passing-86efac.svg?style=for-the-badge)](https://github.com/darshjme/darshjdb)
 
 <br/>
 
@@ -98,7 +98,7 @@ Three schema modes, one database:
 - **`SCHEMAFULL`** — strict types, validated on write (production)
 - **`SCHEMAMIXED`** — defined fields are strict, unknown fields pass through (migration)
 
-This is alpha software. It works. It has 731 tests proving it works. But it is not production-hardened yet. Use it to prototype, learn the architecture, and contribute. Don't put your startup's production data on it today.
+This is alpha software. It works. It has 1,090 tests proving it works. But it is not production-hardened yet. Use it to prototype, learn the architecture, and contribute. Don't put your startup's production data on it today.
 
 ---
 
@@ -132,11 +132,11 @@ graph TB
 
 | Layer | What it does | Tests |
 |-------|-------------|-------|
-| **Rust server** | REST API, auth, permissions, query engine, WebSocket handler, admin endpoints | 446 |
-| **TypeScript SDKs** | React hooks, Angular signals, Next.js App/Pages Router, core client | 92 |
-| **Python SDK** | Sync/async client, FastAPI integration, Django support | 141 |
-| **PHP SDK** | Composer package, Laravel integration | 52 |
-| **Total** | | **731 tests passing** |
+| **Rust server** | REST API, auth, permissions, query engine, WebSocket handler, admin endpoints | 845 |
+| **TypeScript SDKs** | React hooks, Angular signals, Next.js App/Pages Router, core client | 141 |
+| **Python SDK** | Sync/async client, FastAPI integration, Django support | 48 |
+| **PHP SDK** | Composer package, Laravel integration | 56 |
+| **Total** | | **1,090 tests passing** |
 
 ### What each piece actually does
 
@@ -863,16 +863,16 @@ curl http://localhost:7700/api/data/users \
 ### Run the tests
 
 ```bash
-# Rust (446 tests)
+# Rust (845 tests)
 cargo test --workspace
 
-# TypeScript SDKs (92 tests)
+# TypeScript SDKs (141 tests)
 cd packages/tests && npm test
 
-# Python SDK (141 tests)
+# Python SDK (48 tests)
 cd sdks/python && pytest
 
-# PHP SDK (52 tests)
+# PHP SDK (56 tests)
 cd sdks/php && composer test
 
 # End-to-end (20+ assertions)
@@ -974,10 +974,10 @@ Longer-term thinking on AI/ML integration (MCP server, embeddings, RAG) and ente
 
 ```bash
 # Run the full test suite
-cargo test --workspace   # 446 tests
-npm test                 # 92 tests
-pytest                   # 141 tests
-composer test            # 52 tests
+cargo test --workspace   # 845 tests
+npm test                 # 141 tests
+pytest                   # 48 tests
+composer test            # 56 tests
 ```
 
 Read [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on code style, PR process, and architecture decisions.

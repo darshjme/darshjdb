@@ -116,16 +116,11 @@ pub struct DefineTableStatement {
 }
 
 /// Whether a table enforces a strict schema.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SchemaMode {
+    #[default]
     Schemaless,
     Schemafull,
-}
-
-impl Default for SchemaMode {
-    fn default() -> Self {
-        Self::Schemaless
-    }
 }
 
 // ── DEFINE FIELD ───────────────────────────────────────────────────
@@ -259,7 +254,7 @@ pub enum DarshType {
 
 impl DarshType {
     /// Parse a type name string into a DarshType.
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn parse_type(s: &str) -> Option<Self> {
         match s {
             "int" | "integer" => Some(Self::Int),
             "float" | "number" | "decimal" => Some(Self::Float),
@@ -286,17 +281,13 @@ pub struct OrderBy {
 }
 
 /// Sort direction.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SortDir {
+    #[default]
     Asc,
     Desc,
 }
 
-impl Default for SortDir {
-    fn default() -> Self {
-        Self::Asc
-    }
-}
 
 /// Expression node for WHERE clauses, SET values, and assertions.
 #[derive(Debug, Clone, Serialize, Deserialize)]

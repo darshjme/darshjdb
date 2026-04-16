@@ -629,7 +629,8 @@ impl ScopeManager {
     ) -> Result<(AuthContext, String), AuthError> {
         let key_hash = hex_sha256(api_key.as_bytes());
 
-        let row: Option<(Uuid, Uuid, String, bool, Option<chrono::DateTime<Utc>>, serde_json::Value)> =
+        type ApiKeyRow = (Uuid, Uuid, String, bool, Option<chrono::DateTime<Utc>>, serde_json::Value);
+        let row: Option<ApiKeyRow> =
             sqlx::query_as(
                 "SELECT key_id, owner_id, scope, revoked, expires_at, roles
                  FROM _api_keys WHERE key_hash = $1",
@@ -645,10 +646,10 @@ impl ScopeManager {
             return Err(AuthError::TokenInvalid("API key revoked".into()));
         }
 
-        if let Some(exp) = expires_at {
-            if Utc::now() > exp {
-                return Err(AuthError::TokenInvalid("API key expired".into()));
-            }
+        if let Some(exp) = expires_at
+            && Utc::now() > exp
+        {
+            return Err(AuthError::TokenInvalid("API key expired".into()));
         }
 
         // Update last_used_at (fire-and-forget, non-blocking).

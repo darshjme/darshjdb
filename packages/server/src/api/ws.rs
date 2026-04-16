@@ -1343,7 +1343,7 @@ async fn handle_live_query_change(
                                 let attr_name = t
                                     .attribute
                                     .split('/')
-                                    .last()
+                                    .next_back()
                                     .unwrap_or(&t.attribute);
                                 if attr_name != ":db/type" && !t.attribute.starts_with(":db/") {
                                     obj.insert(attr_name.to_string(), t.value.clone());
@@ -1370,7 +1370,7 @@ async fn handle_live_query_change(
 
     // Determine the action type from the event heuristics.
     let action = if entity_data.values().all(|v| {
-        v.as_object().map_or(true, |o| o.len() <= 1)
+        v.as_object().is_none_or(|o| o.len() <= 1)
     }) {
         LiveAction::Delete
     } else if event.tx_id > 0 && event.entity_ids.len() == 1 {

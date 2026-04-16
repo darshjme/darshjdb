@@ -5,6 +5,26 @@ All notable changes to DarshJDB will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-04-15
+
+### Changed
+- Honest project framing — removed fabricated timeline, added AI-assisted development disclosure
+- Synchronized all package versions to 0.4.0
+- Split monolithic rest.rs (4,449 lines) into 15 focused handler modules
+- Replaced fabricated competitor comparison docs with real criterion benchmarks
+
+### Security
+- Hardcoded dev-signing-key now requires DDB_DEV=1 in development
+- pg_advisory_lock uses namespaced constant instead of magic number 42
+- Docker Compose requires explicit REDIS_PASSWORD and POSTGRES_PASSWORD
+- Added cargo audit and npm audit to CI pipeline
+- Removed unsafe std::env::set_var calls
+
+### Removed
+- Vaporware strategy docs (quantum, blockchain, web3)
+- Fabricated benchmark comparison pages
+- Unimplemented security claims from SECURITY.md (TLS 1.3 mandatory, AES-256-GCM at rest, Ed25519)
+
 ## [0.1.0] - 2026-04-05
 
 ### Added

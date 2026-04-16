@@ -31,21 +31,16 @@ use std::fmt;
 // ── Schema mode ────────────────────────────────────────────────────
 
 /// The enforcement level for a table's schema.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum SchemaMode {
     /// Strict: all fields must be defined; unknown fields are rejected.
     Schemafull,
     /// Flexible: any JSON accepted with no validation (default).
+    #[default]
     Schemaless,
     /// Hybrid: defined fields are enforced; extras are allowed.
     Mixed,
-}
-
-impl Default for SchemaMode {
-    fn default() -> Self {
-        Self::Schemaless
-    }
 }
 
 impl fmt::Display for SchemaMode {

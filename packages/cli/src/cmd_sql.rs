@@ -377,24 +377,20 @@ fn handle_dot_command(cmd: &str) -> DotResult {
             println!("  {}", "DarshQL Shell Commands".bright_white().bold());
             println!("  {}", "=".repeat(40).dimmed());
             println!(
-                "  {}   {}",
-                ".help".bright_cyan(),
-                "Show this help message"
+                "  {}   Show this help message",
+                ".help".bright_cyan()
             );
             println!(
-                "  {}  {}",
-                ".clear".bright_cyan(),
-                "Clear the multi-line buffer"
+                "  {}  Clear the multi-line buffer",
+                ".clear".bright_cyan()
             );
             println!(
-                "  {} {}",
-                ".status".bright_cyan(),
-                "Show server status"
+                "  {} Show server status",
+                ".status".bright_cyan()
             );
             println!(
-                "  {}   {}",
-                ".quit".bright_cyan(),
-                "Exit the shell"
+                "  {}   Exit the shell",
+                ".quit".bright_cyan()
             );
             println!();
             println!("  {}", "Query Syntax".bright_white().bold());

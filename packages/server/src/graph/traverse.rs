@@ -202,7 +202,7 @@ impl TraversalEngine {
             edges_examined += edges.len();
 
             for edge in &edges {
-                let neighbor = Self::resolve_neighbor(&edge, &current, config.direction);
+                let neighbor = Self::resolve_neighbor(edge, &current, config.direction);
                 let key = neighbor.to_string_repr();
 
                 if !visited.contains(&key) {

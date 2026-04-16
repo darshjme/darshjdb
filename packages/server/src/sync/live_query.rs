@@ -92,11 +92,11 @@ impl FilterPredicate {
             FilterPredicate::All => true,
 
             FilterPredicate::Eq { field, value } => {
-                entity.get(field).map_or(false, |v| v == value)
+                entity.get(field) == Some(value)
             }
 
             FilterPredicate::Ne { field, value } => {
-                entity.get(field).map_or(true, |v| v != value)
+                entity.get(field) != Some(value)
             }
 
             FilterPredicate::Gt { field, value } => {
@@ -130,7 +130,7 @@ impl FilterPredicate {
             }
 
             FilterPredicate::In { field, values } => {
-                entity.get(field).map_or(false, |v| values.contains(v))
+                entity.get(field).is_some_and(|v| values.contains(v))
             }
 
             FilterPredicate::And { predicates } => {
@@ -575,8 +575,8 @@ impl LiveQueryManager {
             let entry = queries.get(live_id);
 
             // Verify ownership.
-            if let Some(q) = entry {
-                if q.session_id != *session_id {
+            if let Some(q) = entry
+                && q.session_id != *session_id {
                     warn!(
                         live_id = %live_id,
                         owner = %q.session_id,
@@ -584,7 +584,6 @@ impl LiveQueryManager {
                         "kill rejected: session does not own this live query"
                     );
                     return false;
-                }
             }
 
             queries.remove(live_id).is_some()

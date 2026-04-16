@@ -225,10 +225,10 @@ async fn exec_select(
                     }
                 }
                 Field::Cast { cast_type, expr } => {
-                    if let Field::Attribute(name) = expr.as_ref() {
-                        if let Some(v) = attrs.get(name) {
-                            obj.insert(name.clone(), cast_value(v, cast_type));
-                        }
+                    if let Field::Attribute(name) = expr.as_ref()
+                        && let Some(v) = attrs.get(name)
+                    {
+                        obj.insert(name.clone(), cast_value(v, cast_type));
                     }
                 }
                 Field::Graph(trav) => {
@@ -792,10 +792,10 @@ async fn exec_graph_traversal(
             .await?;
 
             for (val,) in rows {
-                if let Some(uid_str) = val.as_str() {
-                    if let Ok(uid) = uid_str.parse::<Uuid>() {
-                        next_ids.push(uid);
-                    }
+                if let Some(uid_str) = val.as_str()
+                    && let Ok(uid) = uid_str.parse::<Uuid>()
+                {
+                    next_ids.push(uid);
                 }
             }
         }

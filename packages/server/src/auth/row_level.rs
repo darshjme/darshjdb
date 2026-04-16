@@ -300,10 +300,10 @@ impl EvalValue {
         match op {
             CompareOp::Eq => self == other,
             CompareOp::Ne => self != other,
-            CompareOp::Lt => self.partial_ord(other).map_or(false, |o| o.is_lt()),
-            CompareOp::Le => self.partial_ord(other).map_or(false, |o| o.is_le()),
-            CompareOp::Gt => self.partial_ord(other).map_or(false, |o| o.is_gt()),
-            CompareOp::Ge => self.partial_ord(other).map_or(false, |o| o.is_ge()),
+            CompareOp::Lt => self.partial_ord(other).is_some_and(|o| o.is_lt()),
+            CompareOp::Le => self.partial_ord(other).is_some_and(|o| o.is_le()),
+            CompareOp::Gt => self.partial_ord(other).is_some_and(|o| o.is_gt()),
+            CompareOp::Ge => self.partial_ord(other).is_some_and(|o| o.is_ge()),
         }
     }
 

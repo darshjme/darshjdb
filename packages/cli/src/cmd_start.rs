@@ -32,6 +32,7 @@ impl std::fmt::Display for StorageBackend {
 ///
 /// This embeds the full server binary — no separate process needed.
 /// The `ddb` binary IS the server.
+#[allow(clippy::too_many_arguments)]
 pub async fn run(
     storage: StorageBackend,
     conn: Option<String>,

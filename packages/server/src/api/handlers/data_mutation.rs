@@ -177,27 +177,26 @@ pub async fn mutate(
     // Schema validation for batch mutations.
     if let Some(ref registry) = state.schema_registry {
         for (i, m) in body.mutations.iter().enumerate() {
-            if let Some(data) = &m.data {
-                if let Some(obj) = data.as_object() {
-                    if let Some(schema) = registry.get(&m.entity) {
-                        let doc: std::collections::HashMap<String, Value> = obj
-                            .iter()
-                            .filter(|(k, _)| !k.starts_with('$'))
-                            .map(|(k, v)| (k.clone(), v.clone()))
-                            .collect();
-                        let is_update = matches!(m.op, MutationOp::Update | MutationOp::Upsert);
-                        let result = if is_update {
-                            crate::schema::validator::SchemaValidator::validate_update(&schema, &doc)
-                        } else {
-                            crate::schema::validator::SchemaValidator::validate_insert(&schema, &doc)
-                        };
-                        if !result.is_valid() {
-                            return Err(ApiError::bad_request(format!(
-                                "Mutation {i}: schema validation failed: {}",
-                                result.error_message()
-                            )));
-                        }
-                    }
+            if let Some(data) = &m.data
+                && let Some(obj) = data.as_object()
+                && let Some(schema) = registry.get(&m.entity)
+            {
+                let doc: std::collections::HashMap<String, Value> = obj
+                    .iter()
+                    .filter(|(k, _)| !k.starts_with('$'))
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect();
+                let is_update = matches!(m.op, MutationOp::Update | MutationOp::Upsert);
+                let result = if is_update {
+                    crate::schema::validator::SchemaValidator::validate_update(&schema, &doc)
+                } else {
+                    crate::schema::validator::SchemaValidator::validate_insert(&schema, &doc)
+                };
+                if !result.is_valid() {
+                    return Err(ApiError::bad_request(format!(
+                        "Mutation {i}: schema validation failed: {}",
+                        result.error_message()
+                    )));
                 }
             }
         }

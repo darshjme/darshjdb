@@ -440,10 +440,10 @@ impl Parser {
 
     /// Consume "BY" after ORDER/GROUP keywords.
     fn eat_by(&mut self) {
-        if let Token::Ident(s) = self.peek() {
-            if s.to_uppercase() == "BY" {
-                self.advance();
-            }
+        if let Token::Ident(s) = self.peek()
+            && s.to_uppercase() == "BY"
+        {
+            self.advance();
         }
     }
 
@@ -708,7 +708,7 @@ impl Parser {
 
         let field_type = if self.eat(Token::Type) {
             let type_name = self.expect_ident()?;
-            DarshType::from_str(&type_name.to_lowercase())
+            DarshType::parse_type(&type_name.to_lowercase())
         } else {
             None
         };
@@ -807,7 +807,7 @@ impl Parser {
                 self.advance(); // consume type name
                 if self.eat(Token::Gt) {
                     // It's a type cast.
-                    if let Some(dt) = DarshType::from_str(&type_name.to_lowercase()) {
+                    if let Some(dt) = DarshType::parse_type(&type_name.to_lowercase()) {
                         let inner = self.parse_field()?;
                         let field = Field::Cast {
                             cast_type: dt,
@@ -1165,14 +1165,14 @@ impl Parser {
                 self.advance();
                 if let Token::Ident(type_name) = self.peek().clone() {
                     self.advance();
-                    if self.eat(Token::Gt) {
-                        if let Some(dt) = DarshType::from_str(&type_name.to_lowercase()) {
-                            let inner = self.parse_primary()?;
-                            return Ok(Expr::Cast {
-                                cast_type: dt,
-                                expr: Box::new(inner),
-                            });
-                        }
+                    if self.eat(Token::Gt)
+                        && let Some(dt) = DarshType::parse_type(&type_name.to_lowercase())
+                    {
+                        let inner = self.parse_primary()?;
+                        return Ok(Expr::Cast {
+                            cast_type: dt,
+                            expr: Box::new(inner),
+                        });
                     }
                 }
                 self.pos = saved;
