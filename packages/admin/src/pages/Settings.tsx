@@ -1,18 +1,12 @@
 import { useState, useEffect, useCallback } from "react";
 import {
-  Eye,
-  EyeOff,
   Plus,
-  Trash2,
-  Save,
   Download,
   Upload,
   Shield,
   Bell,
   Globe,
   Clock,
-  Copy,
-  Check,
   RefreshCw,
   Loader2,
   Database,
@@ -22,7 +16,6 @@ import {
   Server,
 } from "lucide-react";
 import { Badge } from "../components/Badge";
-import { mockEnvVars } from "../lib/mock-data";
 import {
   fetchCacheStats,
   fetchHealthDetailed,
@@ -40,8 +33,6 @@ type SettingsTab = "env" | "system" | "backup" | "rate-limits" | "webhooks";
 
 export function Settings() {
   const [activeTab, setActiveTab] = useState<SettingsTab>("system");
-  const [showSecrets, setShowSecrets] = useState<Set<string>>(new Set());
-  const [copied, setCopied] = useState<string | null>(null);
 
   // Live system data
   const [cacheStats, setCacheStats] = useState<CacheStats | null>(null);
@@ -75,8 +66,8 @@ export function Settings() {
       const err = results[0].status === "rejected" ? results[0].reason : null;
       setSystemError(
         err instanceof ApiError
-          ? `API ${err.status}: ${err.body}`
-          : "Server unreachable",
+          ? `Cannot connect to DarshJDB server (${err.status}). Is the server running?`
+          : "Cannot connect to DarshJDB server. Is the server running?",
       );
     }
 
@@ -86,21 +77,6 @@ export function Settings() {
   useEffect(() => {
     loadSystemData();
   }, [loadSystemData]);
-
-  const toggleSecret = (key: string) => {
-    setShowSecrets((prev) => {
-      const next = new Set(prev);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
-      return next;
-    });
-  };
-
-  const copyValue = (key: string, value: string) => {
-    navigator.clipboard.writeText(value);
-    setCopied(key);
-    setTimeout(() => setCopied(null), 2000);
-  };
 
   const tabs: { id: SettingsTab; label: string; icon: typeof Shield }[] = [
     { id: "system", label: "System Status", icon: Server },
@@ -390,65 +366,8 @@ export function Settings() {
             </button>
           </div>
 
-          <div className="glass-panel p-0 overflow-hidden">
-            {mockEnvVars.map((envVar, i) => (
-              <div
-                key={envVar.key}
-                className={cn(
-                  "flex items-center gap-4 px-4 py-3 hover:bg-zinc-800/30 transition-colors",
-                  i !== mockEnvVars.length - 1 && "border-b border-zinc-800/60",
-                )}
-              >
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2">
-                    <span className="font-mono text-sm text-zinc-200">{envVar.key}</span>
-                    {envVar.isSecret && (
-                      <Badge variant="amber" className="text-[9px]">
-                        <Shield className="w-2.5 h-2.5 mr-0.5" />
-                        secret
-                      </Badge>
-                    )}
-                  </div>
-                  <div className="flex items-center gap-2 mt-1">
-                    <span className="font-mono text-xs text-zinc-500">
-                      {envVar.isSecret && !showSecrets.has(envVar.key)
-                        ? "••••••••••••"
-                        : envVar.value}
-                    </span>
-                  </div>
-                </div>
-                <span className="text-[10px] text-zinc-600 flex-shrink-0">
-                  {formatRelativeTime(envVar.updatedAt)}
-                </span>
-                <div className="flex items-center gap-1 flex-shrink-0">
-                  {envVar.isSecret && (
-                    <button
-                      onClick={() => toggleSecret(envVar.key)}
-                      className="btn-ghost p-1.5"
-                    >
-                      {showSecrets.has(envVar.key) ? (
-                        <EyeOff className="w-3.5 h-3.5" />
-                      ) : (
-                        <Eye className="w-3.5 h-3.5" />
-                      )}
-                    </button>
-                  )}
-                  <button
-                    onClick={() => copyValue(envVar.key, envVar.value)}
-                    className="btn-ghost p-1.5"
-                  >
-                    {copied === envVar.key ? (
-                      <Check className="w-3.5 h-3.5 text-emerald-400" />
-                    ) : (
-                      <Copy className="w-3.5 h-3.5" />
-                    )}
-                  </button>
-                  <button className="btn-ghost p-1.5 text-red-400 hover:text-red-300">
-                    <Trash2 className="w-3.5 h-3.5" />
-                  </button>
-                </div>
-              </div>
-            ))}
+          <div className="glass-panel p-8 text-center text-sm text-zinc-500">
+            Environment variables API not yet available. Configure variables via the server config file.
           </div>
         </div>
       )}

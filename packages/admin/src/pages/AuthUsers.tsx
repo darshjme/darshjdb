@@ -14,9 +14,9 @@ import {
   AlertCircle,
   UserPlus,
   RefreshCw,
+  AlertTriangle,
 } from "lucide-react";
 import { Badge } from "../components/Badge";
-import { mockUsers } from "../lib/mock-data";
 import { fetchEntities, fetchSchema, createUser, ApiError } from "../lib/api";
 import { cn, formatRelativeTime, formatTimestamp } from "../lib/utils";
 import type { User } from "../types";
@@ -54,10 +54,9 @@ export function AuthUsers() {
   const [selectedUser, setSelectedUser] = useState<User | null>(null);
 
   // Live data state
-  const [users, setUsers] = useState<User[]>(mockUsers);
+  const [users, setUsers] = useState<User[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [isLive, setIsLive] = useState(false);
 
   // Create user dialog
   const [showCreate, setShowCreate] = useState(false);
@@ -79,29 +78,20 @@ export function AuthUsers() {
       );
 
       if (!userType) {
-        // No user entity type -- fall back to mock
-        setUsers(mockUsers);
-        setIsLive(false);
+        // No user entity type in schema
+        setUsers([]);
         setLoading(false);
         return;
       }
 
       const res = await fetchEntities(userType.name, 200);
-      if (res.data.length === 0) {
-        // Empty result -- fall back to mock for a nicer demo experience
-        setUsers(mockUsers);
-        setIsLive(false);
-      } else {
-        setUsers(res.data.map((r, i) => entityToUser(r, i)));
-        setIsLive(true);
-      }
+      setUsers(res.data.map((r, i) => entityToUser(r, i)));
     } catch (err) {
-      // API unavailable -- fall back to mock data silently
-      console.warn("[AuthUsers] API unavailable, using mock data:", err);
-      setUsers(mockUsers);
-      setIsLive(false);
+      setUsers([]);
       if (err instanceof ApiError) {
-        setError(`API ${err.status}: ${err.body}`);
+        setError(`Cannot connect to DarshJDB server (${err.status}). Is the server running?`);
+      } else {
+        setError("Cannot connect to DarshJDB server. Is the server running?");
       }
     } finally {
       setLoading(false);
@@ -162,15 +152,7 @@ export function AuthUsers() {
                   Loading users...
                 </span>
               ) : (
-                <>
-                  {users.length} users
-                  {!isLive && (
-                    <Badge variant="zinc" className="ml-2 text-[9px]">mock data</Badge>
-                  )}
-                  {isLive && (
-                    <Badge variant="emerald" className="ml-2 text-[9px]">live</Badge>
-                  )}
-                </>
+                <>{users.length} users</>
               )}
             </p>
           </div>
@@ -193,9 +175,9 @@ export function AuthUsers() {
         </div>
 
         {error && (
-          <div className="glass-panel p-3 mb-4 border-amber-500/30 flex items-center gap-2 text-xs text-amber-400">
-            <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" />
-            <span>{error} -- showing mock data as fallback</span>
+          <div className="glass-panel p-3 mb-4 border-red-500/30 flex items-center gap-2 text-xs text-red-400">
+            <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0" />
+            <span>{error}</span>
           </div>
         )}
 
@@ -272,85 +254,104 @@ export function AuthUsers() {
           </div>
         )}
 
-        {/* Filters */}
-        <div className="flex items-center gap-3 mb-4">
-          <div className="relative flex-1 max-w-sm">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-zinc-500" />
-            <input
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search users..."
-              className="input-field pl-9 text-xs"
-            />
+        {/* Loading state */}
+        {loading && (
+          <div className="flex items-center justify-center gap-2 py-16 text-sm text-zinc-500">
+            <Loader2 className="w-4 h-4 animate-spin" />
+            Loading users...
           </div>
-          <div className="flex items-center gap-1 bg-zinc-900 rounded-lg p-0.5 border border-zinc-800">
-            {["all", "admin", "developer", "viewer"].map((r) => (
-              <button
-                key={r}
-                onClick={() => setRoleFilter(r)}
-                className={cn(
-                  "px-2.5 py-1 rounded-md text-xs font-medium transition-colors capitalize",
-                  roleFilter === r
-                    ? "bg-zinc-800 text-zinc-100"
-                    : "text-zinc-500 hover:text-zinc-300",
-                )}
-              >
-                {r}
-              </button>
-            ))}
-          </div>
-        </div>
+        )}
 
-        {/* User cards */}
-        <div className="space-y-2">
-          {filtered.map((user) => {
-            const role = roleBadge[user.role];
-            return (
-              <button
-                key={user.id}
-                onClick={() => setSelectedUser(user)}
-                className={cn(
-                  "w-full glass-panel p-4 text-left transition-all hover:border-zinc-700",
-                  selectedUser?.id === user.id && "border-amber-500/40",
-                )}
-              >
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-3">
-                    <div className="w-9 h-9 rounded-full bg-gradient-to-br from-zinc-700 to-zinc-800 flex items-center justify-center">
-                      <span className="text-sm font-semibold text-zinc-300">
-                        {user.name.charAt(0)}
-                      </span>
-                    </div>
-                    <div>
-                      <div className="flex items-center gap-2">
-                        <span className="text-sm font-medium text-zinc-100">
-                          {user.name}
-                        </span>
-                        <Badge variant={role.variant} className="text-[10px]">
-                          <role.icon className="w-2.5 h-2.5 mr-1" />
-                          {user.role}
-                        </Badge>
-                      </div>
-                      <span className="text-xs text-zinc-500">{user.email}</span>
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-3 text-xs text-zinc-500">
-                    <span className="flex items-center gap-1">
-                      <Clock className="w-3 h-3" />
-                      {formatRelativeTime(user.lastLogin)}
-                    </span>
-                    {user.sessions.length > 0 && (
-                      <div className="w-2 h-2 rounded-full bg-emerald-400" title="Active" />
+        {/* Empty state */}
+        {!loading && !error && users.length === 0 && (
+          <div className="flex items-center justify-center py-16 text-sm text-zinc-500">
+            No users found.
+          </div>
+        )}
+
+        {!loading && users.length > 0 && (
+          <>
+            {/* Filters */}
+            <div className="flex items-center gap-3 mb-4">
+              <div className="relative flex-1 max-w-sm">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-zinc-500" />
+                <input
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  placeholder="Search users..."
+                  className="input-field pl-9 text-xs"
+                />
+              </div>
+              <div className="flex items-center gap-1 bg-zinc-900 rounded-lg p-0.5 border border-zinc-800">
+                {["all", "admin", "developer", "viewer"].map((r) => (
+                  <button
+                    key={r}
+                    onClick={() => setRoleFilter(r)}
+                    className={cn(
+                      "px-2.5 py-1 rounded-md text-xs font-medium transition-colors capitalize",
+                      roleFilter === r
+                        ? "bg-zinc-800 text-zinc-100"
+                        : "text-zinc-500 hover:text-zinc-300",
                     )}
-                    <button className="btn-ghost p-1" aria-label={`More options for ${user.name}`}>
-                      <MoreVertical className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
-                </div>
-              </button>
-            );
-          })}
-        </div>
+                  >
+                    {r}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* User cards */}
+            <div className="space-y-2">
+              {filtered.map((user) => {
+                const role = roleBadge[user.role];
+                return (
+                  <button
+                    key={user.id}
+                    onClick={() => setSelectedUser(user)}
+                    className={cn(
+                      "w-full glass-panel p-4 text-left transition-all hover:border-zinc-700",
+                      selectedUser?.id === user.id && "border-amber-500/40",
+                    )}
+                  >
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-3">
+                        <div className="w-9 h-9 rounded-full bg-gradient-to-br from-zinc-700 to-zinc-800 flex items-center justify-center">
+                          <span className="text-sm font-semibold text-zinc-300">
+                            {user.name.charAt(0)}
+                          </span>
+                        </div>
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <span className="text-sm font-medium text-zinc-100">
+                              {user.name}
+                            </span>
+                            <Badge variant={role.variant} className="text-[10px]">
+                              <role.icon className="w-2.5 h-2.5 mr-1" />
+                              {user.role}
+                            </Badge>
+                          </div>
+                          <span className="text-xs text-zinc-500">{user.email}</span>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-3 text-xs text-zinc-500">
+                        <span className="flex items-center gap-1">
+                          <Clock className="w-3 h-3" />
+                          {formatRelativeTime(user.lastLogin)}
+                        </span>
+                        {user.sessions.length > 0 && (
+                          <div className="w-2 h-2 rounded-full bg-emerald-400" title="Active" />
+                        )}
+                        <button className="btn-ghost p-1" aria-label={`More options for ${user.name}`}>
+                          <MoreVertical className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </>
+        )}
       </div>
 
       {/* User detail panel */}

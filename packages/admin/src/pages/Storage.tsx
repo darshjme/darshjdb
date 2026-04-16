@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react";
+import { useState, useEffect, useCallback } from "react";
 import {
   Grid,
   List,
@@ -13,9 +13,11 @@ import {
   Archive,
   Video,
   Eye,
+  Loader2,
+  AlertTriangle,
 } from "lucide-react";
 import { Badge } from "../components/Badge";
-import { mockStorageFiles } from "../lib/mock-data";
+import { fetchHealth } from "../lib/api";
 import { cn, formatBytes, formatRelativeTime } from "../lib/utils";
 import type { StorageFile } from "../types";
 
@@ -36,12 +38,34 @@ export function Storage() {
   const [search, setSearch] = useState("");
   const [dragOver, setDragOver] = useState(false);
   const [selectedFile, setSelectedFile] = useState<StorageFile | null>(null);
+  const [files] = useState<StorageFile[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
-  const filtered = mockStorageFiles.filter((f) =>
+  useEffect(() => {
+    (async () => {
+      setLoading(true);
+      setError(null);
+      try {
+        const healthy = await fetchHealth();
+        if (!healthy) {
+          setError("Cannot connect to DarshJDB server. Is the server running?");
+        }
+        // Storage API endpoint not yet implemented on server.
+        // When it is, fetch files here.
+      } catch {
+        setError("Cannot connect to DarshJDB server. Is the server running?");
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, []);
+
+  const filtered = files.filter((f) =>
     f.name.toLowerCase().includes(search.toLowerCase()),
   );
 
-  const totalSize = mockStorageFiles.reduce((sum, f) => sum + f.size, 0);
+  const totalSize = files.reduce((sum, f) => sum + f.size, 0);
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -65,176 +89,208 @@ export function Storage() {
         <div>
           <h2 className="text-lg font-semibold text-zinc-100">Storage</h2>
           <p className="text-sm text-zinc-500 mt-0.5">
-            {mockStorageFiles.length} files, {formatBytes(totalSize)} total
+            {loading ? (
+              <span className="flex items-center gap-1.5">
+                <Loader2 className="w-3 h-3 animate-spin" />
+                Loading...
+              </span>
+            ) : (
+              <>{files.length} files, {formatBytes(totalSize)} total</>
+            )}
           </p>
         </div>
-        <button className="btn-primary text-sm">
+        <button className="btn-primary text-sm" disabled={!!error}>
           <Upload className="w-4 h-4" />
           Upload Files
         </button>
       </div>
 
-      {/* Drop zone */}
-      <div
-        onDragOver={handleDragOver}
-        onDragLeave={handleDragLeave}
-        onDrop={handleDrop}
-        className={cn(
-          "border-2 border-dashed rounded-xl p-8 mb-6 text-center transition-all",
-          dragOver
-            ? "border-amber-500 bg-amber-500/5"
-            : "border-zinc-800 hover:border-zinc-700",
-        )}
-      >
-        <Upload className={cn(
-          "w-8 h-8 mx-auto mb-3",
-          dragOver ? "text-amber-500" : "text-zinc-600",
-        )} />
-        <p className="text-sm text-zinc-400">
-          Drag and drop files here, or{" "}
-          <button className="text-amber-500 hover:text-amber-400 font-medium">
-            browse
-          </button>
-        </p>
-        <p className="text-xs text-zinc-600 mt-1">Max 100MB per file</p>
-      </div>
-
-      {/* Toolbar */}
-      <div className="flex items-center gap-3 mb-4">
-        <div className="relative flex-1 max-w-sm">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-zinc-500" />
-          <input
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search files..."
-            className="input-field pl-9 text-xs"
-          />
+      {error && (
+        <div className="flex items-center gap-2 px-4 py-3 mb-6 rounded-lg bg-red-500/10 border border-red-500/20 text-red-400 text-xs">
+          <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0" />
+          <span>{error}</span>
         </div>
-        <div className="flex items-center gap-1 bg-zinc-900 rounded-lg p-0.5 border border-zinc-800">
-          <button
-            onClick={() => setView("grid")}
+      )}
+
+      {loading && (
+        <div className="flex items-center justify-center gap-2 py-16 text-sm text-zinc-500">
+          <Loader2 className="w-4 h-4 animate-spin" />
+          Loading storage...
+        </div>
+      )}
+
+      {!loading && !error && (
+        <>
+          {/* Drop zone */}
+          <div
+            onDragOver={handleDragOver}
+            onDragLeave={handleDragLeave}
+            onDrop={handleDrop}
             className={cn(
-              "p-1.5 rounded-md transition-colors",
-              view === "grid" ? "bg-zinc-800 text-zinc-100" : "text-zinc-500",
+              "border-2 border-dashed rounded-xl p-8 mb-6 text-center transition-all",
+              dragOver
+                ? "border-amber-500 bg-amber-500/5"
+                : "border-zinc-800 hover:border-zinc-700",
             )}
           >
-            <Grid className="w-3.5 h-3.5" />
-          </button>
-          <button
-            onClick={() => setView("list")}
-            className={cn(
-              "p-1.5 rounded-md transition-colors",
-              view === "list" ? "bg-zinc-800 text-zinc-100" : "text-zinc-500",
-            )}
-          >
-            <List className="w-3.5 h-3.5" />
-          </button>
-        </div>
-      </div>
+            <Upload className={cn(
+              "w-8 h-8 mx-auto mb-3",
+              dragOver ? "text-amber-500" : "text-zinc-600",
+            )} />
+            <p className="text-sm text-zinc-400">
+              Drag and drop files here, or{" "}
+              <button className="text-amber-500 hover:text-amber-400 font-medium">
+                browse
+              </button>
+            </p>
+            <p className="text-xs text-zinc-600 mt-1">Max 100MB per file</p>
+          </div>
 
-      {/* File display */}
-      {view === "grid" ? (
-        <div className="grid grid-cols-4 gap-3">
-          {filtered.map((file) => {
-            const Icon = mimeIcons[file.mimeType] || File;
-            const isImage = file.mimeType.startsWith("image/");
-            return (
+          {/* Toolbar */}
+          <div className="flex items-center gap-3 mb-4">
+            <div className="relative flex-1 max-w-sm">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-zinc-500" />
+              <input
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Search files..."
+                className="input-field pl-9 text-xs"
+              />
+            </div>
+            <div className="flex items-center gap-1 bg-zinc-900 rounded-lg p-0.5 border border-zinc-800">
               <button
-                key={file.id}
-                onClick={() => setSelectedFile(file)}
+                onClick={() => setView("grid")}
                 className={cn(
-                  "glass-panel p-0 text-left transition-all hover:border-zinc-700 group",
-                  selectedFile?.id === file.id && "border-amber-500/40",
+                  "p-1.5 rounded-md transition-colors",
+                  view === "grid" ? "bg-zinc-800 text-zinc-100" : "text-zinc-500",
                 )}
               >
-                <div className={cn(
-                  "aspect-[4/3] flex items-center justify-center rounded-t-lg relative",
-                  isImage ? "bg-gradient-to-br from-zinc-800 to-zinc-900" : "bg-zinc-900/50",
-                )}>
-                  <Icon className={cn(
-                    "w-10 h-10",
-                    isImage ? "text-amber-500/40" : "text-zinc-700",
-                  )} />
-                  <div className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity flex gap-1">
-                    <button className="p-1 rounded bg-zinc-900/90 text-zinc-400 hover:text-zinc-100" aria-label={`Preview ${file.name}`}>
-                      <Eye className="w-3 h-3" />
-                    </button>
-                    <button className="p-1 rounded bg-zinc-900/90 text-zinc-400 hover:text-zinc-100" aria-label={`Download ${file.name}`}>
-                      <Download className="w-3 h-3" />
-                    </button>
-                  </div>
-                </div>
-                <div className="p-3">
-                  <p className="text-xs font-medium text-zinc-200 truncate">
-                    {file.name}
-                  </p>
-                  <div className="flex items-center justify-between mt-1">
-                    <span className="text-[10px] text-zinc-500">
-                      {formatBytes(file.size)}
-                    </span>
-                    <span className="text-[10px] text-zinc-600">
-                      {formatRelativeTime(file.uploadedAt)}
-                    </span>
-                  </div>
-                </div>
+                <Grid className="w-3.5 h-3.5" />
               </button>
-            );
-          })}
-        </div>
-      ) : (
-        <div className="glass-panel p-0 overflow-hidden">
-          <table className="w-full">
-            <thead>
-              <tr className="bg-zinc-900/50">
-                <th className="table-header text-left">Name</th>
-                <th className="table-header text-left">Type</th>
-                <th className="table-header text-left">Size</th>
-                <th className="table-header text-left">Uploaded by</th>
-                <th className="table-header text-left">Date</th>
-                <th className="table-header text-right">Actions</th>
-              </tr>
-            </thead>
-            <tbody>
+              <button
+                onClick={() => setView("list")}
+                className={cn(
+                  "p-1.5 rounded-md transition-colors",
+                  view === "list" ? "bg-zinc-800 text-zinc-100" : "text-zinc-500",
+                )}
+              >
+                <List className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          </div>
+
+          {/* Empty state */}
+          {files.length === 0 && (
+            <div className="flex items-center justify-center py-16 text-sm text-zinc-500">
+              No files stored yet.
+            </div>
+          )}
+
+          {/* File display */}
+          {files.length > 0 && view === "grid" ? (
+            <div className="grid grid-cols-4 gap-3">
               {filtered.map((file) => {
                 const Icon = mimeIcons[file.mimeType] || File;
+                const isImage = file.mimeType.startsWith("image/");
                 return (
-                  <tr
+                  <button
                     key={file.id}
-                    className="hover:bg-zinc-800/40 transition-colors cursor-pointer"
                     onClick={() => setSelectedFile(file)}
+                    className={cn(
+                      "glass-panel p-0 text-left transition-all hover:border-zinc-700 group",
+                      selectedFile?.id === file.id && "border-amber-500/40",
+                    )}
                   >
-                    <td className="table-cell">
-                      <div className="flex items-center gap-2">
-                        <Icon className="w-4 h-4 text-zinc-500" />
-                        <span className="text-sm text-zinc-200">{file.name}</span>
-                      </div>
-                    </td>
-                    <td className="table-cell">
-                      <Badge variant="zinc" className="text-[10px]">
-                        {file.mimeType.split("/")[1]}
-                      </Badge>
-                    </td>
-                    <td className="table-cell text-xs">{formatBytes(file.size)}</td>
-                    <td className="table-cell text-xs text-zinc-400">{file.uploadedBy}</td>
-                    <td className="table-cell text-xs text-zinc-500">
-                      {formatRelativeTime(file.uploadedAt)}
-                    </td>
-                    <td className="table-cell text-right">
-                      <div className="flex items-center justify-end gap-1">
-                        <button className="btn-ghost p-1" aria-label={`Download ${file.name}`}>
-                          <Download className="w-3.5 h-3.5" />
+                    <div className={cn(
+                      "aspect-[4/3] flex items-center justify-center rounded-t-lg relative",
+                      isImage ? "bg-gradient-to-br from-zinc-800 to-zinc-900" : "bg-zinc-900/50",
+                    )}>
+                      <Icon className={cn(
+                        "w-10 h-10",
+                        isImage ? "text-amber-500/40" : "text-zinc-700",
+                      )} />
+                      <div className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity flex gap-1">
+                        <button className="p-1 rounded bg-zinc-900/90 text-zinc-400 hover:text-zinc-100" aria-label={`Preview ${file.name}`}>
+                          <Eye className="w-3 h-3" />
                         </button>
-                        <button className="btn-ghost p-1 text-red-400 hover:text-red-300" aria-label={`Delete ${file.name}`}>
-                          <Trash2 className="w-3.5 h-3.5" />
+                        <button className="p-1 rounded bg-zinc-900/90 text-zinc-400 hover:text-zinc-100" aria-label={`Download ${file.name}`}>
+                          <Download className="w-3 h-3" />
                         </button>
                       </div>
-                    </td>
-                  </tr>
+                    </div>
+                    <div className="p-3">
+                      <p className="text-xs font-medium text-zinc-200 truncate">
+                        {file.name}
+                      </p>
+                      <div className="flex items-center justify-between mt-1">
+                        <span className="text-[10px] text-zinc-500">
+                          {formatBytes(file.size)}
+                        </span>
+                        <span className="text-[10px] text-zinc-600">
+                          {formatRelativeTime(file.uploadedAt)}
+                        </span>
+                      </div>
+                    </div>
+                  </button>
                 );
               })}
-            </tbody>
-          </table>
-        </div>
+            </div>
+          ) : files.length > 0 ? (
+            <div className="glass-panel p-0 overflow-hidden">
+              <table className="w-full">
+                <thead>
+                  <tr className="bg-zinc-900/50">
+                    <th className="table-header text-left">Name</th>
+                    <th className="table-header text-left">Type</th>
+                    <th className="table-header text-left">Size</th>
+                    <th className="table-header text-left">Uploaded by</th>
+                    <th className="table-header text-left">Date</th>
+                    <th className="table-header text-right">Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filtered.map((file) => {
+                    const Icon = mimeIcons[file.mimeType] || File;
+                    return (
+                      <tr
+                        key={file.id}
+                        className="hover:bg-zinc-800/40 transition-colors cursor-pointer"
+                        onClick={() => setSelectedFile(file)}
+                      >
+                        <td className="table-cell">
+                          <div className="flex items-center gap-2">
+                            <Icon className="w-4 h-4 text-zinc-500" />
+                            <span className="text-sm text-zinc-200">{file.name}</span>
+                          </div>
+                        </td>
+                        <td className="table-cell">
+                          <Badge variant="zinc" className="text-[10px]">
+                            {file.mimeType.split("/")[1]}
+                          </Badge>
+                        </td>
+                        <td className="table-cell text-xs">{formatBytes(file.size)}</td>
+                        <td className="table-cell text-xs text-zinc-400">{file.uploadedBy}</td>
+                        <td className="table-cell text-xs text-zinc-500">
+                          {formatRelativeTime(file.uploadedAt)}
+                        </td>
+                        <td className="table-cell text-right">
+                          <div className="flex items-center justify-end gap-1">
+                            <button className="btn-ghost p-1" aria-label={`Download ${file.name}`}>
+                              <Download className="w-3.5 h-3.5" />
+                            </button>
+                            <button className="btn-ghost p-1 text-red-400 hover:text-red-300" aria-label={`Delete ${file.name}`}>
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          ) : null}
+        </>
       )}
     </div>
   );

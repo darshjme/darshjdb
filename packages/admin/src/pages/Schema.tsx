@@ -1,7 +1,6 @@
 import { useState, useEffect } from "react";
-import { Eye, GitBranch, List, ArrowRight, Key, Hash, AlertTriangle } from "lucide-react";
+import { Eye, GitBranch, List, ArrowRight, Key, Hash, AlertTriangle, Loader2 } from "lucide-react";
 import { Badge } from "../components/Badge";
-import { mockEntityTypes } from "../lib/mock-data";
 import { fetchSchema } from "../lib/api";
 import { cn } from "../lib/utils";
 import type { EntityType } from "../types";
@@ -15,27 +14,26 @@ const relationships = [
 ];
 
 export function Schema() {
-  const [entityTypes, setEntityTypes] = useState<EntityType[]>(mockEntityTypes);
+  const [entityTypes, setEntityTypes] = useState<EntityType[]>([]);
   const [selectedEntity, setSelectedEntity] = useState<EntityType | null>(null);
   const [view, setView] = useState<"diagram" | "list">("diagram");
-  const [usingMock, setUsingMock] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
+      setLoading(true);
+      setError(null);
       try {
         const types = await fetchSchema();
         if (cancelled) return;
-        if (types.length > 0) {
-          setEntityTypes(types);
-          setUsingMock(false);
-        } else {
-          setUsingMock(true);
-        }
+        setEntityTypes(types);
       } catch {
         if (cancelled) return;
-        setEntityTypes(mockEntityTypes);
-        setUsingMock(true);
+        setError("Cannot connect to DarshJDB server. Is the server running?");
+      } finally {
+        if (!cancelled) setLoading(false);
       }
     })();
     return () => { cancelled = true; };
@@ -49,7 +47,14 @@ export function Schema() {
           <div>
             <h2 className="text-lg font-semibold text-zinc-100">Schema</h2>
             <p className="text-sm text-zinc-500 mt-0.5">
-              {entityTypes.length} entity types, {relationships.length} relationships
+              {loading ? (
+                <span className="flex items-center gap-1.5">
+                  <Loader2 className="w-3 h-3 animate-spin" />
+                  Loading schema...
+                </span>
+              ) : (
+                <>{entityTypes.length} entity types, {relationships.length} relationships</>
+              )}
             </p>
           </div>
           <div className="flex items-center gap-1 bg-zinc-900 rounded-lg p-0.5 border border-zinc-800">
@@ -80,14 +85,27 @@ export function Schema() {
           </div>
         </div>
 
-        {usingMock && (
-          <div className="flex items-center gap-2 px-4 py-2 mb-4 rounded-lg bg-amber-500/10 border border-amber-500/20 text-amber-400 text-xs">
-            <AlertTriangle className="w-3.5 h-3.5" />
-            <span>Server unreachable -- showing mock schema</span>
+        {error && (
+          <div className="flex items-center gap-2 px-4 py-3 mb-4 rounded-lg bg-red-500/10 border border-red-500/20 text-red-400 text-xs">
+            <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0" />
+            <span>{error}</span>
           </div>
         )}
 
-        {view === "diagram" ? (
+        {loading && (
+          <div className="flex items-center justify-center gap-2 py-16 text-sm text-zinc-500">
+            <Loader2 className="w-4 h-4 animate-spin" />
+            Loading schema...
+          </div>
+        )}
+
+        {!loading && !error && entityTypes.length === 0 && (
+          <div className="flex items-center justify-center py-16 text-sm text-zinc-500">
+            No entity types found in the database.
+          </div>
+        )}
+
+        {!loading && entityTypes.length > 0 && view === "diagram" ? (
           <div className="grid grid-cols-3 gap-4">
             {entityTypes.map((entity) => (
               <button
@@ -153,7 +171,7 @@ export function Schema() {
               </button>
             ))}
           </div>
-        ) : (
+        ) : !loading && entityTypes.length > 0 ? (
           <div className="space-y-3">
             {entityTypes.map((entity) => (
               <div key={entity.name} className="glass-panel">
@@ -216,7 +234,7 @@ export function Schema() {
               </div>
             ))}
           </div>
-        )}
+        ) : null}
       </div>
     </div>
   );

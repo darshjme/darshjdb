@@ -9,46 +9,44 @@ import {
   Trash2,
   Download,
   AlertTriangle,
+  Loader2,
 } from "lucide-react";
 import { DataTable } from "../components/DataTable";
 import { Badge } from "../components/Badge";
-import { mockEntityTypes, mockRecords } from "../lib/mock-data";
 import { fetchSchema, fetchEntities, queryDarshJQL } from "../lib/api";
 import { cn, formatNumber } from "../lib/utils";
 import type { EntityType, EntityRecord } from "../types";
 
 export function DataExplorer() {
-  const [entityTypes, setEntityTypes] = useState<EntityType[]>(mockEntityTypes);
-  const [selectedEntity, setSelectedEntity] = useState<EntityType>(mockEntityTypes[0]);
-  const [records, setRecords] = useState<EntityRecord[]>(mockRecords);
-  const [loading, setLoading] = useState(false);
-  const [usingMock, setUsingMock] = useState(false);
+  const [entityTypes, setEntityTypes] = useState<EntityType[]>([]);
+  const [selectedEntity, setSelectedEntity] = useState<EntityType | null>(null);
+  const [records, setRecords] = useState<EntityRecord[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [liveMode, setLiveMode] = useState(false);
   const [showQuery, setShowQuery] = useState(false);
-  const [queryText, setQueryText] = useState(`SELECT * FROM "${mockEntityTypes[0].name}" LIMIT 100`);
+  const [queryText, setQueryText] = useState("");
   const [filter, setFilter] = useState("");
 
   // ── Load schema (entity types) from API on mount ──────────────────
   useEffect(() => {
     let cancelled = false;
     (async () => {
+      setLoading(true);
+      setError(null);
       try {
         const types = await fetchSchema();
         if (cancelled) return;
+        setEntityTypes(types);
         if (types.length > 0) {
-          setEntityTypes(types);
           setSelectedEntity(types[0]);
-          setUsingMock(false);
-        } else {
-          // Server returned empty schema, fall back to mock
-          setUsingMock(true);
+          setQueryText(`SELECT * FROM "${types[0].name}" LIMIT 100`);
         }
       } catch {
         if (cancelled) return;
-        // API unreachable — stay on mock data
-        setEntityTypes(mockEntityTypes);
-        setSelectedEntity(mockEntityTypes[0]);
-        setUsingMock(true);
+        setError("Cannot connect to DarshJDB server. Is the server running?");
+      } finally {
+        if (!cancelled) setLoading(false);
       }
     })();
     return () => { cancelled = true; };
@@ -57,26 +55,25 @@ export function DataExplorer() {
   // ── Load records when selected entity changes ─────────────────────
   const loadRecords = useCallback(async (entity: EntityType) => {
     setLoading(true);
+    setError(null);
     try {
       const result = await fetchEntities(entity.name);
       setRecords(result.data);
-      setUsingMock(false);
     } catch {
-      // Fallback to mock data
-      setRecords(mockRecords);
-      setUsingMock(true);
+      setError("Cannot connect to DarshJDB server. Is the server running?");
+      setRecords([]);
     } finally {
       setLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    loadRecords(selectedEntity);
+    if (selectedEntity) loadRecords(selectedEntity);
   }, [selectedEntity, loadRecords]);
 
   // ── Live polling ──────────────────────────────────────────────────
   useEffect(() => {
-    if (!liveMode) return;
+    if (!liveMode || !selectedEntity) return;
     const interval = setInterval(() => {
       loadRecords(selectedEntity);
     }, 3000);
@@ -85,11 +82,14 @@ export function DataExplorer() {
 
   // ── Update query text when entity changes ─────────────────────────
   useEffect(() => {
-    setQueryText(`SELECT * FROM "${selectedEntity.name}" LIMIT 100`);
+    if (selectedEntity) {
+      setQueryText(`SELECT * FROM "${selectedEntity.name}" LIMIT 100`);
+    }
   }, [selectedEntity]);
 
   // ── Run DarshJQL query ───────────────────────────────────────────
   const runQuery = useCallback(async () => {
+    if (!selectedEntity) return;
     setLoading(true);
     try {
       // Parse simple SELECT-style into DarshJQL JSON object
@@ -106,17 +106,19 @@ export function DataExplorer() {
     }
   }, [selectedEntity]);
 
-  const columns = selectedEntity.fields.map((f) => ({
-    key: f.name,
-    label: f.name,
-    sortable: true,
-    width: f.name === "_id" ? "140px" : undefined,
-    render: f.name === "_id"
-      ? (val: unknown) => (
-          <span className="font-mono text-xs text-amber-500/80">{String(val)}</span>
-        )
-      : undefined,
-  }));
+  const columns = selectedEntity
+    ? selectedEntity.fields.map((f) => ({
+        key: f.name,
+        label: f.name,
+        sortable: true,
+        width: f.name === "_id" ? "140px" : undefined,
+        render: f.name === "_id"
+          ? (val: unknown) => (
+              <span className="font-mono text-xs text-amber-500/80">{String(val)}</span>
+            )
+          : undefined,
+      }))
+    : [];
 
   const filteredEntities = filter
     ? entityTypes.filter((e) => e.name.toLowerCase().includes(filter.toLowerCase()))
@@ -136,13 +138,19 @@ export function DataExplorer() {
           />
         </div>
         <div className="overflow-y-auto py-1">
+          {loading && entityTypes.length === 0 && (
+            <div className="flex items-center justify-center gap-2 py-8 text-xs text-zinc-500">
+              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              Loading...
+            </div>
+          )}
           {filteredEntities.map((entity) => (
             <button
               key={entity.name}
               onClick={() => setSelectedEntity(entity)}
               className={cn(
                 "flex items-center justify-between w-full px-3 py-2 text-sm transition-colors",
-                selectedEntity.name === entity.name
+                selectedEntity?.name === entity.name
                   ? "bg-amber-500/10 text-amber-500"
                   : "text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/40",
               )}
@@ -161,18 +169,16 @@ export function DataExplorer() {
 
       {/* Main content */}
       <div className="flex-1 flex flex-col min-w-0">
-        {/* Mock data banner */}
-        {usingMock && (
-          <div className="flex items-center gap-2 px-4 py-1.5 bg-amber-500/10 border-b border-amber-500/20 text-amber-400 text-xs">
-            <AlertTriangle className="w-3.5 h-3.5" />
-            <span>
-              Server unreachable -- showing mock data. Start DarshJDB on{" "}
-              <code className="font-mono text-amber-300">{import.meta.env.VITE_DDB_URL || "localhost:7700"}</code>
-            </span>
+        {/* Error banner */}
+        {error && (
+          <div className="flex items-center gap-2 px-4 py-3 bg-red-500/10 border-b border-red-500/20 text-red-400 text-xs">
+            <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0" />
+            <span>{error}</span>
           </div>
         )}
 
         {/* Toolbar */}
+        {selectedEntity && (
         <div className="flex items-center justify-between px-4 py-2.5 border-b border-zinc-800">
           <div className="flex items-center gap-3">
             <h2 className="text-sm font-semibold text-zinc-100">
@@ -223,6 +229,7 @@ export function DataExplorer() {
             </button>
           </div>
         </div>
+        )}
 
         {/* Query panel */}
         {showQuery && (
@@ -262,11 +269,22 @@ export function DataExplorer() {
 
         {/* Data table */}
         <div className="flex-1 overflow-auto">
-          <DataTable
-            columns={columns}
-            data={records}
-            pageSize={10}
-          />
+          {loading && !selectedEntity ? (
+            <div className="flex items-center justify-center gap-2 py-16 text-sm text-zinc-500">
+              <Loader2 className="w-4 h-4 animate-spin" />
+              Loading...
+            </div>
+          ) : selectedEntity ? (
+            <DataTable
+              columns={columns}
+              data={records}
+              pageSize={10}
+            />
+          ) : !error ? (
+            <div className="flex items-center justify-center py-16 text-sm text-zinc-500">
+              No entity types found.
+            </div>
+          ) : null}
         </div>
       </div>
     </div>
