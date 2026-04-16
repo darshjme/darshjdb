@@ -20,7 +20,7 @@
 //!
 //! - **Providers**: Pluggable authentication backends (password, magic link, OAuth2).
 //! - **Session**: JWT issuance, refresh rotation, key management.
-//! - **MFA**: TOTP, recovery codes, and WebAuthn stubs.
+//! - **MFA**: TOTP and recovery codes. WebAuthn: planned for v0.5.0.
 //! - **Permissions**: Rule-based access control with query-level injection.
 //! - **Row-Level Security**: SurrealDB-style per-table, per-operation permission expressions.
 //! - **Scopes**: Scope-based authentication with custom session TTL, claims, and API keys.
@@ -36,7 +36,7 @@ pub mod scope;
 pub mod session;
 
 pub use default_permissions::{build_default_engine, get_rule_with_fallback};
-pub use mfa::{RecoveryCodeManager, TotpManager, WebAuthnStub};
+pub use mfa::{RecoveryCodeManager, TotpManager};
 pub use middleware::{AuthLayer, RateLimiter, auth_middleware};
 pub use permissions::{
     Operation, PermissionEngine, PermissionResult, PermissionRule, evaluate_permission,

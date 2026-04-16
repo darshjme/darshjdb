@@ -965,11 +965,19 @@ pub struct StorageEngine<B: StorageBackend> {
     resumable_uploads: dashmap::DashMap<Uuid, ResumableUpload>,
     /// Maximum upload size in bytes (0 = unlimited).
     max_upload_size: u64,
+    /// Directory for staging resumable upload chunks before assembly.
+    staging_dir: PathBuf,
 }
 
 impl<B: StorageBackend> StorageEngine<B> {
     /// Create a new storage engine with the given backend and signing key.
     pub fn new(backend: Arc<B>, signing_key: Vec<u8>) -> Self {
+        let staging_dir = std::env::var("DDB_STORAGE_PATH")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| std::env::temp_dir().join("darshjdb"))
+            .join(".staging");
+        // Ensure the staging directory exists (best-effort at construction).
+        let _ = std::fs::create_dir_all(&staging_dir);
         Self {
             backend,
             hooks: Vec::new(),
@@ -977,6 +985,7 @@ impl<B: StorageBackend> StorageEngine<B> {
             signed_url_ttl: Duration::from_secs(3600),
             resumable_uploads: dashmap::DashMap::new(),
             max_upload_size: DEFAULT_MAX_UPLOAD_SIZE,
+            staging_dir,
         }
     }
 
@@ -988,6 +997,12 @@ impl<B: StorageBackend> StorageEngine<B> {
     /// Add an upload hook.
     pub fn add_hook(&mut self, hook: Arc<dyn UploadHook>) {
         self.hooks.push(hook);
+    }
+
+    /// Override the staging directory for resumable upload chunks.
+    pub fn set_staging_dir(&mut self, dir: impl Into<PathBuf>) {
+        self.staging_dir = dir.into();
+        let _ = std::fs::create_dir_all(&self.staging_dir);
     }
 
     /// Set the default signed URL TTL.
@@ -1177,30 +1192,46 @@ impl<B: StorageBackend> StorageEngine<B> {
     }
 
     /// Append a chunk to a resumable upload.
-    pub fn append_chunk(
+    ///
+    /// Each chunk is persisted to a staging file under
+    /// `<staging_dir>/<upload_id>/<offset>.chunk` so that data survives
+    /// process restarts and is not held purely in memory.
+    pub async fn append_chunk(
         &self,
         upload_id: Uuid,
         offset: u64,
         data: &[u8],
     ) -> Result<u64, StorageError> {
-        let mut upload = self
-            .resumable_uploads
-            .get_mut(&upload_id)
-            .ok_or_else(|| StorageError::NotFound(format!("upload {upload_id}")))?;
+        let next_offset = {
+            let mut upload = self
+                .resumable_uploads
+                .get_mut(&upload_id)
+                .ok_or_else(|| StorageError::NotFound(format!("upload {upload_id}")))?;
 
-        if offset != upload.next_offset {
-            return Err(StorageError::InvalidOffset {
-                expected: upload.next_offset,
-                received: offset,
-            });
-        }
+            if offset != upload.next_offset {
+                return Err(StorageError::InvalidOffset {
+                    expected: upload.next_offset,
+                    received: offset,
+                });
+            }
 
-        upload.bytes_received += data.len() as u64;
-        upload.next_offset = offset + data.len() as u64;
+            upload.bytes_received += data.len() as u64;
+            upload.next_offset = offset + data.len() as u64;
+            upload.next_offset
+        };
 
-        // TODO: persist chunk data to a staging area.
+        // Persist chunk data to the staging area.
+        let chunk_dir = self.staging_dir.join(upload_id.to_string());
+        tokio::fs::create_dir_all(&chunk_dir)
+            .await
+            .map_err(|e| StorageError::Io(format!("staging mkdir: {e}")))?;
 
-        Ok(upload.next_offset)
+        let chunk_path = chunk_dir.join(format!("{offset}.chunk"));
+        tokio::fs::write(&chunk_path, data)
+            .await
+            .map_err(|e| StorageError::Io(format!("staging write: {e}")))?;
+
+        Ok(next_offset)
     }
 
     /// Get the status of a resumable upload.
@@ -1208,9 +1239,15 @@ impl<B: StorageBackend> StorageEngine<B> {
         self.resumable_uploads.get(&upload_id).map(|u| u.clone())
     }
 
-    /// Cancel and clean up a resumable upload.
+    /// Cancel and clean up a resumable upload, removing staged chunks.
     pub fn cancel_resumable_upload(&self, upload_id: Uuid) -> bool {
-        self.resumable_uploads.remove(&upload_id).is_some()
+        let removed = self.resumable_uploads.remove(&upload_id).is_some();
+        if removed {
+            // Best-effort cleanup of staged chunk files.
+            let chunk_dir = self.staging_dir.join(upload_id.to_string());
+            let _ = std::fs::remove_dir_all(chunk_dir);
+        }
+        removed
     }
 }
 
@@ -1281,7 +1318,9 @@ mod tests {
 
     fn make_engine(dir: &str) -> StorageEngine<LocalFsBackend> {
         let backend = Arc::new(LocalFsBackend::new(dir).expect("create backend"));
-        StorageEngine::new(backend, b"test-secret-key".to_vec())
+        let mut engine = StorageEngine::new(backend, b"test-secret-key".to_vec());
+        engine.set_staging_dir(PathBuf::from(dir).join(".staging"));
+        engine
     }
 
     // -----------------------------------------------------------------------
@@ -1769,35 +1808,40 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    #[test]
-    fn resumable_upload_sequential_chunks() {
+    #[tokio::test]
+    async fn resumable_upload_sequential_chunks() {
         let dir = temp_dir();
         let engine = make_engine(&dir);
 
         let id = engine.create_resumable_upload("file.bin", "application/octet-stream", Some(100));
 
-        let next = engine.append_chunk(id, 0, &[0u8; 50]).expect("chunk 1");
+        let next = engine.append_chunk(id, 0, &[0u8; 50]).await.expect("chunk 1");
         assert_eq!(next, 50);
 
-        let next = engine.append_chunk(id, 50, &[0u8; 50]).expect("chunk 2");
+        let next = engine.append_chunk(id, 50, &[0u8; 50]).await.expect("chunk 2");
         assert_eq!(next, 100);
 
         let status = engine.resumable_upload_status(id).expect("status");
         assert_eq!(status.bytes_received, 100);
 
+        // Verify chunk files were persisted to staging.
+        let chunk_dir = std::path::Path::new(&dir).join(".staging").join(id.to_string());
+        assert!(chunk_dir.join("0.chunk").exists());
+        assert!(chunk_dir.join("50.chunk").exists());
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    #[test]
-    fn resumable_upload_wrong_offset_rejected() {
+    #[tokio::test]
+    async fn resumable_upload_wrong_offset_rejected() {
         let dir = temp_dir();
         let engine = make_engine(&dir);
 
         let id = engine.create_resumable_upload("file.bin", "application/octet-stream", Some(100));
-        engine.append_chunk(id, 0, &[0u8; 50]).expect("chunk 1");
+        engine.append_chunk(id, 0, &[0u8; 50]).await.expect("chunk 1");
 
         // Try to append at offset 0 again (should be 50).
-        let result = engine.append_chunk(id, 0, &[0u8; 10]);
+        let result = engine.append_chunk(id, 0, &[0u8; 10]).await;
         assert!(result.is_err());
         assert!(matches!(
             result.unwrap_err(),
@@ -1810,13 +1854,13 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    #[test]
-    fn resumable_upload_nonexistent_id() {
+    #[tokio::test]
+    async fn resumable_upload_nonexistent_id() {
         let dir = temp_dir();
         let engine = make_engine(&dir);
 
         let fake_id = Uuid::new_v4();
-        assert!(engine.append_chunk(fake_id, 0, &[0u8; 10]).is_err());
+        assert!(engine.append_chunk(fake_id, 0, &[0u8; 10]).await.is_err());
         assert!(engine.resumable_upload_status(fake_id).is_none());
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -1837,8 +1881,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    #[test]
-    fn resumable_upload_open_ended() {
+    #[tokio::test]
+    async fn resumable_upload_open_ended() {
         let dir = temp_dir();
         let engine = make_engine(&dir);
 
@@ -1847,7 +1891,7 @@ mod tests {
         let status = engine.resumable_upload_status(id).expect("status");
         assert!(status.total_size.is_none());
 
-        engine.append_chunk(id, 0, &[1u8; 1024]).expect("chunk");
+        engine.append_chunk(id, 0, &[1u8; 1024]).await.expect("chunk");
         let status = engine.resumable_upload_status(id).expect("status");
         assert_eq!(status.bytes_received, 1024);
 
