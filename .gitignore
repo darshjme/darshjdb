@@ -70,3 +70,17 @@ sdks/python/.venv/
 sdks/php/vendor/
 .claude/
 .gstack/
+.planning/
+
+# AI agent workflow artifacts
+BENCHMARK_SELF.md
+CODE.md
+DEFERRED.md
+ENDPOINT_AUDIT.md
+HOTFIX-SUMMARY.md
+IMPROVEMENT_LOG.md
+PHASE2-SUMMARY.md
+RESEARCH_SOURCES.md
+SDK_AUDIT.md
+SURREAL_FEATURES.md
+VERIFICATION.md
