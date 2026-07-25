@@ -676,10 +676,11 @@ mod tests {
         assert_eq!(anchorer.chain(), AnchorChain::None);
     }
 
+    // Only meaningful with `anchor-ipfs` off: with the feature on this
+    // path talks to a real daemon, which CI does not run.
+    #[cfg(not(feature = "anchor-ipfs"))]
     #[tokio::test]
     async fn ipfs_mock_produces_cid_shape() {
-        // With `anchor-ipfs` off (default in CI), the mock should
-        // return a CID-shaped string derived from the batch root.
         let anchorer = IpfsAnchorer::new("http://localhost:5001");
         let receipt = anchorer
             .anchor(
@@ -690,13 +691,10 @@ mod tests {
             .expect("mock IPFS must not fail");
 
         assert_eq!(receipt.chain, "ipfs");
-        #[cfg(not(feature = "anchor-ipfs"))]
-        {
-            let cid = receipt.ipfs_cid.as_deref().unwrap_or("");
-            assert!(cid.starts_with("Qm"), "mock CID must start with Qm");
-            assert_eq!(cid.len(), 46, "CIDv0 length = 46");
-            assert_eq!(receipt.status, "confirmed");
-        }
+        let cid = receipt.ipfs_cid.as_deref().unwrap_or("");
+        assert!(cid.starts_with("Qm"), "mock CID must start with Qm");
+        assert_eq!(cid.len(), 46, "CIDv0 length = 46");
+        assert_eq!(receipt.status, "confirmed");
     }
 
     #[test]

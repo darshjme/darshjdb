@@ -158,8 +158,11 @@ jobs:
           npm run build --workspace=packages/admin
       - name: Clippy lints (--features ${{ matrix.feature }})
         run: cargo clippy -p ddb-server --all-targets --features ${{ matrix.feature }} -- -D warnings
+      # Serial like the E2E job: the integration suite's setup runs schema
+      # DDL per test, and concurrent AccessExclusiveLock acquisition on the
+      # same database deadlocks.
       - name: Run tests (--features ${{ matrix.feature }})
-        run: cargo test -p ddb-server --features ${{ matrix.feature }}
+        run: cargo test -p ddb-server --features ${{ matrix.feature }} -- --test-threads=1
         env:
           DATABASE_URL: postgres://darshan:darshan@localhost:5432/darshjdb_test
 
