@@ -108,9 +108,9 @@ describeIntegration('DarshJDB Client Integration', () => {
   /*  Test 3: REST URL builder produces correct paths                       */
   /* ====================================================================== */
 
-  it('getRestUrl builds the correct versioned path', () => {
+  it('getRestUrl builds the correct /api path', () => {
     const url = db.getRestUrl('/query');
-    expect(url).toBe(`${DDB_URL}/v1/apps/${APP_ID}/query`);
+    expect(url).toBe(`${DDB_URL}/api/query`);
   });
 
   /* ====================================================================== */
@@ -191,8 +191,7 @@ describeIntegration('DarshJDB Client Integration', () => {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        collection: 'test_entities',
-        limit: 5,
+        query: { type: 'test_entities', $limit: 5 },
       }),
     });
 
@@ -220,9 +219,9 @@ describeIntegration('DarshJDB Client Integration', () => {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        ops: [
+        mutations: [
           {
-            kind: 'set',
+            op: 'insert',
             entity: 'integration_test',
             id: testId,
             data: { label: 'round-trip-test', ts: Date.now() },
@@ -277,13 +276,12 @@ describeIntegration('DarshJDB Client Integration', () => {
     }
 
     const signupData = (await signupResp.json()) as {
-      user?: { id: string; email?: string };
-      tokens?: { accessToken: string };
+      user_id?: string;
+      access_token?: string;
     };
 
-    expect(signupData.user).toBeDefined();
-    expect(signupData.tokens).toBeDefined();
-    expect(signupData.tokens!.accessToken).toBeTruthy();
+    expect(signupData.user_id).toBeTruthy();
+    expect(signupData.access_token).toBeTruthy();
 
     // Attempt signin with same credentials
     const signinResp = await fetch(`${DDB_URL}/api/auth/signin`, {
@@ -301,13 +299,12 @@ describeIntegration('DarshJDB Client Integration', () => {
     }
 
     const signinData = (await signinResp.json()) as {
-      user?: { id: string; email?: string };
-      tokens?: { accessToken: string };
+      user_id?: string;
+      access_token?: string;
     };
 
-    expect(signinData.user).toBeDefined();
-    expect(signinData.user!.id).toBe(signupData.user!.id);
-    expect(signinData.tokens!.accessToken).toBeTruthy();
+    expect(signinData.user_id).toBe(signupData.user_id);
+    expect(signinData.access_token).toBeTruthy();
   });
 
   /* ====================================================================== */
@@ -401,12 +398,10 @@ describeIntegration('DarshJDB Client Integration', () => {
   /* ====================================================================== */
 
   it('subscribe SSE endpoint is reachable', async () => {
-    const query = encodeURIComponent(
-      JSON.stringify({ collection: 'test_entities' }),
-    );
+    const query = encodeURIComponent(JSON.stringify({ type: 'test_entities' }));
 
     // We just check the endpoint responds (even if it's 400 for missing params)
-    const resp = await fetch(`${DDB_URL}/api/subscribe?query=${query}`, {
+    const resp = await fetch(`${DDB_URL}/api/subscribe?q=${query}`, {
       method: 'GET',
       headers: { Accept: 'text/event-stream' },
       // Abort quickly since SSE is long-lived
@@ -447,7 +442,7 @@ describeIntegration('DarshJDB Client Integration', () => {
         'Content-Type': 'application/json',
         Accept: 'application/msgpack',
       },
-      body: JSON.stringify({ collection: 'test_entities', limit: 1 }),
+      body: JSON.stringify({ query: { type: 'test_entities', $limit: 1 } }),
     });
 
     if (resp.status === 501 || resp.status === 404) {
@@ -479,9 +474,9 @@ describeIntegration('DarshJDB Client Integration', () => {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        ops: [
+        mutations: [
           {
-            kind: 'set',
+            op: 'insert',
             entity: 'roundtrip_test',
             id: entityId,
             data: entityData,
@@ -504,9 +499,11 @@ describeIntegration('DarshJDB Client Integration', () => {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        collection: 'roundtrip_test',
-        where: [{ field: 'id', op: '=', value: entityId }],
-        limit: 1,
+        query: {
+          type: 'roundtrip_test',
+          $where: [{ attribute: 'id', op: 'Eq', value: entityId }],
+          $limit: 1,
+        },
       }),
     });
 

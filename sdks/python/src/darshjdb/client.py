@@ -17,9 +17,12 @@ Usage::
     await db.update("users:darsh", {"age": 31})
     await db.delete("users:darsh")
 
-    results = await db.query("SELECT * FROM users WHERE age > 18")
+    results = await db.query({
+        "type": "users",
+        "$where": [{"attribute": "age", "op": "Gt", "value": 18}],
+    })
 
-    async for change in db.live("SELECT * FROM users"):
+    async for change in db.live("users"):
         print(change)
 
     await db.relate("user:darsh", "works_at", "company:knowai")
@@ -64,6 +67,81 @@ def _parse_thing(thing: str) -> tuple[str, str | None]:
     return thing, None
 
 
+def _extract_token(result: dict[str, Any]) -> str:
+    """Read the JWT from an auth response (server field: ``access_token``)."""
+    return result.get("access_token") or result.get("token") or ""
+
+
+def _extract_refresh_token(result: dict[str, Any]) -> str:
+    """Read the refresh token from an auth response."""
+    return result.get("refresh_token") or ""
+
+
+def _extract_user(result: dict[str, Any]) -> dict[str, Any]:
+    """
+    Build the user payload from an auth response.
+
+    The server returns flat ``user_id``/``email`` fields rather than a
+    nested ``user`` object.
+    """
+    user = result.get("user")
+    if isinstance(user, dict):
+        return user
+
+    user = {}
+    if "user_id" in result:
+        user["id"] = result["user_id"]
+    if "email" in result:
+        user["email"] = result["email"]
+    return user
+
+
+def _as_darshanql(query: dict[str, Any] | str) -> dict[str, Any]:
+    """
+    Coerce a query argument into a DarshanQL object.
+
+    The server parses ``{"type": "users", "$where": [...], "$limit": 10}``.
+    A bare table name is accepted as shorthand; SQL strings are not
+    supported by ``/api/query``.
+    """
+    if isinstance(query, dict):
+        return query
+    name = query.strip()
+    if name and name.isidentifier():
+        return {"type": name}
+    raise DarshDBQueryError(
+        "query must be a DarshanQL object like "
+        "{'type': 'users', '$where': [...]} or a table name; "
+        "SQL strings are not accepted by /api/query",
+        query=query,
+    )
+
+
+def _mutation_records(
+    result: dict[str, Any],
+    records: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """
+    Map a ``/api/mutate`` response onto the submitted records.
+
+    The server acknowledges with ``{"tx_id", "affected", "entity_ids"}`` and
+    does not echo stored documents, so the server-assigned ids are attached
+    to the submitted data. Raises if the response carries neither.
+    """
+    results = result.get("results")
+    if isinstance(results, list):
+        return results
+
+    entity_ids = result.get("entity_ids")
+    if isinstance(entity_ids, list) and len(entity_ids) == len(records):
+        return [
+            {**record, "id": entity_id}
+            for record, entity_id in zip(records, entity_ids, strict=True)
+        ]
+
+    raise DarshDBError(f"Unexpected /api/mutate response: {result}")
+
+
 class DarshDB:
     """
     Async client for DarshJDB.
@@ -99,6 +177,7 @@ class DarshDB:
         self._namespace: str | None = None
         self._database: str | None = None
         self._state = ConnectionState.DISCONNECTED
+        self._sse_tasks: set[asyncio.Task[None]] = set()
 
         self._http = httpx.AsyncClient(
             base_url=self._url,
@@ -119,6 +198,8 @@ class DarshDB:
         if self._state == ConnectionState.CLOSING:
             return
         self._state = ConnectionState.CLOSING
+        for task in list(self._sse_tasks):
+            task.cancel()
         await self._http.aclose()
         self._state = ConnectionState.DISCONNECTED
 
@@ -179,14 +260,14 @@ class DarshDB:
                 raise DarshDBAuthError(str(exc)) from exc
             raise
 
-        token = result.get("accessToken", result.get("token", ""))
+        token = _extract_token(result)
         if token:
             self._token = token
 
         return AuthResponse(
             token=token,
-            user=result.get("user", {}),
-            refresh_token=result.get("refreshToken", ""),
+            user=_extract_user(result),
+            refresh_token=_extract_refresh_token(result),
         )
 
     async def signup(self, credentials: dict[str, Any]) -> AuthResponse:
@@ -215,7 +296,7 @@ class DarshDB:
                 raise DarshDBAuthError(str(exc)) from exc
             raise
 
-        token = result.get("accessToken", result.get("token", ""))
+        token = _extract_token(result)
         if token:
             self._token = token
 
@@ -226,8 +307,8 @@ class DarshDB:
 
         return AuthResponse(
             token=token,
-            user=result.get("user", {}),
-            refresh_token=result.get("refreshToken", ""),
+            user=_extract_user(result),
+            refresh_token=_extract_refresh_token(result),
         )
 
     async def invalidate(self) -> None:
@@ -324,7 +405,11 @@ class DarshDB:
             data: A single record dict or a list of record dicts.
 
         Returns:
-            List of created records.
+            List of created records, each carrying the server-assigned ``id``.
+
+        Raises:
+            DarshDBError: If the server response acknowledges neither results
+                nor entity ids.
         """
         records = data if isinstance(data, list) else [data]
         result = await self._post("/api/mutate", json={
@@ -333,7 +418,7 @@ class DarshDB:
                 for record in records
             ]
         })
-        return result.get("results", records)
+        return _mutation_records(result, records)
 
     async def update(
         self,
@@ -401,15 +486,17 @@ class DarshDB:
 
     async def query(
         self,
-        sql: str,
-        vars: dict[str, Any] | None = None,
+        query: dict[str, Any] | str,
+        args: dict[str, Any] | None = None,
     ) -> list[QueryResult]:
         """
-        Execute a DarshJQL query string.
+        Execute a DarshanQL query.
 
         Args:
-            sql: The query string (e.g., ``"SELECT * FROM users WHERE age > 18"``).
-            vars: Optional bind variables.
+            query: A DarshanQL object (e.g.
+                ``{"type": "users", "$where": [{"attribute": "age",
+                "op": "Gt", "value": 18}]}``) or a bare table name.
+            args: Optional bind arguments.
 
         Returns:
             A list of QueryResult objects (one per statement in the query).
@@ -417,14 +504,15 @@ class DarshDB:
         Raises:
             DarshDBQueryError: On parse or execution errors.
         """
-        body: dict[str, Any] = {"query": sql}
-        if vars:
-            body["vars"] = vars
+        darshanql = _as_darshanql(query)
+        body: dict[str, Any] = {"query": darshanql}
+        if args:
+            body["args"] = args
 
         try:
             result = await self._post("/api/query", json=body)
         except DarshDBAPIError as exc:
-            raise DarshDBQueryError(str(exc), query=sql) from exc
+            raise DarshDBQueryError(str(exc), query=json.dumps(darshanql)) from exc
 
         # Server may return a single result or an array of results
         if isinstance(result, list):
@@ -445,22 +533,22 @@ class DarshDB:
 
     async def query_raw(
         self,
-        sql: str,
-        vars: dict[str, Any] | None = None,
+        query: dict[str, Any] | str,
+        args: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """
         Execute a query and return the raw server response without parsing.
 
         Args:
-            sql: The query string.
-            vars: Optional bind variables.
+            query: A DarshanQL object or a bare table name.
+            args: Optional bind arguments.
 
         Returns:
             Raw JSON response from the server.
         """
-        body: dict[str, Any] = {"query": sql}
-        if vars:
-            body["vars"] = vars
+        body: dict[str, Any] = {"query": _as_darshanql(query)}
+        if args:
+            body["args"] = args
         return await self._post("/api/query", json=body)
 
     # ------------------------------------------------------------------
@@ -469,7 +557,7 @@ class DarshDB:
 
     async def live(
         self,
-        query_or_table: str,
+        query_or_table: dict[str, Any] | str,
         *,
         diff: bool = False,
     ) -> AsyncIterator[LiveNotification]:
@@ -480,7 +568,7 @@ class DarshDB:
         query are created, updated, or deleted.
 
         Args:
-            query_or_table: A SQL query (``"SELECT * FROM users"``) or
+            query_or_table: A DarshanQL object (``{"type": "users"}``) or
                 just a table name (``"users"``).
             diff: If True, receive diff patches instead of full records.
 
@@ -489,7 +577,7 @@ class DarshDB:
 
         Example::
 
-            async for change in db.live("SELECT * FROM users"):
+            async for change in db.live("users"):
                 print(f"{change.action}: {change.result}")
         """
         import websockets
@@ -513,14 +601,10 @@ class DarshDB:
                             auth_response.get("error", "WebSocket auth failed")
                         )
 
-                # Determine if this is a raw table name or a query
-                if query_or_table.strip().upper().startswith("SELECT"):
-                    sub_query = {"query": query_or_table}
-                else:
-                    sub_query = {"query": f"SELECT * FROM {query_or_table}"}
-
+                # The server subscribes on a DarshanQL object keyed by 'type'
+                sub_query = _as_darshanql(query_or_table)
                 if diff:
-                    sub_query["diff"] = True  # type: ignore[assignment]
+                    sub_query = {**sub_query, "diff": True}
 
                 # Subscribe
                 sub_id = f"live_{id(query_or_table)}"
@@ -534,7 +618,7 @@ class DarshDB:
                 if sub_response.get("type") == "sub-err":
                     raise DarshDBQueryError(
                         sub_response.get("error", "Subscription failed"),
-                        query=query_or_table,
+                        query=json.dumps(sub_query),
                     )
 
                 # Listen for diffs
@@ -585,7 +669,7 @@ class DarshDB:
 
     async def subscribe(
         self,
-        table: str,
+        table: dict[str, Any] | str,
         callback: Any = None,
     ) -> str:
         """
@@ -595,36 +679,65 @@ class DarshDB:
         This method sets up an SSE subscription and returns a subscription ID.
 
         Args:
-            table: The table to subscribe to.
+            table: The table to subscribe to, or a DarshanQL object.
             callback: Optional async callback(event_dict) for each event.
 
         Returns:
             The subscription channel identifier.
+
+        Raises:
+            DarshDBAPIError: If the server rejects the subscription.
         """
-        channel = f"entity:{table}:*"
+        darshanql = _as_darshanql(table)
+        channel = f"entity:{darshanql['type']}:*"
+
         if callback:
-            asyncio.create_task(self._sse_listener(table, callback))
+            ready: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+            task = asyncio.create_task(
+                self._sse_listener(darshanql, callback, ready)
+            )
+            self._sse_tasks.add(task)
+            task.add_done_callback(self._sse_tasks.discard)
+            await ready
+
         return channel
 
-    async def _sse_listener(self, table: str, callback: Any) -> None:
+    async def _sse_listener(
+        self,
+        darshanql: dict[str, Any],
+        callback: Any,
+        ready: asyncio.Future[None],
+    ) -> None:
         """Internal SSE listener that calls the callback for each event."""
         try:
             async with self._http.stream(
                 "GET",
                 "/api/subscribe",
-                params={"table": table},
+                params={"q": json.dumps(darshanql)},
                 headers=self._build_headers(),
                 timeout=None,
             ) as response:
+                if response.status_code >= 400:
+                    await response.aread()
+                    self._check_response(response)
+
+                if not ready.done():
+                    ready.set_result(None)
+
                 async for line in response.aiter_lines():
-                    if line.startswith("data:"):
-                        try:
-                            data = json.loads(line[5:].strip())
-                            await callback(data)
-                        except (json.JSONDecodeError, Exception) as e:
-                            logger.warning("SSE parse error: %s", e)
+                    if not line.startswith("data:"):
+                        continue
+                    try:
+                        data = json.loads(line[5:].strip())
+                    except json.JSONDecodeError as e:
+                        logger.warning("SSE parse error: %s", e)
+                        continue
+                    await callback(data)
         except Exception as e:
-            logger.error("SSE listener error: %s", e)
+            if not ready.done():
+                ready.set_exception(e)
+            else:
+                logger.error("SSE listener error: %s", e)
 
     # ------------------------------------------------------------------
     #  Graph relations
@@ -656,23 +769,17 @@ class DarshDB:
         from_table, from_id = _parse_thing(from_thing)
         to_table, to_id = _parse_thing(to_thing)
 
-        body: dict[str, Any] = {
-            "mutations": [
-                {
-                    "op": "insert",
-                    "entity": relation,
-                    "data": {
-                        "from_entity": from_table,
-                        "from_id": from_id or from_thing,
-                        "to_entity": to_table,
-                        "to_id": to_id or to_thing,
-                        **(data or {}),
-                    },
-                }
-            ]
+        edge: dict[str, Any] = {
+            "from_entity": from_table,
+            "from_id": from_id or from_thing,
+            "to_entity": to_table,
+            "to_id": to_id or to_thing,
+            **(data or {}),
         }
-        result = await self._post("/api/mutate", json=body)
-        return result.get("results", [{}])[0] if isinstance(result, dict) else result
+        result = await self._post("/api/mutate", json={
+            "mutations": [{"op": "insert", "entity": relation, "data": edge}]
+        })
+        return _mutation_records(result, [edge])[0]
 
     # ------------------------------------------------------------------
     #  Server-side functions
@@ -702,19 +809,29 @@ class DarshDB:
 
     async def batch(
         self,
-        operations: list[dict[str, Any]],
+        ops: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
         """
         Execute multiple operations in a single batch request.
 
         Args:
-            operations: List of operation dicts, each with ``method``,
-                ``path``, and optionally ``body``.
+            ops: List of operation dicts, each with ``type``
+                (``"query"``, ``"mutate"`` or ``"fn"``), ``id``, and the
+                op payload (``body`` for query/mutate, ``name``/``args``
+                for fn).
 
         Returns:
-            List of results corresponding to each operation.
+            List of results corresponding to each operation, each with
+            ``id``, ``status`` and ``data`` or ``error``.
+
+        Example::
+
+            await db.batch([
+                {"type": "query", "id": "q1", "body": {"type": "users"}},
+                {"type": "fn", "id": "f1", "name": "ping", "args": {}},
+            ])
         """
-        result = await self._post("/api/batch", json={"operations": operations})
+        result = await self._post("/api/batch", json={"ops": ops})
         return result.get("results", [])
 
     # ------------------------------------------------------------------

@@ -231,37 +231,157 @@ export interface UploadResult {
 }
 
 /* -------------------------------------------------------------------------- */
+/*  DarshJQL (server query dialect)                                           */
+/* -------------------------------------------------------------------------- */
+
+/** Comparison operators understood by the server's DarshJQL parser. */
+export type DarshJQLOp =
+  | 'Eq'
+  | 'Neq'
+  | 'Gt'
+  | 'Gte'
+  | 'Lt'
+  | 'Lte'
+  | 'Contains'
+  | 'Like';
+
+/** A single DarshJQL `$where` predicate. */
+export interface DarshJQLWhere {
+  attribute: string;
+  op: DarshJQLOp;
+  value: unknown;
+}
+
+/** A single DarshJQL `$order` clause. */
+export interface DarshJQLOrder {
+  attribute: string;
+  direction: 'Asc' | 'Desc';
+}
+
+/** Wire form of a query as accepted by `POST /api/query`, the WS `sub`
+ *  frame, and the `q` parameter of `GET /api/subscribe`. */
+export interface DarshJQL {
+  type: string;
+  $where?: DarshJQLWhere[];
+  $order?: DarshJQLOrder[];
+  $limit?: number;
+  $offset?: number;
+}
+
+/** Mutation verbs accepted by `POST /api/mutate` and the WS `mut` frame. */
+export type ServerMutationOp = 'insert' | 'update' | 'delete';
+
+/** Wire form of a single mutation. */
+export interface ServerMutation {
+  op: ServerMutationOp;
+  entity: string;
+  id?: string;
+  data?: Record<string, unknown>;
+}
+
+/* -------------------------------------------------------------------------- */
 /*  Protocol messages (wire format)                                           */
 /* -------------------------------------------------------------------------- */
 
-/** Client-to-server message envelope. */
-export interface ClientMessage {
-  type:
-    | 'auth'
-    | 'query'
-    | 'subscribe'
-    | 'unsubscribe'
-    | 'transact'
-    | 'presence-join'
-    | 'presence-publish'
-    | 'presence-leave'
-    | 'ping';
-  id: string;
-  payload: unknown;
-}
+/**
+ * Client-to-server frame.
+ *
+ * Mirrors the server's `ClientMessage` enum (`packages/server/src/api/ws.rs`),
+ * which is internally tagged on `type` with kebab-case variant names and
+ * flat, per-variant fields — there is no `payload` envelope.
+ */
+export type ClientMessage =
+  | { type: 'auth'; token: string }
+  | { type: 'sub'; id: string; query: DarshJQL }
+  | { type: 'unsub'; id: string; sub_id: string }
+  | { type: 'mut'; id: string; ops: ServerMutation[] }
+  | { type: 'pres-join'; room: string; state?: unknown }
+  | { type: 'pres-state'; room: string; state: unknown }
+  | { type: 'pres-leave'; room: string }
+  | { type: 'live-select'; id: string; query: string }
+  | { type: 'kill'; id: string; live_id: string }
+  | { type: 'pub-sub'; id: string; channel: string }
+  | { type: 'pub-unsub'; id: string }
+  | { type: 'ping' };
 
-/** Server-to-client message envelope. */
-export interface ServerMessage {
-  type:
-    | 'auth-ok'
-    | 'auth-error'
-    | 'query-result'
-    | 'subscription-update'
-    | 'tx-ok'
-    | 'tx-error'
-    | 'presence-update'
-    | 'pong'
-    | 'error';
-  id?: string;
-  payload: unknown;
+/** Distributes `Omit` across the members of a union. */
+type DistributiveOmit<T, K extends PropertyKey> = T extends unknown
+  ? Omit<T, K>
+  : never;
+
+/** Client frames that the server answers with a correlated reply, minus the
+ *  correlation id (which {@link DarshJDB.send} assigns). */
+export type ClientRequest = DistributiveOmit<
+  Extract<ClientMessage, { id: string }>,
+  'id'
+>;
+
+/** Client frames the server never replies to directly. */
+export type ClientNotification = Exclude<ClientMessage, { id: string }>;
+
+/**
+ * Server-to-client frame.
+ *
+ * Mirrors the server's `ServerMessage` enum (`packages/server/src/api/ws.rs`).
+ */
+export type ServerMessage =
+  | { type: 'auth-ok'; session_id: string }
+  | { type: 'auth-err'; error: string }
+  | {
+      type: 'sub-ok';
+      id: string;
+      sub_id: string;
+      initial: Record<string, unknown>[];
+    }
+  | { type: 'sub-err'; id: string; error: string }
+  | {
+      type: 'sub';
+      sub_id: string;
+      added?: Record<string, unknown>[];
+      removed?: Record<string, unknown>[];
+      updated?: Record<string, unknown>[];
+    }
+  | { type: 'diff'; sub_id: string; tx: number; changes: unknown }
+  | { type: 'unsub-ok'; id: string }
+  | { type: 'mut-ok'; id: string; tx: number }
+  | { type: 'mut-err'; id: string; error: string }
+  | { type: 'pres-snap'; room: string; members: PresenceMember[] }
+  | {
+      type: 'pres-diff';
+      room: string;
+      joined?: PresenceMember[];
+      left?: string[];
+      updated?: PresenceMember[];
+    }
+  | { type: 'live-select-ok'; id: string; live_id: string }
+  | { type: 'live-select-err'; id: string; error: string }
+  | {
+      type: 'live-event';
+      live_id: string;
+      action: string;
+      result: unknown;
+      tx_id: number;
+    }
+  | { type: 'kill-ok'; id: string; live_id: string }
+  | { type: 'kill-err'; id: string; error: string }
+  | { type: 'pub-sub-ok'; id: string; channel: string }
+  | { type: 'pub-unsub-ok'; id: string }
+  | {
+      type: 'pub-event';
+      id: string;
+      event: string;
+      entity_type?: string;
+      entity_id?: string;
+      changed?: string[];
+      tx_id: number;
+      payload?: unknown;
+    }
+  | { type: 'batch-result'; id: string; results: unknown[]; duration_ms: number }
+  | { type: 'pong' }
+  | { type: 'error'; error: string };
+
+/** A room member as reported by the server's presence frames. */
+export interface PresenceMember {
+  user_id: string;
+  state: unknown;
 }

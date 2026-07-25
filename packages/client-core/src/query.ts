@@ -6,6 +6,8 @@
 
 import type { DarshJDB } from './client.js';
 import type {
+  DarshJQL,
+  DarshJQLOp,
   QueryDescriptor,
   QueryResult,
   WhereClause,
@@ -27,6 +29,57 @@ import type {
  */
 function hashQuery(desc: QueryDescriptor): string {
   return JSON.stringify(desc, Object.keys(desc).sort());
+}
+
+/** Client operator -> DarshJQL operator. */
+const OP_MAP: Partial<Record<WhereOp, DarshJQLOp>> = {
+  '=': 'Eq',
+  '!=': 'Neq',
+  '>': 'Gt',
+  '>=': 'Gte',
+  '<': 'Lt',
+  '<=': 'Lte',
+  contains: 'Contains',
+  'starts-with': 'Like',
+};
+
+/**
+ * Translate a {@link QueryDescriptor} into the DarshJQL object the server's
+ * parser expects (`{ type, $where, $order, $limit, $offset }`).
+ *
+ * @throws If the descriptor uses an operator the server does not implement.
+ */
+export function toDarshJQL(desc: QueryDescriptor): DarshJQL {
+  const query: DarshJQL = { type: desc.collection };
+
+  if (desc.where && desc.where.length > 0) {
+    query.$where = desc.where.map((clause: WhereClause) => {
+      const op = OP_MAP[clause.op];
+      if (!op) {
+        throw new Error(
+          `Operator "${clause.op}" is not supported by the DarshJDB server`,
+        );
+      }
+      return {
+        attribute: clause.field,
+        op,
+        value:
+          clause.op === 'starts-with' ? `${String(clause.value)}%` : clause.value,
+      };
+    });
+  }
+
+  if (desc.order && desc.order.length > 0) {
+    query.$order = desc.order.map((clause: OrderClause) => ({
+      attribute: clause.field,
+      direction: clause.direction === 'desc' ? 'Desc' : 'Asc',
+    }));
+  }
+
+  if (desc.limit !== undefined) query.$limit = desc.limit;
+  if (desc.offset !== undefined) query.$offset = desc.offset;
+
+  return query;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -161,14 +214,17 @@ export class QueryBuilder<T = Record<string, unknown>> {
 interface ActiveSubscription<T> {
   descriptor: QueryDescriptor;
   callbacks: Set<SubscriptionCallback<T>>;
-  subId: string;
+  /** Server-assigned subscription id; null until `sub-ok` arrives. */
+  subId: string | null;
   refCount: number;
+  /** Latest result set, replayed to late joiners and used as the diff base. */
+  rows: Record<string, unknown>[];
+  /** Removes the reconnect hook when the subscription is torn down. */
+  disposeReconnect: (() => void) | null;
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- type-safe at call-sites
 const _privateActiveSubs = new Map<string, ActiveSubscription<any>>();
-
-let _privateSubCounter = 0;
 
 /* -------------------------------------------------------------------------- */
 /*  Public API                                                                */
@@ -176,6 +232,10 @@ let _privateSubCounter = 0;
 
 /**
  * Execute a one-shot query against the server.
+ *
+ * Uses `POST /api/query` when the client is in REST mode; otherwise the query
+ * is registered as a WebSocket subscription and its initial result set is
+ * returned before the subscription is released.
  *
  * @typeParam T - Expected document shape.
  * @param client     - DarshJDB client instance.
@@ -186,20 +246,38 @@ export async function queryOnce<T = Record<string, unknown>>(
   client: DarshJDB,
   descriptor: QueryDescriptor,
 ): Promise<QueryResult<T>> {
+  if (client.usesRest) {
+    return client.rest.query<T>(descriptor);
+  }
+
   const resp = await client.send({
-    type: 'query',
-    payload: descriptor,
+    type: 'sub',
+    query: toDarshJQL(descriptor),
   });
 
-  const payload = resp.payload as { data: T[]; txId: string };
-  return { data: payload.data, txId: payload.txId };
+  if (resp.type === 'sub-err') {
+    throw new Error(`Query failed: ${resp.error}`);
+  }
+  if (resp.type !== 'sub-ok') {
+    throw new Error(`Unexpected response to query: ${resp.type}`);
+  }
+
+  // One-shot: release the server-side subscription straight away.
+  client
+    .send({ type: 'unsub', sub_id: resp.sub_id })
+    .catch(() => {
+      /* best effort */
+    });
+
+  return { data: resp.initial as T[], txId: '' };
 }
 
 /**
  * Subscribe to live query results.
  *
  * Queries are deduplicated by their hash: if two callers subscribe to an
- * identical query, only one server subscription is created.
+ * identical query, only one server subscription is created. Subscriptions are
+ * automatically re-established after a WebSocket reconnect.
  *
  * @typeParam T - Expected document shape.
  * @param client     - DarshJDB client instance.
@@ -212,6 +290,10 @@ export function subscribe<T = Record<string, unknown>>(
   descriptor: QueryDescriptor,
   callback: SubscriptionCallback<T>,
 ): Unsubscribe {
+  if (client.usesRest) {
+    return client.rest.subscribe<T>(descriptor, callback);
+  }
+
   const hash = hashQuery(descriptor);
 
   let sub = _privateActiveSubs.get(hash) as ActiveSubscription<T> | undefined;
@@ -220,37 +302,28 @@ export function subscribe<T = Record<string, unknown>>(
     // Dedup: reuse existing server subscription.
     sub.callbacks.add(callback);
     sub.refCount++;
+    if (sub.subId) {
+      deliver(sub, { data: sub.rows as T[], txId: '' });
+    }
   } else {
-    const subId = `sub_${(++_privateSubCounter).toString(36)}`;
-
     sub = {
       descriptor,
       callbacks: new Set([callback]),
-      subId,
+      subId: null,
       refCount: 1,
+      rows: [],
+      disposeReconnect: null,
     };
 
     _privateActiveSubs.set(hash, sub);
 
-    // Wire up server subscription.
-    client
-      .send({ type: 'subscribe', payload: { subId, query: descriptor } })
-      .catch((err) => {
-        console.error('[DarshJDB] Subscription error:', err);
-      });
-
-    client.registerSubscriptionHandler(subId, (msg: ServerMessage) => {
-      const active = _privateActiveSubs.get(hash);
-      if (!active) return;
-      const payload = msg.payload as { data: T[]; txId: string };
-      const result: QueryResult<T> = { data: payload.data, txId: payload.txId };
-      for (const cb of active.callbacks) {
-        try {
-          cb(result);
-        } catch {
-          /* subscriber errors must not break the notification loop */
-        }
-      }
+    const active = sub;
+    void openSubscription(client, hash, active);
+    active.disposeReconnect = client.onReconnected(() => {
+      // The socket dropped, so the server-side registration is gone.
+      if (active.subId) client.unregisterSubscriptionHandler(active.subId);
+      active.subId = null;
+      return openSubscription(client, hash, active);
     });
   }
 
@@ -268,15 +341,106 @@ export function subscribe<T = Record<string, unknown>>(
 
     if (active.refCount <= 0) {
       _privateActiveSubs.delete(hash);
-      client.unregisterSubscriptionHandler(active.subId);
-      client
-        .send({
-          type: 'unsubscribe',
-          payload: { subId: active.subId },
-        })
-        .catch(() => {
+      active.disposeReconnect?.();
+      const { subId } = active;
+      if (subId) {
+        client.unregisterSubscriptionHandler(subId);
+        client.send({ type: 'unsub', sub_id: subId }).catch(() => {
           /* best effort */
         });
+      }
     }
   };
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Internals                                                                 */
+/* -------------------------------------------------------------------------- */
+
+/** Register (or re-register) a live subscription on the server. */
+async function openSubscription<T>(
+  client: DarshJDB,
+  hash: string,
+  active: ActiveSubscription<T>,
+): Promise<void> {
+  try {
+    const resp = await client.send({
+      type: 'sub',
+      query: toDarshJQL(active.descriptor),
+    });
+
+    if (resp.type === 'sub-err') {
+      throw new Error(resp.error);
+    }
+    if (resp.type !== 'sub-ok') {
+      throw new Error(`unexpected response: ${resp.type}`);
+    }
+
+    // The caller may have unsubscribed while the request was in flight.
+    if (_privateActiveSubs.get(hash) !== active) {
+      client.send({ type: 'unsub', sub_id: resp.sub_id }).catch(() => {
+        /* best effort */
+      });
+      return;
+    }
+
+    active.subId = resp.sub_id;
+    active.rows = resp.initial;
+
+    client.registerSubscriptionHandler(resp.sub_id, (msg: ServerMessage) => {
+      applyPush(active, msg);
+    });
+
+    deliver(active, { data: active.rows as T[], txId: '' });
+  } catch (err) {
+    console.error('[DarshJDB] Subscription error:', err);
+  }
+}
+
+/** Fold a server-pushed diff into the cached row set and notify subscribers. */
+function applyPush<T>(active: ActiveSubscription<T>, msg: ServerMessage): void {
+  if (msg.type !== 'sub') return;
+
+  const removed = new Set(
+    (msg.removed ?? []).map((row) => rowKey(row)).filter((k): k is string => !!k),
+  );
+  const updated = new Map(
+    (msg.updated ?? [])
+      .map((row) => [rowKey(row), row] as const)
+      .filter((entry): entry is readonly [string, Record<string, unknown>] =>
+        Boolean(entry[0]),
+      ),
+  );
+
+  const next = active.rows
+    .filter((row) => {
+      const key = rowKey(row);
+      return !key || !removed.has(key);
+    })
+    .map((row) => {
+      const key = rowKey(row);
+      return key ? (updated.get(key) ?? row) : row;
+    });
+
+  active.rows = [...next, ...(msg.added ?? [])];
+  deliver(active, { data: active.rows as T[], txId: '' });
+}
+
+/** Identity of a row in a result set, as emitted by the server. */
+function rowKey(row: Record<string, unknown>): string | null {
+  const id = row['_id'] ?? row['id'] ?? row['entity_id'];
+  return typeof id === 'string' ? id : null;
+}
+
+function deliver<T>(
+  active: ActiveSubscription<T>,
+  result: QueryResult<T>,
+): void {
+  for (const cb of active.callbacks) {
+    try {
+      cb(result);
+    } catch {
+      /* subscriber errors must not break the notification loop */
+    }
+  }
 }

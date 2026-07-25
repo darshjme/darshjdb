@@ -58,7 +58,7 @@ async fn cleanup_snapshots(pool: &PgPool, ids: &[Uuid]) {
 // ===========================================================================
 
 #[tokio::test]
-#[ignore = "pre-existing v0.2.0 baseline failure — tracked in v0.3.1 followup"]
+#[ignore = "GENUINE FAILURE: history reconstruction (versions.rs build_versions) still folds a retracted row into its original insert tx_id and ignores retracted_tx_id, so v1 loses the later-retracted attribute. The retracted_tx_id fix landed in schema/get_entity/snapshots but not the version-history path; needs a src fix outside this test scope."]
 async fn test_history_three_versions() {
     let Some((pool, store)) = setup().await else {
         return;
@@ -161,7 +161,7 @@ async fn test_history_three_versions() {
 // ===========================================================================
 
 #[tokio::test]
-#[ignore = "pre-existing v0.2.0 baseline failure — tracked in v0.3.1 followup"]
+#[ignore = "GENUINE FAILURE: versions.rs get_version/build_versions ignores retracted_tx_id, so requesting v1 after a retract+re-set returns None instead of the original value. Needs a src fix in the version-history path outside this test scope."]
 async fn test_history_get_version() {
     let Some((pool, store)) = setup().await else {
         return;
@@ -222,7 +222,7 @@ async fn test_history_get_version() {
 // ===========================================================================
 
 #[tokio::test]
-#[ignore = "pre-existing v0.2.0 baseline failure — tracked in v0.3.1 followup"]
+#[ignore = "GENUINE FAILURE: restore.rs restore_version relies on the version reconstruction that ignores retracted_tx_id, so restoring to v1 restores empty state (name comes back None). Needs a src fix in the restore/version-history path outside this test scope."]
 async fn test_history_restore_version() {
     let Some((pool, store)) = setup().await else {
         return;
@@ -312,7 +312,7 @@ async fn test_history_restore_version() {
 // ===========================================================================
 
 #[tokio::test]
-#[ignore = "pre-existing v0.2.0 baseline failure — tracked in v0.3.1 followup"]
+#[ignore = "GENUINE FAILURE: restore.rs undo_last relies on the version reconstruction that ignores retracted_tx_id, so undo restores empty state instead of the previous value. Needs a src fix in the restore/version-history path outside this test scope."]
 async fn test_history_undo_last() {
     let Some((pool, store)) = setup().await else {
         return;
@@ -363,7 +363,6 @@ async fn test_history_undo_last() {
 }
 
 #[tokio::test]
-#[ignore = "pre-existing v0.2.0 baseline failure — tracked in v0.3.1 followup"]
 async fn test_history_undo_single_version_errors() {
     let Some((pool, store)) = setup().await else {
         return;
@@ -394,7 +393,7 @@ async fn test_history_undo_single_version_errors() {
 // ===========================================================================
 
 #[tokio::test]
-#[ignore = "pre-existing v0.2.0 baseline failure — tracked in v0.3.1 followup"]
+#[ignore = "GENUINE FAILURE: versions.rs get_at_time selects only the mutable `retracted` flag and ignores retracted_tx_id, so a point-in-time read before a retraction returns None instead of the value live at that time. Needs a src fix in the version-history path outside this test scope."]
 async fn test_history_at_time() {
     let Some((pool, store)) = setup().await else {
         return;
@@ -460,7 +459,7 @@ async fn test_history_at_time() {
 // ===========================================================================
 
 #[tokio::test]
-#[ignore = "pre-existing v0.2.0 baseline failure — tracked in v0.3.1 followup"]
+#[ignore = "GENUINE FAILURE (unrelated to retracted_tx_id): snapshots.rs create_snapshot counts records by attribute-name prefix (\"Widget/%\") but the data marks type via the :db/type attribute with lowercase names (widget/name), so the prefix never matches and record_count is 0. Pre-existing snapshots.rs defect; needs a src fix outside this test scope."]
 async fn test_snapshot_create_and_list() {
     let Some((pool, store)) = setup().await else {
         return;
@@ -516,7 +515,7 @@ async fn test_snapshot_create_and_list() {
 }
 
 #[tokio::test]
-#[ignore = "pre-existing v0.2.0 baseline failure — tracked in v0.3.1 followup"]
+#[ignore = "GENUINE FAILURE (unrelated to retracted_tx_id): snapshots.rs diff_snapshot counts changes by attribute-name prefix (\"Order/%\") but the data marks type via the :db/type attribute with lowercase names (order/total), so no changes are detected. Pre-existing snapshots.rs defect; needs a src fix outside this test scope."]
 async fn test_snapshot_diff() {
     let Some((pool, store)) = setup().await else {
         return;
@@ -606,7 +605,7 @@ async fn test_snapshot_diff() {
 // ===========================================================================
 
 #[tokio::test]
-#[ignore = "pre-existing v0.2.0 baseline failure — tracked in v0.3.1 followup"]
+#[ignore = "GENUINE FAILURE: restore.rs restore_deleted cannot find recoverable state because the version reconstruction it depends on ignores retracted_tx_id and sees the entity as never-having-had state. Errors with 'no recoverable state found'. Needs a src fix in the restore/version-history path outside this test scope."]
 async fn test_restore_deleted_record() {
     let Some((pool, store)) = setup().await else {
         return;
@@ -689,7 +688,6 @@ async fn test_restore_deleted_record() {
 // ===========================================================================
 
 #[tokio::test]
-#[ignore = "pre-existing v0.2.0 baseline failure — tracked in v0.3.1 followup"]
 async fn test_history_nonexistent_entity() {
     let Some((pool, _store)) = setup().await else {
         return;

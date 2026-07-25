@@ -28,8 +28,8 @@ class AuthClient
      *
      * @param string               $email    User's email address.
      * @param string               $password User's password (min 8 characters recommended).
-     * @param array<string, mixed> $profile  Optional profile fields (displayName, avatarUrl, metadata).
-     * @return array{user: array<string, mixed>, accessToken: string, refreshToken: string}
+     * @param array<string, mixed> $profile  Optional profile fields (name).
+     * @return array{user: array<string, mixed>, access_token: string, refresh_token: string}
      *
      * @throws Exception On validation or server errors.
      */
@@ -40,9 +40,7 @@ class AuthClient
             'password' => $password,
         ], $profile));
 
-        if (isset($result['accessToken'])) {
-            $this->client->setToken($result['accessToken']);
-        }
+        $this->captureToken($result);
 
         return $result;
     }
@@ -52,7 +50,7 @@ class AuthClient
      *
      * @param string $email    User's email address.
      * @param string $password User's password.
-     * @return array{user: array<string, mixed>, accessToken: string, refreshToken: string}
+     * @return array{user: array<string, mixed>, access_token: string, refresh_token: string}
      *
      * @throws Exception On invalid credentials or server errors.
      */
@@ -63,34 +61,37 @@ class AuthClient
             'password' => $password,
         ]);
 
-        if (isset($result['accessToken'])) {
-            $this->client->setToken($result['accessToken']);
-        }
+        $this->captureToken($result);
 
         return $result;
     }
 
     /**
-     * Sign in using an OAuth2 provider token.
+     * Exchange an OAuth2 authorization code for a session.
      *
-     * @param string $provider  OAuth provider name (google, github, apple, discord).
-     * @param string $token     OAuth access token or authorization code.
-     * @param string $redirectUri The redirect URI used in the OAuth flow.
-     * @return array{user: array<string, mixed>, accessToken: string, refreshToken: string}
+     * Called without a code, the server returns an authorize URL to redirect to.
+     *
+     * @param string $provider      OAuth provider name (google, github, apple, discord).
+     * @param string $code          Authorization code from the provider callback.
+     * @param string $state         State parameter from the provider callback.
+     * @param string $pkceVerifier  PKCE verifier matching the challenge sent to the provider.
+     * @return array{user: array<string, mixed>, access_token: string, refresh_token: string}
      *
      * @throws Exception On OAuth or server errors.
      */
-    public function signInWithOAuth(string $provider, string $token, string $redirectUri = ''): array
-    {
-        $result = $this->client->post('/api/auth/oauth', [
-            'provider'    => $provider,
-            'token'       => $token,
-            'redirectUri' => $redirectUri,
+    public function signInWithOAuth(
+        string $provider,
+        string $code = '',
+        string $state = '',
+        string $pkceVerifier = '',
+    ): array {
+        $result = $this->client->post("/api/auth/oauth/{$provider}", [
+            'code'          => $code,
+            'state'         => $state,
+            'pkce_verifier' => $pkceVerifier,
         ]);
 
-        if (isset($result['accessToken'])) {
-            $this->client->setToken($result['accessToken']);
-        }
+        $this->captureToken($result);
 
         return $result;
     }
@@ -136,19 +137,17 @@ class AuthClient
      * Refresh the access token using a refresh token.
      *
      * @param string $refreshToken The refresh token from a previous sign-in.
-     * @return array{accessToken: string, refreshToken: string, expiresAt: int}
+     * @return array{access_token: string, refresh_token: string, expires_in: int, token_type: string}
      *
      * @throws Exception On invalid or expired refresh token.
      */
     public function refresh(string $refreshToken): array
     {
         $result = $this->client->post('/api/auth/refresh', [
-            'refreshToken' => $refreshToken,
+            'refresh_token' => $refreshToken,
         ]);
 
-        if (isset($result['accessToken'])) {
-            $this->client->setToken($result['accessToken']);
-        }
+        $this->captureToken($result);
 
         return $result;
     }
@@ -163,5 +162,22 @@ class AuthClient
     public function setToken(string $token): void
     {
         $this->client->setToken($token);
+    }
+
+    /**
+     * Store the access token from an auth response on the parent client.
+     *
+     * The server emits snake_case (`access_token`); camelCase is accepted
+     * for compatibility with older builds.
+     *
+     * @param array<string, mixed> $result A decoded auth response.
+     */
+    private function captureToken(array $result): void
+    {
+        $token = $result['access_token'] ?? $result['accessToken'] ?? null;
+
+        if (is_string($token) && $token !== '') {
+            $this->client->setToken($token);
+        }
     }
 }

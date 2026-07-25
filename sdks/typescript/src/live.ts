@@ -11,6 +11,7 @@ import {
   DarshDBError,
   DarshDBQueryError,
   LiveAction,
+  type DarshanQuery,
   type LiveNotification,
   type LiveStream,
 } from "./types.js";
@@ -35,14 +36,17 @@ export class LiveQueryStream<T = Record<string, unknown>>
   constructor(
     private readonly wsUrl: string,
     private readonly token: string | null,
-    private readonly query: string,
+    private readonly query: DarshanQuery,
   ) {
     this.connect();
   }
 
   on(event: "change", callback: Listener<LiveNotification<T>>): void;
   on(event: "error", callback: Listener<Error>): void;
-  on(event: string, callback: Listener<unknown>): void {
+  on(
+    event: string,
+    callback: Listener<LiveNotification<T>> | Listener<Error>,
+  ): void {
     if (event === "change") {
       this.changeListeners.push(
         callback as Listener<LiveNotification<T>>,
@@ -53,7 +57,7 @@ export class LiveQueryStream<T = Record<string, unknown>>
   }
 
   once(event: "change", callback: Listener<LiveNotification<T>>): void;
-  once(event: string, callback: Listener<unknown>): void {
+  once(event: string, callback: Listener<LiveNotification<T>>): void {
     if (event === "change") {
       const cb = callback as Listener<LiveNotification<T>>;
       this.onceChangeListeners.add(cb);
@@ -145,16 +149,11 @@ export class LiveQueryStream<T = Record<string, unknown>>
   }
 
   private sendSubscribe(): void {
-    const isQuery = this.query.trim().toUpperCase().startsWith("SELECT");
-    const queryPayload = isQuery
-      ? this.query
-      : `SELECT * FROM ${this.query}`;
-
     this.ws?.send(
       JSON.stringify({
         type: "sub",
         id: `live_${Date.now()}`,
-        query: { query: queryPayload },
+        query: this.query,
       }),
     );
   }
@@ -184,20 +183,19 @@ export class LiveQueryStream<T = Record<string, unknown>>
         this.emitError(
           new DarshDBQueryError(
             (msg["error"] as string) ?? "Subscription failed",
-            this.query,
+            JSON.stringify(this.query),
           ),
         );
         break;
 
-      case "diff": {
-        const changes = (msg["changes"] ?? {}) as Record<string, unknown[]>;
+      case "sub": {
         const actionMap: Record<string, LiveAction> = {
-          inserted: LiveAction.Create,
+          added: LiveAction.Create,
           updated: LiveAction.Update,
-          deleted: LiveAction.Delete,
+          removed: LiveAction.Delete,
         };
         for (const [key, action] of Object.entries(actionMap)) {
-          const records = (changes[key] ?? []) as T[];
+          const records = Array.isArray(msg[key]) ? (msg[key] as T[]) : [];
           for (const record of records) {
             this.emitChange({ action, result: record });
           }

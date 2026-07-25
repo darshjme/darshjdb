@@ -194,6 +194,9 @@ pub async fn run_import(
     }
 
     let client = reqwest::Client::new();
+    let mut imported: u64 = 0;
+    let mut failed: u64 = 0;
+    let mut first_error: Option<String> = None;
 
     if is_jsonl {
         // JSONL format: each line is a record
@@ -203,8 +206,10 @@ pub async fn run_import(
         for (i, line) in lines.iter().enumerate() {
             let parsed: serde_json::Value = match serde_json::from_str(line) {
                 Ok(v) => v,
-                Err(_) => {
+                Err(e) => {
                     pb.set_message(format!("Skipping invalid line {}", i + 1));
+                    failed += 1;
+                    first_error.get_or_insert(format!("line {}: {e}", i + 1));
                     pb.inc(1);
                     continue;
                 }
@@ -237,14 +242,26 @@ pub async fn run_import(
                 .send()
                 .await;
 
-            if let Err(e) = resp {
-                tracing::warn!("Failed to import line {}: {e}", i + 1);
+            match resp {
+                Ok(r) if r.status().is_success() => imported += 1,
+                Ok(r) => {
+                    let status = r.status();
+                    let body = r.text().await.unwrap_or_default();
+                    tracing::warn!("Line {} rejected: {status} — {body}", i + 1);
+                    failed += 1;
+                    first_error.get_or_insert(format!("line {}: {status} — {body}", i + 1));
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to import line {}: {e}", i + 1);
+                    failed += 1;
+                    first_error.get_or_insert(format!("line {}: {e}", i + 1));
+                }
             }
 
             pb.inc(1);
         }
 
-        pb.finish_with_message("Import complete");
+        pb.finish_with_message("Import finished");
     } else {
         // JSON format: full export object
         let export: serde_json::Value =
@@ -277,8 +294,21 @@ pub async fn run_import(
                             .send()
                             .await;
 
-                        if let Err(e) = resp {
-                            tracing::warn!("Failed to import {entity_type}: {e}");
+                        match resp {
+                            Ok(r) if r.status().is_success() => imported += 1,
+                            Ok(r) => {
+                                let status = r.status();
+                                let body = r.text().await.unwrap_or_default();
+                                tracing::warn!("{entity_type} rejected: {status} — {body}");
+                                failed += 1;
+                                first_error
+                                    .get_or_insert(format!("{entity_type}: {status} — {body}"));
+                            }
+                            Err(e) => {
+                                tracing::warn!("Failed to import {entity_type}: {e}");
+                                failed += 1;
+                                first_error.get_or_insert(format!("{entity_type}: {e}"));
+                            }
                         }
 
                         pb.inc(1);
@@ -286,13 +316,24 @@ pub async fn run_import(
                 }
             }
 
-            pb.finish_with_message("Import complete");
+            pb.finish_with_message("Import finished");
         } else {
             anyhow::bail!("Import file does not contain an 'entities' object");
         }
     }
 
-    println!("\n  {} Import complete\n", "-->".bright_green());
+    if failed > 0 {
+        let detail = first_error.unwrap_or_else(|| "unknown error".to_string());
+        anyhow::bail!(
+            "Import failed: {failed} record(s) rejected, {imported} imported. First error — {detail}"
+        );
+    }
+
+    println!(
+        "\n  {} Import complete — {} record(s)\n",
+        "-->".bright_green(),
+        imported
+    );
 
     Ok(())
 }

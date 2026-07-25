@@ -71,18 +71,21 @@ describe("DarshDB initialization", () => {
 // ---------------------------------------------------------------------------
 
 describe("DarshDB authentication", () => {
-  it("signin with user/pass", async () => {
+  it("signin reads the server's snake_case token fields", async () => {
     const fetchMock = mockFetch(200, {
-      accessToken: "tok123",
-      user: { id: "u1" },
-      refreshToken: "ref1",
+      user_id: "u1",
+      email: "root@test.com",
+      access_token: "tok123",
+      refresh_token: "ref1",
+      expires_in: 3600,
+      token_type: "Bearer",
     });
     const db = new DarshDB(SERVER, { fetch: fetchMock });
 
     const result = await db.signin({ user: "root", pass: "root" });
 
     expect(result.token).toBe("tok123");
-    expect(result.user).toEqual({ id: "u1" });
+    expect(result.user).toEqual({ id: "u1", email: "root@test.com" });
     expect(result.refreshToken).toBe("ref1");
 
     // Verify body sent
@@ -92,8 +95,23 @@ describe("DarshDB authentication", () => {
     expect(body.password).toBe("root");
   });
 
+  it("signin stores the access token for later requests", async () => {
+    const fetchMock = mockFetch(200, { access_token: "tok123" });
+    const db = new DarshDB(SERVER, { fetch: fetchMock });
+
+    await db.signin({ user: "root", pass: "root" });
+
+    const selectFetch = mockFetch(200, { data: [] });
+    (db as unknown as { fetchFn: typeof fetch }).fetchFn = selectFetch;
+    await db.select("users");
+
+    const call = vi.mocked(selectFetch).mock.calls[0]!;
+    const headers = call[1]?.headers as Record<string, string>;
+    expect(headers["Authorization"]).toBe("Bearer tok123");
+  });
+
   it("signin with email/password", async () => {
-    const fetchMock = mockFetch(200, { accessToken: "tok456" });
+    const fetchMock = mockFetch(200, { access_token: "tok456" });
     const db = new DarshDB(SERVER, { fetch: fetchMock });
 
     await db.signin({ email: "alice@test.com", password: "secret" });
@@ -105,7 +123,7 @@ describe("DarshDB authentication", () => {
   });
 
   it("signin sets namespace and database", async () => {
-    const fetchMock = mockFetch(200, { accessToken: "tok" });
+    const fetchMock = mockFetch(200, { access_token: "tok" });
     const db = new DarshDB(SERVER, { fetch: fetchMock });
 
     await db.signin({
@@ -138,8 +156,10 @@ describe("DarshDB authentication", () => {
 
   it("signup creates account", async () => {
     const fetchMock = mockFetch(200, {
-      accessToken: "new-tok",
-      user: { id: "u2" },
+      user_id: "u2",
+      email: "bob@test.com",
+      access_token: "new-tok",
+      refresh_token: "new-ref",
     });
     const db = new DarshDB(SERVER, { fetch: fetchMock });
 
@@ -150,6 +170,8 @@ describe("DarshDB authentication", () => {
     });
 
     expect(result.token).toBe("new-tok");
+    expect(result.refreshToken).toBe("new-ref");
+    expect(result.user).toEqual({ id: "u2", email: "bob@test.com" });
   });
 
   it("invalidate clears token", async () => {
@@ -197,6 +219,8 @@ describe("DarshDB CRUD", () => {
   it("select table", async () => {
     const fetchMock = mockFetch(200, {
       data: [{ id: "u1", name: "Alice" }],
+      cursor: null,
+      has_more: false,
     });
     const db = new DarshDB(SERVER, { fetch: fetchMock });
 
@@ -206,6 +230,96 @@ describe("DarshDB CRUD", () => {
     expect(vi.mocked(fetchMock).mock.calls[0]![0]).toContain(
       "/api/data/users",
     );
+  });
+
+  it("select requests the server's maximum page instead of the default 50", async () => {
+    const fetchMock = mockFetch(200, { data: [], has_more: false });
+    const db = new DarshDB(SERVER, { fetch: fetchMock });
+
+    await db.select("users");
+
+    expect(vi.mocked(fetchMock).mock.calls[0]![0]).toContain("limit=1000");
+  });
+
+  it("select honours an explicit limit and cursor", async () => {
+    const fetchMock = mockFetch(200, { data: [], has_more: true });
+    const db = new DarshDB(SERVER, { fetch: fetchMock });
+
+    await db.select("users", { limit: 10, cursor: "c1" });
+
+    const url = String(vi.mocked(fetchMock).mock.calls[0]![0]);
+    expect(url).toContain("limit=10");
+    expect(url).toContain("cursor=c1");
+    // A caller-driven page is returned as-is, never auto-followed.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("select follows cursors until the server stops offering pages", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        statusText: "OK",
+        json: () =>
+          Promise.resolve({
+            data: [{ id: "u1" }],
+            cursor: "c2",
+            has_more: true,
+          }),
+        text: () => Promise.resolve(""),
+        headers: new Headers(),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        statusText: "OK",
+        json: () =>
+          Promise.resolve({
+            data: [{ id: "u2" }],
+            cursor: null,
+            has_more: false,
+          }),
+        text: () => Promise.resolve(""),
+        headers: new Headers(),
+      }) as unknown as typeof globalThis.fetch;
+    const db = new DarshDB(SERVER, { fetch: fetchMock });
+
+    const result = await db.select("users");
+
+    expect(result.map((r) => r.id)).toEqual(["u1", "u2"]);
+    expect(String(vi.mocked(fetchMock).mock.calls[1]![0])).toContain(
+      "cursor=c2",
+    );
+  });
+
+  it("select does not loop when the server repeats a cursor", async () => {
+    const fetchMock = mockFetch(200, {
+      data: [{ id: "u1" }],
+      cursor: "same",
+      has_more: true,
+    });
+    const db = new DarshDB(SERVER, { fetch: fetchMock });
+
+    const result = await db.select("users");
+
+    expect(result).toHaveLength(2);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("selectPage exposes has_more and the cursor", async () => {
+    const fetchMock = mockFetch(200, {
+      data: [{ id: "u1" }],
+      cursor: "c2",
+      has_more: true,
+    });
+    const db = new DarshDB(SERVER, { fetch: fetchMock });
+
+    const page = await db.selectPage("users", { limit: 1 });
+
+    expect(page.data).toHaveLength(1);
+    expect(page.cursor).toBe("c2");
+    expect(page.hasMore).toBe(true);
   });
 
   it("select specific record", async () => {
@@ -329,29 +443,73 @@ describe("DarshDB query", () => {
     });
     const db = new DarshDB(SERVER, { fetch: fetchMock });
 
-    const results = await db.query("SELECT * FROM users WHERE age > 18");
+    const results = await db.query({
+      type: "users",
+      $where: [{ attribute: "age", op: "Gt", value: 18 }],
+    });
     expect(results).toHaveLength(1);
     expect(results[0]!.data[0]!.age).toBe(25);
     expect(results[0]!.meta.count).toBe(1);
   });
 
-  it("sends query and vars", async () => {
+  it("posts a DarshanQL object and args", async () => {
     const fetchMock = mockFetch(200, { data: [] });
     const db = new DarshDB(SERVER, { fetch: fetchMock });
 
-    await db.query("SELECT * FROM users", { min_age: 18 });
+    await db.query(
+      { type: "users", $where: [{ attribute: "age", op: "Gt", value: 18 }] },
+      { min_age: 18 },
+    );
+
+    const call = vi.mocked(fetchMock).mock.calls[0]!;
+    expect(call[0]).toContain("/api/query");
+    const body = JSON.parse(call[1]?.body as string);
+    expect(body.query).toEqual({
+      type: "users",
+      $where: [{ attribute: "age", op: "Gt", value: 18 }],
+    });
+    expect(body.args).toEqual({ min_age: 18 });
+  });
+
+  it("accepts a bare table name as DarshanQL shorthand", async () => {
+    const fetchMock = mockFetch(200, { data: [] });
+    const db = new DarshDB(SERVER, { fetch: fetchMock });
+
+    await db.query("users");
 
     const call = vi.mocked(fetchMock).mock.calls[0]!;
     const body = JSON.parse(call[1]?.body as string);
-    expect(body.query).toBe("SELECT * FROM users");
-    expect(body.vars).toEqual({ min_age: 18 });
+    expect(body.query).toEqual({ type: "users" });
+  });
+
+  it("rejects SQL strings without hitting the server", async () => {
+    const fetchMock = mockFetch(200, { data: [] });
+    const db = new DarshDB(SERVER, { fetch: fetchMock });
+
+    await expect(
+      db.query("SELECT * FROM users WHERE age > 18"),
+    ).rejects.toThrow(DarshDBQueryError);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("queryRaw posts a DarshanQL object", async () => {
+    const fetchMock = mockFetch(200, { data: [], meta: {} });
+    const db = new DarshDB(SERVER, { fetch: fetchMock });
+
+    await db.queryRaw({ type: "users", $limit: 5 });
+
+    const call = vi.mocked(fetchMock).mock.calls[0]!;
+    const body = JSON.parse(call[1]?.body as string);
+    expect(body.query).toEqual({ type: "users", $limit: 5 });
   });
 
   it("throws DarshDBQueryError on 400", async () => {
     const fetchMock = mockFetch(400, { message: "Parse error" });
     const db = new DarshDB(SERVER, { fetch: fetchMock });
 
-    await expect(db.query("INVALID")).rejects.toThrow(DarshDBQueryError);
+    await expect(db.query({ type: "users" })).rejects.toThrow(
+      DarshDBQueryError,
+    );
   });
 });
 
@@ -481,17 +639,59 @@ describe("DarshDB health", () => {
 // ---------------------------------------------------------------------------
 
 describe("DarshDB batch", () => {
-  it("sends batch operations", async () => {
+  it("sends tagged ops under the 'ops' key", async () => {
     const fetchMock = mockFetch(200, {
-      results: [{ id: "u1" }, { data: [] }],
+      results: [
+        { id: "q1", status: 200, data: [] },
+        { id: "m1", status: 200, data: { tx_id: 7 } },
+      ],
+      duration_ms: 1.2,
     });
     const db = new DarshDB(SERVER, { fetch: fetchMock });
 
     const results = await db.batch([
-      { method: "POST", path: "/api/data/users", body: { name: "A" } },
-      { method: "GET", path: "/api/data/users" },
+      { type: "query", id: "q1", body: { type: "users" } },
+      {
+        type: "mutate",
+        id: "m1",
+        body: {
+          mutations: [{ op: "insert", entity: "users", data: { name: "A" } }],
+        },
+      },
     ]);
 
     expect(results).toHaveLength(2);
+    expect(results[0]!.id).toBe("q1");
+    expect(results[0]!.status).toBe(200);
+
+    const call = vi.mocked(fetchMock).mock.calls[0]!;
+    expect(call[0]).toContain("/api/batch");
+    const body = JSON.parse(call[1]?.body as string);
+    expect(body.operations).toBeUndefined();
+    expect(body.ops).toHaveLength(2);
+    expect(body.ops[0]).toEqual({
+      type: "query",
+      id: "q1",
+      body: { type: "users" },
+    });
+    expect(body.ops[1].type).toBe("mutate");
+  });
+
+  it("sends fn ops with name and args", async () => {
+    const fetchMock = mockFetch(200, { results: [], duration_ms: 0.1 });
+    const db = new DarshDB(SERVER, { fetch: fetchMock });
+
+    await db.batch([
+      { type: "fn", id: "f1", name: "ping", args: { n: 1 } },
+    ]);
+
+    const call = vi.mocked(fetchMock).mock.calls[0]!;
+    const body = JSON.parse(call[1]?.body as string);
+    expect(body.ops[0]).toEqual({
+      type: "fn",
+      id: "f1",
+      name: "ping",
+      args: { n: 1 },
+    });
   });
 });

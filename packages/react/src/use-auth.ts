@@ -1,3 +1,5 @@
+'use client';
+
 /**
  * @module use-auth
  * @description Reactive authentication hook that tracks the current user

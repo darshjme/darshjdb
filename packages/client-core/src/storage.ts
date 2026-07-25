@@ -20,6 +20,19 @@ const RESUMABLE_THRESHOLD = 5 * 1024 * 1024; // 5 MB
 /** Chunk size for resumable uploads. */
 const CHUNK_SIZE = 2 * 1024 * 1024; // 2 MB
 
+/** Percent-encode each segment of a storage path, keeping the separators. */
+function encodePath(path: string): string {
+  return path.split('/').map(encodeURIComponent).join('/');
+}
+
+/** Response body of `POST /api/storage/upload`. */
+interface UploadResponse {
+  path: string;
+  size: number;
+  content_type: string;
+  signed_url?: string | null;
+}
+
 /* -------------------------------------------------------------------------- */
 /*  StorageClient                                                             */
 /* -------------------------------------------------------------------------- */
@@ -83,12 +96,10 @@ export class StorageClient {
    * @returns The file URL.
    */
   async getUrl(path: string): Promise<string> {
-    const headers = this._privateAuthHeaders();
+    const headers = { ...this._privateAuthHeaders(), Accept: 'application/json' };
 
     const resp = await fetch(
-      this._privateClient.getRestUrl(
-        `/storage/url?path=${encodeURIComponent(path)}`,
-      ),
+      `${this._privateClient.getRestUrl(`/storage/${encodePath(path)}`)}?signed=true`,
       { headers },
     );
 
@@ -97,8 +108,8 @@ export class StorageClient {
       throw new Error(`Failed to get URL (${resp.status}): ${body}`);
     }
 
-    const data = (await resp.json()) as { url: string };
-    return data.url;
+    const data = (await resp.json()) as { signed_url: string };
+    return data.signed_url;
   }
 
   /* -- Delete ------------------------------------------------------------- */
@@ -112,9 +123,7 @@ export class StorageClient {
     const headers = this._privateAuthHeaders();
 
     const resp = await fetch(
-      this._privateClient.getRestUrl(
-        `/storage/files?path=${encodeURIComponent(path)}`,
-      ),
+      this._privateClient.getRestUrl(`/storage/${encodePath(path)}`),
       { method: 'DELETE', headers },
     );
 
@@ -137,12 +146,6 @@ export class StorageClient {
     const formData = new FormData();
     formData.append('file', file);
     formData.append('path', path);
-    if (contentType) {
-      formData.append('contentType', contentType);
-    }
-    if (options.metadata) {
-      formData.append('metadata', JSON.stringify(options.metadata));
-    }
 
     const xhr = new XMLHttpRequest();
 
@@ -158,9 +161,9 @@ export class StorageClient {
       xhr.addEventListener('load', () => {
         if (xhr.status >= 200 && xhr.status < 300) {
           try {
-            const result = JSON.parse(xhr.responseText) as UploadResult;
+            const body = JSON.parse(xhr.responseText) as UploadResponse;
             options.onProgress?.(1);
-            resolve(result);
+            resolve(this._privateToResult(body, contentType));
           } catch {
             reject(new Error('Invalid upload response'));
           }
@@ -198,17 +201,19 @@ export class StorageClient {
     const contentType =
       options.contentType ?? (file instanceof File ? file.type : 'application/octet-stream');
 
-    // Step 1: Initiate resumable upload session.
+    const totalChunks = Math.max(1, Math.ceil(file.size / CHUNK_SIZE));
+
+    // Step 1: Initiate the chunked upload session.
     const initResp = await fetch(
-      this._privateClient.getRestUrl('/storage/upload/resumable'),
+      this._privateClient.getRestUrl('/storage/upload/init'),
       {
         method: 'POST',
         headers: { ...headers, 'Content-Type': 'application/json' },
         body: JSON.stringify({
           path,
-          contentType,
-          size: file.size,
-          metadata: options.metadata,
+          content_type: contentType,
+          total_chunks: totalChunks,
+          file_size: file.size,
         }),
       },
     );
@@ -218,32 +223,30 @@ export class StorageClient {
       throw new Error(`Resumable init failed (${initResp.status}): ${body}`);
     }
 
-    const { uploadId, chunkSize: serverChunkSize } = (await initResp.json()) as {
-      uploadId: string;
-      chunkSize?: number;
+    const { upload_id: uploadId } = (await initResp.json()) as {
+      upload_id: string;
     };
 
-    const chunkSize = serverChunkSize ?? CHUNK_SIZE;
-    const totalChunks = Math.ceil(file.size / chunkSize);
     let uploadedBytes = 0;
+    let final: { path: string } | null = null;
 
-    // Step 2: Upload chunks sequentially.
+    // Step 2: Upload chunks sequentially. The server assembles and completes
+    // the upload itself once the last outstanding chunk lands.
     for (let i = 0; i < totalChunks; i++) {
-      const start = i * chunkSize;
-      const end = Math.min(start + chunkSize, file.size);
+      const start = i * CHUNK_SIZE;
+      const end = Math.min(start + CHUNK_SIZE, file.size);
       const chunk = file.slice(start, end);
 
       const chunkResp = await fetch(
         this._privateClient.getRestUrl(
-          `/storage/upload/resumable/${uploadId}/chunk`,
+          `/storage/upload/${uploadId}/chunk/${i}`,
         ),
         {
           method: 'PUT',
           headers: {
             ...headers,
             'Content-Type': 'application/octet-stream',
-            'Content-Range': `bytes ${start}-${end - 1}/${file.size}`,
-            'X-Chunk-Index': i.toString(),
+            Accept: 'application/json',
           },
           body: chunk,
         },
@@ -256,32 +259,46 @@ export class StorageClient {
         );
       }
 
+      const status = (await chunkResp.json()) as {
+        status: string;
+        path: string;
+      };
+      if (status.status === 'completed') {
+        final = status;
+      }
+
       uploadedBytes += end - start;
       options.onProgress?.(uploadedBytes / file.size);
     }
 
-    // Step 3: Complete the upload.
-    const completeResp = await fetch(
-      this._privateClient.getRestUrl(
-        `/storage/upload/resumable/${uploadId}/complete`,
-      ),
-      {
-        method: 'POST',
-        headers,
-      },
-    );
-
-    if (!completeResp.ok) {
-      const body = await completeResp.text();
-      throw new Error(`Upload complete failed (${completeResp.status}): ${body}`);
+    if (!final) {
+      throw new Error(
+        `Resumable upload ${uploadId} did not complete after ${totalChunks} chunks`,
+      );
     }
 
-    const result = (await completeResp.json()) as UploadResult;
     options.onProgress?.(1);
-    return result;
+    return this._privateToResult(
+      { path: final.path, size: file.size, content_type: contentType },
+      contentType,
+    );
   }
 
   /* -- Helpers ------------------------------------------------------------ */
+
+  private _privateToResult(
+    body: UploadResponse,
+    fallbackContentType: string,
+  ): UploadResult {
+    return {
+      path: body.path,
+      url:
+        body.signed_url ??
+        this._privateClient.getRestUrl(`/storage/${encodePath(body.path)}`),
+      size: body.size,
+      contentType: body.content_type || fallbackContentType,
+    };
+  }
 
   private _privateAuthHeaders(): Record<string, string> {
     const headers: Record<string, string> = {};

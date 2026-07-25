@@ -1,3 +1,5 @@
+'use client';
+
 /**
  * @module use-storage
  * @description Hook for uploading files to DarshJDB storage with

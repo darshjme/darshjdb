@@ -17,8 +17,8 @@ use crate::sync::broadcaster::ChangeEvent;
 use crate::triple_store::{PgTripleStore, TripleInput, TripleStore};
 
 use super::helpers::{
-    check_permission, extract_auth_context, infer_value_type,
-    negotiate_response, negotiate_response_status, validate_entity_name,
+    check_permission, extract_auth_context, infer_value_type, negotiate_response,
+    negotiate_response_status, validate_entity_name,
 };
 
 // ---------------------------------------------------------------------------

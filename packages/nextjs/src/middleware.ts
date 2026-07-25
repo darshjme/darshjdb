@@ -192,12 +192,9 @@ export function darshanMiddleware(config: DarshanMiddlewareConfig) {
       }
     }
 
-    // Session is valid — proceed
+    // Session is valid — proceed. The token stays in the httpOnly cookie;
+    // downstream code reads it from there.
     const response = NextResponse.next();
-
-    // Inject session token into request headers so Server Components
-    // and API routes can access it without re-reading the cookie.
-    response.headers.set('x-ddb-session', sessionToken);
 
     // Allow custom post-authentication logic
     if (onAuthenticated) {

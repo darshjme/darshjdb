@@ -139,9 +139,39 @@ export function darshanRoleGuard(
 }
 
 /**
+ * Whether a request URL actually targets the configured DarshJDB server.
+ *
+ * Compares parsed origins rather than string prefixes: a prefix check would
+ * also match look-alike hosts such as `https://db.example.com.evil.tld`.
+ * Relative and unparseable URLs are treated as foreign.
+ *
+ * @internal
+ */
+function targetsDarshanServer(requestUrl: string, serverUrl: string): boolean {
+  try {
+    const base = new URL(serverUrl);
+    const target = new URL(requestUrl);
+
+    if (target.origin !== base.origin) {
+      return false;
+    }
+
+    const basePath = base.pathname.replace(/\/+$/, '');
+
+    return (
+      basePath === '' ||
+      target.pathname === basePath ||
+      target.pathname.startsWith(`${basePath}/`)
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
  * HTTP interceptor that attaches the DarshJDB JWT to outgoing requests.
  *
- * Only attaches the token to requests whose URL starts with the
+ * Only attaches the token to requests whose origin (and base path) match the
  * configured `serverUrl`, preventing token leakage to third-party APIs.
  *
  * Register via `provideHttpClient(withInterceptors([darshanAuthInterceptor]))`.
@@ -169,7 +199,7 @@ export const darshanAuthInterceptor: HttpInterceptorFn = (
   const token = client.getToken();
 
   // Only attach the token to requests targeting the DarshJDB server.
-  if (token && req.url.startsWith(config.serverUrl)) {
+  if (token && targetsDarshanServer(req.url, config.serverUrl)) {
     const authedReq = req.clone({
       setHeaders: {
         Authorization: `Bearer ${token}`,

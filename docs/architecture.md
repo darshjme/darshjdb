@@ -227,7 +227,7 @@ Instead of re-sending entire result sets, the sync engine computes a minimal dif
 }
 ```
 
-On a typical app, this reduces bandwidth by 98% compared to polling.
+Only the changed fields cross the wire, so a subscription costs far less than repeatedly re-fetching the full document by polling.
 
 ## Offline-First Architecture
 
@@ -406,7 +406,7 @@ DarshJDB supports three transport mechanisms, negotiated at connection time:
 
 ### MsgPack vs JSON
 
-MsgPack produces payloads 28% smaller than JSON on average, with faster serialization and deserialization. The client SDKs handle encoding/decoding transparently.
+MsgPack encodes the same document in fewer bytes than JSON text and skips string parsing on decode. The client SDKs handle encoding/decoding transparently.
 
 ## Technology Stack
 

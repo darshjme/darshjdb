@@ -369,7 +369,7 @@ impl ScopeManager {
         let query = format!(
             "SELECT id, password_hash, roles FROM {} WHERE {} AND deleted_at IS NULL",
             sanitize_table_name(&scope.auth_table),
-            &scope.signin_condition,
+            scope.signin_condition,
         );
 
         // Execute with email bind.

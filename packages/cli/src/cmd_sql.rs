@@ -283,22 +283,21 @@ pub async fn run(
     }
 
     // Authenticate if credentials provided
+    if user.is_some() != pass.is_some() {
+        anyhow::bail!("--user and --pass must be provided together");
+    }
+
     let token = if let (Some(u), Some(p)) = (&user, &pass) {
-        match authenticate(&client, &conn, u, p).await {
-            Ok(t) => {
-                println!(
-                    "  {} Authenticated as {}",
-                    "-->".bright_green(),
-                    u.bright_white()
-                );
-                println!();
-                Some(t)
-            }
-            Err(e) => {
-                eprintln!("  {} Authentication failed: {}", "!!!".bright_red(), e);
-                None
-            }
-        }
+        let t = authenticate(&client, &conn, u, p)
+            .await
+            .with_context(|| format!("Authentication failed for {u}"))?;
+        println!(
+            "  {} Authenticated as {}",
+            "-->".bright_green(),
+            u.bright_white()
+        );
+        println!();
+        Some(t)
     } else {
         // Try token from env
         std::env::var("DDB_TOKEN").ok()
@@ -557,10 +556,19 @@ async fn authenticate(
     }
 
     let body: serde_json::Value = resp.json().await?;
-    body.get("token")
+
+    if body
+        .get("mfa_required")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+    {
+        anyhow::bail!("Account requires MFA — `ddb sql` cannot complete an MFA challenge");
+    }
+
+    body.get("access_token")
         .and_then(|t| t.as_str())
         .map(String::from)
-        .ok_or_else(|| anyhow::anyhow!("No token in auth response"))
+        .ok_or_else(|| anyhow::anyhow!("No access_token in auth response"))
 }
 
 /// Print server status.
@@ -708,8 +716,9 @@ fn format_cell_value(val: &serde_json::Value) -> String {
         serde_json::Value::Bool(b) => b.to_string(),
         serde_json::Value::Number(n) => n.to_string(),
         serde_json::Value::String(s) => {
-            if s.len() > 50 {
-                format!("{}...", &s[..47])
+            if s.chars().count() > 50 {
+                let head: String = s.chars().take(47).collect();
+                format!("{head}...")
             } else {
                 s.clone()
             }

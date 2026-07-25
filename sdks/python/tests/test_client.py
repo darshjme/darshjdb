@@ -88,7 +88,13 @@ class TestAuth:
     @pytest.mark.asyncio
     async def test_signin_with_user_pass(self, db: DarshDB, mock_router):
         mock_router.post("/api/auth/signin").respond(
-            json={"accessToken": "tok123", "user": {"id": "u1"}, "refreshToken": "ref1"}
+            json={
+                "user_id": "u1",
+                "access_token": "tok123",
+                "refresh_token": "ref1",
+                "expires_in": 900,
+                "token_type": "Bearer",
+            }
         )
         result = await db.signin({"user": "root", "pass": "root"})
         assert isinstance(result, AuthResponse)
@@ -100,7 +106,7 @@ class TestAuth:
     @pytest.mark.asyncio
     async def test_signin_with_email_password(self, db: DarshDB, mock_router):
         route = mock_router.post("/api/auth/signin").respond(
-            json={"accessToken": "tok456"}
+            json={"access_token": "tok456"}
         )
         await db.signin({"email": "alice@example.com", "password": "secret"})
         body = json.loads(route.calls[0].request.content)
@@ -109,7 +115,7 @@ class TestAuth:
 
     @pytest.mark.asyncio
     async def test_signin_sets_namespace_database(self, db: DarshDB, mock_router):
-        mock_router.post("/api/auth/signin").respond(json={"accessToken": "tok"})
+        mock_router.post("/api/auth/signin").respond(json={"access_token": "tok"})
         await db.signin({"user": "root", "pass": "root", "namespace": "ns1", "database": "db1"})
         assert db._namespace == "ns1"
         assert db._database == "db1"
@@ -125,10 +131,11 @@ class TestAuth:
     @pytest.mark.asyncio
     async def test_signup(self, db: DarshDB, mock_router):
         mock_router.post("/api/auth/signup").respond(
-            json={"accessToken": "new-tok", "user": {"id": "u2", "email": "bob@test.com"}}
+            json={"access_token": "new-tok", "user_id": "u2", "email": "bob@test.com"}
         )
         result = await db.signup({"email": "bob@test.com", "password": "pass123", "name": "Bob"})
         assert result.token == "new-tok"
+        assert result.user == {"id": "u2", "email": "bob@test.com"}
         assert db._token == "new-tok"
 
     @pytest.mark.asyncio
@@ -161,7 +168,7 @@ class TestUse:
         await db.use("myns", "mydb")
         db._token = "tok"
         route = mock_router.post("/api/query").respond(json={"data": []})
-        await db.query("SELECT * FROM users")
+        await db.query({"type": "users"})
         req = route.calls[0].request
         assert req.headers["x-darshdb-ns"] == "myns"
         assert req.headers["x-darshdb-db"] == "mydb"
@@ -248,25 +255,48 @@ class TestCRUD:
     @pytest.mark.asyncio
     async def test_insert_single(self, db: DarshDB, mock_router):
         mock_router.post("/api/mutate").respond(
-            json={"results": [{"id": "u1", "name": "Alice"}]}
+            json={"tx_id": 7, "affected": 1, "entity_ids": ["e1"]}
         )
         result = await db.insert("users", {"name": "Alice"})
-        assert len(result) == 1
+        assert result == [{"name": "Alice", "id": "e1"}]
 
     @pytest.mark.asyncio
     async def test_insert_batch(self, db: DarshDB, mock_router):
         route = mock_router.post("/api/mutate").respond(
-            json={"results": [{"id": "u1"}, {"id": "u2"}]}
+            json={"tx_id": 8, "affected": 2, "entity_ids": ["e1", "e2"]}
         )
-        await db.insert("users", [{"name": "A"}, {"name": "B"}])
+        result = await db.insert("users", [{"name": "A"}, {"name": "B"}])
         body = json.loads(route.calls[0].request.content)
         assert len(body["mutations"]) == 2
         assert all(m["op"] == "insert" for m in body["mutations"])
+        assert [r["id"] for r in result] == ["e1", "e2"]
+
+    @pytest.mark.asyncio
+    async def test_insert_does_not_fabricate_on_unknown_response(
+        self, db: DarshDB, mock_router
+    ):
+        mock_router.post("/api/mutate").respond(json={"ok": True})
+        with pytest.raises(DarshDBError, match="Unexpected /api/mutate response"):
+            await db.insert("users", {"name": "Alice"})
+
+    @pytest.mark.asyncio
+    async def test_insert_surfaces_server_error(self, db: DarshDB, mock_router):
+        mock_router.post("/api/mutate").respond(
+            status_code=400, json={"message": "Mutation 0: data is required"}
+        )
+        with pytest.raises(DarshDBAPIError):
+            await db.insert("users", {"name": "Alice"})
 
 
 # ---------------------------------------------------------------------------
 #  Query
 # ---------------------------------------------------------------------------
+
+
+AGE_QUERY = {
+    "type": "users",
+    "$where": [{"attribute": "age", "op": "Gt", "value": 18}],
+}
 
 
 class TestQuery:
@@ -275,36 +305,92 @@ class TestQuery:
         mock_router.post("/api/query").respond(
             json={"data": [{"id": "1", "age": 25}], "meta": {"count": 1, "duration_ms": 0.5}}
         )
-        results = await db.query("SELECT * FROM users WHERE age > 18")
+        results = await db.query(AGE_QUERY)
         assert len(results) == 1
         assert isinstance(results[0], QueryResult)
         assert results[0].count == 1
         assert results[0].data[0]["age"] == 25
 
     @pytest.mark.asyncio
-    async def test_query_sends_correct_body(self, db: DarshDB, mock_router):
+    async def test_query_sends_darshanql_body(self, db: DarshDB, mock_router):
         route = mock_router.post("/api/query").respond(json={"data": []})
-        await db.query("SELECT * FROM users", vars={"min_age": 18})
+        await db.query(AGE_QUERY, args={"min_age": 18})
         body = json.loads(route.calls[0].request.content)
-        assert body["query"] == "SELECT * FROM users"
-        assert body["vars"] == {"min_age": 18}
+        assert body["query"] == AGE_QUERY
+        assert body["args"] == {"min_age": 18}
+
+    @pytest.mark.asyncio
+    async def test_query_accepts_table_name(self, db: DarshDB, mock_router):
+        route = mock_router.post("/api/query").respond(json={"data": []})
+        await db.query("users")
+        body = json.loads(route.calls[0].request.content)
+        assert body["query"] == {"type": "users"}
+
+    @pytest.mark.asyncio
+    async def test_query_rejects_sql_string(self, db: DarshDB, mock_router):
+        with pytest.raises(DarshDBQueryError, match="DarshanQL"):
+            await db.query("SELECT * FROM users WHERE age > 18")
+        assert not mock_router.calls
 
     @pytest.mark.asyncio
     async def test_query_error_raises(self, db: DarshDB, mock_router):
         mock_router.post("/api/query").respond(
-            status_code=400, json={"message": "Parse error at line 1"}
+            status_code=400, json={"message": "Invalid query: missing 'type' field"}
         )
         with pytest.raises(DarshDBQueryError) as exc_info:
-            await db.query("INVALID QUERY")
-        assert exc_info.value.query == "INVALID QUERY"
+            await db.query({"users": {}})
+        assert exc_info.value.query == json.dumps({"users": {}})
 
     @pytest.mark.asyncio
     async def test_query_raw(self, db: DarshDB, mock_router):
         mock_router.post("/api/query").respond(
             json={"data": [], "meta": {"count": 0}, "extra": "field"}
         )
-        raw = await db.query_raw("SELECT * FROM users")
+        raw = await db.query_raw({"type": "users"})
         assert "extra" in raw
+
+
+# ---------------------------------------------------------------------------
+#  Subscribe (SSE)
+# ---------------------------------------------------------------------------
+
+
+class TestSubscribe:
+    @pytest.mark.asyncio
+    async def test_subscribe_without_callback(self, db: DarshDB, mock_router):
+        assert await db.subscribe("users") == "entity:users:*"
+
+    @pytest.mark.asyncio
+    async def test_subscribe_sends_darshanql_q_param(self, db: DarshDB, mock_router):
+        received: list[Any] = []
+        route = mock_router.get("/api/subscribe").respond(
+            status_code=200,
+            headers={"Content-Type": "text/event-stream"},
+            content=b'event: update\ndata: {"id": "u1"}\n\n',
+        )
+
+        async def on_event(data: Any) -> None:
+            received.append(data)
+
+        channel = await db.subscribe("users", on_event)
+        assert channel == "entity:users:*"
+
+        req = route.calls[0].request
+        assert json.loads(req.url.params["q"]) == {"type": "users"}
+        assert "table" not in req.url.params
+
+    @pytest.mark.asyncio
+    async def test_subscribe_raises_on_server_rejection(self, db: DarshDB, mock_router):
+        mock_router.get("/api/subscribe").respond(
+            status_code=400, json={"message": "Query parameter 'q' is required"}
+        )
+
+        async def on_event(data: Any) -> None:  # pragma: no cover - never called
+            raise AssertionError("callback must not run")
+
+        with pytest.raises(DarshDBAPIError) as exc_info:
+            await db.subscribe("users", on_event)
+        assert exc_info.value.status_code == 400
 
 
 # ---------------------------------------------------------------------------
@@ -452,13 +538,30 @@ class TestBatch:
     @pytest.mark.asyncio
     async def test_batch_operations(self, db: DarshDB, mock_router):
         route = mock_router.post("/api/batch").respond(
-            json={"results": [{"id": "u1"}, {"data": []}]}
+            json={
+                "results": [
+                    {"id": "m1", "status": 200, "data": {"tx_id": 1}},
+                    {"id": "q1", "status": 200, "data": []},
+                ],
+                "duration_ms": 1.2,
+            }
         )
-        results = await db.batch([
-            {"method": "POST", "path": "/api/data/users", "body": {"name": "A"}},
-            {"method": "GET", "path": "/api/data/users"},
-        ])
+        ops = [
+            {
+                "type": "mutate",
+                "id": "m1",
+                "body": {
+                    "mutations": [
+                        {"op": "insert", "entity": "users", "data": {"name": "A"}}
+                    ]
+                },
+            },
+            {"type": "query", "id": "q1", "body": {"type": "users"}},
+        ]
+        results = await db.batch(ops)
         assert len(results) == 2
+        body = json.loads(route.calls[0].request.content)
+        assert body == {"ops": ops}
 
 
 # ---------------------------------------------------------------------------

@@ -15,7 +15,7 @@
 
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import React, { createElement } from 'react';
-import { renderHook, act, cleanup } from '@testing-library/react';
+import { renderHook, render, act, cleanup } from '@testing-library/react';
 
 import { DarshanProvider, useDarshanClient } from '../provider';
 import { useQuery } from '../use-query';
@@ -207,6 +207,60 @@ describe('useQuery', () => {
     );
 
     expect(mockClient.subscribe).not.toHaveBeenCalled();
+  });
+
+  it('is not loading when enabled is false', () => {
+    const mockClient = createMockClient();
+    const { result } = renderHook(
+      () => useQuery({ collection: 'todos' }, { enabled: false }),
+      { wrapper: makeWrapper(mockClient) },
+    );
+
+    expect(result.current.isLoading).toBe(false);
+    expect(result.current.data).toEqual([]);
+  });
+
+  it('suspends the first render in suspense mode', async () => {
+    let subscribeCallback: ((snap: QuerySnapshot<unknown>) => void) | null = null;
+
+    const mockClient = createMockClient({
+      subscribe: vi.fn((_query: unknown, cb: (snap: QuerySnapshot<unknown>) => void) => {
+        subscribeCallback = cb;
+        return () => {};
+      }),
+    });
+
+    function Child(): React.ReactElement {
+      const { data } = useQuery<{ id: string }>(
+        { collection: 'todos' },
+        { suspense: true },
+      );
+      return createElement('span', null, `count:${data.length}`);
+    }
+
+    const { getByText } = render(
+      createElement(DarshanProvider, {
+        serverUrl: 'https://db.test.com',
+        appId: 'test',
+        client: mockClient,
+        children: createElement(
+          React.Suspense,
+          { fallback: createElement('span', null, 'fallback') },
+          createElement(Child),
+        ),
+      }),
+    );
+
+    // The subscription starts during render, and the boundary shows the
+    // fallback instead of committing a loading state.
+    expect(getByText('fallback')).toBeTruthy();
+    expect(mockClient.subscribe).toHaveBeenCalled();
+
+    await act(async () => {
+      subscribeCallback!({ data: [{ id: '1' }], error: null });
+    });
+
+    expect(getByText('count:1')).toBeTruthy();
   });
 
   it('updates data when subscription callback fires', async () => {
@@ -716,6 +770,69 @@ describe('usePresence', () => {
 
     expect(mockClient.leaveRoom).toHaveBeenCalledWith('room-1');
     expect(mockClient.joinRoom).toHaveBeenCalledWith('room-2');
+  });
+
+  it('never leaves the room after a re-join', async () => {
+    const calls: string[] = [];
+    const mockClient = createMockClient({
+      joinRoom: vi.fn(async (roomId: string) => {
+        calls.push(`join:${roomId}`);
+      }),
+      leaveRoom: vi.fn(async (roomId: string) => {
+        calls.push(`leave:${roomId}`);
+      }),
+    });
+
+    // StrictMode mounts, unmounts and re-mounts every effect.
+    const { unmount } = renderHook(() => usePresence('room-1'), {
+      wrapper: ({ children }: { children: React.ReactNode }) =>
+        createElement(
+          React.StrictMode,
+          null,
+          createElement(DarshanProvider, {
+            serverUrl: 'https://db.test.com',
+            appId: 'test',
+            client: mockClient,
+            children,
+          }),
+        ),
+    });
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    // The room must be joined once the dust settles.
+    expect(calls[calls.length - 1]).toBe('join:room-1');
+
+    unmount();
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(calls[calls.length - 1]).toBe('leave:room-1');
+  });
+
+  it('leaves the room only when the last subscriber unmounts', async () => {
+    const mockClient = createMockClient();
+    const wrapper = makeWrapper(mockClient);
+
+    const first = renderHook(() => usePresence('room-1'), { wrapper });
+    const second = renderHook(() => usePresence('room-1'), { wrapper });
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(mockClient.joinRoom).toHaveBeenCalledTimes(1);
+
+    first.unmount();
+    expect(mockClient.leaveRoom).not.toHaveBeenCalled();
+
+    second.unmount();
+    expect(mockClient.leaveRoom).toHaveBeenCalledWith('room-1');
   });
 
   it('publishState has stable identity for same roomId', () => {

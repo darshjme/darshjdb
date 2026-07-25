@@ -102,6 +102,18 @@ export function darshanQuery<T>(
   const _error = signal<DarshJError | null>(null);
 
   let _unsubscribe: (() => void) | null = null;
+  let _debounceTimer: ReturnType<typeof setTimeout> | null = null;
+
+  /**
+   * Cancel a pending debounced update so it cannot overwrite fresher state.
+   * @internal
+   */
+  function cancelPendingUpdate(): void {
+    if (_debounceTimer !== null) {
+      clearTimeout(_debounceTimer);
+      _debounceTimer = null;
+    }
+  }
 
   /**
    * Start (or restart) the subscription.
@@ -110,13 +122,12 @@ export function darshanQuery<T>(
   function subscribe(): void {
     // Clean up any existing subscription before re-subscribing.
     _unsubscribe?.();
+    cancelPendingUpdate();
 
     if (!options?.skipInitialFetch) {
       _isLoading.set(true);
     }
     _error.set(null);
-
-    let debounceTimer: ReturnType<typeof setTimeout> | null = null;
 
     _unsubscribe = client.subscribe<T>(
       collection,
@@ -137,10 +148,11 @@ export function darshanQuery<T>(
         };
 
         if (options?.debounceMs && options.debounceMs > 0) {
-          if (debounceTimer !== null) {
-            clearTimeout(debounceTimer);
-          }
-          debounceTimer = setTimeout(applyUpdate, options.debounceMs);
+          cancelPendingUpdate();
+          _debounceTimer = setTimeout(() => {
+            _debounceTimer = null;
+            applyUpdate();
+          }, options.debounceMs);
         } else {
           applyUpdate();
         }
@@ -155,6 +167,7 @@ export function darshanQuery<T>(
   destroyRef.onDestroy(() => {
     _unsubscribe?.();
     _unsubscribe = null;
+    cancelPendingUpdate();
   });
 
   return {

@@ -14,7 +14,7 @@ import type {
   OptimisticUpdate,
   QueryResult,
 } from './types.js';
-import { generateId } from './transaction.js';
+import { generateId, submitOps } from './transaction.js';
 
 /* -------------------------------------------------------------------------- */
 /*  Constants                                                                 */
@@ -26,6 +26,12 @@ const STORE_CACHE = 'queryCache';
 const STORE_QUEUE = 'offlineQueue';
 const STORE_META = 'meta';
 const MAX_REPLAY_ATTEMPTS = 5;
+
+/** Whether the server rejected the transaction (as opposed to a transport
+ *  failure, which should pause replay until the client is online again). */
+function isRejection(err: unknown): boolean {
+  return err instanceof Error && err.message.startsWith('Transaction failed');
+}
 
 /* -------------------------------------------------------------------------- */
 /*  SyncEngine                                                                */
@@ -243,30 +249,24 @@ export class SyncEngine {
 
       for (const entry of queue) {
         try {
-          const resp = await this._privateClient.send({
-            type: 'transact',
-            payload: { ops: entry.ops },
-          });
-
-          if (resp.type === 'tx-error') {
-            entry.attempts++;
-            if (entry.attempts >= MAX_REPLAY_ATTEMPTS) {
-              console.warn(
-                `[DarshJDB Sync] Discarding queue entry ${entry.id} after ${MAX_REPLAY_ATTEMPTS} attempts`,
-              );
-              await this.dequeue(entry.id);
-            } else {
-              const db = this._privateRequireDb();
-              await db.put(STORE_QUEUE, entry);
-            }
-            continue;
-          }
-
+          await submitOps(this._privateClient, entry.ops);
           await this.dequeue(entry.id);
           replayed++;
-        } catch {
-          // Network error; stop replaying — we're likely offline again.
-          break;
+        } catch (err) {
+          // A rejected transaction is permanent for these ops; a transport
+          // failure is not. Only the former is worth counting attempts on.
+          if (!isRejection(err)) break;
+
+          entry.attempts++;
+          if (entry.attempts >= MAX_REPLAY_ATTEMPTS) {
+            console.warn(
+              `[DarshJDB Sync] Discarding queue entry ${entry.id} after ${MAX_REPLAY_ATTEMPTS} attempts`,
+            );
+            await this.dequeue(entry.id);
+          } else {
+            const db = this._privateRequireDb();
+            await db.put(STORE_QUEUE, entry);
+          }
         }
       }
     } finally {

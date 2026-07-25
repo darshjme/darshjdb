@@ -1,9 +1,9 @@
 # DarshJDB — release matrix
 # Maintained by Darshankumar Joshi (github.com/darshjme)
 #
-# Builds ddb-server across the supported target matrix and publishes binaries
-# to a GitHub Release when a v* tag is pushed. The admin dashboard is built
-# first so the server can embed its static assets.
+# Builds ddb-server and the ddb CLI across the supported target matrix and
+# publishes binaries to a GitHub Release when a v* tag is pushed. The admin
+# dashboard is built first so the server can embed its static assets.
 
 name: Release
 
@@ -69,26 +69,33 @@ jobs:
           npm ci
           npm run build
 
-      - name: Build ddb-server (${{ matrix.target }})
-        run: cargo build --release --target ${{ matrix.target }} -p ddb-server
+      - name: Build ddb-server and ddb CLI (${{ matrix.target }})
+        run: cargo build --release --target ${{ matrix.target }} -p ddb-server -p ddb-cli
 
-      - name: Stage binary
+      - name: Stage binaries
         shell: bash
         run: |
           set -euo pipefail
           TAG="${GITHUB_REF_NAME}"
           mkdir -p staging
-          SRC="target/${{ matrix.target }}/release/ddb-server${{ matrix.ext }}"
-          DEST="staging/ddb-server-${TAG}-${{ matrix.os_name }}-${{ matrix.arch_name }}${{ matrix.ext }}"
-          cp "$SRC" "$DEST"
+          SRC_DIR="target/${{ matrix.target }}/release"
+          SERVER="staging/ddb-server-${TAG}-${{ matrix.os_name }}-${{ matrix.arch_name }}${{ matrix.ext }}"
+          CLI="staging/ddb-${TAG}-${{ matrix.os_name }}-${{ matrix.arch_name }}${{ matrix.ext }}"
+          cp "${SRC_DIR}/ddb-server${{ matrix.ext }}" "$SERVER"
+          cp "${SRC_DIR}/ddb${{ matrix.ext }}" "$CLI"
           if [[ "${{ matrix.os_name }}" != "windows" ]]; then
-            strip "$DEST" 2>/dev/null || true
+            strip "$SERVER" 2>/dev/null || true
+            strip "$CLI" 2>/dev/null || true
           fi
+          # `ddb upgrade` resolves its asset by Rust target triple, so the CLI
+          # is published under the triple name as well as the os/arch name.
+          cp "$CLI" "staging/ddb-${TAG}-${{ matrix.target }}${{ matrix.ext }}"
+          ls -la staging/
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ddb-server-${{ matrix.os_name }}-${{ matrix.arch_name }}
+          name: ddb-${{ matrix.os_name }}-${{ matrix.arch_name }}
           path: staging/*
 
   release:

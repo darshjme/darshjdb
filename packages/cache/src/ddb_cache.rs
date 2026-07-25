@@ -632,7 +632,11 @@ impl DdbCache {
         stream
             .entries
             .iter()
-            .filter(|e| parse_stream_id(&e.id, 0).map(|id| id > after).unwrap_or(false))
+            .filter(|e| {
+                parse_stream_id(&e.id, 0)
+                    .map(|id| id > after)
+                    .unwrap_or(false)
+            })
             .cloned()
             .collect()
     }
@@ -658,7 +662,11 @@ impl DdbCache {
     // ── HLL ────────────────────────────────────────────────────────────
 
     pub async fn pfadd(&self, key: &str, item: &[u8]) -> bool {
-        self.inner.hlls.entry(key.to_string()).or_default().add(item)
+        self.inner
+            .hlls
+            .entry(key.to_string())
+            .or_default()
+            .add(item)
     }
 
     pub async fn pfcount(&self, key: &str) -> u64 {

@@ -64,17 +64,41 @@ class Exception extends \RuntimeException
             }
         }
 
-        $message = $errorBody['message']
-            ?? $errorBody['error']
-            ?? $e->getMessage();
-
         return new self(
-            message: (string) $message,
+            message: self::extractMessage($errorBody) ?? $e->getMessage(),
             code: (int) $e->getCode(),
             previous: $e,
             statusCode: $statusCode,
             errorBody: $errorBody,
         );
+    }
+
+    /**
+     * Pull the human-readable message out of a server error body.
+     *
+     * The server wraps errors in `{"error": {"code": ..., "message": ...}}`,
+     * so the nested object must be unwrapped before the message is read.
+     * Flat `{"message": ...}` and `{"error": "..."}` bodies are also accepted.
+     *
+     * @param array<string, mixed> $errorBody Parsed error body from the server.
+     */
+    private static function extractMessage(array $errorBody): ?string
+    {
+        $error = $errorBody['error'] ?? null;
+
+        if (is_array($error) && isset($error['message']) && is_string($error['message'])) {
+            return $error['message'];
+        }
+
+        if (isset($errorBody['message']) && is_string($errorBody['message'])) {
+            return $errorBody['message'];
+        }
+
+        if (is_string($error) && $error !== '') {
+            return $error;
+        }
+
+        return null;
     }
 
     /**

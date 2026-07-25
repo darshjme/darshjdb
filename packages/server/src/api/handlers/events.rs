@@ -5,8 +5,8 @@ use std::time::Duration;
 
 use axum::extract::{Query, State};
 use axum::http::HeaderMap;
-use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::Response;
+use axum::response::sse::{Event, KeepAlive, Sse};
 use serde::Deserialize;
 use serde_json::Value;
 use tokio_stream::StreamExt;

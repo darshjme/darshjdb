@@ -339,7 +339,7 @@ async fn ipfs_add_impl(_api_url: &str, batch_root: &str) -> AnchorResult<String>
     // "Qm" + first 44 chars of the batch root — not a real CID, but
     // uniquely derived, of the right length, and clearly fake on
     // inspection. Never used when the real feature is on.
-    let mock = format!("Qm{}", &batch_root.chars().take(44).collect::<String>());
+    let mock = format!("Qm{}", batch_root.chars().take(44).collect::<String>());
     Ok(mock)
 }
 

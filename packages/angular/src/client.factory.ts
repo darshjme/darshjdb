@@ -6,6 +6,8 @@
  * and simplifies testing by providing a seam for mock injection.
  */
 
+import { DarshJDB } from '@darshjdb/client';
+
 import type { DarshanConfig } from './types';
 import type { DarshanClient } from './tokens';
 
@@ -19,27 +21,15 @@ import type { DarshanClient } from './tokens';
  * @returns A configured, not-yet-connected `DarshanClient`.
  *
  * @remarks
- * The factory imports `@darshjdb/client` dynamically so that bundlers can
- * tree-shake the client when the Angular SDK is imported but the factory
- * is never invoked (e.g., in test suites that provide mocks).
+ * `@darshjdb/client` exports its core client as `DarshJDB`; the Angular SDK
+ * consumes it through the narrower {@link DarshanClient} facade so that tests
+ * can provide mocks against `DDB_CLIENT` without importing the real client.
  */
 export function createDarshanClient(config: DarshanConfig): DarshanClient {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const { DarshanClient: ClientImpl } = require('@darshjdb/client');
-
-  const wsUrl =
-    config.wsUrl ??
-    config.serverUrl
-      .replace(/^http:/, 'ws:')
-      .replace(/^https:/, 'wss:');
-
-  return new ClientImpl({
+  const client = new DarshJDB({
     serverUrl: config.serverUrl,
-    wsUrl,
     appId: config.appId,
-    debug: config.debug ?? false,
-    connectTimeout: config.connectTimeout ?? 10_000,
-    reconnectInterval: config.reconnectInterval ?? 3_000,
-    maxReconnectAttempts: config.maxReconnectAttempts ?? Infinity,
   });
+
+  return client as unknown as DarshanClient;
 }
