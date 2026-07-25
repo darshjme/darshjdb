@@ -350,20 +350,35 @@ async fn ipfs_add_impl(api_url: &str, batch_root: &str) -> AnchorResult<String> 
     use ipfs_api_backend_hyper::{IpfsApi, IpfsClient, TryFromUri};
     use std::io::Cursor;
 
-    let client = IpfsClient::from_str(api_url)
-        .map_err(|e| AnchorError::Backend(format!("ipfs client init: {e}")))?;
-
+    let api_url = api_url.to_string();
     let payload = serde_json::json!({
         "kind": "darshjdb.batch_root",
         "batch_root": batch_root,
     })
     .to_string();
 
-    let resp = client
-        .add(Cursor::new(payload))
-        .await
-        .map_err(|e| AnchorError::Backend(format!("ipfs add: {e}")))?;
-    Ok(resp.hash)
+    // `IpfsClient`'s response futures are not `Send`, so they cannot be
+    // awaited directly inside the `Send` future `#[async_trait]` requires.
+    // Drive them on a dedicated current-thread runtime instead.
+    tokio::task::spawn_blocking(move || {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| AnchorError::Backend(format!("ipfs runtime init: {e}")))?;
+
+        rt.block_on(async move {
+            let client = IpfsClient::from_str(&api_url)
+                .map_err(|e| AnchorError::Backend(format!("ipfs client init: {e}")))?;
+
+            let resp = client
+                .add(Cursor::new(payload))
+                .await
+                .map_err(|e| AnchorError::Backend(format!("ipfs add: {e}")))?;
+            Ok(resp.hash)
+        })
+    })
+    .await
+    .map_err(|e| AnchorError::Backend(format!("ipfs add task: {e}")))?
 }
 
 // ── EthereumAnchorer ───────────────────────────────────────────────
