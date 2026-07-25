@@ -255,10 +255,7 @@ fn run_in_isolate(
 
         let fn_global: v8::Global<v8::Function> = {
             deno_core::scope!(scope, js_runtime);
-            let ns_local = v8::Local::new(scope, namespace);
-            let ns_obj: v8::Local<v8::Object> = ns_local
-                .try_into()
-                .map_err(|_| RuntimeError::Internal("module namespace is not an object".into()))?;
+            let ns_obj: v8::Local<v8::Object> = v8::Local::new(scope, namespace);
 
             let export_key = v8::String::new(scope, &export_name)
                 .ok_or_else(|| RuntimeError::Internal("failed to allocate export key".into()))?;
