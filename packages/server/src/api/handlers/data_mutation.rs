@@ -45,7 +45,7 @@ pub async fn query_handler(
 
     let start = Instant::now();
 
-    let mut ast = query::parse_darshan_ql(&body.query)
+    let ast = query::parse_darshan_ql(&body.query)
         .map_err(|e| ApiError::bad_request(format!("Invalid query: {e}")))?;
 
     let perm_result = check_permission(
@@ -56,13 +56,9 @@ pub async fn query_handler(
     )?;
 
     let permission_where = perm_result.build_where_clause(auth_ctx.user_id);
-    if let Some(ref where_sql) = permission_where {
-        ast.where_clauses.push(query::WhereClause {
-            attribute: "__permission_filter".to_string(),
-            op: query::WhereOp::Eq,
-            value: serde_json::Value::String(where_sql.clone()),
-        });
-    }
+    let permission =
+        query::PermissionFilter::from_clauses(&perm_result.where_clauses, auth_ctx.user_id)
+            .map_err(|e| ApiError::bad_request(format!("Query planning failed: {e}")))?;
 
     let cache_key_input = serde_json::json!({
         "q": body.query,
@@ -85,7 +81,7 @@ pub async fn query_handler(
         return Ok(negotiate_response(&headers, &response));
     }
 
-    let plan = query::plan_query(&ast)
+    let plan = query::plan_query_with_permission(&ast, &permission)
         .map_err(|e| ApiError::bad_request(format!("Query planning failed: {e}")))?;
 
     let results: Vec<QueryResultRow> = query::execute_query(&state.pool, &plan)

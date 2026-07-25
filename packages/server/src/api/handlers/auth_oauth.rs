@@ -10,7 +10,7 @@ use uuid::Uuid;
 use crate::api::error::ApiError;
 use crate::api::rest::AppState;
 use crate::auth::{
-    MagicLinkProvider, OAuth2Provider, OAuthProviderKind, OAuthUserInfo,
+    GenericOAuth2Provider, MagicLinkProvider, OAuth2Provider, OAuthProviderKind, OAuthUserInfo,
 };
 
 use super::helpers::negotiate_response;
@@ -261,16 +261,24 @@ pub async fn auth_oauth_callback(
         ))
     })?;
 
-    let pkce_verifier = headers
+    let pkce_verifier = match headers
         .get("x-pkce-verifier")
         .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
+        .filter(|v| !v.is_empty())
+    {
+        Some(v) => v.to_string(),
+        None => GenericOAuth2Provider::pkce_verifier_for_state(
+            &params.state,
+            &app.oauth_state_secret,
+        )
+        .map_err(|e| ApiError::bad_request(format!("OAuth callback failed: {e}")))?,
+    };
 
     let user_info = oauth_provider
         .exchange_code(
             &params.code,
             &params.state,
-            pkce_verifier,
+            &pkce_verifier,
             &app.oauth_state_secret,
         )
         .await

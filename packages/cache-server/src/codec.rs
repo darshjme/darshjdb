@@ -71,7 +71,7 @@ impl Decoder for RESP3Codec {
     type Error = io::Error;
 
     fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
-        match parse_frame(src)? {
+        match parse_frame(src, 0)? {
             Some((frame, consumed)) => {
                 src.advance(consumed);
                 Ok(Some(frame))
@@ -158,7 +158,11 @@ fn write_frame(frame: &RespFrame, dst: &mut BytesMut) {
 // Decoding
 // ---------------------------------------------------------------------------
 
-fn parse_frame(src: &[u8]) -> io::Result<Option<(RespFrame, usize)>> {
+const MAX_NESTING_DEPTH: usize = 128;
+const MAX_MULTIBULK_LEN: i64 = 1024 * 1024;
+const MAX_BULK_LEN: i64 = 512 * 1024 * 1024;
+
+fn parse_frame(src: &[u8], depth: usize) -> io::Result<Option<(RespFrame, usize)>> {
     if src.is_empty() {
         return Ok(None);
     }
@@ -203,9 +207,9 @@ fn parse_frame(src: &[u8]) -> io::Result<Option<(RespFrame, usize)>> {
             None => Ok(None),
         },
         b'$' => parse_bulk(body).map(|r| r.map(|(f, n)| (f, n + 1))),
-        b'*' => parse_array(body, b'*').map(|r| r.map(|(f, n)| (f, n + 1))),
-        b'~' => parse_array(body, b'~').map(|r| r.map(|(f, n)| (f, n + 1))),
-        b'%' => parse_map(body).map(|r| r.map(|(f, n)| (f, n + 1))),
+        b'*' => parse_array(body, b'*', depth + 1).map(|r| r.map(|(f, n)| (f, n + 1))),
+        b'~' => parse_array(body, b'~', depth + 1).map(|r| r.map(|(f, n)| (f, n + 1))),
+        b'%' => parse_map(body, depth + 1).map(|r| r.map(|(f, n)| (f, n + 1))),
         // Inline commands ("PING\r\n" without a RESP tag).
         _ => parse_inline(src),
     }
@@ -233,6 +237,12 @@ fn parse_bulk(src: &[u8]) -> io::Result<Option<(RespFrame, usize)>> {
     if len < 0 {
         return Ok(Some((RespFrame::BulkString(None), header_n)));
     }
+    if len > MAX_BULK_LEN {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "ERR protocol error: invalid bulk length",
+        ));
+    }
     let len = len as usize;
     if src.len() < header_n + len + 2 {
         return Ok(None);
@@ -250,7 +260,13 @@ fn parse_bulk(src: &[u8]) -> io::Result<Option<(RespFrame, usize)>> {
     )))
 }
 
-fn parse_array(src: &[u8], kind: u8) -> io::Result<Option<(RespFrame, usize)>> {
+fn parse_array(src: &[u8], kind: u8, depth: usize) -> io::Result<Option<(RespFrame, usize)>> {
+    if depth > MAX_NESTING_DEPTH {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "ERR protocol error: too many nested multibulk replies",
+        ));
+    }
     let Some((len_str, header_n)) = parse_line(src)? else {
         return Ok(None);
     };
@@ -260,11 +276,17 @@ fn parse_array(src: &[u8], kind: u8) -> io::Result<Option<(RespFrame, usize)>> {
     if len < 0 {
         return Ok(Some((RespFrame::Array(None), header_n)));
     }
+    if len > MAX_MULTIBULK_LEN {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "ERR protocol error: invalid multibulk length",
+        ));
+    }
     let len = len as usize;
-    let mut items = Vec::with_capacity(len);
+    let mut items = Vec::with_capacity(len.min(src.len()));
     let mut cursor = header_n;
     for _ in 0..len {
-        match parse_frame(&src[cursor..])? {
+        match parse_frame(&src[cursor..], depth)? {
             Some((frame, consumed)) => {
                 items.push(frame);
                 cursor += consumed;
@@ -280,7 +302,13 @@ fn parse_array(src: &[u8], kind: u8) -> io::Result<Option<(RespFrame, usize)>> {
     Ok(Some((frame, cursor)))
 }
 
-fn parse_map(src: &[u8]) -> io::Result<Option<(RespFrame, usize)>> {
+fn parse_map(src: &[u8], depth: usize) -> io::Result<Option<(RespFrame, usize)>> {
+    if depth > MAX_NESTING_DEPTH {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "ERR protocol error: too many nested multibulk replies",
+        ));
+    }
     let Some((len_str, header_n)) = parse_line(src)? else {
         return Ok(None);
     };
@@ -293,15 +321,21 @@ fn parse_map(src: &[u8]) -> io::Result<Option<(RespFrame, usize)>> {
             "map cannot be null",
         ));
     }
+    if len > MAX_MULTIBULK_LEN {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "ERR protocol error: invalid multibulk length",
+        ));
+    }
     let len = len as usize;
-    let mut pairs = Vec::with_capacity(len);
+    let mut pairs = Vec::with_capacity(len.min(src.len()));
     let mut cursor = header_n;
     for _ in 0..len {
-        let Some((k, kn)) = parse_frame(&src[cursor..])? else {
+        let Some((k, kn)) = parse_frame(&src[cursor..], depth)? else {
             return Ok(None);
         };
         cursor += kn;
-        let Some((v, vn)) = parse_frame(&src[cursor..])? else {
+        let Some((v, vn)) = parse_frame(&src[cursor..], depth)? else {
             return Ok(None);
         };
         cursor += vn;
@@ -378,6 +412,29 @@ mod tests {
         let mut buf = BytesMut::from(&b"*1\r\n$4\r\nPI"[..]);
         let mut c = RESP3Codec;
         assert!(c.decode(&mut buf).unwrap().is_none());
+    }
+
+    #[test]
+    fn decode_deeply_nested_is_rejected() {
+        let mut buf = BytesMut::from(&b"*1\r\n".repeat(20_000)[..]);
+        let mut c = RESP3Codec;
+        let err = c.decode(&mut buf).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn decode_oversized_multibulk_is_rejected() {
+        let mut c = RESP3Codec;
+        for header in [
+            &b"*2000000000\r\n"[..],
+            &b"%9000000000000000000\r\n"[..],
+            &b"~2000000000\r\n"[..],
+            &b"$9000000000000000000\r\n"[..],
+        ] {
+            let mut buf = BytesMut::from(header);
+            let err = c.decode(&mut buf).unwrap_err();
+            assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        }
     }
 
     #[test]

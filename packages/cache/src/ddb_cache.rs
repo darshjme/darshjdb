@@ -20,7 +20,9 @@ use std::time::{Duration, Instant};
 
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
-use tokio::sync::{Mutex, broadcast};
+use tokio::sync::broadcast;
+use tokio::task::JoinHandle;
+use tracing::debug;
 
 // ---------------------------------------------------------------------------
 // Public stats surface
@@ -160,13 +162,20 @@ struct StreamState {
 impl StreamState {
     fn next_id(&mut self) -> String {
         let now_ms = chrono::Utc::now().timestamp_millis().max(0) as u64;
-        if now_ms == self.last_ms {
-            self.last_seq += 1;
-        } else {
+        if now_ms > self.last_ms {
             self.last_ms = now_ms;
             self.last_seq = 0;
+        } else {
+            self.last_seq += 1;
         }
         format!("{}-{}", self.last_ms, self.last_seq)
+    }
+}
+
+fn parse_stream_id(id: &str, default_seq: u64) -> Option<(u64, u64)> {
+    match id.split_once('-') {
+        Some((ms, seq)) => Some((ms.parse().ok()?, seq.parse().ok()?)),
+        None => Some((id.parse().ok()?, default_seq)),
     }
 }
 
@@ -258,8 +267,8 @@ struct DdbCacheInner {
     lists: DashMap<String, VecDeque<Vec<u8>>>,
     zsets: DashMap<String, ZSetEntry>,
     streams: DashMap<String, StreamState>,
-    blooms: Mutex<HashMap<String, BloomFilter>>,
-    hlls: Mutex<HashMap<String, HyperLogLog>>,
+    blooms: DashMap<String, BloomFilter>,
+    hlls: DashMap<String, HyperLogLog>,
     channels: DashMap<String, broadcast::Sender<PubSubMessage>>,
 
     hits: AtomicU64,
@@ -289,8 +298,8 @@ impl DdbCache {
                 lists: DashMap::new(),
                 zsets: DashMap::new(),
                 streams: DashMap::new(),
-                blooms: Mutex::new(HashMap::new()),
-                hlls: Mutex::new(HashMap::new()),
+                blooms: DashMap::new(),
+                hlls: DashMap::new(),
                 channels: DashMap::new(),
                 hits: AtomicU64::new(0),
                 misses: AtomicU64::new(0),
@@ -353,14 +362,26 @@ impl DdbCache {
         if self.inner.streams.remove(key).is_some() {
             removed = true;
         }
+        if self.inner.blooms.remove(key).is_some() {
+            removed = true;
+        }
+        if self.inner.hlls.remove(key).is_some() {
+            removed = true;
+        }
         removed
     }
 
     pub fn exists(&self, key: &str) -> bool {
-        if let Some(entry) = self.inner.strings.get(key)
-            && !entry.is_expired()
-        {
-            return true;
+        let mut drop_expired = false;
+        if let Some(entry) = self.inner.strings.get(key) {
+            if entry.is_expired() {
+                drop_expired = true;
+            } else {
+                return true;
+            }
+        }
+        if drop_expired {
+            self.reclaim_string(key);
         }
         self.inner.hashes.contains_key(key)
             || self.inner.lists.contains_key(key)
@@ -369,19 +390,29 @@ impl DdbCache {
     }
 
     pub fn expire(&self, key: &str, ttl: Duration) -> bool {
+        let mut drop_expired = false;
         if let Some(mut entry) = self.inner.strings.get_mut(key) {
-            entry.expires_at = Some(Instant::now() + ttl);
-            return true;
+            if entry.is_expired() {
+                drop_expired = true;
+            } else {
+                entry.expires_at = Some(Instant::now() + ttl);
+                return true;
+            }
+        }
+        if drop_expired {
+            self.reclaim_string(key);
         }
         false
     }
 
     pub fn ttl(&self, key: &str) -> i64 {
-        match self.inner.strings.get(key) {
+        let mut drop_expired = false;
+        let result = match self.inner.strings.get(key) {
             Some(entry) => match entry.expires_at {
                 Some(deadline) => {
                     let now = Instant::now();
                     if deadline <= now {
+                        drop_expired = true;
                         -2
                     } else {
                         (deadline - now).as_secs() as i64
@@ -390,10 +421,15 @@ impl DdbCache {
                 None => -1,
             },
             None => -2,
+        };
+        if drop_expired {
+            self.reclaim_string(key);
         }
+        result
     }
 
     pub fn keys(&self, pattern: &str) -> Vec<String> {
+        self.sweep_expired_once();
         self.inner
             .strings
             .iter()
@@ -401,6 +437,19 @@ impl DdbCache {
             .map(|e| e.key().clone())
             .filter(|k| glob_match(pattern, k))
             .collect()
+    }
+
+    /// Drop a single string entry that a reader observed as expired, counting
+    /// it against the `expired` stat exactly once.
+    fn reclaim_string(&self, key: &str) {
+        if self
+            .inner
+            .strings
+            .remove_if(key, |_, entry| entry.is_expired())
+            .is_some()
+        {
+            self.inner.expired.fetch_add(1, Ordering::Relaxed);
+        }
     }
 
     // ── HASH ───────────────────────────────────────────────────────────
@@ -542,12 +591,31 @@ impl DdbCache {
         let Some(stream) = self.inner.streams.get(key) else {
             return Vec::new();
         };
+        let start_id = if start == "-" {
+            None
+        } else {
+            match parse_stream_id(start, 0) {
+                Some(id) => Some(id),
+                None => return Vec::new(),
+            }
+        };
+        let end_id = if end == "+" {
+            None
+        } else {
+            match parse_stream_id(end, u64::MAX) {
+                Some(id) => Some(id),
+                None => return Vec::new(),
+            }
+        };
         stream
             .entries
             .iter()
             .filter(|e| {
-                let past_start = start == "-" || e.id.as_str() >= start;
-                let before_end = end == "+" || e.id.as_str() <= end;
+                let Some(id) = parse_stream_id(&e.id, 0) else {
+                    return false;
+                };
+                let past_start = start_id.map(|s| id >= s).unwrap_or(true);
+                let before_end = end_id.map(|x| id <= x).unwrap_or(true);
                 past_start && before_end
             })
             .cloned()
@@ -558,10 +626,13 @@ impl DdbCache {
         let Some(stream) = self.inner.streams.get(key) else {
             return Vec::new();
         };
+        let Some(after) = parse_stream_id(after_id, 0) else {
+            return Vec::new();
+        };
         stream
             .entries
             .iter()
-            .filter(|e| e.id.as_str() > after_id)
+            .filter(|e| parse_stream_id(&e.id, 0).map(|id| id > after).unwrap_or(false))
             .cloned()
             .collect()
     }
@@ -569,28 +640,29 @@ impl DdbCache {
     // ── BLOOM ──────────────────────────────────────────────────────────
 
     pub async fn bfadd(&self, key: &str, item: &[u8]) -> bool {
-        let mut guard = self.inner.blooms.lock().await;
-        guard
+        self.inner
+            .blooms
             .entry(key.to_string())
             .or_insert_with(BloomFilter::new)
             .add(item)
     }
 
     pub async fn bfexists(&self, key: &str, item: &[u8]) -> bool {
-        let guard = self.inner.blooms.lock().await;
-        guard.get(key).map(|b| b.contains(item)).unwrap_or(false)
+        self.inner
+            .blooms
+            .get(key)
+            .map(|b| b.contains(item))
+            .unwrap_or(false)
     }
 
     // ── HLL ────────────────────────────────────────────────────────────
 
     pub async fn pfadd(&self, key: &str, item: &[u8]) -> bool {
-        let mut guard = self.inner.hlls.lock().await;
-        guard.entry(key.to_string()).or_default().add(item)
+        self.inner.hlls.entry(key.to_string()).or_default().add(item)
     }
 
     pub async fn pfcount(&self, key: &str) -> u64 {
-        let guard = self.inner.hlls.lock().await;
-        guard.get(key).map(|h| h.count()).unwrap_or(0)
+        self.inner.hlls.get(key).map(|h| h.count()).unwrap_or(0)
     }
 
     // ── PUB/SUB ────────────────────────────────────────────────────────
@@ -605,19 +677,74 @@ impl DdbCache {
     }
 
     pub fn publish(&self, channel: &str, payload: impl Into<Vec<u8>>) -> usize {
-        match self.inner.channels.get(channel) {
+        let delivered = match self.inner.channels.get(channel) {
             Some(sender) => {
-                let msg = PubSubMessage {
-                    channel: channel.to_string(),
-                    payload: payload.into(),
-                };
-                sender.send(msg).unwrap_or(0)
+                if sender.receiver_count() == 0 {
+                    None
+                } else {
+                    let msg = PubSubMessage {
+                        channel: channel.to_string(),
+                        payload: payload.into(),
+                    };
+                    Some(sender.send(msg).unwrap_or(0))
+                }
             }
-            None => 0,
+            None => return 0,
+        };
+        match delivered {
+            Some(n) => n,
+            None => {
+                self.inner
+                    .channels
+                    .remove_if(channel, |_, sender| sender.receiver_count() == 0);
+                0
+            }
         }
     }
 
     // ── Admin ──────────────────────────────────────────────────────────
+
+    /// One-shot expiry sweep over the string tier. Returns the number of
+    /// entries reclaimed.
+    pub fn sweep_expired_once(&self) -> u64 {
+        let mut removed = 0u64;
+        self.inner.strings.retain(|_, entry| {
+            if entry.is_expired() {
+                removed += 1;
+                false
+            } else {
+                true
+            }
+        });
+        if removed > 0 {
+            self.inner.expired.fetch_add(removed, Ordering::Relaxed);
+        }
+        removed
+    }
+
+    /// Launch the background TTL reaper. Without it, entries whose TTL has
+    /// elapsed stay resident until the exact key is named again, so a
+    /// write-heavy TTL workload grows unbounded. Returns the `JoinHandle` so
+    /// callers can abort the task on shutdown.
+    pub fn start_expiry_sweeper(&self) -> JoinHandle<()> {
+        self.start_expiry_sweeper_every(Duration::from_secs(1))
+    }
+
+    pub fn start_expiry_sweeper_every(&self, period: Duration) -> JoinHandle<()> {
+        let this = self.clone();
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(period);
+            // Skip the immediate tick — let the process warm up first.
+            ticker.tick().await;
+            loop {
+                ticker.tick().await;
+                let removed = this.sweep_expired_once();
+                if removed > 0 {
+                    debug!(target: "ddb_cache::ddb", removed, "expiry sweep reclaimed entries");
+                }
+            }
+        })
+    }
 
     pub fn flush(&self) {
         self.inner.strings.clear();
@@ -625,6 +752,11 @@ impl DdbCache {
         self.inner.lists.clear();
         self.inner.zsets.clear();
         self.inner.streams.clear();
+        self.inner.blooms.clear();
+        self.inner.hlls.clear();
+        self.inner
+            .channels
+            .retain(|_, sender| sender.receiver_count() > 0);
     }
 
     pub fn stats(&self) -> DdbCacheStats {
@@ -634,8 +766,8 @@ impl DdbCache {
             lists: self.inner.lists.len() as u64,
             zsets: self.inner.zsets.len() as u64,
             streams: self.inner.streams.len() as u64,
-            blooms: 0,
-            hlls: 0,
+            blooms: self.inner.blooms.len() as u64,
+            hlls: self.inner.hlls.len() as u64,
             hits: self.inner.hits.load(Ordering::Relaxed),
             misses: self.inner.misses.load(Ordering::Relaxed),
             expired: self.inner.expired.load(Ordering::Relaxed),
@@ -655,6 +787,8 @@ impl DdbCache {
         out.push_str(&format!("lists:{}\n", s.lists));
         out.push_str(&format!("zsets:{}\n", s.zsets));
         out.push_str(&format!("streams:{}\n", s.streams));
+        out.push_str(&format!("blooms:{}\n", s.blooms));
+        out.push_str(&format!("hlls:{}\n", s.hlls));
         out.push_str(&format!("hits:{}\n", s.hits));
         out.push_str(&format!("misses:{}\n", s.misses));
         out.push_str(&format!("expired:{}\n", s.expired));
@@ -827,6 +961,20 @@ mod tests {
         assert_ne!(id1, id2);
         let all = cache.xrange("s", "-", "+");
         assert_eq!(all.len(), 2);
+    }
+
+    #[test]
+    fn stream_ids_compare_numerically() {
+        let cache = DdbCache::new();
+        let ids: Vec<String> = (0..12)
+            .map(|i| cache.xadd("s", vec![("i".into(), i.to_string())]))
+            .collect();
+        let ninth = &ids[9];
+        let rest = cache.xread("s", ninth);
+        assert_eq!(rest.len(), ids.len() - 10);
+        assert_eq!(&rest[0].id, &ids[10]);
+        let ranged = cache.xrange("s", &ids[8], &ids[11]);
+        assert_eq!(ranged.len(), 4);
     }
 
     #[tokio::test]

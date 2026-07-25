@@ -60,6 +60,10 @@ use tokio::sync::mpsc;
 use tokio::time::timeout;
 use tracing::{debug, info};
 
+use crate::auth::session::SessionManager as AuthSessionManager;
+use crate::auth::{
+    AuthContext, Operation, PermissionEngine, evaluate_rule_public, get_rule_with_fallback,
+};
 use crate::cache::QueryCache;
 use crate::query;
 use crate::rules::RuleEngine;
@@ -93,6 +97,10 @@ enum Codec {
 pub struct WsState {
     /// Shared session manager for all connections.
     pub sessions: Arc<SessionManager>,
+    /// Auth subsystem session manager. WebSocket `auth` frames are validated
+    /// through this — the same cryptographic path the REST handlers use — so
+    /// signature, expiry, and revocation are all enforced.
+    pub auth_sessions: Arc<AuthSessionManager>,
     /// Shared subscription registry for fan-out deduplication.
     pub registry: Arc<SubscriptionRegistry>,
     /// Shared presence manager for room tracking.
@@ -123,6 +131,10 @@ pub struct WsState {
     /// emit precise `added`/`removed`/`updated` deltas instead of naive
     /// re-sends. Cleared on WS disconnect.
     pub subscription_snapshots: Arc<DashMap<(SessionId, String), Vec<Value>>>,
+    /// Permission engine shared with the REST handler. Subscribe and mutate
+    /// frames are authorized through it so the WS path enforces the same
+    /// entity-level rules as `/api`.
+    pub permissions: Arc<PermissionEngine>,
 }
 
 /// Inbound client message (deserialized from JSON or MessagePack).
@@ -335,7 +347,13 @@ async fn handle_connection(
     );
 
     // Phase 1: Authentication with timeout.
-    let codec = match timeout(AUTH_TIMEOUT, authenticate(&mut socket, &state, session_id)).await {
+    let peer_ip = peer_addr.map_or_else(|| "unknown".to_string(), |a| a.ip().to_string());
+    let codec = match timeout(
+        AUTH_TIMEOUT,
+        authenticate(&mut socket, &state, session_id, &peer_ip),
+    )
+    .await
+    {
         Ok(Ok(codec)) => codec,
         Ok(Err(e)) => {
             let err_msg = ServerMessage::AuthErr {
@@ -435,6 +453,7 @@ async fn authenticate(
     socket: &mut WebSocket,
     state: &WsState,
     session_id: SessionId,
+    peer_ip: &str,
 ) -> Result<Codec, WsError> {
     loop {
         let msg = socket
@@ -461,10 +480,15 @@ async fn authenticate(
         };
 
         match parsed {
-            ClientMessage::Auth { token } => match validate_token(&token) {
-                Ok(user_id) => {
+            ClientMessage::Auth { token } => match state
+                .auth_sessions
+                .validate_token(&token, peer_ip, "websocket", "")
+                .await
+            {
+                Ok(auth_ctx) => {
+                    let user_id = auth_ctx.user_id.to_string();
                     state.sessions.with_session_mut(&session_id, |s| {
-                        s.authenticate(user_id.clone());
+                        s.authenticate(auth_ctx.clone());
                     });
 
                     let ok_msg = ServerMessage::AuthOk {
@@ -481,8 +505,8 @@ async fn authenticate(
 
                     return Ok(codec);
                 }
-                Err(reason) => {
-                    return Err(WsError::AuthFailed(reason));
+                Err(e) => {
+                    return Err(WsError::AuthFailed(e.to_string()));
                 }
             },
             _ => {
@@ -630,6 +654,35 @@ async fn handle_subscribe(
     session_id: SessionId,
     codec: Codec,
 ) {
+    let entity_type = match query.get("type").and_then(|v| v.as_str()) {
+        Some(t) if !t.is_empty() => t.to_string(),
+        _ => {
+            let _ = send_message(
+                socket,
+                &ServerMessage::SubErr {
+                    id: req_id,
+                    error: "query requires 'type'".into(),
+                },
+                codec,
+            )
+            .await;
+            return;
+        }
+    };
+
+    if let Err(e) = authorize(state, session_id, &entity_type, Operation::Subscribe) {
+        let _ = send_message(
+            socket,
+            &ServerMessage::SubErr {
+                id: req_id,
+                error: e,
+            },
+            codec,
+        )
+        .await;
+        return;
+    }
+
     // Compute query hash for deduplication.
     let query_hash = {
         use std::hash::{DefaultHasher, Hash, Hasher};
@@ -773,6 +826,51 @@ async fn handle_mutation(
             return;
         }
     };
+
+    for op_val in &ops_array {
+        let entity = op_val.get("entity").and_then(|v| v.as_str()).unwrap_or("");
+        if entity.is_empty() {
+            let _ = send_message(
+                socket,
+                &ServerMessage::MutErr {
+                    id: req_id,
+                    error: "each op requires 'entity'".into(),
+                },
+                codec,
+            )
+            .await;
+            return;
+        }
+        let operation = match op_val.get("op").and_then(|v| v.as_str()).unwrap_or("") {
+            "insert" => Operation::Create,
+            "update" => Operation::Update,
+            "delete" => Operation::Delete,
+            other => {
+                let _ = send_message(
+                    socket,
+                    &ServerMessage::MutErr {
+                        id: req_id,
+                        error: format!("unknown op: {other}"),
+                    },
+                    codec,
+                )
+                .await;
+                return;
+            }
+        };
+        if let Err(e) = authorize(state, session_id, entity, operation) {
+            let _ = send_message(
+                socket,
+                &ServerMessage::MutErr {
+                    id: req_id,
+                    error: e,
+                },
+                codec,
+            )
+            .await;
+            return;
+        }
+    }
 
     let mut db_tx = match state.triple_store.begin_tx().await {
         Ok(t) => t,
@@ -1153,6 +1251,42 @@ fn get_user_id(state: &WsState, session_id: SessionId) -> Option<String> {
         .sessions
         .with_session(&session_id, |s| s.user_id.clone())
         .flatten()
+}
+
+/// Extract the verified auth context from the session.
+fn get_auth_ctx(state: &WsState, session_id: SessionId) -> Option<AuthContext> {
+    state
+        .sessions
+        .with_session(&session_id, |s| s.auth_ctx.clone())
+        .flatten()
+}
+
+/// Authorize an entity operation for this session against the shared
+/// permission engine. Mirrors the REST `check_permission` path.
+fn authorize(
+    state: &WsState,
+    session_id: SessionId,
+    entity_type: &str,
+    operation: Operation,
+) -> Result<(), String> {
+    let auth_ctx =
+        get_auth_ctx(state, session_id).ok_or_else(|| "session not authenticated".to_string())?;
+
+    let rule = get_rule_with_fallback(&state.permissions, entity_type, operation)
+        .ok_or_else(|| format!("no permission rule configured for {entity_type}.{operation:?}"))?;
+
+    let result = evaluate_rule_public(&auth_ctx, rule);
+    if !result.allowed {
+        let reason = result
+            .denial_reason
+            .as_deref()
+            .unwrap_or("permission denied");
+        return Err(format!(
+            "access denied for {entity_type}.{operation:?}: {reason}"
+        ));
+    }
+
+    Ok(())
 }
 
 /// Handle a change event from the triple store: for each of this session's
@@ -1860,32 +1994,6 @@ async fn send_message(
         .send(ws_msg)
         .await
         .map_err(|e| WsError::Transport(e.to_string()))
-}
-
-/// Validate a JWT token and extract the user ID.
-///
-/// In production, this will be wired to the auth subsystem's [`KeyManager`]
-/// and [`SessionManager`] for full JWT validation (signature, expiry, revocation).
-/// During development, it does lenient parsing: it attempts to extract the `sub`
-/// claim from the JWT payload, falling back to treating the token as a user ID.
-fn validate_token(token: &str) -> Result<String, String> {
-    if token.is_empty() {
-        return Err("empty token".to_string());
-    }
-
-    // Attempt to decode as a JWT and extract the `sub` claim.
-    let parts: Vec<&str> = token.split('.').collect();
-    if parts.len() == 3
-        && let Ok(decoded) =
-            base64::Engine::decode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, parts[1])
-        && let Ok(claims) = serde_json::from_slice::<Value>(&decoded)
-        && let Some(sub) = claims.get("sub").and_then(|v| v.as_str())
-    {
-        return Ok(sub.to_string());
-    }
-
-    // Fallback: treat the raw token as a user identifier (dev mode only).
-    Ok(token.to_string())
 }
 
 /// Errors specific to the WebSocket subsystem.

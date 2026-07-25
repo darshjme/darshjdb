@@ -156,10 +156,10 @@ impl TableKind {
                  LIMIT $1"
             }
             TableKind::Facts => {
-                "SELECT id, content \
+                "SELECT id, key || ': ' || value::text AS content \
                  FROM agent_facts \
                  WHERE embedding IS NULL \
-                 ORDER BY created_at DESC \
+                 ORDER BY updated_at DESC \
                  LIMIT $1"
             }
         }
@@ -234,6 +234,7 @@ async fn process_table(
     }
 
     let mut written: u64 = 0;
+    let mut failed: u64 = 0;
     for ((id, text), vector) in ids.iter().zip(texts.iter()).zip(embeddings.iter()) {
         let tokens = bpe.encode_with_special_tokens(text).len() as i32;
         let literal = pgvector_literal(vector);
@@ -247,6 +248,7 @@ async fn process_table(
         {
             Ok(_) => written += 1,
             Err(e) => {
+                failed += 1;
                 warn!(
                     error = %e,
                     table = kind.label(),
@@ -255,6 +257,23 @@ async fn process_table(
                 );
             }
         }
+    }
+
+    if failed > 0 {
+        metrics::counter!(
+            "ddb_embedding_write_failures_total",
+            "table" => kind.label(),
+            "provider" => provider_label.to_string(),
+        )
+        .increment(failed);
+    }
+
+    if written == 0 {
+        error!(
+            table = kind.label(),
+            failed,
+            "every embedding write-back failed; the same batch will be re-embedded next tick"
+        );
     }
 
     if written > 0 {

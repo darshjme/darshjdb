@@ -129,6 +129,52 @@ pub enum WhereOp {
     Like,
 }
 
+/// A row-level permission predicate applied to the root entity.
+///
+/// The permission engine declares row-level security as
+/// `<attribute> = $user_id` fragments. They are never spliced into the
+/// generated SQL as text: the planner emits an `EXISTS` sub-select over
+/// `triples` with the subject bound as a parameter.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PermissionFilter {
+    /// Attribute whose value must be the subject. `"id"` matches the
+    /// entity id itself.
+    pub attribute: String,
+    /// Subject the predicate is bound to.
+    pub user_id: uuid::Uuid,
+}
+
+impl PermissionFilter {
+    /// Convert the permission engine's raw `<attribute> = $user_id`
+    /// fragments into structured filters bound to `user_id`.
+    ///
+    /// Fragments the planner cannot represent are rejected so the query
+    /// fails closed rather than silently running without row-level
+    /// filtering.
+    pub fn from_clauses(clauses: &[String], user_id: uuid::Uuid) -> Result<Vec<Self>> {
+        clauses.iter().map(|c| Self::parse(c, user_id)).collect()
+    }
+
+    fn parse(clause: &str, user_id: uuid::Uuid) -> Result<Self> {
+        let unsupported = || {
+            DarshJError::InvalidQuery(format!("unsupported permission clause: {clause}"))
+        };
+        let (attribute, subject) = clause.split_once('=').ok_or_else(unsupported)?;
+        let attribute = attribute.trim();
+        let valid_attribute = !attribute.is_empty()
+            && attribute
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '/');
+        if subject.trim() != "$user_id" || !valid_attribute {
+            return Err(unsupported());
+        }
+        Ok(Self {
+            attribute: attribute.to_string(),
+            user_id,
+        })
+    }
+}
+
 /// Ordering direction for result sets.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OrderClause {
@@ -307,6 +353,10 @@ pub struct NestedPlan {
 /// Maximum nesting depth to prevent query explosion.
 const MAX_NESTING_DEPTH: usize = 3;
 
+/// Select list every root plan returns, one row per entity attribute.
+const SELECT_TRIPLE_COLUMNS: &str =
+    "SELECT t0.entity_id, t0.attribute, t0.value, t0.value_type, t0.tx_id, t0.created_at\n";
+
 /// Convert a [`QueryAST`] into an executable [`QueryPlan`] using the
 /// default Postgres dialect.
 ///
@@ -318,6 +368,15 @@ pub fn plan_query(ast: &QueryAST) -> Result<QueryPlan> {
     plan_query_with_dialect(ast, &PgDialect)
 }
 
+/// Convert a [`QueryAST`] into an executable [`QueryPlan`] on the default
+/// Postgres dialect, restricted to the rows the subject may read.
+pub fn plan_query_with_permission(
+    ast: &QueryAST,
+    permission: &[PermissionFilter],
+) -> Result<QueryPlan> {
+    plan_query_with_dialect_and_permission(ast, &PgDialect, permission)
+}
+
 /// Convert a [`QueryAST`] into an executable [`QueryPlan`] using the
 /// supplied SQL dialect.
 ///
@@ -327,6 +386,21 @@ pub fn plan_query(ast: &QueryAST) -> Result<QueryPlan> {
 /// routed through `dialect` so the same logical plan works on both
 /// Postgres and SQLite.
 pub fn plan_query_with_dialect(ast: &QueryAST, dialect: &dyn SqlDialect) -> Result<QueryPlan> {
+    plan_query_with_dialect_and_permission(ast, dialect, &[])
+}
+
+/// Dialect-aware variant of [`plan_query_with_dialect`] that also applies
+/// row-level permission filters.
+///
+/// Each filter becomes an `EXISTS` sub-select over `triples` matching the
+/// owning attribute (both the entity-qualified `entity/attr` form written
+/// by the data handlers and the bare `attr` form) against the subject id,
+/// which is passed as a bind parameter.
+pub fn plan_query_with_dialect_and_permission(
+    ast: &QueryAST,
+    dialect: &dyn SqlDialect,
+    permission: &[PermissionFilter],
+) -> Result<QueryPlan> {
     let mut sql = String::with_capacity(512);
     let mut params: Vec<serde_json::Value> = Vec::new();
     let mut param_idx = 1u32;
@@ -334,9 +408,6 @@ pub fn plan_query_with_dialect(ast: &QueryAST, dialect: &dyn SqlDialect) -> Resu
     // Base: find entity_ids that have :db/type = entity_type.
     // No DISTINCT here: the Rust grouping (HashMap by entity_id) deduplicates,
     // and DISTINCT conflicts with ORDER BY on expressions not in the select list.
-    sql.push_str(
-        "SELECT t0.entity_id, t0.attribute, t0.value, t0.value_type, t0.tx_id, t0.created_at\n",
-    );
     sql.push_str("FROM triples t0\n");
 
     // Join for type filter
@@ -466,12 +537,52 @@ pub fn plan_query_with_dialect(ast: &QueryAST, dialect: &dyn SqlDialect) -> Resu
 
     sql.push_str("WHERE NOT t0.retracted\n");
 
+    // Row-level security. The subject id is always a bind parameter.
+    for (i, pf) in permission.iter().enumerate() {
+        if pf.attribute == "id" {
+            let subject = dialect.uuid_cast(&dialect.placeholder(param_idx));
+            sql.push_str(&format!("  AND t0.entity_id = {subject}\n"));
+            params.push(serde_json::Value::String(pf.user_id.to_string()));
+            param_idx += 1;
+        } else {
+            let alias = format!("tp{i}");
+            let qualified_attr = dialect.placeholder(param_idx);
+            param_idx += 1;
+            let bare_attr = dialect.placeholder(param_idx);
+            param_idx += 1;
+            let subject = dialect.jsonb_param(param_idx, ParamKind::Text);
+            let value_match = dialect.compare_triple_value(&alias, "=", &subject);
+            param_idx += 1;
+            sql.push_str(&format!(
+                "  AND EXISTS (SELECT 1 FROM triples {alias} WHERE {alias}.entity_id = t0.entity_id \
+                 AND NOT {alias}.retracted AND {alias}.attribute IN ({qualified_attr}, {bare_attr}) \
+                 AND {value_match})\n"
+            ));
+            params.push(serde_json::Value::String(format!(
+                "{}/{}",
+                ast.entity_type, pf.attribute
+            )));
+            params.push(serde_json::Value::String(pf.attribute.clone()));
+            params.push(serde_json::Value::String(pf.user_id.to_string()));
+        }
+    }
+
     // Ordering: when semantic search is active with a vector (and the
     // dialect supports vectors), order by cosine distance first.
     let has_semantic_vector =
         ast.semantic.as_ref().is_some_and(|s| s.vector.is_some()) && dialect.supports_vector();
 
-    if has_semantic_vector || !ast.order.is_empty() {
+    let effective_limit = ast.limit.or_else(|| ast.semantic.as_ref().map(|s| s.limit));
+
+    // A bounded page is selected in SQL: an inner statement picks the page
+    // of entity ids ordered the same way the executor orders its keys, and
+    // the outer statement fetches only those entities' triples. The bound
+    // covers the offset the executor skips after grouping. Unbounded
+    // queries keep the flat statement and the caller's ORDER BY.
+    let page_bound =
+        effective_limit.map(|l| u64::from(l).saturating_add(u64::from(ast.offset.unwrap_or(0))));
+
+    if page_bound.is_none() && (has_semantic_vector || !ast.order.is_empty()) {
         sql.push_str("ORDER BY ");
         let mut first = true;
 
@@ -510,10 +621,14 @@ pub fn plan_query_with_dialect(ast: &QueryAST, dialect: &dyn SqlDialect) -> Resu
         sql.push('\n');
     }
 
-    // Pagination is applied in Rust after grouping rows by entity_id,
-    // because SQL LIMIT counts rows (not entities) and without DISTINCT
-    // multiple rows per entity cause undercounting.
-    let effective_limit = ast.limit.or_else(|| ast.semantic.as_ref().map(|s| s.limit));
+    // Offset and limit are still applied in Rust after grouping rows by
+    // entity_id, because SQL LIMIT counts rows (not entities).
+    let sql = match page_bound {
+        Some(bound) => format!(
+            "WITH page AS (\nSELECT t0.entity_id\n{sql}GROUP BY t0.entity_id\nORDER BY t0.entity_id\nLIMIT {bound}\n)\n{SELECT_TRIPLE_COLUMNS}FROM triples t0\nINNER JOIN page ON page.entity_id = t0.entity_id\nWHERE NOT t0.retracted\n"
+        ),
+        None => format!("{SELECT_TRIPLE_COLUMNS}{sql}"),
+    };
 
     // Nested plans (with recursive sub-nesting up to MAX_NESTING_DEPTH)
     let nested_plans = build_nested_plans(&ast.nested, dialect, 1);
@@ -1540,8 +1655,18 @@ mod tests {
         // after grouping (SQL LIMIT counts rows, not entities).
         assert_eq!(plan.limit, Some(50u32));
         assert_eq!(plan.offset, Some(10u32));
-        // Should NOT appear in SQL — applied post-grouping.
-        assert!(!plan.sql.contains("LIMIT"), "LIMIT should not be in SQL");
+        // The page of entity ids is bounded in SQL so the executor never
+        // buffers the whole entity type; the bound covers limit + offset.
+        assert!(
+            plan.sql.contains("WITH page AS ("),
+            "page CTE should bound the scan: {}",
+            plan.sql
+        );
+        assert!(
+            plan.sql.contains("LIMIT 60"),
+            "inner LIMIT should be limit + offset: {}",
+            plan.sql
+        );
         assert!(!plan.sql.contains("OFFSET"), "OFFSET should not be in SQL");
     }
 
@@ -1960,6 +2085,100 @@ mod tests {
         assert!(
             !plan.sql.contains("embeddings"),
             "text-only semantic should not join embeddings: {}",
+            plan.sql
+        );
+    }
+
+    // ── Row-level permission filters ───────────────────────────────
+
+    #[test]
+    fn permission_filter_from_owner_clause() {
+        let user_id = uuid::Uuid::new_v4();
+        let filters =
+            PermissionFilter::from_clauses(&["owner_id = $user_id".to_string()], user_id)
+                .expect("should parse");
+        assert_eq!(filters.len(), 1);
+        assert_eq!(filters[0].attribute, "owner_id");
+        assert_eq!(filters[0].user_id, user_id);
+    }
+
+    #[test]
+    fn permission_filter_rejects_unsupported_clause() {
+        let user_id = uuid::Uuid::new_v4();
+        assert!(
+            PermissionFilter::from_clauses(&["owner_id = 'x' OR true".to_string()], user_id)
+                .is_err(),
+            "arbitrary SQL must fail closed"
+        );
+    }
+
+    #[test]
+    fn plan_permission_filter_emits_exists_with_bound_subject() {
+        let user_id = uuid::Uuid::new_v4();
+        let permission = PermissionFilter::from_clauses(
+            &["owner_id = $user_id".to_string()],
+            user_id,
+        )
+        .expect("should parse");
+        let plan = plan_query_with_permission(&bare_ast("order"), &permission)
+            .expect("should plan");
+        assert!(
+            plan.sql.contains("EXISTS (SELECT 1 FROM triples tp0"),
+            "should emit an EXISTS row-level filter: {}",
+            plan.sql
+        );
+        assert!(
+            !plan.sql.contains("owner_id = "),
+            "predicate must never be spliced as raw SQL: {}",
+            plan.sql
+        );
+        assert!(
+            plan.params
+                .contains(&serde_json::Value::String("order/owner_id".into())),
+            "should bind the entity-qualified attribute: {:?}",
+            plan.params
+        );
+        assert!(
+            plan.params
+                .contains(&serde_json::Value::String("owner_id".into())),
+            "should bind the bare attribute: {:?}",
+            plan.params
+        );
+        assert!(
+            plan.params
+                .contains(&serde_json::Value::String(user_id.to_string())),
+            "should bind the subject id: {:?}",
+            plan.params
+        );
+    }
+
+    #[test]
+    fn plan_permission_filter_on_id_matches_entity_id() {
+        let user_id = uuid::Uuid::new_v4();
+        let permission =
+            PermissionFilter::from_clauses(&["id = $user_id".to_string()], user_id)
+                .expect("should parse");
+        let plan = plan_query_with_permission(&bare_ast("users"), &permission)
+            .expect("should plan");
+        assert!(
+            plan.sql.contains("AND t0.entity_id = "),
+            "id filter should compare the entity id directly: {}",
+            plan.sql
+        );
+        assert!(
+            plan.params
+                .contains(&serde_json::Value::String(user_id.to_string())),
+            "should bind the subject id: {:?}",
+            plan.params
+        );
+    }
+
+    #[test]
+    fn plan_without_permission_has_no_row_filter() {
+        let plan = plan_query(&bare_ast("order")).expect("should plan");
+        assert!(
+            !plan.sql.contains("tp0"),
+            "no permission filters means no row-level predicate: {}",
             plan.sql
         );
     }
@@ -2520,7 +2739,8 @@ mod tests {
         // Postgres: full feature set (Eq + Contains + $search +
         // $semantic vector + $order + $nested).
         let pg = plan_query_with_dialect(&base_ast, &PgDialect).unwrap();
-        let pg_expected = "SELECT t0.entity_id, t0.attribute, t0.value, t0.value_type, t0.tx_id, t0.created_at\n\
+        let pg_expected = "WITH page AS (\n\
+SELECT t0.entity_id\n\
 FROM triples t0\n\
 INNER JOIN triples t_type ON t_type.entity_id = t0.entity_id\n  \
 AND t_type.attribute = ':db/type'\n  \
@@ -2540,7 +2760,14 @@ AND to_tsvector('english', t_search.value #>> '{}') @@ plainto_tsquery('english'
 INNER JOIN embeddings t_emb ON t_emb.entity_id = t0.entity_id\n  \
 AND t_emb.embedding <=> '[0.1,0.2,0.3]'::vector < 2.0\n\
 WHERE NOT t0.retracted\n\
-ORDER BY t_emb.embedding <=> '[0.1,0.2,0.3]'::vector ASC, (SELECT to0.value FROM triples to0 WHERE to0.entity_id = t0.entity_id AND to0.attribute = $7 AND NOT to0.retracted ORDER BY to0.tx_id DESC LIMIT 1) DESC\n";
+GROUP BY t0.entity_id\n\
+ORDER BY t0.entity_id\n\
+LIMIT 25\n\
+)\n\
+SELECT t0.entity_id, t0.attribute, t0.value, t0.value_type, t0.tx_id, t0.created_at\n\
+FROM triples t0\n\
+INNER JOIN page ON page.entity_id = t0.entity_id\n\
+WHERE NOT t0.retracted\n";
         assert_eq!(
             pg.sql, pg_expected,
             "Postgres SQL snapshot drift — review the full diff:\n--- expected ---\n{pg_expected}\n--- got ---\n{}",
@@ -2561,7 +2788,8 @@ ORDER BY t_emb.embedding <=> '[0.1,0.2,0.3]'::vector ASC, (SELECT to0.value FROM
             ..base_ast.clone()
         };
         let sq = plan_query_with_dialect(&sq_ast, &SqliteDialect).unwrap();
-        let sq_expected = "SELECT t0.entity_id, t0.attribute, t0.value, t0.value_type, t0.tx_id, t0.created_at\n\
+        let sq_expected = "WITH page AS (\n\
+SELECT t0.entity_id\n\
 FROM triples t0\n\
 INNER JOIN triples t_type ON t_type.entity_id = t0.entity_id\n  \
 AND t_type.attribute = ':db/type'\n  \
@@ -2575,7 +2803,14 @@ INNER JOIN triples t_search ON t_search.entity_id = t0.entity_id\n  \
 AND NOT t_search.retracted\n  \
 AND t_search.value LIKE '%' || ?4 || '%'\n\
 WHERE NOT t0.retracted\n\
-ORDER BY (SELECT to0.value FROM triples to0 WHERE to0.entity_id = t0.entity_id AND to0.attribute = ?5 AND NOT to0.retracted ORDER BY to0.tx_id DESC LIMIT 1) DESC\n";
+GROUP BY t0.entity_id\n\
+ORDER BY t0.entity_id\n\
+LIMIT 25\n\
+)\n\
+SELECT t0.entity_id, t0.attribute, t0.value, t0.value_type, t0.tx_id, t0.created_at\n\
+FROM triples t0\n\
+INNER JOIN page ON page.entity_id = t0.entity_id\n\
+WHERE NOT t0.retracted\n";
         assert_eq!(
             sq.sql, sq_expected,
             "SQLite SQL snapshot drift — review the full diff:\n--- expected ---\n{sq_expected}\n--- got ---\n{}",

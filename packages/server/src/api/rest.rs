@@ -559,10 +559,7 @@ async fn rate_limit_middleware(
     let is_authenticated = token.is_some();
 
     let rate_key = if let Some(ref tok) = token {
-        use sha2::Digest;
-        let prefix = &tok[..std::cmp::min(tok.len(), 16)];
-        let hash = sha2::Sha256::digest(prefix.as_bytes());
-        RateLimitKey::Token(data_encoding::HEXLOWER.encode(&hash[..16]))
+        RateLimitKey::from_token(tok)
     } else {
         RateLimitKey::Ip(ip)
     };
@@ -951,7 +948,22 @@ pub fn build_router(state: AppState) -> Router {
     // Uses a process-local `DdbCache` shared across requests; the RESP3
     // protocol server (packages/cache-server binary) can be wired to the
     // same instance when embedded in-process in a later slice.
-    let cache_http_routes = ddb_cache_server::cache_http_router(ddb_cache_http_handle().clone());
+    let cache_http_routes: Router = Router::new()
+        .merge(ddb_cache_server::cache_http_router(
+            ddb_cache_http_handle().clone(),
+        ))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            require_cache_admin_middleware,
+        ))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            require_auth_middleware,
+        ))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            rate_limit_middleware,
+        ));
 
     // -- Agent memory (slice 12/13/14) --------------------------------------
     // Sub-router with its own AgentMemoryState; auth-gated like the other
@@ -1001,7 +1013,39 @@ pub fn build_router(state: AppState) -> Router {
 fn ddb_cache_http_handle() -> &'static std::sync::Arc<ddb_cache::DdbCache> {
     use std::sync::{Arc, OnceLock};
     static CACHE: OnceLock<Arc<ddb_cache::DdbCache>> = OnceLock::new();
-    CACHE.get_or_init(|| Arc::new(ddb_cache::DdbCache::new()))
+    CACHE.get_or_init(|| {
+        let cache = Arc::new(ddb_cache::DdbCache::new());
+        if tokio::runtime::Handle::try_current().is_ok() {
+            cache.start_expiry_sweeper();
+        }
+        cache
+    })
+}
+
+/// Middleware that restricts the destructive and enumerating `/api/cache/*`
+/// verbs to callers holding the "admin" role. The [`DdbCache`] behind this
+/// router is process-wide and not namespaced per tenant, so writes,
+/// deletions and key enumeration would otherwise let any authenticated
+/// caller poison, evict or list every other caller's entries. Plain reads
+/// of a known key remain available to any authenticated caller.
+async fn require_cache_admin_middleware(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    request: Request<Body>,
+    next: Next,
+) -> Response {
+    let path = request.uri().path();
+    let enumerates = path.ends_with("/cache/keys") || path.ends_with("/cache/stats");
+    let method = request.method();
+    let mutates = !(method == http::Method::GET || method == http::Method::HEAD);
+
+    if (enumerates || mutates)
+        && let Err(e) = require_admin_role(&headers, &state).await
+    {
+        return e.into_response();
+    }
+
+    next.run(request).await
 }
 
 // ===========================================================================
@@ -1843,19 +1887,27 @@ async fn auth_oauth_callback(
         ))
     })?;
 
-    // For server-side callback flow, the PKCE verifier should be stored in
-    // a server-side session or secure HTTP-only cookie. We check the
-    // X-PKCE-Verifier header (set by a BFF proxy) or fall back to empty.
-    let pkce_verifier = headers
+    // The browser cannot carry the verifier across the provider redirect, so
+    // recompute it from the signed state. An X-PKCE-Verifier header (set by a
+    // BFF proxy) takes precedence when present.
+    let pkce_verifier = match headers
         .get("x-pkce-verifier")
         .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
+        .filter(|v| !v.is_empty())
+    {
+        Some(v) => v.to_string(),
+        None => GenericOAuth2Provider::pkce_verifier_for_state(
+            &params.state,
+            &app.oauth_state_secret,
+        )
+        .map_err(|e| ApiError::bad_request(format!("OAuth callback failed: {e}")))?,
+    };
 
     let user_info = oauth_provider
         .exchange_code(
             &params.code,
             &params.state,
-            pkce_verifier,
+            &pkce_verifier,
             &app.oauth_state_secret,
         )
         .await
@@ -2420,7 +2472,7 @@ async fn query(
     let start = Instant::now();
 
     // Parse the DarshJQL JSON into an AST.
-    let mut ast = query::parse_darshan_ql(&body.query)
+    let ast = query::parse_darshan_ql(&body.query)
         .map_err(|e| ApiError::bad_request(format!("Invalid query: {e}")))?;
 
     // Evaluate read permission for the queried entity type.
@@ -2431,18 +2483,11 @@ async fn query(
         &state.permissions,
     )?;
 
-    // Inject permission WHERE clauses into the query AST.
+    // Row-level security: restrict the plan to the rows this subject may read.
     let permission_where = perm_result.build_where_clause(auth_ctx.user_id);
-    if let Some(ref where_sql) = permission_where {
-        // Convert the permission WHERE clause into a query WhereClause.
-        // The permission engine produces raw SQL fragments; we inject them
-        // as a special "raw" where clause that the planner will append.
-        ast.where_clauses.push(query::WhereClause {
-            attribute: "__permission_filter".to_string(),
-            op: query::WhereOp::Eq,
-            value: serde_json::Value::String(where_sql.clone()),
-        });
-    }
+    let permission =
+        query::PermissionFilter::from_clauses(&perm_result.where_clauses, auth_ctx.user_id)
+            .map_err(|e| ApiError::bad_request(format!("Query planning failed: {e}")))?;
 
     // Build a cache key that includes the full query + permission context
     // so different users never see each other's cached results.
@@ -2469,7 +2514,7 @@ async fn query(
     }
 
     // Plan the query.
-    let plan = query::plan_query(&ast)
+    let plan = query::plan_query_with_permission(&ast, &permission)
         .map_err(|e| ApiError::bad_request(format!("Query planning failed: {e}")))?;
 
     // Execute against Postgres.
@@ -2786,19 +2831,15 @@ async fn data_list(
         "type": entity,
         "$limit": limit
     });
-    let mut ast = query::parse_darshan_ql(&query_json)
+    let ast = query::parse_darshan_ql(&query_json)
         .map_err(|e| ApiError::internal(format!("Failed to build list query: {e}")))?;
 
-    // Inject permission WHERE clauses into the query.
-    if let Some(where_sql) = perm_result.build_where_clause(auth_ctx.user_id) {
-        ast.where_clauses.push(query::WhereClause {
-            attribute: "__permission_filter".to_string(),
-            op: query::WhereOp::Eq,
-            value: serde_json::Value::String(where_sql),
-        });
-    }
+    // Row-level security: restrict the plan to the rows this subject may read.
+    let permission =
+        query::PermissionFilter::from_clauses(&perm_result.where_clauses, auth_ctx.user_id)
+            .map_err(|e| ApiError::internal(format!("Failed to build list query: {e}")))?;
 
-    let plan = query::plan_query(&ast)
+    let plan = query::plan_query_with_permission(&ast, &permission)
         .map_err(|e| ApiError::internal(format!("Failed to plan list query: {e}")))?;
     let results = query::execute_query(&state.pool, &plan)
         .await
@@ -2932,7 +2973,8 @@ async fn data_create(
     }];
     for (key, value) in obj {
         // Skip $-prefixed meta-keys (e.g. $ttl) — not stored as data attributes.
-        if key.starts_with('$') {
+        // `owner_id` is server-stamped below and never taken from the body.
+        if key.starts_with('$') || key == "owner_id" {
             continue;
         }
         let value_type = infer_value_type(value);
@@ -2944,6 +2986,13 @@ async fn data_create(
             ttl_seconds,
         });
     }
+    triples.push(TripleInput {
+        entity_id: id,
+        attribute: format!("{entity}/owner_id"),
+        value: Value::String(auth_ctx.user_id.to_string()),
+        value_type: 0, // String
+        ttl_seconds,
+    });
 
     let tx_id = state
         .triple_store
@@ -3056,17 +3105,14 @@ async fn data_get(
             owner_id
         };
 
-        if let Some(owner) = entity_owner
-            && owner != auth_ctx.user_id
-        {
-            return Err(ApiError::permission_denied(format!(
-                "Access denied: you do not own this {entity}"
-            )));
+        match entity_owner {
+            Some(owner) if owner == auth_ctx.user_id => {}
+            _ => {
+                return Err(ApiError::permission_denied(format!(
+                    "Access denied: you do not own this {entity}"
+                )));
+            }
         }
-        // If no owner_id attribute exists, the WHERE clause will be
-        // enforced at query time for list operations. For single-entity
-        // fetches without an owner field, we allow access (the entity
-        // type's rules should use Deny if truly restricted).
     }
 
     // Apply field restrictions from permissions.
@@ -3135,12 +3181,13 @@ async fn data_patch(
             owner_id
         };
 
-        if let Some(owner) = entity_owner
-            && owner != auth_ctx.user_id
-        {
-            return Err(ApiError::permission_denied(format!(
-                "Access denied: you do not own this {entity}"
-            )));
+        match entity_owner {
+            Some(owner) if owner == auth_ctx.user_id => {}
+            _ => {
+                return Err(ApiError::permission_denied(format!(
+                    "Access denied: you do not own this {entity}"
+                )));
+            }
         }
     }
 
@@ -3356,12 +3403,13 @@ async fn data_delete(
             owner_id
         };
 
-        if let Some(owner) = entity_owner
-            && owner != auth_ctx.user_id
-        {
-            return Err(ApiError::permission_denied(format!(
-                "Access denied: you do not own this {entity}"
-            )));
+        match entity_owner {
+            Some(owner) if owner == auth_ctx.user_id => {}
+            _ => {
+                return Err(ApiError::permission_denied(format!(
+                    "Access denied: you do not own this {entity}"
+                )));
+            }
         }
     }
 

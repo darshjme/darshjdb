@@ -52,19 +52,20 @@ async fn summariser_replaces_20_episodic_with_1_semantic() {
         "CREATE EXTENSION IF NOT EXISTS vector;
 
          CREATE TABLE IF NOT EXISTS agent_sessions (
-             session_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+             id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+             user_id UUID NOT NULL,
              agent_id TEXT NOT NULL,
-             model TEXT NOT NULL,
+             model TEXT,
              created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-             last_active_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+             updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
              metadata JSONB NOT NULL DEFAULT '{}'::jsonb
          );
 
          CREATE TABLE IF NOT EXISTS memory_entries (
              id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-             session_id UUID NOT NULL REFERENCES agent_sessions(session_id)
+             session_id UUID NOT NULL REFERENCES agent_sessions(id)
                  ON DELETE CASCADE,
-             agent_id TEXT NOT NULL,
+             agent_id TEXT,
              role TEXT NOT NULL,
              content TEXT NOT NULL,
              content_tokens INTEGER NOT NULL DEFAULT 0,
@@ -91,9 +92,9 @@ async fn summariser_replaces_20_episodic_with_1_semantic() {
 
     // 1. Fresh session.
     let session_id: Uuid = sqlx::query_scalar(
-        "INSERT INTO agent_sessions (agent_id, model)
-         VALUES ($1, $2)
-         RETURNING session_id",
+        "INSERT INTO agent_sessions (user_id, agent_id, model)
+         VALUES (gen_random_uuid(), $1, $2)
+         RETURNING id",
     )
     .bind(&agent_id)
     .bind("test-model")
@@ -165,7 +166,7 @@ async fn summariser_replaces_20_episodic_with_1_semantic() {
         .bind(session_id)
         .execute(&pool)
         .await;
-    let _ = sqlx::query("DELETE FROM agent_sessions WHERE session_id = $1")
+    let _ = sqlx::query("DELETE FROM agent_sessions WHERE id = $1")
         .bind(session_id)
         .execute(&pool)
         .await;
