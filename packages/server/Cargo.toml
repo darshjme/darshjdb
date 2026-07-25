@@ -104,7 +104,7 @@ deno_core = { version = "0.398", optional = true }
 
 # v0.3.2 — SQLite backend. Gated behind the `sqlite-store` feature so
 # default builds stay Postgres-only. See packages/server/src/store/sqlite.rs.
-rusqlite = { version = "0.31", optional = true, features = ["bundled"] }
+rusqlite = { workspace = true, optional = true }
 
 # v0.3.2 — embedded mlua 0.10 Lua runtime for server functions. Gated behind
 # the `mlua-runtime` Cargo feature so default builds skip the vendored Lua
