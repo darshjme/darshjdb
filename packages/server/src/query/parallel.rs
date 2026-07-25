@@ -112,7 +112,7 @@ impl ParallelMetrics {
     pub fn snapshot(&self) -> MetricsSnapshot {
         let total = self.total_batches.load(Ordering::Relaxed);
         let cumulative = self.cumulative_duration_us.load(Ordering::Relaxed);
-        let avg_us = if total > 0 { cumulative / total } else { 0 };
+        let avg_us = cumulative.checked_div(total).unwrap_or(0);
 
         MetricsSnapshot {
             total_batches: total,

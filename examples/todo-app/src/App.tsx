@@ -1,25 +1,33 @@
 import React, { useState } from "react";
 import { useQuery, useMutation } from "@darshjdb/react";
 
+interface Todo {
+  id: string;
+  title: string;
+  done: boolean;
+  createdAt: number;
+}
+
 export function App() {
   const [title, setTitle] = useState("");
 
   // Live query — automatically updates when data changes
-  const { data, isLoading } = useQuery({
-    todos: {
-      $order: { createdAt: "desc" },
-    },
+  const { data: todos, isLoading } = useQuery<Todo>({
+    collection: "todos",
+    orderBy: [{ field: "createdAt", direction: "desc" }],
   });
 
-  const createTodo = useMutation("createTodo");
-  const toggleTodo = useMutation("toggleTodo");
-  const deleteTodo = useMutation("deleteTodo");
+  const { mutate } = useMutation();
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!title.trim()) return;
 
-    await createTodo({ title: title.trim() });
+    await mutate({
+      type: "insert",
+      collection: "todos",
+      data: { title: title.trim(), done: false, createdAt: Date.now() },
+    });
     setTitle("");
   };
 
@@ -27,8 +35,7 @@ export function App() {
     return <p>Loading...</p>;
   }
 
-  const todos = data?.todos ?? [];
-  const done = todos.filter((t: any) => t.done).length;
+  const done = todos.filter((t) => t.done).length;
 
   return (
     <div style={{ maxWidth: 480, margin: "40px auto", fontFamily: "system-ui" }}>
@@ -53,7 +60,7 @@ export function App() {
       </form>
 
       <ul style={{ listStyle: "none", padding: 0 }}>
-        {todos.map((todo: any) => (
+        {todos.map((todo) => (
           <li
             key={todo.id}
             style={{
@@ -67,7 +74,14 @@ export function App() {
             <input
               type="checkbox"
               checked={todo.done}
-              onChange={() => toggleTodo({ id: todo.id, done: !todo.done })}
+              onChange={() =>
+                mutate({
+                  type: "update",
+                  collection: "todos",
+                  id: todo.id,
+                  data: { done: !todo.done },
+                })
+              }
             />
             <span
               style={{
@@ -79,7 +93,9 @@ export function App() {
               {todo.title}
             </span>
             <button
-              onClick={() => deleteTodo({ id: todo.id })}
+              onClick={() =>
+                mutate({ type: "delete", collection: "todos", id: todo.id })
+              }
               style={{ background: "none", border: "none", color: "#999", cursor: "pointer", fontSize: 18 }}
             >
               x

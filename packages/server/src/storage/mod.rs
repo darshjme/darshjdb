@@ -1831,17 +1831,25 @@ mod tests {
 
         let id = engine.create_resumable_upload("file.bin", "application/octet-stream", Some(100));
 
-        let next = engine.append_chunk(id, 0, &[0u8; 50]).await.expect("chunk 1");
+        let next = engine
+            .append_chunk(id, 0, &[0u8; 50])
+            .await
+            .expect("chunk 1");
         assert_eq!(next, 50);
 
-        let next = engine.append_chunk(id, 50, &[0u8; 50]).await.expect("chunk 2");
+        let next = engine
+            .append_chunk(id, 50, &[0u8; 50])
+            .await
+            .expect("chunk 2");
         assert_eq!(next, 100);
 
         let status = engine.resumable_upload_status(id).expect("status");
         assert_eq!(status.bytes_received, 100);
 
         // Verify chunk files were persisted to staging.
-        let chunk_dir = std::path::Path::new(&dir).join(".staging").join(id.to_string());
+        let chunk_dir = std::path::Path::new(&dir)
+            .join(".staging")
+            .join(id.to_string());
         assert!(chunk_dir.join("0.chunk").exists());
         assert!(chunk_dir.join("50.chunk").exists());
 
@@ -1854,7 +1862,10 @@ mod tests {
         let engine = make_engine(&dir);
 
         let id = engine.create_resumable_upload("file.bin", "application/octet-stream", Some(100));
-        engine.append_chunk(id, 0, &[0u8; 50]).await.expect("chunk 1");
+        engine
+            .append_chunk(id, 0, &[0u8; 50])
+            .await
+            .expect("chunk 1");
 
         // Try to append at offset 0 again (should be 50).
         let result = engine.append_chunk(id, 0, &[0u8; 10]).await;
@@ -1907,7 +1918,10 @@ mod tests {
         let status = engine.resumable_upload_status(id).expect("status");
         assert!(status.total_size.is_none());
 
-        engine.append_chunk(id, 0, &[1u8; 1024]).await.expect("chunk");
+        engine
+            .append_chunk(id, 0, &[1u8; 1024])
+            .await
+            .expect("chunk");
         let status = engine.resumable_upload_status(id).expect("status");
         assert_eq!(status.bytes_received, 1024);
 

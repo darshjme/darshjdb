@@ -234,7 +234,10 @@ mod tests {
         let user_id = uuid::Uuid::new_v4();
         session.authenticate(test_auth_ctx(user_id));
         assert!(session.is_authenticated());
-        assert_eq!(session.user_id.as_deref(), Some(user_id.to_string().as_str()));
+        assert_eq!(
+            session.user_id.as_deref(),
+            Some(user_id.to_string().as_str())
+        );
     }
 
     #[test]

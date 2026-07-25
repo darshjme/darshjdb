@@ -13,9 +13,7 @@ use crate::api::rest::AppState;
 use crate::auth::{AuthOutcome, PasswordProvider};
 use crate::triple_store::{TripleInput, TripleStore};
 
-use super::helpers::{
-    extract_bearer_token, negotiate_response, negotiate_response_status,
-};
+use super::helpers::{extract_bearer_token, negotiate_response, negotiate_response_status};
 
 // ---------------------------------------------------------------------------
 // Schema bootstrap

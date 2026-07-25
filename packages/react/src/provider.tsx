@@ -1,7 +1,9 @@
+'use client';
+
 /**
  * @module provider
  * @description React context provider that initialises and distributes a
- * `DarshanClient` instance to all descendant hooks.
+ * DarshJDB client instance to all descendant hooks.
  *
  * @example
  * ```tsx
@@ -26,49 +28,8 @@ import {
   type ReactNode,
 } from 'react';
 
-import type { DarshanClientInterface, DarshanClientOptions } from './types';
-
-// ---------------------------------------------------------------------------
-// Lazy import helper -- allows tree-shaking when the React SDK is loaded
-// without `@darshjdb/client` being bundled at definition time.
-// ---------------------------------------------------------------------------
-
-let _createClient: ((opts: DarshanClientOptions) => DarshanClientInterface) | null = null;
-
-/**
- * Resolve the `createClient` factory from `@darshjdb/client`.
- * Throws a clear error if the dependency is missing at runtime.
- */
-function getCreateClient(): (opts: DarshanClientOptions) => DarshanClientInterface {
-  if (_createClient) return _createClient;
-
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const mod = require('@darshjdb/client') as {
-      createClient?: (opts: DarshanClientOptions) => DarshanClientInterface;
-      DarshanClient?: new (opts: DarshanClientOptions) => DarshanClientInterface;
-    };
-
-    if (typeof mod.createClient === 'function') {
-      _createClient = mod.createClient;
-    } else if (typeof mod.DarshanClient === 'function') {
-      const Ctor = mod.DarshanClient;
-      _createClient = (opts) => new Ctor(opts);
-    } else {
-      throw new Error(
-        '@darshjdb/client must export either `createClient` or `DarshanClient`.',
-      );
-    }
-
-    return _createClient;
-  } catch (err) {
-    throw new Error(
-      `@darshjdb/react requires @darshjdb/client as a dependency. ` +
-        `Install it with: npm install @darshjdb/client\n` +
-        `Original error: ${err instanceof Error ? err.message : String(err)}`,
-    );
-  }
-}
+import { createDarshanClient } from './create-client';
+import type { DarshanClientInterface } from './types';
 
 // ---------------------------------------------------------------------------
 // Context
@@ -119,7 +80,7 @@ export function DarshanProvider({
 
   const client = useMemo<DarshanClientInterface>(() => {
     if (externalClient) return externalClient;
-    return getCreateClient()({ serverUrl, appId });
+    return createDarshanClient({ serverUrl, appId });
     // Re-create when connection params change (external client bypasses this).
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [externalClient, serverUrl, appId]);

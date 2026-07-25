@@ -106,14 +106,15 @@ class Client
     /**
      * Execute a batch transaction.
      *
-     * @param array<int, array{kind: string, entity: string, id: string, data?: array}> $ops
+     * @param array<int, array{op: string, entity: string, id?: string, data?: array}> $ops
+     *   Each mutation's `op` is one of: insert, update, delete, upsert.
      * @return array{txId: string}
      *
      * @throws Exception On server or network errors.
      */
     public function transact(array $ops): array
     {
-        return $this->post('/api/transact', ['ops' => $ops]);
+        return $this->post('/api/mutate', ['mutations' => $ops]);
     }
 
     /**
@@ -182,6 +183,22 @@ class Client
     public function post(string $path, array $body = []): array
     {
         return $this->request('POST', $path, $body);
+    }
+
+    /**
+     * Send a PATCH request to the DarshJDB server.
+     *
+     * @internal
+     *
+     * @param string              $path    API endpoint path.
+     * @param array<string, mixed> $body   Request body (will be JSON-encoded).
+     * @return array<string, mixed>
+     *
+     * @throws Exception
+     */
+    public function patch(string $path, array $body = []): array
+    {
+        return $this->request('PATCH', $path, $body);
     }
 
     /**
@@ -301,9 +318,15 @@ class Client
 
         try {
             $response = $this->http->request($method, $path, $options);
+            $raw = (string) $response->getBody();
+
+            // 204 No Content (e.g. storage deletes) has no body to decode.
+            if ($raw === '') {
+                return [];
+            }
 
             /** @var array<string, mixed> $decoded */
-            $decoded = json_decode((string) $response->getBody(), true, 512, JSON_THROW_ON_ERROR);
+            $decoded = json_decode($raw, true, 512, JSON_THROW_ON_ERROR);
 
             return $decoded;
         } catch (GuzzleException $e) {

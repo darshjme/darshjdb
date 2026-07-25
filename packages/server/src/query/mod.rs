@@ -156,9 +156,8 @@ impl PermissionFilter {
     }
 
     fn parse(clause: &str, user_id: uuid::Uuid) -> Result<Self> {
-        let unsupported = || {
-            DarshJError::InvalidQuery(format!("unsupported permission clause: {clause}"))
-        };
+        let unsupported =
+            || DarshJError::InvalidQuery(format!("unsupported permission clause: {clause}"));
         let (attribute, subject) = clause.split_once('=').ok_or_else(unsupported)?;
         let attribute = attribute.trim();
         let valid_attribute = !attribute.is_empty()
@@ -2094,9 +2093,8 @@ mod tests {
     #[test]
     fn permission_filter_from_owner_clause() {
         let user_id = uuid::Uuid::new_v4();
-        let filters =
-            PermissionFilter::from_clauses(&["owner_id = $user_id".to_string()], user_id)
-                .expect("should parse");
+        let filters = PermissionFilter::from_clauses(&["owner_id = $user_id".to_string()], user_id)
+            .expect("should parse");
         assert_eq!(filters.len(), 1);
         assert_eq!(filters[0].attribute, "owner_id");
         assert_eq!(filters[0].user_id, user_id);
@@ -2115,13 +2113,11 @@ mod tests {
     #[test]
     fn plan_permission_filter_emits_exists_with_bound_subject() {
         let user_id = uuid::Uuid::new_v4();
-        let permission = PermissionFilter::from_clauses(
-            &["owner_id = $user_id".to_string()],
-            user_id,
-        )
-        .expect("should parse");
-        let plan = plan_query_with_permission(&bare_ast("order"), &permission)
-            .expect("should plan");
+        let permission =
+            PermissionFilter::from_clauses(&["owner_id = $user_id".to_string()], user_id)
+                .expect("should parse");
+        let plan =
+            plan_query_with_permission(&bare_ast("order"), &permission).expect("should plan");
         assert!(
             plan.sql.contains("EXISTS (SELECT 1 FROM triples tp0"),
             "should emit an EXISTS row-level filter: {}",
@@ -2155,11 +2151,10 @@ mod tests {
     #[test]
     fn plan_permission_filter_on_id_matches_entity_id() {
         let user_id = uuid::Uuid::new_v4();
-        let permission =
-            PermissionFilter::from_clauses(&["id = $user_id".to_string()], user_id)
-                .expect("should parse");
-        let plan = plan_query_with_permission(&bare_ast("users"), &permission)
-            .expect("should plan");
+        let permission = PermissionFilter::from_clauses(&["id = $user_id".to_string()], user_id)
+            .expect("should parse");
+        let plan =
+            plan_query_with_permission(&bare_ast("users"), &permission).expect("should plan");
         assert!(
             plan.sql.contains("AND t0.entity_id = "),
             "id filter should compare the entity id directly: {}",

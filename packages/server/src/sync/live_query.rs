@@ -660,7 +660,7 @@ impl LiveQueryManager {
         let queries = self.queries.read().expect("live query lock poisoned");
         let mut results = Vec::new();
 
-        for (_, query) in queries.iter() {
+        for query in queries.values() {
             // Collection filter: skip if the change doesn't target this collection.
             if let Some(ref event_type) = event.entity_type {
                 if *event_type != query.collection {

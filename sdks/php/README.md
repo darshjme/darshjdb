@@ -57,8 +57,8 @@ $result = $db->query([
 
 // Transactions
 $db->transact([
-    ['kind' => 'set', 'entity' => 'accounts', 'id' => 'acc-1', 'data' => ['balance' => 900]],
-    ['kind' => 'set', 'entity' => 'accounts', 'id' => 'acc-2', 'data' => ['balance' => 1100]],
+    ['op' => 'update', 'entity' => 'accounts', 'id' => 'acc-1', 'data' => ['balance' => 900]],
+    ['op' => 'update', 'entity' => 'accounts', 'id' => 'acc-2', 'data' => ['balance' => 1100]],
 ]);
 
 // Server-side functions

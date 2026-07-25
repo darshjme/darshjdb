@@ -9,7 +9,13 @@
 
 import { v7 as uuidv7 } from 'uuid';
 import type { DarshJDB } from './client.js';
-import type { TxId, TxOp, TxOpKind } from './types.js';
+import type {
+  ServerMutation,
+  ServerMutationOp,
+  TxId,
+  TxOp,
+  TxOpKind,
+} from './types.js';
 
 /* -------------------------------------------------------------------------- */
 /*  Entity Proxy                                                              */
@@ -141,6 +147,70 @@ export class TransactionBuilder {
 /*  Public API                                                                */
 /* -------------------------------------------------------------------------- */
 
+/** Builder verb -> the mutation verb the server implements. */
+const OP_MAP: Partial<Record<TxOpKind, ServerMutationOp>> = {
+  set: 'insert',
+  merge: 'update',
+  delete: 'delete',
+};
+
+/**
+ * Translate builder operations into the wire form accepted by
+ * `POST /api/mutate` and the WebSocket `mut` frame.
+ *
+ * @throws If an operation has no server-side equivalent.
+ */
+export function toServerMutations(ops: TxOp[]): ServerMutation[] {
+  return ops.map((op) => {
+    const serverOp = OP_MAP[op.kind];
+    if (!serverOp) {
+      throw new Error(
+        `Operation "${op.kind}" is not supported by the DarshJDB server`,
+      );
+    }
+    return {
+      op: serverOp,
+      entity: op.entity,
+      id: op.id,
+      ...(op.data && { data: op.data }),
+    };
+  });
+}
+
+/**
+ * Submit already-built operations as an atomic transaction.
+ *
+ * @param client - The DarshJDB client instance.
+ * @param ops    - Operations to submit.
+ * @returns The transaction id assigned by the server.
+ */
+export async function submitOps(
+  client: DarshJDB,
+  ops: TxOp[],
+): Promise<TxId> {
+  if (ops.length === 0) {
+    throw new Error('Transaction has no operations');
+  }
+
+  if (client.usesRest) {
+    return client.rest.transact(ops);
+  }
+
+  const resp = await client.send({
+    type: 'mut',
+    ops: toServerMutations(ops),
+  });
+
+  if (resp.type === 'mut-err') {
+    throw new Error(`Transaction failed: ${resp.error}`);
+  }
+  if (resp.type !== 'mut-ok') {
+    throw new Error(`Unexpected response to transaction: ${resp.type}`);
+  }
+
+  return String(resp.tx);
+}
+
 /**
  * Execute an atomic transaction against the DarshJDB server.
  *
@@ -162,21 +232,7 @@ export async function transact(
   const builder = new TransactionBuilder();
   fn(builder.proxy);
 
-  if (builder.ops.length === 0) {
-    throw new Error('Transaction has no operations');
-  }
-
-  const resp = await client.send({
-    type: 'transact',
-    payload: { ops: builder.ops },
-  });
-
-  if (resp.type === 'tx-error') {
-    throw new Error(`Transaction failed: ${JSON.stringify(resp.payload)}`);
-  }
-
-  const payload = resp.payload as { txId: string };
-  return payload.txId;
+  return submitOps(client, builder.ops);
 }
 
 /**

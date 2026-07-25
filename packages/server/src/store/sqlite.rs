@@ -304,9 +304,7 @@ const MAX_NESTED_DEPTH: usize = 3;
 ///
 /// This matches the v0.3.2 PgStore::query bind contract closely enough
 /// that round-trip equality tests pass for the simple SELECT path.
-fn build_rusqlite_params(
-    params: &[serde_json::Value],
-) -> Result<Vec<rusqlite::types::Value>> {
+fn build_rusqlite_params(params: &[serde_json::Value]) -> Result<Vec<rusqlite::types::Value>> {
     use rusqlite::types::Value as RV;
     let mut out = Vec::with_capacity(params.len());
     for p in params {
@@ -441,8 +439,7 @@ fn resolve_nested_sqlite(
             probe.column_count()
         };
 
-        let mut grouped: HashMap<Uuid, serde_json::Map<String, serde_json::Value>> =
-            HashMap::new();
+        let mut grouped: HashMap<Uuid, serde_json::Map<String, serde_json::Value>> = HashMap::new();
 
         if col_count == 2 {
             // Per-UUID re-query — slower but matches the planner's
@@ -459,8 +456,7 @@ fn resolve_nested_sqlite(
                 let mut srows = sstmt
                     .query(rusqlite::params![uid.to_string()])
                     .map_err(map_rq)?;
-                let mut attrs: serde_json::Map<String, serde_json::Value> =
-                    serde_json::Map::new();
+                let mut attrs: serde_json::Map<String, serde_json::Value> = serde_json::Map::new();
                 while let Some(row) = srows.next().map_err(map_rq)? {
                     let attr: String = row.get(0).map_err(map_rq)?;
                     let val_str: String = row.get(1).map_err(map_rq)?;
@@ -1130,7 +1126,10 @@ mod tests {
             limit: None,
             offset: None,
         };
-        let err = store.query(&plan).await.expect_err("vector sentinel rejected");
+        let err = store
+            .query(&plan)
+            .await
+            .expect_err("vector sentinel rejected");
         match err {
             DarshJError::InvalidQuery(msg) => {
                 assert!(

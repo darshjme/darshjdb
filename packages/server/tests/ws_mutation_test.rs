@@ -50,7 +50,9 @@ async fn setup_pool() -> Option<PgPool> {
     let url = std::env::var("DATABASE_URL").ok()?;
     let pool = PgPool::connect(&url).await.ok()?;
     PgTripleStore::new(pool.clone()).await.ok()?;
-    ddb_server::api::rest::ensure_auth_schema(&pool).await.ok()?;
+    ddb_server::api::rest::ensure_auth_schema(&pool)
+        .await
+        .ok()?;
     Some(pool)
 }
 
@@ -298,8 +300,8 @@ async fn ws_mutation_end_to_end() {
 /// Runs without a database — signature validation fails before any query.
 #[tokio::test]
 async fn ws_auth_rejects_forged_token() {
-    let pool = PgPool::connect_lazy("postgres://invalid:invalid@127.0.0.1:1/invalid")
-        .expect("lazy pool");
+    let pool =
+        PgPool::connect_lazy("postgres://invalid:invalid@127.0.0.1:1/invalid").expect("lazy pool");
     let auth_sessions = Arc::new(AuthSessionManager::new(
         pool.clone(),
         KeyManager::from_secret(b"ws-forged-token-test-secret-0123456789"),

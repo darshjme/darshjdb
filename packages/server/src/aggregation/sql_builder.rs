@@ -31,7 +31,13 @@ fn sanitize_attr(attr: &str) -> String {
 fn attr_to_alias(attr: &str) -> String {
     let mut alias: String = attr
         .chars()
-        .map(|c| if c.is_alphanumeric() || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     if alias.starts_with(|c: char| c.is_numeric()) {
         alias.insert(0, '_');

@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Honest project framing — removed fabricated timeline, added AI-assisted development disclosure
 - Synchronized all package versions to 0.4.0
 - Split monolithic rest.rs (4,449 lines) into 15 focused handler modules
-- Replaced fabricated competitor comparison docs with real criterion benchmarks
+- Replaced fabricated competitor comparison docs with qualitative descriptions; `cargo bench` (criterion) in `packages/server/` is now the only sanctioned way to produce numbers
 
 ### Security
 - Hardcoded dev-signing-key now requires DDB_DEV=1 in development
@@ -23,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 - Vaporware strategy docs (quantum, blockchain, web3)
 - Fabricated benchmark comparison pages
+- Unsourced performance multipliers from `docs/performance.md`, `docs/architecture.md` and `docs/guide/index.html` (15x lower latency, 28% smaller payloads, 98% less bandwidth, 206x latency at ~1.2ms vs ~248ms, 26x less bandwidth overhead) — none had methodology, hardware or a reproduction command
 - Unimplemented security claims from SECURITY.md (TLS 1.3 mandatory, AES-256-GCM at rest, Ed25519)
 
 ## [0.3.3] - 2026-04-15 — Executor Rewire + SqliteStore::query + mlua ddb.kv

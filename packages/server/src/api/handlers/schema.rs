@@ -176,7 +176,8 @@ pub async fn schema_remove_field(
         .await
         .map_err(|e| ApiError::internal(format!("Failed to remove field: {e}")))?;
 
-    let response = serde_json::json!({ "status": "ok", "table": table, "field": field, "action": "removed" });
+    let response =
+        serde_json::json!({ "status": "ok", "table": table, "field": field, "action": "removed" });
     Ok(negotiate_response(&headers, &response))
 }
 

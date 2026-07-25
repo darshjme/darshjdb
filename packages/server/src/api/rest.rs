@@ -23,7 +23,7 @@ use std::time::{Duration, Instant};
 use axum::Router;
 use axum::body::Body;
 use axum::extract::{FromRequest, Path, Query, State};
-use axum::http::header::{ACCEPT, CONTENT_TYPE};
+use axum::http::header::CONTENT_TYPE;
 use axum::http::{HeaderMap, HeaderValue, Request, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::sse::{Event, KeepAlive, Sse};
@@ -63,10 +63,8 @@ use ddb_cache::DdbCache;
 pub use super::handlers;
 
 // Import shared helpers used by the inline handlers in this file.
-use handlers::helpers::{
-    negotiate_response, negotiate_response_status, validate_entity_name, wants_msgpack,
-};
 use handlers::admin::BulkLoadRequest;
+use handlers::helpers::{negotiate_response, negotiate_response_status, validate_entity_name};
 
 // ---------------------------------------------------------------------------
 // Application state
@@ -1896,11 +1894,10 @@ async fn auth_oauth_callback(
         .filter(|v| !v.is_empty())
     {
         Some(v) => v.to_string(),
-        None => GenericOAuth2Provider::pkce_verifier_for_state(
-            &params.state,
-            &app.oauth_state_secret,
-        )
-        .map_err(|e| ApiError::bad_request(format!("OAuth callback failed: {e}")))?,
+        None => {
+            GenericOAuth2Provider::pkce_verifier_for_state(&params.state, &app.oauth_state_secret)
+                .map_err(|e| ApiError::bad_request(format!("OAuth callback failed: {e}")))?
+        }
     };
 
     let user_info = oauth_provider
@@ -5764,7 +5761,7 @@ async fn schema_migration_history(
 mod tests {
     use super::*;
     use crate::api::error::ErrorCode;
-    use axum::http::header::CONTENT_TYPE;
+    use axum::http::header::{ACCEPT, CONTENT_TYPE};
     use handlers::helpers::{
         extract_bearer_token, negotiate_response, negotiate_response_status, validate_entity_name,
         wants_msgpack,

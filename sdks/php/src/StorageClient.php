@@ -121,58 +121,63 @@ class StorageClient
     /**
      * Get the URL for a stored file.
      *
-     * @param string $path   Remote storage path.
-     * @param int    $expiry URL expiry time in seconds (default: 3600).
-     * @return string The signed or public URL.
+     * @param string $path Remote storage path.
+     * @return string The signed URL (expiry is configured server-side).
      *
      * @throws Exception On server errors.
      */
-    public function getUrl(string $path, int $expiry = 3600): string
+    public function getUrl(string $path): string
     {
-        $result = $this->client->get('/api/storage/url', [
-            'path'   => $path,
-            'expiry' => $expiry,
+        $result = $this->client->get($this->objectPath($path), [
+            'signed' => 'true',
         ]);
 
-        return $result['url'] ?? '';
+        return $result['signed_url'] ?? '';
     }
 
     /**
      * Delete a file from storage.
      *
      * @param string $path Remote storage path.
-     * @return array<string, mixed> Server acknowledgement.
+     * @return array<string, mixed> Server acknowledgement (empty on 204).
      *
      * @throws Exception On server errors.
      */
     public function delete(string $path): array
     {
-        return $this->client->delete('/api/storage/delete', [
-            'path' => $path,
-        ]);
+        return $this->client->delete($this->objectPath($path));
     }
 
     /**
-     * List files under a given prefix.
+     * List stored files.
      *
-     * @param string $prefix Directory prefix to list (e.g. '/avatars/').
+     * Requires an admin token — this is served by the admin storage endpoint.
+     *
      * @param int    $limit  Maximum files to return (default: 100).
      * @param string $cursor Pagination cursor from a previous response.
-     * @return array{files: array<int, array{path: string, size: int, contentType: string, updatedAt: string}>, cursor?: string}
+     * @return array{files: array<int, array{path: string, size: int, mimeType: string, modifiedAt: int}>, cursor?: string}
      *
      * @throws Exception On server errors.
      */
-    public function list(string $prefix = '/', int $limit = 100, string $cursor = ''): array
+    public function list(int $limit = 100, string $cursor = ''): array
     {
-        $query = [
-            'prefix' => $prefix,
-            'limit'  => $limit,
-        ];
+        $query = ['limit' => $limit];
 
         if ($cursor !== '') {
             $query['cursor'] = $cursor;
         }
 
-        return $this->client->get('/api/storage/list', $query);
+        return $this->client->get('/api/admin/storage', $query);
+    }
+
+    /**
+     * Build the server path for a stored object.
+     *
+     * The server mounts objects at `/api/storage/*path`, so the leading
+     * slash of a caller-supplied path must not be duplicated.
+     */
+    private function objectPath(string $path): string
+    {
+        return '/api/storage/' . ltrim($path, '/');
     }
 }

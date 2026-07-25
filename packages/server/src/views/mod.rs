@@ -567,7 +567,7 @@ impl ViewStore for PgViewStore {
         }
 
         // Sort by created_at ascending for stable ordering.
-        views.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+        views.sort_by_key(|v| v.created_at);
         Ok(views)
     }
 

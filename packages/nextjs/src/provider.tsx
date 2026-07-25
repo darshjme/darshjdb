@@ -4,8 +4,7 @@
  * @module @darshjdb/nextjs/provider
  *
  * Client-side DarshJDB provider for Next.js App Router.
- * Wraps `@darshjdb/react` with automatic environment configuration
- * and SSR hydration support.
+ * Wraps `@darshjdb/react` with automatic environment configuration.
  *
  * @example
  * ```tsx
@@ -27,89 +26,20 @@
  *
  * @example
  * ```tsx
- * // With SSR hydration from a Server Component
+ * // With an app id and a per-user token
  * import { DarshanProvider } from '@darshjdb/nextjs/provider';
- * import { dehydrate } from '@darshjdb/nextjs/provider';
- * import { queryServer } from '@darshjdb/nextjs/server';
  *
- * export default async function Layout({ children }: { children: React.ReactNode }) {
- *   const users = await queryServer({ collection: 'users' });
- *   const dehydratedState = dehydrate({ users: { data: users } });
- *
- *   return (
- *     <DarshanProvider dehydratedState={dehydratedState}>
- *       {children}
- *     </DarshanProvider>
- *   );
- * }
+ * <DarshanProvider appId="my-app" token={sessionToken}>
+ *   {children}
+ * </DarshanProvider>
  * ```
  */
 
-import React, { type ReactNode } from 'react';
-import { DarshanProvider as DarshanReactProvider } from '@darshjdb/react';
-
-// ---------------------------------------------------------------------------
-// Dehydration / Hydration types
-// ---------------------------------------------------------------------------
-
-/** A single cache entry keyed by query identifier. */
-export interface DehydratedCacheEntry {
-  /** The query result data. */
-  data: unknown;
-  /** Timestamp when the data was fetched (ms since epoch). */
-  fetchedAt?: number;
-}
-
-/**
- * Serializable snapshot of server-side query results.
- * Passed from Server Components to the client for hydration.
- */
-export interface DehydratedState {
-  /** Map of cache key to entry. */
-  queries: Record<string, DehydratedCacheEntry>;
-  /** ISO timestamp of when dehydration occurred. */
-  timestamp: string;
-}
-
-// ---------------------------------------------------------------------------
-// Dehydrate helper (runs on server, result is serialized to client)
-// ---------------------------------------------------------------------------
-
-/**
- * Dehydrate server-fetched data into a serializable snapshot that the
- * `DarshanProvider` can hydrate on the client. Call this in a Server
- * Component and pass the result as `dehydratedState` prop.
- *
- * @param queries - Map of cache keys to their data. Each value should
- *                  contain at minimum a `data` property.
- * @returns A serializable `DehydratedState` object.
- *
- * @example
- * ```ts
- * const state = dehydrate({
- *   users: { data: await queryServer({ collection: 'users' }) },
- *   config: { data: await queryServer({ collection: 'config' }) },
- * });
- * ```
- */
-export function dehydrate(
-  queries: Record<string, { data: unknown; fetchedAt?: number }>,
-): DehydratedState {
-  const entries: Record<string, DehydratedCacheEntry> = {};
-  const now = Date.now();
-
-  for (const [key, value] of Object.entries(queries)) {
-    entries[key] = {
-      data: value.data,
-      fetchedAt: value.fetchedAt ?? now,
-    };
-  }
-
-  return {
-    queries: entries,
-    timestamp: new Date(now).toISOString(),
-  };
-}
+import React, { useEffect, type ReactNode } from 'react';
+import {
+  DarshanProvider as DarshanReactProvider,
+  useDarshanClient,
+} from '@darshjdb/react';
 
 // ---------------------------------------------------------------------------
 // Provider Props
@@ -126,31 +56,18 @@ export interface DarshanProviderProps {
   url?: string;
 
   /**
+   * Public application identifier. Defaults to `NEXT_PUBLIC_DDB_APP_ID` env var.
+   * This value is part of every request URL, so it must never hold a secret.
+   */
+  appId?: string;
+
+  /**
    * Client authentication token. Defaults to `NEXT_PUBLIC_DDB_TOKEN` env var.
    * For user-specific tokens, pass dynamically after authentication.
+   *
+   * Sent as an `Authorization: Bearer` credential — never placed in a URL.
    */
   token?: string;
-
-  /**
-   * Additional client configuration passed to `createClient()`.
-   */
-  clientConfig?: Record<string, unknown>;
-
-  /**
-   * Dehydrated server state for SSR hydration.
-   * Generate with the `dehydrate()` function in a Server Component.
-   */
-  dehydratedState?: DehydratedState;
-
-  /**
-   * Enable real-time subscriptions. Defaults to `true`.
-   */
-  realtime?: boolean;
-
-  /**
-   * Enable offline persistence. Defaults to `false`.
-   */
-  offline?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -158,11 +75,36 @@ export interface DarshanProviderProps {
 // ---------------------------------------------------------------------------
 
 /**
+ * Bind the auth token to the client created by `@darshjdb/react`.
+ *
+ * Runs as a child of the provider so its effect fires before the provider's
+ * own connect effect — the token is in place before the first request.
+ * @internal
+ */
+function TokenBinder({
+  token,
+  children,
+}: {
+  token: string | undefined;
+  children: ReactNode;
+}): React.JSX.Element {
+  const client = useDarshanClient() as {
+    setAuthToken?: (token: string | null) => void;
+  };
+
+  useEffect(() => {
+    client.setAuthToken?.(token ?? null);
+  }, [client, token]);
+
+  return <>{children}</>;
+}
+
+/**
  * Root provider for DarshJDB in Next.js applications.
  *
  * Wraps `@darshjdb/react`'s provider with:
  * - Automatic environment variable configuration
- * - SSR hydration of server-fetched data
+ * - Bearer-token authentication
  * - Singleton client management across re-renders
  *
  * Place this in your root layout (`app/layout.tsx`) or wrap individual
@@ -173,15 +115,14 @@ export interface DarshanProviderProps {
 export function DarshanProvider({
   children,
   url,
+  appId,
   token,
-  clientConfig: _clientConfig,
-  dehydratedState: _dehydratedState,
-  realtime: _realtime = true,
-  offline: _offline = false,
 }: DarshanProviderProps): React.JSX.Element {
   // Resolve configuration from props or environment variables
   const resolvedUrl =
     url ?? process.env.NEXT_PUBLIC_DDB_URL ?? '';
+  const resolvedAppId =
+    appId ?? process.env.NEXT_PUBLIC_DDB_APP_ID ?? 'nextjs-app';
   const resolvedToken =
     token ?? process.env.NEXT_PUBLIC_DDB_TOKEN ?? undefined;
 
@@ -194,8 +135,8 @@ export function DarshanProvider({
   }
 
   return (
-    <DarshanReactProvider serverUrl={resolvedUrl} appId={resolvedToken ?? 'nextjs-app'}>
-      {children}
+    <DarshanReactProvider serverUrl={resolvedUrl} appId={resolvedAppId}>
+      <TokenBinder token={resolvedToken}>{children}</TokenBinder>
     </DarshanReactProvider>
   );
 }

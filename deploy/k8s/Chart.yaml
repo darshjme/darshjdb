@@ -11,3 +11,8 @@ keywords:
 maintainers:
   - name: Darsh Joshi
     url: https://github.com/darshjme
+dependencies:
+  - name: postgresql
+    version: "16.x.x"
+    repository: oci://registry-1.docker.io/bitnamicharts
+    condition: postgresql.enabled

@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace Darshjdb\Laravel;
 
 use Darshjdb\Client;
-use Illuminate\Support\ServiceProvider;
+use Illuminate\Support\ServiceProvider as BaseServiceProvider;
 
 /**
  * Laravel service provider for DarshJDB.
@@ -18,7 +18,7 @@ use Illuminate\Support\ServiceProvider;
  *       Darshjdb\Laravel\ServiceProvider::class,
  *   ],
  */
-class ServiceProvider extends ServiceProvider
+class ServiceProvider extends BaseServiceProvider
 {
     /**
      * Register the DarshJDB client singleton.

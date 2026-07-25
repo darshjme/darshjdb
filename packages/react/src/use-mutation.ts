@@ -1,3 +1,5 @@
+'use client';
+
 /**
  * @module use-mutation
  * @description Hook that returns a stable `mutate` function for performing

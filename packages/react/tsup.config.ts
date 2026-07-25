@@ -8,7 +8,9 @@ export default defineConfig([
     splitting: false,
     sourcemap: true,
     clean: true,
-    treeshake: true,
+    // The rollup treeshake pass strips module-level directives; esbuild keeps
+    // the entry's `'use client'`, which the Next.js App Router requires.
+    treeshake: false,
     minify: true,
     target: 'es2022',
     outDir: 'dist',
