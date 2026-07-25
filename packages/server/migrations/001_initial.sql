@@ -16,8 +16,14 @@ CREATE TABLE IF NOT EXISTS triples (
     tx_id       BIGINT      NOT NULL,
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
     retracted   BOOLEAN     NOT NULL DEFAULT false,
-    expires_at  TIMESTAMPTZ
+    expires_at  TIMESTAMPTZ,
+    -- Transaction id at which the triple was retracted; NULL while live.
+    -- Point-in-time reads use this rather than the mutable `retracted`
+    -- flag, which carries no temporal information.
+    retracted_tx_id BIGINT
 );
+
+ALTER TABLE triples ADD COLUMN IF NOT EXISTS retracted_tx_id BIGINT;
 
 -- ── Indexes ────────────────────────────────────────────────────────
 
@@ -53,6 +59,31 @@ CREATE INDEX IF NOT EXISTS idx_triples_fts
 
 CREATE SEQUENCE IF NOT EXISTS darshan_tx_seq
     START WITH 1 INCREMENT BY 1;
+
+-- ── Retraction transaction stamping ───────────────────────────────
+
+CREATE INDEX IF NOT EXISTS idx_triples_retracted_tx
+    ON triples (retracted_tx_id)
+    WHERE retracted_tx_id IS NOT NULL;
+
+UPDATE triples
+SET retracted_tx_id = tx_id
+WHERE retracted AND retracted_tx_id IS NULL;
+
+CREATE OR REPLACE FUNCTION darshan_stamp_retraction_tx()
+RETURNS trigger AS $fn$
+BEGIN
+    NEW.retracted_tx_id := nextval('darshan_tx_seq');
+    RETURN NEW;
+END;
+$fn$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_triples_retraction_tx ON triples;
+CREATE TRIGGER trg_triples_retraction_tx
+    BEFORE UPDATE ON triples
+    FOR EACH ROW
+    WHEN (NEW.retracted AND NEW.retracted_tx_id IS NULL)
+    EXECUTE FUNCTION darshan_stamp_retraction_tx();
 
 -- ── Entity Pool ───────────────────────────────────────────────────
 -- Maps external UUIDs to compact internal integer IDs.

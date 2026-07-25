@@ -20,6 +20,7 @@ async fn main() -> std::io::Result<()> {
 
     let config = ServerConfig::from_env();
     let cache = Arc::new(DdbCache::new());
+    cache.start_expiry_sweeper();
 
     tracing::info!(
         version = env!("CARGO_PKG_VERSION"),

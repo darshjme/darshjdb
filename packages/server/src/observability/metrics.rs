@@ -36,20 +36,27 @@
 
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use axum::Router;
 use axum::body::Body;
-use axum::extract::{ConnectInfo, State};
+use axum::extract::{ConnectInfo, MatchedPath, State};
 use axum::http::{Request, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use metrics::{counter, histogram};
 use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
+use metrics_util::MetricKindMask;
 
 /// Default IPs allowed to reach `/metrics` when `DDB_METRICS_ALLOWED_IPS` is unset.
 pub const DEFAULT_METRICS_ALLOWED_IPS: &[&str] = &["127.0.0.1", "::1"];
+
+/// Series untouched for this long are dropped from the registry.
+const METRIC_IDLE_TIMEOUT: Duration = Duration::from_secs(600);
+
+/// Label value used when a request matched no route.
+const UNMATCHED_PATH: &str = "unmatched";
 
 /// Metric name constants — kept in one place so callers do not drift.
 pub mod names {
@@ -158,6 +165,7 @@ pub fn init_prometheus() -> Result<(MetricsHandle, MetricsIpAllowList), String> 
             ],
         )
         .map_err(|e| format!("failed to set histogram buckets: {e}"))?
+        .idle_timeout(MetricKindMask::ALL, Some(METRIC_IDLE_TIMEOUT))
         .install_recorder()
         .map_err(|e| format!("failed to install Prometheus recorder: {e}"))?;
 
@@ -306,7 +314,11 @@ fn looks_like_id(seg: &str) -> bool {
 /// Tower middleware that observes every HTTP request.
 pub async fn http_metrics_middleware(req: Request<Body>, next: Next) -> Response {
     let method = req.method().clone();
-    let path = normalize_path(req.uri().path());
+    let path = req
+        .extensions()
+        .get::<MatchedPath>()
+        .map(|matched| normalize_path(matched.as_str()))
+        .unwrap_or_else(|| UNMATCHED_PATH.to_string());
     let start = Instant::now();
 
     let response = next.run(req).await;

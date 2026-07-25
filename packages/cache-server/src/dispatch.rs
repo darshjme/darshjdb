@@ -3,26 +3,42 @@
 // server. Every command listed in Slice 11 Part A, item 4 is handled
 // here.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
 use ddb_cache::DdbCache;
+use tokio::sync::broadcast::error::RecvError;
+use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
 
 use crate::codec::RespFrame;
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Session {
     pub authenticated: bool,
     pub resp3: bool,
     pub subscriptions: Vec<String>,
+    pushes: mpsc::UnboundedSender<RespFrame>,
+    forwarders: HashMap<String, JoinHandle<()>>,
 }
 
 impl Session {
-    pub fn new(auth_required: bool) -> Self {
+    pub fn new(auth_required: bool, pushes: mpsc::UnboundedSender<RespFrame>) -> Self {
         Self {
             authenticated: !auth_required,
             resp3: false,
             subscriptions: Vec::new(),
+            pushes,
+            forwarders: HashMap::new(),
+        }
+    }
+}
+
+impl Drop for Session {
+    fn drop(&mut self) {
+        for (_, handle) in self.forwarders.drain() {
+            handle.abort();
         }
     }
 }
@@ -563,38 +579,90 @@ impl Dispatcher {
     // ── PUB/SUB ────────────────────────────────────────────────────────
 
     fn subscribe(&self, session: &mut Session, args: &[&[u8]]) -> RespFrame {
+        if args.is_empty() {
+            return RespFrame::err("ERR wrong number of arguments for 'subscribe'");
+        }
+        let mut replies = Vec::with_capacity(args.len());
         for a in args {
-            if let Ok(ch) = std::str::from_utf8(a) {
-                let _ = self.cache.subscribe(ch);
+            let Ok(ch) = std::str::from_utf8(a) else {
+                return RespFrame::err("ERR invalid channel");
+            };
+            if !session.forwarders.contains_key(ch) {
+                let mut rx = self.cache.subscribe(ch);
+                let pushes = session.pushes.clone();
+                let channel = ch.to_string();
+                let handle = tokio::spawn(async move {
+                    loop {
+                        match rx.recv().await {
+                            Ok(msg) => {
+                                let frame = RespFrame::Array(Some(vec![
+                                    RespFrame::bulk(b"message".to_vec()),
+                                    RespFrame::bulk(msg.channel.into_bytes()),
+                                    RespFrame::bulk(msg.payload),
+                                ]));
+                                if pushes.send(frame).is_err() {
+                                    break;
+                                }
+                            }
+                            Err(RecvError::Lagged(missed)) => {
+                                tracing::warn!(%channel, missed, "subscriber lagged, messages dropped");
+                            }
+                            Err(RecvError::Closed) => break,
+                        }
+                    }
+                });
+                session.forwarders.insert(ch.to_string(), handle);
                 session.subscriptions.push(ch.to_string());
             }
+            replies.push(RespFrame::Array(Some(vec![
+                RespFrame::bulk(b"subscribe".to_vec()),
+                RespFrame::bulk(a.to_vec()),
+                RespFrame::Integer(session.subscriptions.len() as i64),
+            ])));
         }
-        RespFrame::Array(Some(vec![
-            RespFrame::bulk(b"subscribe".to_vec()),
-            RespFrame::bulk(
-                args.first()
-                    .map(|a| a.to_vec())
-                    .unwrap_or_else(|| b"".to_vec()),
-            ),
-            RespFrame::Integer(session.subscriptions.len() as i64),
-        ]))
+        let first = replies.remove(0);
+        for reply in replies {
+            let _ = session.pushes.send(reply);
+        }
+        first
     }
 
     fn unsubscribe(&self, session: &mut Session, args: &[&[u8]]) -> RespFrame {
-        let before = session.subscriptions.len();
-        if args.is_empty() {
-            session.subscriptions.clear();
+        let channels: Vec<Vec<u8>> = if args.is_empty() {
+            session
+                .subscriptions
+                .iter()
+                .map(|s| s.as_bytes().to_vec())
+                .collect()
         } else {
-            for a in args {
-                if let Ok(ch) = std::str::from_utf8(a) {
-                    session.subscriptions.retain(|s| s != ch);
-                }
-            }
+            args.iter().map(|a| a.to_vec()).collect()
+        };
+        if channels.is_empty() {
+            return RespFrame::Array(Some(vec![
+                RespFrame::bulk(b"unsubscribe".to_vec()),
+                RespFrame::nil_bulk(),
+                RespFrame::Integer(0),
+            ]));
         }
-        RespFrame::Array(Some(vec![
-            RespFrame::bulk(b"unsubscribe".to_vec()),
-            RespFrame::Integer((before - session.subscriptions.len()) as i64),
-        ]))
+        let mut replies = Vec::with_capacity(channels.len());
+        for ch in channels {
+            if let Ok(name) = std::str::from_utf8(&ch) {
+                if let Some(handle) = session.forwarders.remove(name) {
+                    handle.abort();
+                }
+                session.subscriptions.retain(|s| s != name);
+            }
+            replies.push(RespFrame::Array(Some(vec![
+                RespFrame::bulk(b"unsubscribe".to_vec()),
+                RespFrame::bulk(ch),
+                RespFrame::Integer(session.subscriptions.len() as i64),
+            ])));
+        }
+        let first = replies.remove(0);
+        for reply in replies {
+            let _ = session.pushes.send(reply);
+        }
+        first
     }
 
     fn publish(&self, args: &[&[u8]]) -> RespFrame {

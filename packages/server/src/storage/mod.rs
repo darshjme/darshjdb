@@ -995,6 +995,11 @@ impl<B: StorageBackend> StorageEngine<B> {
         self.max_upload_size = size;
     }
 
+    /// The maximum upload size in bytes (`0` = unlimited).
+    pub fn max_upload_size(&self) -> u64 {
+        self.max_upload_size
+    }
+
     /// Add an upload hook.
     pub fn add_hook(&mut self, hook: Arc<dyn UploadHook>) {
         self.hooks.push(hook);

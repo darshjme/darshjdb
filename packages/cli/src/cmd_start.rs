@@ -278,6 +278,7 @@ pub async fn run(
 
     let ws_state = ddb_server::api::ws::WsState {
         sessions: sync_sessions.clone(),
+        auth_sessions: session_manager.clone(),
         registry: subscription_registry,
         presence: presence_manager,
         diff_tx,
@@ -294,6 +295,7 @@ pub async fn run(
             true,
         )),
         subscription_snapshots: Arc::new(dashmap::DashMap::new()),
+        permissions: Arc::new(ddb_server::auth::build_default_engine()),
     };
 
     tracing::info!("sync engine initialized");

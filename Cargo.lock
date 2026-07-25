@@ -2059,6 +2059,7 @@ dependencies = [
  "lru",
  "metrics",
  "metrics-exporter-prometheus",
+ "metrics-util",
  "mime_guess",
  "mlua",
  "notify",

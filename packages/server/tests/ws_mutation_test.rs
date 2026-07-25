@@ -22,6 +22,7 @@ use std::sync::Arc;
 
 use axum::Router;
 use ddb_server::api::ws::{WsState, ws_routes};
+use ddb_server::auth::session::{KeyManager, SessionManager as AuthSessionManager};
 use ddb_server::sync::broadcaster::ChangeEvent;
 use ddb_server::sync::change_feed::ChangeFeed;
 use ddb_server::sync::live_query::LiveQueryManager;
@@ -49,14 +50,42 @@ async fn setup_pool() -> Option<PgPool> {
     let url = std::env::var("DATABASE_URL").ok()?;
     let pool = PgPool::connect(&url).await.ok()?;
     PgTripleStore::new(pool.clone()).await.ok()?;
+    ddb_server::api::rest::ensure_auth_schema(&pool).await.ok()?;
     Some(pool)
+}
+
+/// Mint a real access token for a freshly created user + session, so the
+/// WebSocket `auth` frame passes cryptographic validation.
+async fn issue_access_token(pool: &PgPool, auth_sessions: &AuthSessionManager) -> String {
+    let user_id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO users (id, email, password_hash, roles)
+         VALUES ($1, $2, 'x', '[\"user\"]'::jsonb)",
+    )
+    .bind(user_id)
+    .bind(format!("ws-mutation-{user_id}@test.invalid"))
+    .execute(pool)
+    .await
+    .expect("insert test user");
+
+    auth_sessions
+        .create_session(
+            user_id,
+            vec!["user".to_string()],
+            "127.0.0.1",
+            "websocket",
+            "",
+        )
+        .await
+        .expect("create session")
+        .access_token
 }
 
 /// Build a minimal `WsState` wired to a real Postgres pool. All sync
 /// subsystems use their default/empty constructors because the tests only
 /// exercise the mutation path — we do not need live queries, presence,
 /// or pub/sub for this slice's assertions.
-fn build_ws_state(pool: PgPool) -> WsState {
+fn build_ws_state(pool: PgPool, auth_sessions: Arc<AuthSessionManager>) -> WsState {
     let (diff_tx, _diff_rx) = tokio::sync::mpsc::channel(128);
     let (change_tx, _change_rx) = tokio::sync::broadcast::channel::<ChangeEvent>(128);
     let (pubsub_engine, _pubsub_rx) = PubSubEngine::new(128);
@@ -67,6 +96,7 @@ fn build_ws_state(pool: PgPool) -> WsState {
 
     WsState {
         sessions: Arc::new(SyncSessionManager::new()),
+        auth_sessions,
         registry: Arc::new(SubscriptionRegistry::new()),
         presence: Arc::new(PresenceManager::new()),
         diff_tx,
@@ -83,6 +113,7 @@ fn build_ws_state(pool: PgPool) -> WsState {
             true,
         )),
         subscription_snapshots: Arc::new(dashmap::DashMap::new()),
+        permissions: Arc::new(ddb_server::auth::build_default_engine()),
     }
 }
 
@@ -151,7 +182,7 @@ async fn next_json(
 /// End-to-end WebSocket mutation test:
 ///
 /// 1. Connect to `/ws`.
-/// 2. Send an `auth` frame (dev-mode tokens accept any non-empty string).
+/// 2. Send an `auth` frame carrying a real signed access token.
 /// 3. Send a `mut` frame with a single `insert` op for an entity of type
 ///    `ws_mutation_fixture`.
 /// 4. Parse the `mut-ok` response and assert `tx > 0`.
@@ -164,14 +195,20 @@ async fn ws_mutation_end_to_end() {
         return;
     };
 
-    let ws_state = build_ws_state(pool.clone());
+    let auth_sessions = Arc::new(AuthSessionManager::new(
+        pool.clone(),
+        KeyManager::from_secret(b"ws-mutation-test-secret-0123456789abcdef"),
+    ));
+    let token = issue_access_token(&pool, &auth_sessions).await;
+
+    let ws_state = build_ws_state(pool.clone(), auth_sessions);
     let addr = spawn_ws_server(ws_state).await;
 
     let url = format!("ws://{addr}/ws");
     let (mut socket, _resp) = connect_async(&url).await.expect("ws connect");
 
     // --- Auth --------------------------------------------------------------
-    let auth_frame = json!({ "type": "auth", "token": "ws-mutation-test-user" });
+    let auth_frame = json!({ "type": "auth", "token": token });
     socket
         .send(Message::Text(auth_frame.to_string().into()))
         .await
@@ -255,4 +292,37 @@ async fn ws_mutation_end_to_end() {
 
     // --- Cleanup -----------------------------------------------------------
     cleanup_entity(&pool, entity_id).await;
+}
+
+/// Regression: an unsigned / forged token must be rejected with `auth-err`.
+/// Runs without a database — signature validation fails before any query.
+#[tokio::test]
+async fn ws_auth_rejects_forged_token() {
+    let pool = PgPool::connect_lazy("postgres://invalid:invalid@127.0.0.1:1/invalid")
+        .expect("lazy pool");
+    let auth_sessions = Arc::new(AuthSessionManager::new(
+        pool.clone(),
+        KeyManager::from_secret(b"ws-forged-token-test-secret-0123456789"),
+    ));
+
+    let ws_state = build_ws_state(pool, auth_sessions);
+    let addr = spawn_ws_server(ws_state).await;
+
+    let url = format!("ws://{addr}/ws");
+
+    for token in ["not-a-jwt", "a.b.c", ""] {
+        let (mut socket, _resp) = connect_async(&url).await.expect("ws connect");
+        let auth_frame = json!({ "type": "auth", "token": token });
+        socket
+            .send(Message::Text(auth_frame.to_string().into()))
+            .await
+            .expect("send auth");
+
+        let resp = next_json(&mut socket).await;
+        assert_eq!(
+            resp["type"].as_str(),
+            Some("auth-err"),
+            "token {token:?} should be rejected, got: {resp}",
+        );
+    }
 }

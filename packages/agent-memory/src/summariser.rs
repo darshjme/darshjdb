@@ -445,7 +445,7 @@ pub async fn summarise_oldest_episodic(
     // 4. Resolve the owning agent_id via agent_sessions so the summary
     //    row is linked the same way the source rows were.
     let agent_id: String =
-        sqlx::query_scalar("SELECT agent_id FROM agent_sessions WHERE session_id = $1")
+        sqlx::query_scalar("SELECT agent_id FROM agent_sessions WHERE id = $1")
             .bind(session_id)
             .fetch_one(&mut *tx)
             .await?;

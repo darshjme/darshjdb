@@ -624,6 +624,7 @@ async fn main() -> Result<()> {
 
     let ws_state = WsState {
         sessions: sync_sessions.clone(),
+        auth_sessions: session_manager.clone(),
         registry: subscription_registry,
         presence: presence_manager,
         diff_tx,
@@ -636,6 +637,7 @@ async fn main() -> Result<()> {
         rule_engine: rule_engine.clone(),
         query_cache: query_cache.clone(),
         subscription_snapshots: Arc::new(dashmap::DashMap::new()),
+        permissions: Arc::new(ddb_server::auth::build_default_engine()),
     };
 
     tracing::info!("sync engine initialized");
@@ -776,6 +778,7 @@ async fn main() -> Result<()> {
     // here (before AppState construction) so the same handle threads into both
     // the function runtime and AppState below.
     let shared_ddb_cache = std::sync::Arc::new(ddb_cache::DdbCache::new());
+    shared_ddb_cache.start_expiry_sweeper();
 
     let (fn_registry, fn_runtime) = if functions_dir_path.is_dir() {
         // Harness lives next to the functions directory.
