@@ -86,7 +86,7 @@ metrics = "0.23"
 
 # Grand Transformation dependencies (slice 1/30 — dependency manifest)
 pgvector = { version = "0.4", features = ["sqlx"] }
-rusqlite = { version = "0.31", features = ["bundled", "serde_json"] }
+rusqlite = { version = "0.32", features = ["bundled", "serde_json"] }
 pg_embed = { package = "pg-embed", version = "1", default-features = false, features = ["rt_tokio_migrate"] }
 tiktoken-rs = "0.6"
 # Slice 16 upgrades async-openai to 0.34 with the rustls `embedding` feature
