@@ -688,10 +688,16 @@ Partially implemented, code path exists but is gated on something:
 - **Per-transaction Merkle roots** — recorded best-effort after commit, on one of two write paths.
 - **Automatic embedding generation** — two providers-backed pipelines exist and run, but both
   write to tables no read path queries. See [Search and agent memory](#search-and-agent-memory).
-- **S3 / R2 / MinIO storage** — `S3Backend` is a complete aws-sdk-s3 implementation with a
-  `storage.backend` config field, but `main.rs` unconditionally constructs `LocalFsBackend`.
-  Nothing in the server ever builds an `S3Backend`, and there is no `DDB_STORAGE_BACKEND`
-  environment variable.
+
+### Removed
+
+- **S3 / R2 / MinIO storage** — removed, no longer in the tree. `S3Backend` was a complete
+  aws-sdk-s3 implementation that nothing ever constructed: `main.rs` builds `LocalFsBackend`
+  unconditionally and `AppState.storage_engine` is typed `Arc<StorageEngine<LocalFsBackend>>`.
+  It was deleted along with the four AWS SDK dependencies, which held rustls 0.21 /
+  rustls-webpki 0.101.7 in `Cargo.lock` (RUSTSEC-2026-0098, -0099, -0104). The `storage.backend`
+  and `storage.bucket` config fields still parse but only `local` does anything; there is no
+  `DDB_STORAGE_BACKEND` environment variable. File storage is local-filesystem only.
 
 ### Known gaps
 
@@ -742,6 +748,12 @@ Verified in-tree, not speculation.
 - **CI on `main` is failing.** The five most recent `ci.yml` runs on `main` all completed with
   `failure` (re-checked 2026-07-25). The gates in [Contributing](#contributing) pass on this
   working tree — see the verified run there — but those fixes have not landed on `main`.
+- **Ten npm advisories sit in the dev/build toolchain.** `npm audit --omit=dev` — the gate CI
+  actually runs (`ci.yml:186`) — reports `found 0 vulnerabilities`, so nothing ships to a consumer
+  of these packages. But a full-tree `npm audit` reports 10 (2 low, 7 high, 1 critical) in
+  `vitest`, `vite`, `esbuild`, `@babel/core`, `undici`, and the `@angular/*` and `next`/`postcss`
+  peer sets. Four need only `npm audit fix`; the `@angular/*` and `next` ones are semver-major.
+  Not suppressed and not yet taken.
 - **No mobile SDKs, no phone-OTP auth, no hosted documentation site.**
 - **`https://db.darshj.me` returns 200 but does not serve the API.** `/health` and `/api/docs` both
   return 404 there (checked), so the live site is a project page, not a running demo instance.
@@ -758,8 +770,8 @@ Verified in-tree, not speculation.
    `pg_notify` and records a Merkle root.
 5. Align the SDKs, CLI, Helm chart, and release workflow with the server's real contract — see
    the four wire-drift bullets in [Known gaps](#known-gaps).
-6. Wire the L2 Postgres cache and `S3Backend` into the server, or delete them and stop describing
-   them.
+6. Wire the L2 Postgres cache into the server, or delete it and stop describing it. (`S3Backend`
+   was the other half of this item and has been deleted.)
 7. Ship `ddb-cache-server` in the Docker image, or drop 7701 from compose.
 8. Replace the IVFFlat `vector_l2_ops` index with something the planner can use, or drop it.
 9. Testcontainers for the auth suite so CI stops needing an external Postgres.
@@ -906,6 +918,12 @@ cargo bench --bench darshql_parser --no-run
 DATABASE_URL=postgres://darshan:darshan@localhost:5432/darshjdb_test cargo test --workspace
 ```
 
+`DATABASE_URL` is not optional. The `#[sqlx::test]` suites do **not** self-skip when it is
+missing — `packages/cache/tests/l2_integration.rs` panics with
+`DATABASE_URL must be set: EnvVar(NotPresent)` on all 11 of its tests. Because `cargo test`
+fail-fasts on the first failing target, that also stops the run before the `ddb-server` suite
+executes. Without a database, use `--no-fail-fast` and read past the `l2_integration` block.
+
 JavaScript, Python, PHP — each in its own subshell so the working directory does not accumulate:
 
 ```bash
@@ -928,11 +946,33 @@ five npm workspaces (`client-core`, `react`, `angular`, `nextjs`, `admin`), plus
 
 Test *declarations*, counted by grep: 1,846 `#[test]` / `#[tokio::test]` attributes under
 `packages/`; 34 `it(`/`test(` calls in `sdks/typescript`, 48 `def test_` in `sdks/python`, 56
-`public function test` in `sdks/php`. The suites were last run against this exact tree on
-2026-07-25: roughly 1,700 Rust tests passed across the workspace — 1,438 of them in the
-`ddb-server` lib target — with 0 failures, and the npm workspaces' typecheck, build, and tests all
-passed. `cargo check` and `cargo clippy` were clean apart from two pre-existing unused-import
-warnings in `rest.rs`. CI on GitHub `main` is still red because none of this has landed there.
+`public function test` in `sdks/php`.
+
+Last full gate run against this exact tree, 2026-07-26, on Windows with **no** Postgres reachable
+and `DATABASE_URL` unset. Exit codes observed, not inferred:
+
+| Gate | Result |
+| --- | --- |
+| `cargo fmt --all -- --check` | exit 0 |
+| `cargo check --workspace --all-targets` | exit 0, zero warnings |
+| `cargo clippy --workspace --all-targets` | exit 0, zero warnings |
+| `cargo clippy --workspace --all-targets -- -D warnings` | exit 0 |
+| `cargo audit` | exit 0 — 0 vulnerabilities, 16 informational warnings |
+| `cargo test --workspace --no-fail-fast` | 1,742 passed · 11 failed · 28 ignored, 31 targets |
+| `npm run build` | exit 0 (all 5 workspaces) |
+| `npm run typecheck` | exit 0 (all 5 workspaces) |
+| `npm test` | exit 0 — 105 passed, 15 skipped |
+| `npm audit --omit=dev` | exit 0 — found 0 vulnerabilities |
+| `npm audit` (incl. dev) | exit 1 — 10 advisories, all build/test tooling |
+
+All 11 Rust failures are the same environmental cause and are the whole of
+`packages/cache/tests/l2_integration.rs`: `#[sqlx::test]` panicking with
+`DATABASE_URL must be set: EnvVar(NotPresent)`. There were 11 panics in the run and all 11 were
+that message — no other test failed. CI supplies `DATABASE_URL` (`ci.yml:71`), so that target
+is expected to run there. The two unused-import warnings in `rest.rs` reported previously are
+gone; `cargo check` and `cargo clippy` are now completely silent.
+
+CI on GitHub `main` is still red because none of this has landed there.
 See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 Good first contributions are the ten items in [Planned](#planned-in-rough-order).
