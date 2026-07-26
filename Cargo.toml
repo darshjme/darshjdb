@@ -68,7 +68,15 @@ axum-server = { version = "0.7", features = ["tls-rustls"] }
 rustyline = { version = "14", features = ["derive"] }
 comfy-table = "7"
 ctrlc = { version = "3", features = ["termination"] }
-self_update = "0.41"
+# `default` is exactly ["reqwest/default-tls"], which pulls native-tls ->
+# openssl-sys and makes the x86_64-unknown-linux-musl release build fail
+# ("Could not find directory of OpenSSL installation") because there is no
+# musl-target OpenSSL on the runner. `rustls` is ["reqwest/rustls-tls"] and is
+# otherwise feature-identical, so this drops the C OpenSSL dependency from the
+# static binary and matches the rustls backend already used by reqwest,
+# lettre, oauth2 and axum-server. Only the GitHub backend is used
+# (packages/cli/src/main.rs:411), which needs no archive/compression feature.
+self_update = { version = "0.41", default-features = false, features = ["rustls"] }
 async-trait = "0.1"
 csv = "1.3"
 
