@@ -45,8 +45,10 @@ The DarshJDB storage engine provides a well-structured pluggable backend archite
 
 #### 4. S3 Backend Path Traversal
 - **Severity:** HIGH
-- **Status:** FIXED
-- **Location:** `S3Backend::effective_key()`
+- **Status:** FIXED, then MOOT — `S3Backend` was deleted in 0.4.0 (it was never constructed by
+  any code path, and its AWS SDK dependencies held rustls-webpki 0.101.7 in `Cargo.lock`).
+  The fix below applied while the type existed; reinstating S3 support must reinstate it too.
+- **Location:** `S3Backend::effective_key()` (removed)
 - **Description:** The `effective_key()` method did no path validation -- it simply prepended an optional prefix to the raw user-supplied path. An attacker could supply `../../../sensitive-bucket-key` to access or overwrite objects outside the intended prefix.
 - **Fix:** Added null byte, empty path, absolute path, and `..` traversal checks to `effective_key()`. Method now returns `Result<String, StorageError>` instead of bare `String`.
 - **Test:** `s3_effective_key_rejects_traversal`
