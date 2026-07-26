@@ -1875,7 +1875,7 @@ darshan restore --input /backups/darshan-20260405.sql.gz</code></pre>
             <tr><td>Server</td><td>Rust (Axum + Tokio)</td><td>Single binary, zero GC pauses, millions of connections</td></tr>
             <tr><td>Functions</td><td>Deno Core (V8)</td><td>Secure sandboxing, TypeScript native</td></tr>
             <tr><td>Database</td><td>PostgreSQL 16+</td><td>Battle-tested, pgvector, MVCC, streaming replication</td></tr>
-            <tr><td>Wire Protocol</td><td>MsgPack over WebSocket</td><td>28% smaller than JSON, zero-copy decode</td></tr>
+            <tr><td>Wire Protocol</td><td>MsgPack over WebSocket</td><td>Fewer bytes than JSON text, zero-copy decode</td></tr>
             <tr><td>Client Core</td><td>TypeScript</td><td>Universal, type-safe, tree-shakeable</td></tr>
             <tr><td>Password Hash</td><td>Argon2id</td><td>PHC winner, GPU-resistant</td></tr>
             <tr><td>JWT</td><td>RS256 + Ed25519</td><td>Asymmetric verification</td></tr>
@@ -1907,15 +1907,16 @@ darshan restore --input /backups/darshan-20260405.sql.gz</code></pre>
 
         <h3>DarshanDB vs Traditional REST</h3>
         <table class="comparison">
-          <thead><tr><th>Metric</th><th>REST (20 req/s)</th><th>DarshanDB</th><th>Improvement</th></tr></thead>
+          <thead><tr><th>Metric</th><th>REST</th><th>DarshanDB</th><th>Why It Helps</th></tr></thead>
           <tbody>
-            <tr><td><strong>Latency</strong></td><td>~248ms avg</td><td>~1.2ms avg</td><td>206x faster</td></tr>
-            <tr><td><strong>Bandwidth</strong></td><td>~4,800 B/s overhead</td><td>~180 B/s overhead</td><td>26x less</td></tr>
-            <tr><td><strong>Payload size</strong></td><td>58 bytes/obj (JSON)</td><td>42 bytes/obj (MsgPack)</td><td>28% smaller</td></tr>
+            <tr><td><strong>Connection</strong></td><td>New TCP+TLS per request</td><td>One persistent WebSocket</td><td>No handshake on every call</td></tr>
+            <tr><td><strong>Encoding</strong></td><td>JSON text</td><td>MsgPack binary</td><td>Fewer bytes for the same document</td></tr>
             <tr><td><strong>Auth overhead</strong></td><td>Verify every request</td><td>Verify once at connection</td><td>Zero redundancy</td></tr>
-            <tr><td><strong>Data transfer</strong></td><td>Full response on poll</td><td>Delta-only patches</td><td>98% less data</td></tr>
+            <tr><td><strong>Data transfer</strong></td><td>Full response on poll</td><td>Delta-only patches</td><td>Only what changed goes on the wire</td></tr>
+            <tr><td><strong>Change delivery</strong></td><td>Client polls</td><td>Server pushes</td><td>No polling interval to tune</td></tr>
           </tbody>
         </table>
+        <p>We do not publish comparison numbers because we have not run controlled benchmarks yet. Run <code>cargo bench</code> in <code>packages/server/</code> to measure on your own hardware.</p>
 
         <h3>Tuning Guide</h3>
         <div class="code-block-wrapper">

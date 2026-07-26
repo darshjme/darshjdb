@@ -54,13 +54,13 @@ spec:
                   key: database-url
           startupProbe:
             httpGet:
-              path: /api/admin/health
+              path: /health
               port: http
             failureThreshold: 30
             periodSeconds: 2
           livenessProbe:
             httpGet:
-              path: /api/admin/health
+              path: /live
               port: http
             initialDelaySeconds: 0
             periodSeconds: 30
@@ -68,7 +68,7 @@ spec:
             failureThreshold: 3
           readinessProbe:
             httpGet:
-              path: /api/admin/health
+              path: /ready
               port: http
             initialDelaySeconds: 0
             periodSeconds: 10

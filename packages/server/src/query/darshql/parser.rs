@@ -243,7 +243,9 @@ impl Lexer {
     }
 
     fn lex_string(&mut self) -> Result<Token, DarshJError> {
-        let quote = self.advance().expect("quote char was peeked before calling lex_string");
+        let quote = self
+            .advance()
+            .expect("quote char was peeked before calling lex_string");
         let mut s = String::new();
         loop {
             match self.advance() {

@@ -139,6 +139,13 @@ pub struct AggregateQuery {
     pub having: Option<HavingClause>,
 }
 
+/// Return `true` if `alias` is a plain SQL-safe identifier.
+fn is_valid_alias(alias: &str) -> bool {
+    alias.len() <= 64
+        && alias.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
+        && alias.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
 impl AggregateQuery {
     /// Validate the query before execution.
     pub fn validate(&self) -> Result<()> {
@@ -158,6 +165,12 @@ impl AggregateQuery {
                 return Err(DarshJError::InvalidQuery(
                     "aggregation alias must not be empty".into(),
                 ));
+            }
+            if !is_valid_alias(&agg.alias) {
+                return Err(DarshJError::InvalidQuery(format!(
+                    "aggregation alias '{}' must match [A-Za-z_][A-Za-z0-9_]{{0,63}}",
+                    agg.alias
+                )));
             }
             if agg.field.is_empty() {
                 return Err(DarshJError::InvalidQuery(

@@ -3,12 +3,14 @@
  *
  * Provides the same query/mutation/subscription API surface as the WebSocket
  * transport but uses HTTP fetch for one-shot operations and Server-Sent Events
- * (EventSource) for live subscriptions.
+ * for live subscriptions.
  *
  * @module rest
  */
 
 import type { DarshJDB } from './client.js';
+import { toDarshJQL } from './query.js';
+import { toServerMutations } from './transaction.js';
 import type {
   QueryDescriptor,
   QueryResult,
@@ -45,7 +47,7 @@ import type {
  */
 export class RestTransport {
   private _privateClient: DarshJDB;
-  private _privateEventSources = new Map<string, EventSource>();
+  private _privateStreams = new Map<string, AbortController>();
   private _privateSubCounter = 0;
 
   constructor(client: DarshJDB) {
@@ -55,7 +57,7 @@ export class RestTransport {
   /* -- Query -------------------------------------------------------------- */
 
   /**
-   * Execute a one-shot query via HTTP POST.
+   * Execute a one-shot query via `POST /api/query`.
    *
    * @typeParam T - Expected document shape.
    * @param descriptor - The query descriptor.
@@ -66,35 +68,39 @@ export class RestTransport {
   ): Promise<QueryResult<T>> {
     const resp = await this._privateFetch('/query', {
       method: 'POST',
-      body: JSON.stringify(descriptor),
+      body: JSON.stringify({ query: toDarshJQL(descriptor) }),
     });
 
-    const data = (await resp.json()) as { data: T[]; txId: string };
-    return { data: data.data, txId: data.txId };
+    const data = (await resp.json()) as { data: T[] };
+    return { data: data.data, txId: '' };
   }
 
   /* -- Transact ----------------------------------------------------------- */
 
   /**
-   * Submit a mutation transaction via HTTP POST.
+   * Submit a mutation transaction via `POST /api/mutate`.
    *
    * @param ops - Array of transaction operations.
    * @returns The server-assigned transaction id.
    */
   async transact(ops: TxOp[]): Promise<TxId> {
-    const resp = await this._privateFetch('/transact', {
+    const resp = await this._privateFetch('/mutate', {
       method: 'POST',
-      body: JSON.stringify({ ops }),
+      body: JSON.stringify({ mutations: toServerMutations(ops) }),
     });
 
-    const data = (await resp.json()) as { txId: string };
-    return data.txId;
+    const data = (await resp.json()) as { tx_id: number | string };
+    return String(data.tx_id);
   }
 
   /* -- Subscribe (SSE) ---------------------------------------------------- */
 
   /**
-   * Subscribe to live query updates via Server-Sent Events.
+   * Subscribe to live query updates via `GET /api/subscribe`.
+   *
+   * The server's SSE stream carries change notifications rather than result
+   * sets, so every notification triggers a re-query and the fresh rows are
+   * handed to the callback.
    *
    * @typeParam T - Expected document shape.
    * @param descriptor - The query descriptor.
@@ -106,39 +112,38 @@ export class RestTransport {
     callback: SubscriptionCallback<T>,
   ): Unsubscribe {
     const subId = `rest_sub_${(++this._privateSubCounter).toString(36)}`;
+    const controller = new AbortController();
+    this._privateStreams.set(subId, controller);
+
+    const emit = (): void => {
+      this.query<T>(descriptor)
+        .then((result) => {
+          if (!controller.signal.aborted) callback(result);
+        })
+        .catch((err: unknown) => {
+          if (!controller.signal.aborted) {
+            console.warn(`[DarshJDB REST] Query failed for ${subId}:`, err);
+          }
+        });
+    };
+
+    // Deliver the current result set, then follow the change stream.
+    emit();
 
     const params = new URLSearchParams({
-      query: JSON.stringify(descriptor),
+      q: JSON.stringify(toDarshJQL(descriptor)),
     });
 
-    const token = this._privateClient.getAuthToken();
-    if (token) {
-      params.set('token', token);
-    }
-
-    const url = this._privateClient.getRestUrl(
+    void this._privateStream(
       `/subscribe?${params.toString()}`,
-    );
-
-    const eventSource = new EventSource(url);
-    this._privateEventSources.set(subId, eventSource);
-
-    eventSource.addEventListener('update', (event) => {
-      try {
-        const payload = JSON.parse(event.data) as {
-          data: T[];
-          txId: string;
-        };
-        callback({ data: payload.data, txId: payload.txId });
-      } catch {
-        /* malformed event data */
+      controller.signal,
+      (event) => {
+        if (event === 'update') emit();
+      },
+    ).catch((err: unknown) => {
+      if (!controller.signal.aborted) {
+        console.warn(`[DarshJDB REST] SSE error on subscription ${subId}:`, err);
       }
-    });
-
-    eventSource.addEventListener('error', () => {
-      // EventSource auto-reconnects by default.
-      // We only log for debugging purposes.
-      console.warn(`[DarshJDB REST] SSE error on subscription ${subId}`);
     });
 
     let closed = false;
@@ -146,8 +151,8 @@ export class RestTransport {
     return () => {
       if (closed) return;
       closed = true;
-      eventSource.close();
-      this._privateEventSources.delete(subId);
+      controller.abort();
+      this._privateStreams.delete(subId);
     };
   }
 
@@ -157,9 +162,9 @@ export class RestTransport {
    * Close all active SSE connections.
    */
   closeAll(): void {
-    for (const [id, es] of this._privateEventSources) {
-      es.close();
-      this._privateEventSources.delete(id);
+    for (const [id, controller] of this._privateStreams) {
+      controller.abort();
+      this._privateStreams.delete(id);
     }
   }
 
@@ -189,5 +194,71 @@ export class RestTransport {
     }
 
     return resp;
+  }
+
+  /**
+   * Consume an SSE endpoint over `fetch`.
+   *
+   * `EventSource` cannot carry an `Authorization` header and the server
+   * authenticates every subscription with a bearer token, so the stream is
+   * read and framed manually.
+   */
+  private async _privateStream(
+    path: string,
+    signal: AbortSignal,
+    onEvent: (event: string, data: string) => void,
+  ): Promise<void> {
+    const headers: Record<string, string> = { Accept: 'text/event-stream' };
+    const token = this._privateClient.getAuthToken();
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`;
+    }
+
+    const resp = await fetch(this._privateClient.getRestUrl(path), {
+      headers,
+      signal,
+    });
+
+    if (!resp.ok) {
+      const body = await resp.text();
+      throw new Error(`SSE request failed (${resp.status}): ${body}`);
+    }
+    if (!resp.body) {
+      throw new Error('SSE response has no body');
+    }
+
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (!signal.aborted) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+
+      let boundary = buffer.indexOf('\n\n');
+      while (boundary !== -1) {
+        const frame = buffer.slice(0, boundary);
+        buffer = buffer.slice(boundary + 2);
+        boundary = buffer.indexOf('\n\n');
+
+        let eventName = 'message';
+        const dataLines: string[] = [];
+
+        for (const line of frame.split('\n')) {
+          if (line.startsWith(':')) continue; // heartbeat comment
+          if (line.startsWith('event:')) {
+            eventName = line.slice(6).trim();
+          } else if (line.startsWith('data:')) {
+            dataLines.push(line.slice(5).trim());
+          }
+        }
+
+        if (dataLines.length > 0) {
+          onEvent(eventName, dataLines.join('\n'));
+        }
+      }
+    }
   }
 }

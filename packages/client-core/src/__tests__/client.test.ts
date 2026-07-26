@@ -18,8 +18,13 @@ import {
   msgpackEncode,
   msgpackDecode,
 } from '../client.js';
-import { QueryBuilder } from '../query.js';
-import { TransactionBuilder, generateId } from '../transaction.js';
+import { QueryBuilder, queryOnce, subscribe, toDarshJQL } from '../query.js';
+import {
+  TransactionBuilder,
+  generateId,
+  toServerMutations,
+  transact,
+} from '../transaction.js';
 import { AuthClient } from '../auth.js';
 import { PresenceRoom } from '../presence.js';
 import type { ConnectionState, ServerMessage, TokenStorage } from '../types.js';
@@ -190,14 +195,14 @@ describe('getRestUrl', () => {
   it('builds correct REST endpoint URL', () => {
     const db = makeClient({ serverUrl: 'https://db.example.com', appId: 'my-app' });
     expect(db.getRestUrl('/auth/signup')).toBe(
-      'https://db.example.com/v1/apps/my-app/auth/signup',
+      'https://db.example.com/api/auth/signup',
     );
   });
 
-  it('handles paths without leading slash', () => {
+  it('targets the /api namespace the server mounts', () => {
     const db = makeClient();
     const url = db.getRestUrl('/query');
-    expect(url).toContain('/v1/apps/test-app/query');
+    expect(url).toBe('https://db.example.com/api/query');
   });
 });
 
@@ -593,17 +598,20 @@ describe('AuthClient', () => {
     ).rejects.toThrow('Sign-in failed (401)');
   });
 
-  it('signUp sets session on success', async () => {
-    const mockUser = { id: 'u1', email: 'a@b.com' };
-    const mockTokens = {
-      accessToken: 'access-123',
-      refreshToken: 'refresh-123',
-      expiresAt: Date.now() + 3600_000,
-    };
+  /** The flat, snake_case token pair the server actually returns. */
+  const serverTokenPair = {
+    user_id: 'u1',
+    email: 'a@b.com',
+    access_token: 'access-123',
+    refresh_token: 'refresh-123',
+    expires_in: 3600,
+    token_type: 'Bearer',
+  };
 
+  it('signUp sets session on success', async () => {
     globalThis.fetch = vi.fn().mockResolvedValue({
       ok: true,
-      json: vi.fn().mockResolvedValue({ user: mockUser, tokens: mockTokens }),
+      json: vi.fn().mockResolvedValue(serverTokenPair),
     });
 
     const stateCallback = vi.fn();
@@ -612,34 +620,52 @@ describe('AuthClient', () => {
 
     const user = await auth.signUp({ email: 'a@b.com', password: 'pass' });
 
-    expect(user).toEqual(mockUser);
-    expect(auth.getUser()).toEqual(mockUser);
-    expect(auth.getTokens()).toEqual(mockTokens);
+    expect(user.id).toBe('u1');
+    expect(user.email).toBe('a@b.com');
+    expect(auth.getUser()).toEqual(user);
+
+    const tokens = auth.getTokens();
+    expect(tokens?.accessToken).toBe('access-123');
+    expect(tokens?.refreshToken).toBe('refresh-123');
+    // expires_in is relative seconds; the SDK stores an absolute epoch ms.
+    expect(tokens!.expiresAt).toBeGreaterThan(Date.now());
     expect(db.getAuthToken()).toBe('access-123');
 
     // Should have notified listeners
-    expect(stateCallback).toHaveBeenCalledWith({
-      user: mockUser,
-      tokens: mockTokens,
-    });
+    expect(stateCallback).toHaveBeenCalledWith({ user, tokens });
 
     // Should have persisted to storage
     expect(storage.get('darshan_access_token')).toBe('access-123');
     expect(storage.get('darshan_refresh_token')).toBe('refresh-123');
   });
 
+  it('signUp posts the server field names', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue(serverTokenPair),
+    });
+    globalThis.fetch = fetchMock;
+
+    await auth.signUp({
+      email: 'a@b.com',
+      password: 'pass',
+      displayName: 'Alice',
+    });
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('https://db.example.com/api/auth/signup');
+    expect(JSON.parse(init.body as string)).toEqual({
+      email: 'a@b.com',
+      password: 'pass',
+      name: 'Alice',
+    });
+  });
+
   it('signOut clears session', async () => {
     // First sign in
-    const mockUser = { id: 'u1', email: 'a@b.com' };
-    const mockTokens = {
-      accessToken: 'access-123',
-      refreshToken: 'refresh-123',
-      expiresAt: Date.now() + 3600_000,
-    };
-
     globalThis.fetch = vi.fn().mockResolvedValue({
       ok: true,
-      json: vi.fn().mockResolvedValue({ user: mockUser, tokens: mockTokens }),
+      json: vi.fn().mockResolvedValue(serverTokenPair),
     });
 
     await auth.signUp({ email: 'a@b.com', password: 'pass' });
@@ -741,11 +767,187 @@ describe('PresenceRoom', () => {
 /* ========================================================================== */
 
 describe('DarshJDB.send()', () => {
-  it('throws when WebSocket is not open', async () => {
+  it('rejects when WebSocket is not open', async () => {
     const db = makeClient();
-    // Not connected, so send should throw synchronously from _privateSendRaw
+    // Not connected, so send should reject from _privateSendRaw
     await expect(
-      db.send({ type: 'query', payload: {} }),
+      db.send({ type: 'sub', query: { type: 'users' } }),
     ).rejects.toThrow('WebSocket is not open');
+  });
+});
+
+/* ========================================================================== */
+/*  DarshJQL translation                                                      */
+/* ========================================================================== */
+
+describe('toDarshJQL', () => {
+  it('maps a descriptor onto the server query dialect', () => {
+    expect(
+      toDarshJQL({
+        collection: 'users',
+        where: [{ field: 'age', op: '>=', value: 18 }],
+        order: [{ field: 'createdAt', direction: 'desc' }],
+        limit: 20,
+        offset: 5,
+      }),
+    ).toEqual({
+      type: 'users',
+      $where: [{ attribute: 'age', op: 'Gte', value: 18 }],
+      $order: [{ attribute: 'createdAt', direction: 'Desc' }],
+      $limit: 20,
+      $offset: 5,
+    });
+  });
+
+  it('rejects operators the server does not implement', () => {
+    expect(() =>
+      toDarshJQL({
+        collection: 'users',
+        where: [{ field: 'role', op: 'in', value: ['admin'] }],
+      }),
+    ).toThrow('not supported by the DarshJDB server');
+  });
+});
+
+/* ========================================================================== */
+/*  Mutation translation                                                      */
+/* ========================================================================== */
+
+describe('toServerMutations', () => {
+  it('maps builder verbs onto server mutation verbs', () => {
+    expect(
+      toServerMutations([
+        { kind: 'set', entity: 'users', id: 'u1', data: { name: 'Alice' } },
+        { kind: 'merge', entity: 'users', id: 'u2', data: { age: 30 } },
+        { kind: 'delete', entity: 'posts', id: 'p1' },
+      ]),
+    ).toEqual([
+      { op: 'insert', entity: 'users', id: 'u1', data: { name: 'Alice' } },
+      { op: 'update', entity: 'users', id: 'u2', data: { age: 30 } },
+      { op: 'delete', entity: 'posts', id: 'p1' },
+    ]);
+  });
+
+  it('rejects link/unlink, which the server has no mutation for', () => {
+    expect(() =>
+      toServerMutations([
+        { kind: 'link', entity: 'users', id: 'u1', target: { entity: 't', id: '1' } },
+      ]),
+    ).toThrow('not supported by the DarshJDB server');
+  });
+});
+
+/* ========================================================================== */
+/*  REST transport is a real transport, not an inert flag                     */
+/* ========================================================================== */
+
+describe('transport: rest', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('routes queryOnce through POST /api/query', async () => {
+    const db = makeClient({ transport: 'rest' });
+    await db.connect();
+
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue({ data: [{ id: 'u1' }], meta: { count: 1 } }),
+    });
+    globalThis.fetch = fetchMock;
+
+    const result = await queryOnce(db, { collection: 'users', limit: 1 });
+
+    expect(result.data).toEqual([{ id: 'u1' }]);
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('https://db.example.com/api/query');
+    expect(JSON.parse(init.body as string)).toEqual({
+      query: { type: 'users', $limit: 1 },
+    });
+  });
+
+  it('routes transact through POST /api/mutate', async () => {
+    const db = makeClient({ transport: 'rest' });
+    await db.connect();
+
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue({ tx_id: 42, affected: 1, entity_ids: [] }),
+    });
+    globalThis.fetch = fetchMock;
+
+    const txId = await transact(db, (tx) => {
+      tx.users['u1']!.set({ name: 'Alice' });
+    });
+
+    expect(txId).toBe('42');
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('https://db.example.com/api/mutate');
+    expect(JSON.parse(init.body as string)).toEqual({
+      mutations: [
+        { op: 'insert', entity: 'users', id: 'u1', data: { name: 'Alice' } },
+      ],
+    });
+  });
+});
+
+/* ========================================================================== */
+/*  Reconnect re-subscribes live queries                                      */
+/* ========================================================================== */
+
+describe('reconnect hooks', () => {
+  it('invokes registered callbacks and stops after disposal', async () => {
+    const db = makeClient();
+    const calls: string[] = [];
+
+    const dispose = db.onReconnected(() => {
+      calls.push('a');
+    });
+    db.onReconnected(() => {
+      calls.push('b');
+    });
+
+    // Exercise the notification path the socket uses after re-authenticating.
+    (db as unknown as { _privateNotifyReconnected(): void })._privateNotifyReconnected();
+    await Promise.resolve();
+    expect(calls).toEqual(['a', 'b']);
+
+    dispose();
+    calls.length = 0;
+    (db as unknown as { _privateNotifyReconnected(): void })._privateNotifyReconnected();
+    await Promise.resolve();
+    expect(calls).toEqual(['b']);
+  });
+
+  it('re-subscribes live queries when the socket comes back', async () => {
+    const db = makeClient();
+    const sent: unknown[] = [];
+    let subCount = 0;
+
+    vi.spyOn(db, 'send').mockImplementation(async (msg) => {
+      sent.push(msg);
+      if (msg.type === 'sub') {
+        subCount++;
+        return {
+          type: 'sub-ok',
+          id: 'm1',
+          sub_id: `s${subCount}`,
+          initial: [],
+        } as ServerMessage;
+      }
+      return { type: 'unsub-ok', id: 'm1' } as ServerMessage;
+    });
+
+    subscribe(db, { collection: 'users' }, () => {});
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(subCount).toBe(1);
+
+    (db as unknown as { _privateNotifyReconnected(): void })._privateNotifyReconnected();
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(subCount).toBe(2);
   });
 });

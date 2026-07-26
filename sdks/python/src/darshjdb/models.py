@@ -61,6 +61,15 @@ class QueryResult:
         return len(self.data) > 0
 
 
+#: Past-tense event names emitted by the server pub/sub stream.
+_EVENT_ACTIONS = {
+    "CREATED": LiveAction.CREATE,
+    "INSERTED": LiveAction.CREATE,
+    "UPDATED": LiveAction.UPDATE,
+    "DELETED": LiveAction.DELETE,
+}
+
+
 @dataclass(frozen=True, slots=True)
 class LiveNotification:
     """
@@ -81,7 +90,7 @@ class LiveNotification:
         try:
             action = LiveAction(action_str)
         except ValueError:
-            action = LiveAction.UPDATE
+            action = _EVENT_ACTIONS.get(action_str, LiveAction.UPDATE)
 
         result = data.get("result", data.get("data", data))
         return cls(action=action, result=result)

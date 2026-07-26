@@ -80,11 +80,7 @@ impl ExecutorContext {
 
     /// Direct constructor for callers that already have the three
     /// handles materialised (tests, future portable call sites).
-    pub fn new(
-        pool: PgPool,
-        store: Arc<dyn Store>,
-        dialect: Arc<dyn SqlDialect>,
-    ) -> Self {
+    pub fn new(pool: PgPool, store: Arc<dyn Store>, dialect: Arc<dyn SqlDialect>) -> Self {
         Self {
             pool,
             store,
@@ -185,7 +181,10 @@ async fn execute_one(
             // don't support graph traversal because the read path
             // (->edge) won't be runnable anyway.
             if !ctx.dialect.supports_graph_traversal() {
-                return Err(refuse_unsupported(ctx.dialect.name(), "RELATE / graph edges"));
+                return Err(refuse_unsupported(
+                    ctx.dialect.name(),
+                    "RELATE / graph edges",
+                ));
             }
             exec_relate(ctx, r, start).await
         }

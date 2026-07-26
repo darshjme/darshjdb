@@ -27,7 +27,7 @@ use ddb_server::cluster::{
     ClusterState, LOCK_ANCHOR_WRITER, LOCK_EXPIRY_SWEEPER, NodeId, release_leader,
     spawn_singleton_task, try_acquire_leader,
 };
-use sqlx::PgPool;
+use sqlx::{Connection, PgPool};
 use std::sync::Arc;
 
 // ---------------------------------------------------------------------------
@@ -80,12 +80,11 @@ async fn only_one_replica_acquires_leader_lock() {
         "second session must NOT acquire the same advisory lock while A holds it"
     );
 
-    // Drop A — lock is released automatically when its session ends.
-    drop(conn_a);
-
-    // Give Postgres a moment to fully tear down session A. The drop above
-    // only queues the return; the actual `DISCARD ALL` cleanup runs async.
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    // End A's session outright — simulating a leader crash. Dropping the
+    // connection would only return it to the pool, where the reset that
+    // releases session-level advisory locks runs asynchronously; closing
+    // detaches it from the pool and tears the session down deterministically.
+    conn_a.detach().close().await.expect("close conn a");
 
     // B should now succeed.
     let b_retry = try_acquire_leader(&mut conn_b, TEST_LOCK).await.unwrap();

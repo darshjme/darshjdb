@@ -1,3 +1,5 @@
+'use client';
+
 /**
  * @module @darshjdb/react
  * @description React bindings for DarshJDB.
@@ -24,6 +26,9 @@
 // Provider & context -----------------------------------------------------------
 export { DarshanProvider, useDarshanClient, DarshanContext } from './provider';
 export type { DarshanProviderProps } from './provider';
+
+// Client factory ---------------------------------------------------------------
+export { createDarshanClient } from './create-client';
 
 // Hooks ------------------------------------------------------------------------
 export { useQuery } from './use-query';

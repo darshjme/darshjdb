@@ -1,8 +1,18 @@
 //! Storage engine for DarshJDB.
 //!
-//! Provides a unified interface for file storage with pluggable backends:
-//! local filesystem, Amazon S3, Cloudflare R2, and MinIO. All backends
-//! implement the [`StorageBackend`] trait.
+//! Provides a unified interface for file storage with pluggable backends.
+//! All backends implement the [`StorageBackend`] trait.
+//!
+//! - [`LocalFsBackend`] — local filesystem. This is the only backend that
+//!   exists, and the only one the server wires up (`main.rs` builds it
+//!   unconditionally and `AppState.storage_engine` is typed
+//!   `StorageEngine<LocalFsBackend>`).
+//!
+//! An `S3Backend` (S3 / Cloudflare R2 / MinIO, built on `aws-sdk-s3`) was
+//! removed in 0.4.0: nothing in the server ever constructed it, and the AWS
+//! SDK pulled the unmaintained rustls 0.21 / rustls-webpki 0.101 chain
+//! (RUSTSEC-2026-0098, -0099, -0104) into every build. See git history if it
+//! is ever reinstated.
 //!
 //! # Data backends
 //!
@@ -30,7 +40,7 @@
 //! ## Architecture
 //!
 //! ```text
-//! Client ──▶ StorageEngine ──▶ Backend (LocalFs | S3 | R2 | MinIO)
+//! Client ──▶ StorageEngine ──▶ Backend (LocalFs)
 //!                │                         │
 //!                ├── UploadHook (pre)       ├── put_object
 //!                ├── UploadHook (post)      ├── get_object
@@ -597,342 +607,6 @@ impl StorageBackend for LocalFsBackend {
 }
 
 // ---------------------------------------------------------------------------
-// S3-compatible backend (stub for S3, R2, MinIO)
-// ---------------------------------------------------------------------------
-
-/// Configuration for S3-compatible storage backends.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct S3Config {
-    /// S3 endpoint URL (e.g., `https://s3.amazonaws.com` or a MinIO/R2 endpoint).
-    pub endpoint: String,
-    /// Bucket name.
-    pub bucket: String,
-    /// AWS region.
-    pub region: String,
-    /// Access key ID.
-    pub access_key_id: String,
-    /// Secret access key.
-    pub secret_access_key: String,
-    /// Optional path prefix within the bucket.
-    pub prefix: Option<String>,
-    /// Whether to use path-style addressing (for MinIO, etc.).
-    pub path_style: bool,
-}
-
-/// S3-compatible storage backend.
-///
-/// Works with Amazon S3, Cloudflare R2, MinIO, and any S3-compatible
-/// service. Uses the `aws-sdk-s3` crate under the hood with native
-/// AWS Signature V4 authentication.
-///
-/// # Environment Variables
-///
-/// - `DDB_S3_BUCKET` — bucket name (overrides config)
-/// - `DDB_S3_REGION` — AWS region (overrides config)
-/// - `DDB_S3_ACCESS_KEY` — access key ID (overrides config)
-/// - `DDB_S3_SECRET_KEY` — secret access key (overrides config)
-/// - `DDB_S3_ENDPOINT` — custom endpoint for R2/MinIO (overrides config)
-pub struct S3Backend {
-    client: aws_sdk_s3::Client,
-    bucket: String,
-    prefix: Option<String>,
-}
-
-impl S3Backend {
-    /// Create a new S3-compatible backend with the given configuration.
-    ///
-    /// Environment variables take precedence over `S3Config` fields,
-    /// allowing runtime override without recompilation.
-    pub async fn new(config: S3Config) -> Self {
-        // Environment overrides for 12-factor compat.
-        let endpoint = std::env::var("DDB_S3_ENDPOINT").unwrap_or_else(|_| config.endpoint.clone());
-        let region = std::env::var("DDB_S3_REGION").unwrap_or_else(|_| config.region.clone());
-        let access_key =
-            std::env::var("DDB_S3_ACCESS_KEY").unwrap_or_else(|_| config.access_key_id.clone());
-        let secret_key =
-            std::env::var("DDB_S3_SECRET_KEY").unwrap_or_else(|_| config.secret_access_key.clone());
-        let bucket = std::env::var("DDB_S3_BUCKET").unwrap_or_else(|_| config.bucket.clone());
-
-        let creds = aws_credential_types::Credentials::new(
-            &access_key,
-            &secret_key,
-            None, // session token
-            None, // expiry
-            "darshjdb-s3-config",
-        );
-
-        let mut s3_config_builder = aws_sdk_s3::config::Builder::new()
-            .behavior_version_latest()
-            .region(aws_types::region::Region::new(region))
-            .credentials_provider(creds)
-            .endpoint_url(&endpoint)
-            .force_path_style(config.path_style);
-
-        // Cloudflare R2 and MinIO do not support S3 checksums —
-        // disable to avoid 400 errors.
-        s3_config_builder = s3_config_builder
-            .request_checksum_calculation(
-                aws_types::sdk_config::RequestChecksumCalculation::WhenRequired,
-            )
-            .response_checksum_validation(
-                aws_types::sdk_config::ResponseChecksumValidation::WhenRequired,
-            );
-
-        let client = aws_sdk_s3::Client::from_conf(s3_config_builder.build());
-
-        Self {
-            client,
-            bucket,
-            prefix: config.prefix,
-        }
-    }
-
-    /// Get the effective object key (with prefix if configured).
-    ///
-    /// Validates the path to prevent traversal in S3 keys.
-    fn effective_key(&self, path: &str) -> Result<String, StorageError> {
-        // Reject null bytes, empty paths, absolute paths, and traversal.
-        if path.contains('\0') {
-            return Err(StorageError::InvalidPath(
-                "null bytes are not allowed in paths".into(),
-            ));
-        }
-        if path.is_empty() {
-            return Err(StorageError::InvalidPath(
-                "empty path is not allowed".into(),
-            ));
-        }
-        if path.starts_with('/') {
-            return Err(StorageError::InvalidPath(
-                "absolute paths are not allowed".into(),
-            ));
-        }
-        if path.contains("..") {
-            return Err(StorageError::InvalidPath(
-                "path traversal is not allowed".into(),
-            ));
-        }
-        Ok(match &self.prefix {
-            Some(prefix) => format!("{prefix}/{path}"),
-            None => path.to_string(),
-        })
-    }
-
-    /// Map AWS SDK errors to StorageError.
-    fn map_sdk_error<E: std::fmt::Display>(err: E, path: &str) -> StorageError {
-        let msg = err.to_string();
-        if msg.contains("NoSuchKey") || msg.contains("NotFound") || msg.contains("404") {
-            StorageError::NotFound(path.to_string())
-        } else if msg.contains("AccessDenied") || msg.contains("403") {
-            StorageError::BackendUnavailable(format!("access denied: {msg}"))
-        } else {
-            StorageError::Io(msg)
-        }
-    }
-}
-
-impl StorageBackend for S3Backend {
-    async fn put_object(
-        &self,
-        path: &str,
-        data: &[u8],
-        content_type: &str,
-        metadata: &HashMap<String, String>,
-    ) -> Result<String, StorageError> {
-        let key = self.effective_key(path)?;
-
-        let body = aws_sdk_s3::primitives::ByteStream::from(data.to_vec());
-
-        let mut req = self
-            .client
-            .put_object()
-            .bucket(&self.bucket)
-            .key(&key)
-            .body(body)
-            .content_type(content_type);
-
-        // Attach user-defined metadata.
-        for (k, v) in metadata {
-            req = req.metadata(k, v);
-        }
-
-        let output = req.send().await.map_err(|e| Self::map_sdk_error(e, path))?;
-
-        // Return the ETag from S3 (strip surrounding quotes if present).
-        let etag = output.e_tag().unwrap_or("").trim_matches('"').to_string();
-
-        Ok(etag)
-    }
-
-    async fn get_object(&self, path: &str) -> Result<(Vec<u8>, ObjectMeta), StorageError> {
-        let key = self.effective_key(path)?;
-
-        let output = self
-            .client
-            .get_object()
-            .bucket(&self.bucket)
-            .key(&key)
-            .send()
-            .await
-            .map_err(|e| Self::map_sdk_error(e, path))?;
-
-        let content_type = output
-            .content_type()
-            .unwrap_or("application/octet-stream")
-            .to_string();
-        let content_length = output.content_length().unwrap_or(0) as u64;
-        let etag = output.e_tag().unwrap_or("").trim_matches('"').to_string();
-        let last_modified: chrono::DateTime<chrono::Utc> = output
-            .last_modified()
-            .and_then(|t| {
-                let secs = t.secs();
-                chrono::DateTime::from_timestamp(secs, t.subsec_nanos())
-            })
-            .unwrap_or_else(chrono::Utc::now);
-
-        // Collect user metadata.
-        let metadata: HashMap<String, String> = output
-            .metadata()
-            .map(|m| m.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
-            .unwrap_or_default();
-
-        // Read body into memory.
-        let data = output
-            .body
-            .collect()
-            .await
-            .map_err(|e| StorageError::Io(format!("failed to read S3 body: {e}")))?
-            .into_bytes()
-            .to_vec();
-
-        let obj_meta = ObjectMeta {
-            path: path.to_string(),
-            size: content_length,
-            content_type,
-            etag,
-            created_at: last_modified,
-            modified_at: last_modified,
-            metadata,
-        };
-
-        Ok((data, obj_meta))
-    }
-
-    async fn delete_object(&self, path: &str) -> Result<(), StorageError> {
-        let key = self.effective_key(path)?;
-
-        self.client
-            .delete_object()
-            .bucket(&self.bucket)
-            .key(&key)
-            .send()
-            .await
-            .map_err(|e| Self::map_sdk_error(e, path))?;
-
-        Ok(())
-    }
-
-    async fn head_object(&self, path: &str) -> Result<ObjectMeta, StorageError> {
-        let key = self.effective_key(path)?;
-
-        let output = self
-            .client
-            .head_object()
-            .bucket(&self.bucket)
-            .key(&key)
-            .send()
-            .await
-            .map_err(|e| Self::map_sdk_error(e, path))?;
-
-        let content_type = output
-            .content_type()
-            .unwrap_or("application/octet-stream")
-            .to_string();
-        let content_length = output.content_length().unwrap_or(0) as u64;
-        let etag = output.e_tag().unwrap_or("").trim_matches('"').to_string();
-        let last_modified: chrono::DateTime<chrono::Utc> = output
-            .last_modified()
-            .and_then(|t| {
-                let secs = t.secs();
-                chrono::DateTime::from_timestamp(secs, t.subsec_nanos())
-            })
-            .unwrap_or_else(chrono::Utc::now);
-
-        let metadata: HashMap<String, String> = output
-            .metadata()
-            .map(|m| m.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
-            .unwrap_or_default();
-
-        Ok(ObjectMeta {
-            path: path.to_string(),
-            size: content_length,
-            content_type,
-            etag,
-            created_at: last_modified,
-            modified_at: last_modified,
-            metadata,
-        })
-    }
-
-    async fn list_objects(
-        &self,
-        prefix: &str,
-        limit: usize,
-        cursor: Option<&str>,
-    ) -> Result<Vec<ObjectMeta>, StorageError> {
-        let effective_prefix = self.effective_key(prefix)?;
-
-        let mut req = self
-            .client
-            .list_objects_v2()
-            .bucket(&self.bucket)
-            .prefix(&effective_prefix)
-            .max_keys(limit as i32);
-
-        if let Some(token) = cursor {
-            req = req.continuation_token(token);
-        }
-
-        let output = req
-            .send()
-            .await
-            .map_err(|e| Self::map_sdk_error(e, prefix))?;
-
-        let mut entries = Vec::new();
-        for obj in output.contents() {
-            let obj_key: &str = obj.key().unwrap_or("");
-            // Strip the prefix back to get the user-facing path.
-            let user_path = match &self.prefix {
-                Some(pfx) => obj_key.strip_prefix(&format!("{pfx}/")).unwrap_or(obj_key),
-                None => obj_key,
-            };
-
-            let last_modified: chrono::DateTime<chrono::Utc> = obj
-                .last_modified()
-                .and_then(|t: &aws_sdk_s3::primitives::DateTime| {
-                    let secs = t.secs();
-                    chrono::DateTime::from_timestamp(secs, t.subsec_nanos())
-                })
-                .unwrap_or_else(chrono::Utc::now);
-
-            let etag = obj.e_tag().unwrap_or("").trim_matches('"').to_string();
-
-            entries.push(ObjectMeta {
-                path: user_path.to_string(),
-                size: obj.size().unwrap_or(0) as u64,
-                content_type: "application/octet-stream".to_string(),
-                etag,
-                created_at: last_modified,
-                modified_at: last_modified,
-                metadata: HashMap::new(),
-            });
-        }
-
-        Ok(entries)
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Storage engine (orchestrator)
 // ---------------------------------------------------------------------------
 
@@ -993,6 +667,11 @@ impl<B: StorageBackend> StorageEngine<B> {
     /// Set the maximum upload size in bytes.
     pub fn set_max_upload_size(&mut self, size: u64) {
         self.max_upload_size = size;
+    }
+
+    /// The maximum upload size in bytes (`0` = unlimited).
+    pub fn max_upload_size(&self) -> u64 {
+        self.max_upload_size
     }
 
     /// Add an upload hook.
@@ -1386,31 +1065,6 @@ mod tests {
         assert!(backend.resolve_path("uploads/image.png").is_ok());
         assert!(backend.resolve_path("a.txt").is_ok());
         let _ = std::fs::remove_dir_all("/tmp/darshjdb-test-pt6");
-    }
-
-    // -----------------------------------------------------------------------
-    // S3 backend path validation
-    // -----------------------------------------------------------------------
-
-    #[tokio::test]
-    async fn s3_effective_key_rejects_traversal() {
-        let backend = S3Backend::new(S3Config {
-            endpoint: "https://s3.example.com".into(),
-            bucket: "test".into(),
-            region: "us-east-1".into(),
-            access_key_id: "key".into(),
-            secret_access_key: "secret".into(),
-            prefix: Some("data".into()),
-            path_style: false,
-        })
-        .await;
-        assert!(backend.effective_key("../../../etc/passwd").is_err());
-        assert!(backend.effective_key("").is_err());
-        assert!(backend.effective_key("/absolute").is_err());
-        assert!(backend.effective_key("file\0.txt").is_err());
-        assert!(backend.effective_key("safe/file.txt").is_ok());
-        let key = backend.effective_key("safe/file.txt").unwrap();
-        assert_eq!(key, "data/safe/file.txt");
     }
 
     // -----------------------------------------------------------------------
@@ -1826,17 +1480,25 @@ mod tests {
 
         let id = engine.create_resumable_upload("file.bin", "application/octet-stream", Some(100));
 
-        let next = engine.append_chunk(id, 0, &[0u8; 50]).await.expect("chunk 1");
+        let next = engine
+            .append_chunk(id, 0, &[0u8; 50])
+            .await
+            .expect("chunk 1");
         assert_eq!(next, 50);
 
-        let next = engine.append_chunk(id, 50, &[0u8; 50]).await.expect("chunk 2");
+        let next = engine
+            .append_chunk(id, 50, &[0u8; 50])
+            .await
+            .expect("chunk 2");
         assert_eq!(next, 100);
 
         let status = engine.resumable_upload_status(id).expect("status");
         assert_eq!(status.bytes_received, 100);
 
         // Verify chunk files were persisted to staging.
-        let chunk_dir = std::path::Path::new(&dir).join(".staging").join(id.to_string());
+        let chunk_dir = std::path::Path::new(&dir)
+            .join(".staging")
+            .join(id.to_string());
         assert!(chunk_dir.join("0.chunk").exists());
         assert!(chunk_dir.join("50.chunk").exists());
 
@@ -1849,7 +1511,10 @@ mod tests {
         let engine = make_engine(&dir);
 
         let id = engine.create_resumable_upload("file.bin", "application/octet-stream", Some(100));
-        engine.append_chunk(id, 0, &[0u8; 50]).await.expect("chunk 1");
+        engine
+            .append_chunk(id, 0, &[0u8; 50])
+            .await
+            .expect("chunk 1");
 
         // Try to append at offset 0 again (should be 50).
         let result = engine.append_chunk(id, 0, &[0u8; 10]).await;
@@ -1902,7 +1567,10 @@ mod tests {
         let status = engine.resumable_upload_status(id).expect("status");
         assert!(status.total_size.is_none());
 
-        engine.append_chunk(id, 0, &[1u8; 1024]).await.expect("chunk");
+        engine
+            .append_chunk(id, 0, &[1u8; 1024])
+            .await
+            .expect("chunk");
         let status = engine.resumable_upload_status(id).expect("status");
         assert_eq!(status.bytes_received, 1024);
 

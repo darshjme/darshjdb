@@ -49,6 +49,10 @@ postgresql:
     persistence:
       size: 10Gi
 
+externalDatabase:
+  # Required when postgresql.enabled is false: postgres://user:pass@host:5432/db
+  url: ""
+
 env:
   RUST_LOG: info
   DDB_PORT: "7700"

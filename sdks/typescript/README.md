@@ -30,14 +30,17 @@ await db.update('users:darsh', { age: 31 });
 // Delete
 await db.delete('users:darsh');
 
-// Query
-const results = await db.query('SELECT * FROM users WHERE age > 18');
+// Query (DarshanQL)
+const results = await db.query({
+  type: 'users',
+  $where: [{ attribute: 'age', op: 'Gt', value: 18 }],
+});
 
 // Graph relations
 await db.relate('user:darsh', 'works_at', 'company:knowai');
 
 // Live queries (WebSocket)
-const stream = await db.live('SELECT * FROM users');
+const stream = await db.live('users');
 stream.on('change', (data) => {
   console.log(data.action, data.result);
 });
@@ -85,8 +88,12 @@ await db.use('namespace', 'database');
 ### CRUD
 
 ```typescript
-// Select all from table
+// Select all from table — every page the server offers is followed
 const users = await db.select('users');
+
+// One page at a time, with the server's pagination metadata
+const page = await db.selectPage('users', { limit: 100 });
+console.log(page.data, page.hasMore, page.cursor);
 
 // Select specific record
 const user = await db.select('users:darsh');
@@ -109,21 +116,53 @@ await db.delete('users');
 
 ### Queries
 
+`/api/query` takes a DarshanQL object; a bare table name is accepted as
+shorthand. SQL strings are rejected client-side.
+
 ```typescript
-const results = await db.query('SELECT * FROM users WHERE age > $min_age', {
-  min_age: 18,
-});
+const results = await db.query(
+  {
+    type: 'users',
+    $where: [{ attribute: 'age', op: 'Gt', value: 18 }],
+    $order: [{ attribute: 'created_at', direction: 'Desc' }],
+    $limit: 50,
+  },
+  { min_age: 18 },
+);
 
 for (const qr of results) {
   console.log(qr.data);
   console.log(qr.meta.count);
+}
+
+// Shorthand for { type: 'users' }
+const everyone = await db.query('users');
+```
+
+Operators: `Eq`, `Neq`, `Gt`, `Gte`, `Lt`, `Lte`, `Contains`, `Like`.
+
+### Batch
+
+```typescript
+const results = await db.batch([
+  { type: 'query', id: 'q1', body: { type: 'users' } },
+  {
+    type: 'mutate',
+    id: 'm1',
+    body: { mutations: [{ op: 'insert', entity: 'users', data: { name: 'A' } }] },
+  },
+  { type: 'fn', id: 'f1', name: 'ping', args: {} },
+]);
+
+for (const r of results) {
+  console.log(r.id, r.status, r.data ?? r.error);
 }
 ```
 
 ### Live Queries
 
 ```typescript
-const stream = await db.live('SELECT * FROM users');
+const stream = await db.live('users');
 stream.on('change', (data) => {
   console.log(data.action); // LiveAction.Create / Update / Delete
   console.log(data.result);
@@ -159,7 +198,7 @@ interface User {
 const users = await db.select<User>('users');
 // users is User[]
 
-const results = await db.query<User>('SELECT * FROM users');
+const results = await db.query<User>({ type: 'users' });
 // results[0].data is User[]
 ```
 

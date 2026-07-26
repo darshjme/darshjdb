@@ -370,6 +370,14 @@ services:
       RUST_LOG: ${RUST_LOG:-info}
     ports:
       - "7701:7701"
+    # The image healthcheck probes ddb-server on 7700; this container runs
+    # the RESP3 server instead, so probe its own port.
+    healthcheck:
+      test: ["CMD-SHELL", "timeout 2 bash -c '</dev/tcp/127.0.0.1/7701'"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     restart: unless-stopped
     logging: *default-logging
     networks:

@@ -45,11 +45,9 @@ todo-app/
 ### Initializing the client
 
 ```tsx
-import { DarshanProvider, DarshJDB } from "@darshjdb/react";
+import { DarshanProvider } from "@darshjdb/react";
 
-const db = DarshJDB.init({ url: "http://localhost:7700" });
-
-<DarshanProvider db={db}>
+<DarshanProvider serverUrl="http://localhost:7700" appId="todo-example">
   <App />
 </DarshanProvider>
 ```
@@ -57,14 +55,20 @@ const db = DarshJDB.init({ url: "http://localhost:7700" });
 ### Live query
 
 ```tsx
-const { data, isLoading } = useQuery({
-  todos: { $order: { createdAt: "desc" } },
+const { data: todos, isLoading } = useQuery({
+  collection: "todos",
+  orderBy: [{ field: "createdAt", direction: "desc" }],
 });
 ```
 
 ### Mutations
 
 ```tsx
-const createTodo = useMutation("createTodo");
-await createTodo({ title: "Learn DarshJDB" });
+const { mutate } = useMutation();
+
+await mutate({
+  type: "insert",
+  collection: "todos",
+  data: { title: "Learn DarshJDB", done: false, createdAt: Date.now() },
+});
 ```

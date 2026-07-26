@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace Darshjdb\Laravel;
 
-use Illuminate\Support\Facades\Facade;
+use Illuminate\Support\Facades\Facade as BaseFacade;
 
 /**
  * Laravel facade for the DarshJDB client.
@@ -27,7 +27,7 @@ use Illuminate\Support\Facades\Facade;
  *
  * @see \Darshjdb\Client
  */
-class Facade extends Facade
+class Facade extends BaseFacade
 {
     /**
      * Get the registered name of the component.

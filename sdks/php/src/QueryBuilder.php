@@ -161,7 +161,7 @@ class QueryBuilder
      */
     public function update(string $id, array $data): array
     {
-        return $this->client->post("/api/data/{$this->entity}/{$id}", $data);
+        return $this->client->patch("/api/data/{$this->entity}/{$id}", $data);
     }
 
     /**

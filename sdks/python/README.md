@@ -37,14 +37,17 @@ async def main():
     # Delete
     await db.delete("users:darsh")
 
-    # Query
-    results = await db.query("SELECT * FROM users WHERE age > 18")
+    # Query (DarshanQL)
+    results = await db.query({
+        "type": "users",
+        "$where": [{"attribute": "age", "op": "Gt", "value": 18}],
+    })
 
     # Graph relations
     await db.relate("user:darsh", "works_at", "company:knowai")
 
     # Live queries (WebSocket)
-    async for change in db.live("SELECT * FROM users"):
+    async for change in db.live("users"):
         print(f"{change.action}: {change.result}")
 
     # Server-side functions
@@ -119,8 +122,18 @@ await db.delete("users")          # all records in table
 
 ### Queries
 
+Queries are DarshanQL objects — the shape `POST /api/query` parses. A bare
+table name is accepted as shorthand; SQL strings are not.
+
 ```python
-results = await db.query("SELECT * FROM users WHERE age > $min_age", vars={"min_age": 18})
+results = await db.query({
+    "type": "users",
+    "$where": [{"attribute": "age", "op": "Gt", "value": 18}],
+    "$order": [{"attribute": "age", "direction": "Desc"}],
+    "$limit": 20,
+})
+
+results = await db.query("users")  # shorthand for {"type": "users"}
 
 for qr in results:
     print(qr.data)       # list of records
@@ -131,9 +144,30 @@ for qr in results:
 ### Live Queries
 
 ```python
-async for change in db.live("SELECT * FROM users"):
+async for change in db.live("users"):
     print(change.action)  # LiveAction.CREATE / UPDATE / DELETE
     print(change.result)  # the record
+```
+
+### Subscriptions (SSE)
+
+```python
+async def on_event(event):
+    print(event)
+
+channel = await db.subscribe("users", on_event)  # raises if the server rejects
+```
+
+### Batch
+
+```python
+results = await db.batch([
+    {"type": "query", "id": "q1", "body": {"type": "users"}},
+    {"type": "mutate", "id": "m1", "body": {"mutations": [
+        {"op": "insert", "entity": "users", "data": {"name": "A"}},
+    ]}},
+    {"type": "fn", "id": "f1", "name": "ping", "args": {}},
+])
 ```
 
 ### Graph Relations

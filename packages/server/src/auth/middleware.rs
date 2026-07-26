@@ -103,13 +103,7 @@ pub async fn auth_middleware(
 
     // Rate-limit check.
     let rate_key = if let Some(ref tok) = token {
-        // Hash the token prefix to avoid storing raw token material in
-        // the rate limiter's DashMap. A SHA-256 of the first 16 bytes
-        // provides sufficient bucketing without leaking token content.
-        use sha2::Digest;
-        let prefix = &tok[..std::cmp::min(tok.len(), 16)];
-        let hash = sha2::Sha256::digest(prefix.as_bytes());
-        RateLimitKey::Token(data_encoding::HEXLOWER.encode(&hash[..16]))
+        RateLimitKey::from_token(tok)
     } else if let Some(ref key) = api_key {
         RateLimitKey::ApiKey(key[..std::cmp::min(key.len(), 16)].to_string())
     } else {
@@ -205,6 +199,18 @@ pub enum RateLimitKey {
     UserId(Uuid),
     /// Keyed by API key.
     ApiKey(String),
+}
+
+impl RateLimitKey {
+    /// Build a [`RateLimitKey::Token`] from a raw bearer token.
+    ///
+    /// The full token is hashed so that distinct sessions land in distinct
+    /// buckets while no raw token material is stored in the limiter.
+    pub fn from_token(token: &str) -> Self {
+        use sha2::Digest;
+        let hash = sha2::Sha256::digest(token.as_bytes());
+        RateLimitKey::Token(data_encoding::HEXLOWER.encode(&hash[..16]))
+    }
 }
 
 /// A single token bucket for rate limiting.
@@ -483,6 +489,25 @@ mod tests {
         let limiter = RateLimiter::new();
         let key = RateLimitKey::ApiKey("sk-test-123".into());
         assert!(limiter.check(&key, true).is_ok());
+    }
+
+    #[test]
+    fn distinct_tokens_produce_distinct_rate_limit_keys() {
+        let header = "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiIsImtpZCI6ImsxIn0";
+        let token_a = format!("{header}.eyJzdWIiOiJ1c2VyLWEifQ.signature-a");
+        let token_b = format!("{header}.eyJzdWIiOiJ1c2VyLWIifQ.signature-b");
+
+        let key_a = RateLimitKey::from_token(&token_a);
+        let key_b = RateLimitKey::from_token(&token_b);
+        assert_ne!(key_a, key_b);
+        assert_eq!(key_a, RateLimitKey::from_token(&token_a));
+
+        let limiter = RateLimiter::new();
+        for _ in 0..100 {
+            assert!(limiter.check(&key_a, true).is_ok());
+        }
+        assert!(limiter.check(&key_a, true).is_err());
+        assert!(limiter.check(&key_b, true).is_ok());
     }
 
     #[test]

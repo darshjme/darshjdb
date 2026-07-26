@@ -339,7 +339,7 @@ async fn ipfs_add_impl(_api_url: &str, batch_root: &str) -> AnchorResult<String>
     // "Qm" + first 44 chars of the batch root — not a real CID, but
     // uniquely derived, of the right length, and clearly fake on
     // inspection. Never used when the real feature is on.
-    let mock = format!("Qm{}", &batch_root.chars().take(44).collect::<String>());
+    let mock = format!("Qm{}", batch_root.chars().take(44).collect::<String>());
     Ok(mock)
 }
 
@@ -350,20 +350,35 @@ async fn ipfs_add_impl(api_url: &str, batch_root: &str) -> AnchorResult<String> 
     use ipfs_api_backend_hyper::{IpfsApi, IpfsClient, TryFromUri};
     use std::io::Cursor;
 
-    let client = IpfsClient::from_str(api_url)
-        .map_err(|e| AnchorError::Backend(format!("ipfs client init: {e}")))?;
-
+    let api_url = api_url.to_string();
     let payload = serde_json::json!({
         "kind": "darshjdb.batch_root",
         "batch_root": batch_root,
     })
     .to_string();
 
-    let resp = client
-        .add(Cursor::new(payload))
-        .await
-        .map_err(|e| AnchorError::Backend(format!("ipfs add: {e}")))?;
-    Ok(resp.hash)
+    // `IpfsClient`'s response futures are not `Send`, so they cannot be
+    // awaited directly inside the `Send` future `#[async_trait]` requires.
+    // Drive them on a dedicated current-thread runtime instead.
+    tokio::task::spawn_blocking(move || {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| AnchorError::Backend(format!("ipfs runtime init: {e}")))?;
+
+        rt.block_on(async move {
+            let client = IpfsClient::from_str(&api_url)
+                .map_err(|e| AnchorError::Backend(format!("ipfs client init: {e}")))?;
+
+            let resp = client
+                .add(Cursor::new(payload))
+                .await
+                .map_err(|e| AnchorError::Backend(format!("ipfs add: {e}")))?;
+            Ok(resp.hash)
+        })
+    })
+    .await
+    .map_err(|e| AnchorError::Backend(format!("ipfs add task: {e}")))?
 }
 
 // ── EthereumAnchorer ───────────────────────────────────────────────
@@ -661,10 +676,11 @@ mod tests {
         assert_eq!(anchorer.chain(), AnchorChain::None);
     }
 
+    // Only meaningful with `anchor-ipfs` off: with the feature on this
+    // path talks to a real daemon, which CI does not run.
+    #[cfg(not(feature = "anchor-ipfs"))]
     #[tokio::test]
     async fn ipfs_mock_produces_cid_shape() {
-        // With `anchor-ipfs` off (default in CI), the mock should
-        // return a CID-shaped string derived from the batch root.
         let anchorer = IpfsAnchorer::new("http://localhost:5001");
         let receipt = anchorer
             .anchor(
@@ -675,13 +691,10 @@ mod tests {
             .expect("mock IPFS must not fail");
 
         assert_eq!(receipt.chain, "ipfs");
-        #[cfg(not(feature = "anchor-ipfs"))]
-        {
-            let cid = receipt.ipfs_cid.as_deref().unwrap_or("");
-            assert!(cid.starts_with("Qm"), "mock CID must start with Qm");
-            assert_eq!(cid.len(), 46, "CIDv0 length = 46");
-            assert_eq!(receipt.status, "confirmed");
-        }
+        let cid = receipt.ipfs_cid.as_deref().unwrap_or("");
+        assert!(cid.starts_with("Qm"), "mock CID must start with Qm");
+        assert_eq!(cid.len(), 46, "CIDv0 length = 46");
+        assert_eq!(receipt.status, "confirmed");
     }
 
     #[test]

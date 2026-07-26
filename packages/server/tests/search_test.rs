@@ -323,7 +323,7 @@ async fn search_hybrid_returns_merged_ranking() {
             (
                 vector_winner,
                 "HybridTestDoc",
-                "this body has nothing in common with the user query at all",
+                "darshjdb hybrid search notes, mentioned once",
             ),
             (
                 unrelated,
@@ -429,8 +429,17 @@ async fn search_hybrid_returns_merged_ranking() {
         );
     }
 
-    // Bias the fusion heavily toward the semantic side: vector_winner
-    // (rank 1 on the semantic list, distance 0) must climb to the very top.
+    // Bias the fusion heavily toward the semantic side. Both winners appear in
+    // both lists, so the weight decides: vector_winner leads the semantic side
+    // (distance 0) and trails on text, text_winner the reverse. RRF's cross-list
+    // bonus is worth 1/(K+rank) to each, which cancels; only the weighted
+    // semantic gap remains, so vector_winner takes the top slot. An entity
+    // present in just one list could not win this at any comparable weight —
+    // rewarding agreement across both lists is the point of RRF.
+    //
+    // plainto_tsquery ANDs its terms, so vector_winner's body has to carry
+    // every word of the query to appear on the text side at all; it says
+    // "darshjdb" once against text_winner's four, which puts it second there.
     let fused_sem_heavy = rrf_fuse(&semantic_rows, &text_rows, 10.0, 1.0);
     if !fused_sem_heavy.is_empty() {
         // The first fused hit's id must be the semantic-side winner.

@@ -285,19 +285,27 @@ impl GenericOAuth2Provider {
         Ok(())
     }
 
-    /// Generate a PKCE code verifier and challenge (S256).
-    fn pkce_pair() -> (String, String) {
-        let mut verifier_bytes = [0u8; 32];
-        OsRng.fill_bytes(&mut verifier_bytes);
-        let verifier = data_encoding::BASE64URL_NOPAD.encode(&verifier_bytes);
+    /// Derive the PKCE code verifier bound to a signed state parameter.
+    ///
+    /// The verifier is `HMAC-SHA256(secret, "pkce:" || nonce)` over the state
+    /// nonce, so the redirect callback can recompute it from the `state` query
+    /// parameter alone — the browser carries no verifier across the redirect.
+    pub fn pkce_verifier_for_state(state: &str, secret: &[u8]) -> Result<String, AuthError> {
+        let nonce = state.split('.').next().unwrap_or_default();
 
-        let challenge = {
-            use sha2::Digest;
-            let hash = sha2::Sha256::digest(verifier.as_bytes());
-            data_encoding::BASE64URL_NOPAD.encode(&hash)
-        };
+        let mut mac = Hmac::<Sha256>::new_from_slice(secret)
+            .map_err(|e| AuthError::Crypto(format!("hmac key: {e}")))?;
+        mac.update(b"pkce:");
+        mac.update(nonce.as_bytes());
 
-        (verifier, challenge)
+        Ok(data_encoding::BASE64URL_NOPAD.encode(&mac.finalize().into_bytes()))
+    }
+
+    /// Compute the S256 PKCE challenge for a verifier.
+    fn pkce_challenge(verifier: &str) -> String {
+        use sha2::Digest;
+        let hash = sha2::Sha256::digest(verifier.as_bytes());
+        data_encoding::BASE64URL_NOPAD.encode(&hash)
     }
 
     /// Construct well-known configs for each supported provider.
@@ -484,7 +492,8 @@ impl OAuth2Provider for GenericOAuth2Provider {
         state_secret: &[u8],
     ) -> Result<(String, String, String), AuthError> {
         let state = Self::sign_state(state_secret)?;
-        let (verifier, challenge) = Self::pkce_pair();
+        let verifier = Self::pkce_verifier_for_state(&state, state_secret)?;
+        let challenge = Self::pkce_challenge(&verifier);
 
         let scopes = self.config.scopes.join(" ");
         let url = format!(
@@ -955,7 +964,10 @@ mod tests {
 
     #[test]
     fn pkce_challenge_is_s256() {
-        let (verifier, challenge) = GenericOAuth2Provider::pkce_pair();
+        let secret = b"test-pkce-challenge-secret-key!!";
+        let state = GenericOAuth2Provider::sign_state(secret).unwrap();
+        let verifier = GenericOAuth2Provider::pkce_verifier_for_state(&state, secret).unwrap();
+        let challenge = GenericOAuth2Provider::pkce_challenge(&verifier);
         use sha2::Digest;
         let hash = sha2::Sha256::digest(verifier.as_bytes());
         let expected = data_encoding::BASE64URL_NOPAD.encode(&hash);
@@ -964,15 +976,42 @@ mod tests {
 
     #[test]
     fn pkce_pairs_are_unique() {
-        let (v1, c1) = GenericOAuth2Provider::pkce_pair();
-        let (v2, c2) = GenericOAuth2Provider::pkce_pair();
+        let secret = b"test-pkce-uniqueness-secret-key!";
+        let s1 = GenericOAuth2Provider::sign_state(secret).unwrap();
+        let s2 = GenericOAuth2Provider::sign_state(secret).unwrap();
+        let v1 = GenericOAuth2Provider::pkce_verifier_for_state(&s1, secret).unwrap();
+        let v2 = GenericOAuth2Provider::pkce_verifier_for_state(&s2, secret).unwrap();
         assert_ne!(v1, v2, "PKCE verifiers must be unique");
-        assert_ne!(c1, c2, "PKCE challenges must be unique");
+        assert_ne!(
+            GenericOAuth2Provider::pkce_challenge(&v1),
+            GenericOAuth2Provider::pkce_challenge(&v2),
+            "PKCE challenges must be unique"
+        );
+    }
+
+    #[test]
+    fn pkce_verifier_is_derivable_from_state() {
+        let secret = b"test-pkce-derivation-secret-key!";
+        let state = GenericOAuth2Provider::sign_state(secret).unwrap();
+        let issued = GenericOAuth2Provider::pkce_verifier_for_state(&state, secret).unwrap();
+        let recovered = GenericOAuth2Provider::pkce_verifier_for_state(&state, secret).unwrap();
+        assert_eq!(issued, recovered);
+
+        let other = GenericOAuth2Provider::pkce_verifier_for_state(&state, b"a-different-secret!!")
+            .unwrap();
+        assert_ne!(issued, other);
     }
 
     #[test]
     fn pkce_verifier_is_base64url() {
-        let (verifier, _) = GenericOAuth2Provider::pkce_pair();
+        let secret = b"test-pkce-base64url-secret-key!!";
+        let state = GenericOAuth2Provider::sign_state(secret).unwrap();
+        let verifier = GenericOAuth2Provider::pkce_verifier_for_state(&state, secret).unwrap();
+        assert!(
+            verifier.len() >= 43 && verifier.len() <= 128,
+            "verifier length must satisfy RFC 7636: {}",
+            verifier.len()
+        );
         assert!(
             verifier
                 .chars()

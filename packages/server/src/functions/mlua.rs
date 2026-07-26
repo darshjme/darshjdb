@@ -831,7 +831,8 @@ pub fn install_ddb_api(lua: &Lua, ctx: Option<&MluaContext>) -> mlua::Result<()>
         kv.set(
             "set",
             lua.create_function(
-                move |_, (key, value, ttl_seconds): (String, String, Option<u64>)|
+                move |_,
+                      (key, value, ttl_seconds): (String, String, Option<u64>)|
                       -> mlua::Result<()> {
                     let ttl = match ttl_seconds {
                         Some(0) | None => None,
@@ -862,7 +863,8 @@ pub fn install_ddb_api(lua: &Lua, ctx: Option<&MluaContext>) -> mlua::Result<()>
             "get",
             lua.create_function(|_, _key: String| -> mlua::Result<LuaValue> {
                 Err(mlua::Error::RuntimeError(
-                    "ddb.kv.get: NotYetImplemented — runtime constructed without MluaContext".into(),
+                    "ddb.kv.get: NotYetImplemented — runtime constructed without MluaContext"
+                        .into(),
                 ))
             })?,
         )?;
@@ -871,7 +873,8 @@ pub fn install_ddb_api(lua: &Lua, ctx: Option<&MluaContext>) -> mlua::Result<()>
             lua.create_function(
                 |_, (_key, _val, _ttl): (String, String, Option<u64>)| -> mlua::Result<()> {
                     Err(mlua::Error::RuntimeError(
-                        "ddb.kv.set: NotYetImplemented — runtime constructed without MluaContext".into(),
+                        "ddb.kv.set: NotYetImplemented — runtime constructed without MluaContext"
+                            .into(),
                     ))
                 },
             )?,
@@ -880,7 +883,8 @@ pub fn install_ddb_api(lua: &Lua, ctx: Option<&MluaContext>) -> mlua::Result<()>
             "del",
             lua.create_function(|_, _key: String| -> mlua::Result<bool> {
                 Err(mlua::Error::RuntimeError(
-                    "ddb.kv.del: NotYetImplemented — runtime constructed without MluaContext".into(),
+                    "ddb.kv.del: NotYetImplemented — runtime constructed without MluaContext"
+                        .into(),
                 ))
             })?,
         )?;

@@ -12,7 +12,8 @@ const SCHEMA_LOCK_ID: i64 = 0x4442_4A44_5348_4D49;
 /// Storage backend selection for `ddb start`.
 #[derive(Clone, Debug, Default, clap::ValueEnum)]
 pub enum StorageBackend {
-    /// In-memory storage (data lost on restart, great for development)
+    /// Disposable PostgreSQL database for development — requires an explicit
+    /// connection string; DarshJDB has no in-process storage engine
     Memory,
     /// PostgreSQL-backed persistent storage (production)
     #[default]
@@ -42,6 +43,7 @@ pub async fn run(
     log_level: String,
     strict: bool,
     no_banner: bool,
+    watch: bool,
 ) -> Result<()> {
     if !no_banner {
         print_banner(&bind, &storage, conn.as_deref());
@@ -55,11 +57,15 @@ pub async fn run(
     // Resolve the database URL based on storage backend
     let is_memory_mode = matches!(storage, StorageBackend::Memory);
     let database_url = match storage {
-        StorageBackend::Memory => {
-            conn.unwrap_or_else(|| {
-                "postgres://postgres:darshan@localhost:5432/darshjdb_mem".to_string()
-            })
-        }
+        StorageBackend::Memory => conn
+            .or_else(|| std::env::var("DDB_MEMORY_URL").ok())
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "--storage memory is not an in-process store: every DarshJDB backend \
+                     is PostgreSQL-backed.\nPass --conn <postgres url> (or set DDB_MEMORY_URL) \
+                     pointing at a database you are willing to treat as disposable."
+                )
+            })?,
         StorageBackend::Postgres => {
             conn.unwrap_or_else(|| "postgres://darshan:darshan@localhost:5432/darshjdb".to_string())
         }
@@ -67,15 +73,14 @@ pub async fn run(
 
     // Initialize tracing with the configured level (passed directly, no env mutation)
     tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::new(&log_level),
-        )
+        .with_env_filter(tracing_subscriber::EnvFilter::new(&log_level))
         .init();
 
     if is_memory_mode {
-        tracing::warn!("running in memory mode — data will be lost on restart");
+        tracing::warn!(
+            "memory mode is a disposable PostgreSQL database — data persists there until dropped"
+        );
     }
-    let _ = (user, pass, strict); // CLI args reserved for future config-based auth
 
     tracing::info!("DarshJDB server starting");
     tracing::info!(storage = %storage, bind = %addr, "configuration");
@@ -119,6 +124,14 @@ pub async fn run(
         .execute(&pool)
         .await
         .context("Failed to release advisory lock")?;
+
+    // ── Root User Bootstrap ─────────────────────────────────────────
+    match (&user, &pass) {
+        (Some(u), Some(p)) => ensure_root_user(&pool, u, p).await?,
+        (Some(_), None) => anyhow::bail!("--user requires --pass"),
+        (None, Some(_)) => anyhow::bail!("--pass requires --user"),
+        (None, None) => {}
+    }
 
     // ── Auth Engine ─────────────────────────────────────────────────
     let jwt_secret = std::env::var("DDB_JWT_SECRET").ok();
@@ -278,6 +291,7 @@ pub async fn run(
 
     let ws_state = ddb_server::api::ws::WsState {
         sessions: sync_sessions.clone(),
+        auth_sessions: session_manager.clone(),
         registry: subscription_registry,
         presence: presence_manager,
         diff_tx,
@@ -294,6 +308,7 @@ pub async fn run(
             true,
         )),
         subscription_snapshots: Arc::new(dashmap::DashMap::new()),
+        permissions: Arc::new(ddb_server::auth::build_default_engine()),
     };
 
     tracing::info!("sync engine initialized");
@@ -357,10 +372,14 @@ pub async fn run(
                 .map(|v| v == "1" || v == "true")
                 .unwrap_or(false);
             if is_dev {
-                tracing::warn!("DDB_STORAGE_KEY not set — using insecure dev fallback. Do NOT use in production.");
+                tracing::warn!(
+                    "DDB_STORAGE_KEY not set — using insecure dev fallback. Do NOT use in production."
+                );
                 "dev-signing-key-insecure".to_string()
             } else {
-                panic!("DDB_STORAGE_KEY must be set in production. Set DDB_DEV=1 for development mode.");
+                panic!(
+                    "DDB_STORAGE_KEY must be set in production. Set DDB_DEV=1 for development mode."
+                );
             }
         }
     };
@@ -384,7 +403,10 @@ pub async fn run(
             (None, None)
         } else {
             match ddb_server::functions::FunctionRegistry::new(functions_dir_path.clone()).await {
-                Ok(registry) => {
+                Ok(mut registry) => {
+                    if watch && let Err(e) = registry.enable_hot_reload() {
+                        tracing::warn!(error = %e, "failed to enable function hot reload");
+                    }
                     let process_runtime = ddb_server::functions::runtime::ProcessRuntime::new(
                         ddb_server::functions::runtime::ProcessKind::Node,
                         harness_path,
@@ -439,6 +461,22 @@ pub async fn run(
         app_state = app_state.with_functions(reg, rt);
     }
     app_state = app_state.with_pubsub(pubsub_engine);
+
+    // ── Strict Schema Enforcement ───────────────────────────────────
+    match ddb_server::schema::strict::StrictSchemaEnforcer::new(pool.clone(), strict).await {
+        Ok(enforcer) => {
+            app_state = app_state.with_strict_schema(enforcer);
+            tracing::info!(strict, "strict schema enforcer initialized");
+        }
+        Err(e) if strict => {
+            return Err(anyhow::anyhow!(
+                "--strict requested but the strict schema enforcer failed to initialize: {e}"
+            ));
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "strict schema enforcer unavailable, continuing flexible");
+        }
+    }
 
     // ── CORS ────────────────────────────────────────────────────────
     use tower_http::cors::{Any, CorsLayer};
@@ -500,6 +538,36 @@ pub async fn run(
     .context("Server error")?;
 
     tracing::info!("DarshJDB server shut down gracefully");
+    Ok(())
+}
+
+/// Create (or update) the root admin user requested via `--user`/`--pass`.
+async fn ensure_root_user(pool: &sqlx::PgPool, user: &str, pass: &str) -> Result<()> {
+    let email = user.trim().to_lowercase();
+    if email.is_empty() {
+        anyhow::bail!("--user must not be empty");
+    }
+    if pass.len() < 8 {
+        anyhow::bail!("--pass must be at least 8 characters");
+    }
+
+    let password_hash = ddb_server::auth::PasswordProvider::hash_password(pass)
+        .map_err(|e| anyhow::anyhow!("Failed to hash root password: {e}"))?;
+
+    sqlx::query(
+        "INSERT INTO users (id, email, password_hash, roles) VALUES ($1, $2, $3, $4) \
+         ON CONFLICT (email) DO UPDATE SET password_hash = EXCLUDED.password_hash, \
+         roles = EXCLUDED.roles, updated_at = now()",
+    )
+    .bind(uuid::Uuid::new_v4())
+    .bind(&email)
+    .bind(&password_hash)
+    .bind(serde_json::json!(["admin"]))
+    .execute(pool)
+    .await
+    .context("Failed to create root user")?;
+
+    tracing::info!(%email, "root user ensured");
     Ok(())
 }
 

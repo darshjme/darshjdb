@@ -34,12 +34,14 @@
 export { DarshJDB, msgpackEncode, msgpackDecode } from './client.js';
 
 /* -- Query ---------------------------------------------------------------- */
-export { QueryBuilder, queryOnce, subscribe } from './query.js';
+export { QueryBuilder, queryOnce, subscribe, toDarshJQL } from './query.js';
 
 /* -- Transaction ---------------------------------------------------------- */
 export {
   TransactionBuilder,
   transact,
+  submitOps,
+  toServerMutations,
   generateId,
   type EntityProxy,
   type EntityCollectionProxy,
@@ -115,6 +117,15 @@ export type {
   UploadResult,
 
   /* Protocol */
+  DarshJQL,
+  DarshJQLOp,
+  DarshJQLWhere,
+  DarshJQLOrder,
+  ServerMutation,
+  ServerMutationOp,
   ClientMessage,
+  ClientRequest,
+  ClientNotification,
   ServerMessage,
+  PresenceMember,
 } from './types.js';

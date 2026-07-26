@@ -5,13 +5,97 @@ All notable changes to DarshJDB will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+> Note on versioning: the workspace is already at `0.4.0` (`Cargo.toml:12`) and the
+> `[0.4.0]` section below is written, but **`v0.4.0` has never been tagged or
+> released** — the newest published GitHub release is `v0.3.3`. Everything under
+> `[Unreleased]` will therefore ship as part of `v0.4.0` when it is actually cut.
+
+### Security
+
+Dependency-advisory cleanup, so that `cargo audit` passes on its own merits
+rather than by being switched off. `cargo audit` now exits 0. Verified with
+cargo-audit 0.22.2 against an advisory database of 1169 advisories and a
+796-crate `Cargo.lock`.
+
+**Fixed by upgrading** (lockfile-only bumps, no manifest changes):
+
+- `quinn-proto` 0.11.14 -> 0.11.16
+- `rustls-webpki` 0.103.10 -> 0.103.13
+- `crossbeam-epoch` 0.9.18 -> 0.9.20
+- `lettre` 0.11.21 -> 0.11.22
+- `sqlx` bumped to 0.8.6 by unifying the `rusqlite` declaration
+
+**Fixed by deleting the vulnerable code path** — the dead `S3Backend` and the
+four AWS SDK dependencies (`aws-sdk-s3`, `aws-config`, `aws-credential-types`,
+`aws-types`) were removed from `ddb-server`. Nothing constructed `S3Backend`;
+`main.rs` always built `LocalFsBackend`. Removing it dropped 47 crates from the
+lockfile and with them the legacy `rustls` 0.21 -> `rustls-webpki` 0.101.7
+chain, clearing RUSTSEC-2026-0098, RUSTSEC-2026-0099 and RUSTSEC-2026-0104.
+`rustls-webpki` 0.101.7 is no longer present at any version in `Cargo.lock`.
+(The `aws-lc-rs` / `aws-lc-sys` crates that remain are rustls's crypto
+provider, not the AWS SDK.)
+
+**Accepted, not fixed** — three advisories have no upgrade we can safely take.
+They are now listed in `.cargo/audit.toml`, each with a written justification
+and a condition for removing it. Stating them plainly rather than burying them:
+
+- **RUSTSEC-2023-0071** — `rsa` 0.9.10, Marvin timing sidechannel, 5.9 medium.
+  No patched release exists upstream. `rsa` enters `Cargo.lock` only through
+  `sqlx-mysql`; this workspace configures sqlx for postgres only, and both
+  `cargo tree -i rsa` and `cargo tree -i sqlx-mysql` report nothing to print.
+  It is in the lockfile but compiled into no artifact we ship.
+- **RUSTSEC-2026-0194** and **RUSTSEC-2026-0195** — `quick-xml` 0.23.1, two
+  denial-of-service advisories, both 7.5 high. Pinned transitively by
+  `self_update` 0.41.0, the latest stable release. The only successor that
+  advances `quick-xml` is `self_update` 1.0.0-rc.6, a release candidate on the
+  code path that downloads and replaces the running `ddb` binary. That upgrade
+  is deliberately deferred until 1.0 is stable. In self_update 0.41.0
+  `quick-xml` is used only by the S3 release backend; the CLI uses the GitHub
+  backend, so no call path in this project reaches the parser.
+
+`cargo audit` additionally reports 16 informational warnings (unmaintained,
+unsound and yanked crates, including `backoff`, `bincode`, `paste`, `instant`,
+`anyhow`, `lru` and three versions of `rand`). These are not suppressed and do
+not fail the build; they are visible in CI output and remain outstanding.
+
+**Not addressed — the npm side.** `npm audit --omit=dev`, the gate CI runs
+(`ci.yml:186`), reports `found 0 vulnerabilities`. A full-tree `npm audit`
+including dev dependencies still reports 10 (2 low, 7 high, 1 critical), all in
+build and test tooling: `vitest`, `vite`, `esbuild`, `@babel/core`, `undici`,
+and the `@angular/*` and `next`/`postcss` peer sets. Nothing was suppressed to
+make that number smaller, and no upgrade was taken here — four of the ten are
+plain `npm audit fix`, the `@angular/*` and `next` ones are semver-major.
+
+### Fixed
+
+- **Concurrent schema setup deadlocked Postgres (SQLSTATE 40P01).**
+  `PgTripleStore::ensure_schema` and `ensure_auth_schema` each issue their DDL
+  as one multi-statement batch, which Postgres runs as a single implicit
+  transaction. That transaction takes `AccessExclusiveLock` on the same
+  relation repeatedly (`CREATE INDEX`, `ALTER TABLE ... ADD COLUMN`,
+  `DROP`/`CREATE TRIGGER`), and two callers racing each other interleave those
+  locks and deadlock — Postgres then aborts one of them. Both functions now
+  hold the new `cluster::LOCK_SCHEMA_SETUP` advisory lock
+  (`pg_advisory_lock`, blocking, explicitly released) for the whole of setup,
+  so concurrent callers queue instead of deadlocking.
+
+  Caught by CI, not by review: the `Rust (clippy + test)` job failed with
+  `deadlock detected ... Process 620 waits for AccessExclusiveLock on relation
+  17187; blocked by process 619` in two of 115 integration tests, which run in
+  parallel against one database. The same race applies in production to two
+  `ddb-server` replicas starting simultaneously, so this is a server fix
+  rather than a test-harness fix. It is timing-dependent and will not
+  reproduce on every run.
+
 ## [0.4.0] - 2026-04-15
 
 ### Changed
 - Honest project framing — removed fabricated timeline, added AI-assisted development disclosure
 - Synchronized all package versions to 0.4.0
 - Split monolithic rest.rs (4,449 lines) into 15 focused handler modules
-- Replaced fabricated competitor comparison docs with real criterion benchmarks
+- Replaced fabricated competitor comparison docs with qualitative descriptions; `cargo bench` (criterion) in `packages/server/` is now the only sanctioned way to produce numbers
 
 ### Security
 - Hardcoded dev-signing-key now requires DDB_DEV=1 in development
@@ -23,6 +107,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 - Vaporware strategy docs (quantum, blockchain, web3)
 - Fabricated benchmark comparison pages
+- Unsourced performance multipliers from `docs/performance.md`, `docs/architecture.md` and `docs/guide/index.html` (15x lower latency, 28% smaller payloads, 98% less bandwidth, 206x latency at ~1.2ms vs ~248ms, 26x less bandwidth overhead) — none had methodology, hardware or a reproduction command
 - Unimplemented security claims from SECURITY.md (TLS 1.3 mandatory, AES-256-GCM at rest, Ed25519)
 
 ## [0.3.3] - 2026-04-15 — Executor Rewire + SqliteStore::query + mlua ddb.kv

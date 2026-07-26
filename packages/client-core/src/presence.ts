@@ -10,6 +10,7 @@
 import type { DarshJDB } from './client.js';
 import type {
   Peer,
+  PresenceMember,
   PresenceSnapshot,
   PresenceCallback,
   ServerMessage,
@@ -56,7 +57,7 @@ export class PresenceRoom<T = Record<string, unknown>> {
     self: null,
   };
   private _privateJoined = false;
-  private _privateSubId: string | null = null;
+  private _privateDisposeReconnect: (() => void) | null = null;
 
   /* Throttle state */
   private _privateLastPublish = 0;
@@ -74,41 +75,39 @@ export class PresenceRoom<T = Record<string, unknown>> {
   /**
    * Join the presence room.
    *
-   * Registers a server-side subscription and begins receiving peer updates.
+   * Registers the room handler and asks the server for the current snapshot.
+   * The room is re-joined automatically after a WebSocket reconnect.
    *
    * @throws If already joined.
    */
-  async join(): Promise<void> {
+  async join(state?: T): Promise<void> {
     if (this._privateJoined) {
       throw new Error(`Already joined room "${this.roomId}"`);
     }
 
-    const resp = await this._privateClient.send({
-      type: 'presence-join',
-      payload: { roomId: this.roomId },
-    });
-
-    const payload = resp.payload as {
-      subId: string;
-      peers: Peer<T>[];
-      self: Peer<T>;
-    };
-
-    this._privateSubId = payload.subId;
-    this._privateSnapshot = {
-      roomId: this.roomId,
-      peers: payload.peers,
-      self: payload.self,
-    };
-    this._privateJoined = true;
-
-    // Register push handler for presence updates.
-    this._privateClient.registerSubscriptionHandler(
-      this._privateSubId,
+    // The server pushes `pres-snap` / `pres-diff` keyed by room, not by a
+    // correlation id, so the handler must be in place before we join.
+    this._privateClient.registerPresenceHandler(
+      this.roomId,
       (msg: ServerMessage) => {
         this._privateHandleUpdate(msg);
       },
     );
+
+    this._privateClient.notify({
+      type: 'pres-join',
+      room: this.roomId,
+      state: state ?? {},
+    });
+
+    this._privateJoined = true;
+    this._privateDisposeReconnect = this._privateClient.onReconnected(() => {
+      this._privateClient.notify({
+        type: 'pres-join',
+        room: this.roomId,
+        state: this._privateSnapshot.self?.state ?? state ?? {},
+      });
+    });
 
     this._privateNotify();
   }
@@ -126,21 +125,17 @@ export class PresenceRoom<T = Record<string, unknown>> {
       this._privateThrottleTimer = null;
     }
 
-    if (this._privateSubId) {
-      this._privateClient.unregisterSubscriptionHandler(this._privateSubId);
-    }
+    this._privateDisposeReconnect?.();
+    this._privateDisposeReconnect = null;
+    this._privateClient.unregisterPresenceHandler(this.roomId);
 
     try {
-      await this._privateClient.send({
-        type: 'presence-leave',
-        payload: { roomId: this.roomId },
-      });
+      this._privateClient.notify({ type: 'pres-leave', room: this.roomId });
     } catch {
       /* best effort — server may already consider us gone */
     }
 
     this._privateJoined = false;
-    this._privateSubId = null;
     this._privateSnapshot = { roomId: this.roomId, peers: [], self: null };
     this._privateNotify();
   }
@@ -182,14 +177,15 @@ export class PresenceRoom<T = Record<string, unknown>> {
 
   private _privateSendPublish(state: T): void {
     this._privateLastPublish = Date.now();
-    this._privateClient
-      .send({
-        type: 'presence-publish',
-        payload: { roomId: this.roomId, state },
-      })
-      .catch((err) => {
-        console.warn('[DarshJDB Presence] Publish error:', err);
+    try {
+      this._privateClient.notify({
+        type: 'pres-state',
+        room: this.roomId,
+        state,
       });
+    } catch (err) {
+      console.warn('[DarshJDB Presence] Publish error:', err);
+    }
 
     // Optimistically update self.
     if (this._privateSnapshot.self) {
@@ -242,17 +238,47 @@ export class PresenceRoom<T = Record<string, unknown>> {
   /* -- Internal ----------------------------------------------------------- */
 
   private _privateHandleUpdate(msg: ServerMessage): void {
-    const payload = msg.payload as {
-      peers: Peer<T>[];
-      self: Peer<T> | null;
-    };
+    if (msg.type === 'pres-snap') {
+      this._privateSnapshot = {
+        roomId: this.roomId,
+        peers: msg.members.map((m) => this._privateToPeer(m)),
+        self: this._privateSnapshot.self,
+      };
+      this._privateNotify();
+      return;
+    }
+
+    if (msg.type !== 'pres-diff') return;
+
+    const left = new Set(msg.left ?? []);
+    const updated = new Map(
+      (msg.updated ?? []).map((m) => [m.user_id, this._privateToPeer(m)]),
+    );
+
+    const peers = this._privateSnapshot.peers
+      .filter((p) => !left.has(p.peerId))
+      .map((p) => updated.get(p.peerId) ?? p);
+
+    const known = new Set(peers.map((p) => p.peerId));
+    for (const m of msg.joined ?? []) {
+      if (!known.has(m.user_id)) peers.push(this._privateToPeer(m));
+    }
 
     this._privateSnapshot = {
       roomId: this.roomId,
-      peers: payload.peers,
-      self: payload.self ?? this._privateSnapshot.self,
+      peers,
+      self: this._privateSnapshot.self,
     };
     this._privateNotify();
+  }
+
+  private _privateToPeer(member: PresenceMember): Peer<T> {
+    return {
+      peerId: member.user_id,
+      userId: member.user_id,
+      state: member.state as T,
+      lastSeen: Date.now(),
+    };
   }
 
   private _privateNotify(): void {

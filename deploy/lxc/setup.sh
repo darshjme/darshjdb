@@ -8,7 +8,7 @@
 # Prerequisites:
 #   - LXC/LXD installed on the host
 #   - DarshJDB release binary available at:
-#     https://github.com/darshjme/darshjdb/releases/download/v${VERSION}/ddb-server-linux-amd64
+#     https://github.com/darshjme/darshjdb/releases/download/v${VERSION}/ddb-server-v${VERSION}-linux-x86_64
 #
 # What this script does:
 #   1. Creates a Debian 12 (bookworm) LXC container
@@ -105,7 +105,7 @@ mkdir -p /opt/darshjdb/{bin,data,admin}
 chown -R darshan:darshan /opt/darshjdb
 
 # ── Download DarshJDB binary ─────────────────────────────────────────
-BINARY_URL="${RELEASE_BASE}/v${DDB_VERSION}/ddb-server-linux-amd64"
+BINARY_URL="${RELEASE_BASE}/v${DDB_VERSION}/ddb-server-v${DDB_VERSION}-linux-x86_64"
 echo "Downloading ddb-server v${DDB_VERSION}..."
 curl -fsSL -o /opt/darshjdb/bin/ddb-server "\${BINARY_URL}" || {
     echo "WARNING: Could not download release binary."

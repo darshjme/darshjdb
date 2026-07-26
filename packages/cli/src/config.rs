@@ -40,11 +40,6 @@ struct ServerConfig {
 }
 
 impl Config {
-    /// Recognized log levels for the `logs --level` filter.
-    pub const VALID_LOG_LEVELS: &[&str] = &["debug", "info", "warn", "error"];
-}
-
-impl Config {
     /// Load configuration with precedence: CLI args > env vars > config file.
     pub fn load(cli_url: Option<&str>, cli_token: Option<&str>) -> Result<Self> {
         let file_cfg = Self::load_file().unwrap_or_default();
@@ -53,7 +48,7 @@ impl Config {
             .map(String::from)
             .or_else(|| std::env::var("DDB_URL").ok())
             .or_else(|| file_cfg.server.as_ref().and_then(|s| s.url.clone()))
-            .unwrap_or_else(|| "http://localhost:4820".to_string());
+            .unwrap_or_else(|| "http://localhost:7700".to_string());
 
         let token = cli_token
             .map(String::from)

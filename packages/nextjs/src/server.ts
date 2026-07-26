@@ -63,11 +63,19 @@ import { DarshJDB } from '@darshjdb/client';
 
 /**
  * Create an admin DarshJDB client from environment variables.
- * Reads DDB_URL and DDB_ADMIN_TOKEN.
+ * Reads DDB_URL, DDB_APP_ID and DDB_ADMIN_TOKEN.
+ *
+ * The token is set as a bearer credential rather than passed as `appId`,
+ * which the client embeds in request URLs.
  */
 export function getAdminDb(): DarshJDB {
   const { url, token } = getConfig();
-  return new DarshJDB({ serverUrl: url, appId: token });
+  const db = new DarshJDB({
+    serverUrl: url,
+    appId: process.env.DDB_APP_ID ?? 'nextjs-admin',
+  });
+  db.setAuthToken(token);
+  return db;
 }
 
 // ---------------------------------------------------------------------------

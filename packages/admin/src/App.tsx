@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
-import { Routes, Route, useLocation } from "react-router-dom";
+import { Routes, Route, useLocation } from "react-router";
 import { Sidebar } from "./components/Sidebar";
 import { TopBar } from "./components/TopBar";
 import { CommandPalette } from "./components/CommandPalette";

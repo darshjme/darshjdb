@@ -39,12 +39,26 @@ import { DDB_SESSION_COOKIE } from './middleware';
 // Types
 // ---------------------------------------------------------------------------
 
+/** The identity behind a validated session. */
+export interface DarshanSessionUser {
+  /** Server-side user id. */
+  id: string;
+  /** User email address. */
+  email: string;
+  /** Roles granted to the user. */
+  roles: string[];
+  /** Server-side session id, when reported. */
+  sessionId?: string;
+}
+
 /** Session information extracted from the request. */
 export interface DarshanSession {
   /** The raw session token, or `null` if unauthenticated. */
   token: string | null;
-  /** Whether a valid session token was found. */
+  /** Whether the token was validated against the DarshJDB server. */
   authenticated: boolean;
+  /** The authenticated user, or `null` if unauthenticated. */
+  user: DarshanSessionUser | null;
 }
 
 /** Context injected into Pages Router API handlers by `withDarshan`. */
@@ -112,40 +126,109 @@ export interface WithDarshanOptions {
    * @example ['GET', 'POST']
    */
   methods?: string[];
+
+  /**
+   * Validate the session token. Return the authenticated user, or `null`
+   * if the token is invalid.
+   *
+   * Defaults to `GET {DDB_URL}/api/auth/me` with the token as a bearer
+   * credential. A token is never trusted on presence alone.
+   *
+   * @example
+   * ```ts
+   * validateSession: async (token) => {
+   *   const res = await fetch(`${process.env.DDB_URL}/api/auth/me`, {
+   *     headers: { Authorization: `Bearer ${token}` },
+   *   });
+   *   if (!res.ok) return null;
+   *   const body = await res.json();
+   *   return { id: body.user_id, email: body.email, roles: body.roles };
+   * }
+   * ```
+   */
+  validateSession?: (token: string) => Promise<DarshanSessionUser | null>;
 }
 
 // ---------------------------------------------------------------------------
 // Session extraction
 // ---------------------------------------------------------------------------
 
+/** Build an unauthenticated session. @internal */
+function anonymousSession(): DarshanSession {
+  return { token: null, authenticated: false, user: null };
+}
+
 /**
- * Extract session information from a Pages Router request.
+ * Validate a session token against the DarshJDB server.
  * @internal
  */
-function extractSessionFromApiRequest(
-  req: NextApiRequest,
-  cookieName: string,
-): DarshanSession {
-  const token = req.cookies[cookieName] ?? null;
+async function validateSessionToken(
+  token: string,
+): Promise<DarshanSessionUser | null> {
+  const url = process.env.DDB_URL;
+
+  if (!url) {
+    throw new Error(
+      '[DarshJDB] Missing DDB_URL environment variable. ' +
+        'It is required to validate session cookies.',
+    );
+  }
+
+  const response = await fetch(`${url.replace(/\/+$/, '')}/api/auth/me`, {
+    method: 'GET',
+    headers: { Authorization: `Bearer ${token}` },
+    cache: 'no-store',
+  });
+
+  if (!response.ok) {
+    return null;
+  }
+
+  const body = (await response.json()) as {
+    user_id?: string;
+    email?: string;
+    roles?: unknown;
+    session_id?: string;
+  };
+
+  if (!body.user_id) {
+    return null;
+  }
+
   return {
-    token,
-    authenticated: token !== null && token.length > 0,
+    id: body.user_id,
+    email: body.email ?? '',
+    roles: Array.isArray(body.roles) ? (body.roles as string[]) : [],
+    sessionId: body.session_id,
   };
 }
 
 /**
- * Extract session information from an App Router request.
+ * Resolve a cookie value into a verified session. A token that cannot be
+ * validated yields an anonymous session — presence alone never authenticates.
  * @internal
  */
-function extractSessionFromRequest(
-  request: NextRequest,
-  cookieName: string,
-): DarshanSession {
-  const token = request.cookies.get(cookieName)?.value ?? null;
-  return {
-    token,
-    authenticated: token !== null && token.length > 0,
-  };
+async function resolveSession(
+  token: string | undefined,
+  validate: (token: string) => Promise<DarshanSessionUser | null>,
+): Promise<DarshanSession> {
+  if (!token) {
+    return anonymousSession();
+  }
+
+  try {
+    const user = await validate(token);
+    if (!user) {
+      return anonymousSession();
+    }
+    return { token, authenticated: true, user };
+  } catch (error) {
+    console.error(
+      '[DarshJDB] Session validation error:',
+      error instanceof Error ? error.message : error,
+    );
+    return anonymousSession();
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -191,6 +274,7 @@ export function withDarshan(
     requireAuth = false,
     cookieName = DDB_SESSION_COOKIE,
     methods,
+    validateSession = validateSessionToken,
   } = options;
 
   return async (req: NextApiRequest, res: NextApiResponse): Promise<void> => {
@@ -204,8 +288,8 @@ export function withDarshan(
       return;
     }
 
-    // Extract session
-    const session = extractSessionFromApiRequest(req, cookieName);
+    // Extract and validate session
+    const session = await resolveSession(req.cookies[cookieName], validateSession);
 
     // Auth check
     if (requireAuth && !session.authenticated) {
@@ -277,14 +361,18 @@ export function withDarshanRoute(
   const {
     requireAuth = false,
     cookieName = DDB_SESSION_COOKIE,
+    validateSession = validateSessionToken,
   } = options;
 
   return async (
     request: NextRequest,
     routeContext: { params: Record<string, string | string[]> },
   ): Promise<Response> => {
-    // Extract session
-    const session = extractSessionFromRequest(request, cookieName);
+    // Extract and validate session
+    const session = await resolveSession(
+      request.cookies.get(cookieName)?.value,
+      validateSession,
+    );
 
     // Auth check
     if (requireAuth && !session.authenticated) {
