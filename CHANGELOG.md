@@ -5,6 +5,69 @@ All notable changes to DarshJDB will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+> Note on versioning: the workspace is already at `0.4.0` (`Cargo.toml:12`) and the
+> `[0.4.0]` section below is written, but **`v0.4.0` has never been tagged or
+> released** — the newest published GitHub release is `v0.3.3`. Everything under
+> `[Unreleased]` will therefore ship as part of `v0.4.0` when it is actually cut.
+
+### Security
+
+Dependency-advisory cleanup, so that `cargo audit` passes on its own merits
+rather than by being switched off. `cargo audit` now exits 0. Verified with
+cargo-audit 0.22.2 against an advisory database of 1169 advisories and a
+796-crate `Cargo.lock`.
+
+**Fixed by upgrading** (lockfile-only bumps, no manifest changes):
+
+- `quinn-proto` 0.11.14 -> 0.11.16
+- `rustls-webpki` 0.103.10 -> 0.103.13
+- `crossbeam-epoch` 0.9.18 -> 0.9.20
+- `lettre` 0.11.21 -> 0.11.22
+- `sqlx` bumped to 0.8.6 by unifying the `rusqlite` declaration
+
+**Fixed by deleting the vulnerable code path** — the dead `S3Backend` and the
+four AWS SDK dependencies (`aws-sdk-s3`, `aws-config`, `aws-credential-types`,
+`aws-types`) were removed from `ddb-server`. Nothing constructed `S3Backend`;
+`main.rs` always built `LocalFsBackend`. Removing it dropped 47 crates from the
+lockfile and with them the legacy `rustls` 0.21 -> `rustls-webpki` 0.101.7
+chain, clearing RUSTSEC-2026-0098, RUSTSEC-2026-0099 and RUSTSEC-2026-0104.
+`rustls-webpki` 0.101.7 is no longer present at any version in `Cargo.lock`.
+(The `aws-lc-rs` / `aws-lc-sys` crates that remain are rustls's crypto
+provider, not the AWS SDK.)
+
+**Accepted, not fixed** — three advisories have no upgrade we can safely take.
+They are now listed in `.cargo/audit.toml`, each with a written justification
+and a condition for removing it. Stating them plainly rather than burying them:
+
+- **RUSTSEC-2023-0071** — `rsa` 0.9.10, Marvin timing sidechannel, 5.9 medium.
+  No patched release exists upstream. `rsa` enters `Cargo.lock` only through
+  `sqlx-mysql`; this workspace configures sqlx for postgres only, and both
+  `cargo tree -i rsa` and `cargo tree -i sqlx-mysql` report nothing to print.
+  It is in the lockfile but compiled into no artifact we ship.
+- **RUSTSEC-2026-0194** and **RUSTSEC-2026-0195** — `quick-xml` 0.23.1, two
+  denial-of-service advisories, both 7.5 high. Pinned transitively by
+  `self_update` 0.41.0, the latest stable release. The only successor that
+  advances `quick-xml` is `self_update` 1.0.0-rc.6, a release candidate on the
+  code path that downloads and replaces the running `ddb` binary. That upgrade
+  is deliberately deferred until 1.0 is stable. In self_update 0.41.0
+  `quick-xml` is used only by the S3 release backend; the CLI uses the GitHub
+  backend, so no call path in this project reaches the parser.
+
+`cargo audit` additionally reports 16 informational warnings (unmaintained,
+unsound and yanked crates, including `backoff`, `bincode`, `paste`, `instant`,
+`anyhow`, `lru` and three versions of `rand`). These are not suppressed and do
+not fail the build; they are visible in CI output and remain outstanding.
+
+**Not addressed — the npm side.** `npm audit --omit=dev`, the gate CI runs
+(`ci.yml:186`), reports `found 0 vulnerabilities`. A full-tree `npm audit`
+including dev dependencies still reports 10 (2 low, 7 high, 1 critical), all in
+build and test tooling: `vitest`, `vite`, `esbuild`, `@babel/core`, `undici`,
+and the `@angular/*` and `next`/`postcss` peer sets. Nothing was suppressed to
+make that number smaller, and no upgrade was taken here — four of the ten are
+plain `npm audit fix`, the `@angular/*` and `next` ones are semver-major.
+
 ## [0.4.0] - 2026-04-15
 
 ### Changed
