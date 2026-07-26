@@ -1051,7 +1051,34 @@ async fn require_cache_admin_middleware(
 // ===========================================================================
 
 /// Ensure the `users` and `sessions` tables exist for the auth subsystem.
+///
+/// Serialised against other schema-setup callers by
+/// [`crate::cluster::LOCK_SCHEMA_SETUP`] for the same reason as
+/// `PgTripleStore::ensure_schema`: the batch below is one implicit
+/// transaction taking `AccessExclusiveLock` repeatedly, so two concurrent
+/// callers deadlock (SQLSTATE 40P01) instead of both succeeding.
 pub async fn ensure_auth_schema(pool: &PgPool) -> std::result::Result<(), sqlx::Error> {
+    let mut lock_conn = pool.acquire().await?;
+    sqlx::query("SELECT pg_advisory_lock($1)")
+        .bind(crate::cluster::LOCK_SCHEMA_SETUP)
+        .execute(&mut *lock_conn)
+        .await?;
+
+    let result = ensure_auth_schema_locked(pool).await;
+
+    // Release explicitly: the connection would otherwise return to the pool
+    // still holding a session-level lock.
+    let _ = sqlx::query("SELECT pg_advisory_unlock($1)")
+        .bind(crate::cluster::LOCK_SCHEMA_SETUP)
+        .execute(&mut *lock_conn)
+        .await;
+
+    result
+}
+
+/// The body of [`ensure_auth_schema`], run while holding
+/// [`crate::cluster::LOCK_SCHEMA_SETUP`].
+async fn ensure_auth_schema_locked(pool: &PgPool) -> std::result::Result<(), sqlx::Error> {
     sqlx::raw_sql(
         r#"
         CREATE TABLE IF NOT EXISTS users (

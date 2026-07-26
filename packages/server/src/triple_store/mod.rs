@@ -189,7 +189,35 @@ impl PgTripleStore {
 
     /// Create the `triples` table and all supporting indexes if they
     /// do not already exist. This is idempotent.
+    ///
+    /// Serialised against other schema-setup callers by
+    /// [`crate::cluster::LOCK_SCHEMA_SETUP`]. The DDL below runs as a single
+    /// implicit transaction that takes `AccessExclusiveLock` on `triples`
+    /// several times over; two concurrent callers interleave those locks and
+    /// deadlock (SQLSTATE 40P01). The advisory lock makes them queue instead.
     async fn ensure_schema(&self) -> Result<()> {
+        let mut lock_conn = self.pool.acquire().await?;
+        sqlx::query("SELECT pg_advisory_lock($1)")
+            .bind(crate::cluster::LOCK_SCHEMA_SETUP)
+            .execute(&mut *lock_conn)
+            .await?;
+
+        let result = self.ensure_schema_locked().await;
+
+        // Release explicitly rather than relying on the connection being
+        // dropped: it returns to the pool still holding a session-level
+        // lock otherwise.
+        let _ = sqlx::query("SELECT pg_advisory_unlock($1)")
+            .bind(crate::cluster::LOCK_SCHEMA_SETUP)
+            .execute(&mut *lock_conn)
+            .await;
+
+        result
+    }
+
+    /// The body of [`Self::ensure_schema`], run while holding
+    /// [`crate::cluster::LOCK_SCHEMA_SETUP`].
+    async fn ensure_schema_locked(&self) -> Result<()> {
         sqlx::raw_sql(
             r#"
             CREATE TABLE IF NOT EXISTS triples (

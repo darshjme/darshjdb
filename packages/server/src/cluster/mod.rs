@@ -77,6 +77,27 @@ pub const LOCK_EXPIRY_SWEEPER: i64 = LOCK_PREFIX | 0x0000_0005;
 /// `chunked_uploads` rows every 5 min.
 pub const LOCK_CHUNKED_UPLOAD_CLEANUP: i64 = LOCK_PREFIX | 0x0000_0006;
 
+/// Idempotent schema setup (`PgTripleStore::ensure_schema`,
+/// `ensure_auth_schema`).
+///
+/// Unlike the keys above this one does not elect a leader — every caller
+/// must run the DDL, they just may not run it *at the same time*. Each
+/// `ensure_*_schema` body is a multi-statement batch that Postgres executes
+/// as one implicit transaction, taking `AccessExclusiveLock` on the same
+/// relations (`CREATE INDEX`, `ALTER TABLE ... ADD COLUMN`, `DROP`/`CREATE
+/// TRIGGER`) in an order the server is free to interleave. Two concurrent
+/// callers therefore deadlock with SQLSTATE 40P01 — observed in CI as
+/// `Process N waits for AccessExclusiveLock on relation ...; blocked by
+/// process M` and vice versa, which aborts one of the two transactions.
+///
+/// This happens whenever two writers race: parallel integration tests
+/// against one database, or two `ddb-server` replicas booting together.
+/// Holding this lock for the whole of schema setup serialises them, so the
+/// batches queue instead of deadlocking. It is a *blocking*
+/// (`pg_advisory_lock`) rather than a try-lock: the loser must wait and
+/// then proceed, not skip setup.
+pub const LOCK_SCHEMA_SETUP: i64 = LOCK_PREFIX | 0x0000_0007;
+
 // -----------------------------------------------------------------------------
 // Node identity
 // -----------------------------------------------------------------------------
