@@ -70,6 +70,21 @@ plain `npm audit fix`, the `@angular/*` and `next` ones are semver-major.
 
 ### Fixed
 
+- **The `x86_64-unknown-linux-musl` release build could not link OpenSSL.**
+  `self_update`'s default feature set is exactly `["reqwest/default-tls"]`,
+  which pulls `native-tls` and therefore `openssl-sys`. There is no
+  musl-target OpenSSL on the CI runner, so the build failed with "Could not
+  find directory of OpenSSL installation" and no Linux binary was produced.
+  `self_update` is now declared `default-features = false, features =
+  ["rustls"]` — upstream defines `rustls` as `["reqwest/rustls-tls"]`, so this
+  is otherwise feature-identical and simply moves the CLI's updater onto the
+  same rustls backend already used by `reqwest`, `lettre`, `oauth2` and
+  `axum-server`. The static binary no longer depends on system OpenSSL, and
+  `native-tls`, `hyper-tls`, `openssl`, `openssl-sys` and `openssl-probe` are
+  gone from the dependency graph. `quick-xml` is a non-optional dependency of
+  `self_update` and is unaffected, so RUSTSEC-2026-0194/-0195 remain accepted
+  as described above.
+
 - **Concurrent schema setup deadlocked Postgres (SQLSTATE 40P01).**
   `PgTripleStore::ensure_schema` and `ensure_auth_schema` each issue their DDL
   as one multi-statement batch, which Postgres runs as a single implicit
