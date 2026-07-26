@@ -84,7 +84,10 @@ jobs:
           DATABASE_URL=postgres://darshan:darshan@localhost:5432/darshjdb_test \
           DDB_PORT=7799 \
           DDB_DEV=1 \
-          DDB_JWT_SECRET=ci-smoke-test-secret \
+          # Must be >= 32 bytes: KeyManager::from_secret enforces the RFC 7518
+          # §3.2 minimum for HS256 and panics on anything shorter. The previous
+          # value here was 20 bytes, so the smoke test could never boot.
+          DDB_JWT_SECRET=ci-smoke-test-secret-do-not-use-in-production \
           RUST_LOG=info \
             ./target/release/ddb-server &
           SMOKE_PID=$!
