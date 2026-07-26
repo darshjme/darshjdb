@@ -68,6 +68,27 @@ and the `@angular/*` and `next`/`postcss` peer sets. Nothing was suppressed to
 make that number smaller, and no upgrade was taken here — four of the ten are
 plain `npm audit fix`, the `@angular/*` and `next` ones are semver-major.
 
+### Fixed
+
+- **Concurrent schema setup deadlocked Postgres (SQLSTATE 40P01).**
+  `PgTripleStore::ensure_schema` and `ensure_auth_schema` each issue their DDL
+  as one multi-statement batch, which Postgres runs as a single implicit
+  transaction. That transaction takes `AccessExclusiveLock` on the same
+  relation repeatedly (`CREATE INDEX`, `ALTER TABLE ... ADD COLUMN`,
+  `DROP`/`CREATE TRIGGER`), and two callers racing each other interleave those
+  locks and deadlock — Postgres then aborts one of them. Both functions now
+  hold the new `cluster::LOCK_SCHEMA_SETUP` advisory lock
+  (`pg_advisory_lock`, blocking, explicitly released) for the whole of setup,
+  so concurrent callers queue instead of deadlocking.
+
+  Caught by CI, not by review: the `Rust (clippy + test)` job failed with
+  `deadlock detected ... Process 620 waits for AccessExclusiveLock on relation
+  17187; blocked by process 619` in two of 115 integration tests, which run in
+  parallel against one database. The same race applies in production to two
+  `ddb-server` replicas starting simultaneously, so this is a server fix
+  rather than a test-harness fix. It is timing-dependent and will not
+  reproduce on every run.
+
 ## [0.4.0] - 2026-04-15
 
 ### Changed
