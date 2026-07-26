@@ -75,9 +75,31 @@ function buildTransferKey(
   collection: string,
   query: Record<string, unknown>,
 ): string {
-  // JSON.stringify with sorted keys for deterministic output.
-  const queryStr = JSON.stringify(query, Object.keys(query).sort());
-  return `${DDB_TRANSFER_KEY_PREFIX}${collection}_${simpleHash(queryStr)}`;
+  return `${DDB_TRANSFER_KEY_PREFIX}${collection}_${simpleHash(stableStringify(query))}`;
+}
+
+/**
+ * Serialize a value with object keys sorted at every depth, so that two
+ * structurally equal queries always produce the same string — and two
+ * different queries never do.
+ *
+ * @internal
+ */
+function stableStringify(value: unknown): string {
+  if (value === null || typeof value !== 'object') {
+    return JSON.stringify(value) ?? 'null';
+  }
+
+  if (Array.isArray(value)) {
+    return `[${value.map(stableStringify).join(',')}]`;
+  }
+
+  const record = value as Record<string, unknown>;
+  const entries = Object.keys(record)
+    .sort()
+    .map((key) => `${JSON.stringify(key)}:${stableStringify(record[key])}`);
+
+  return `{${entries.join(',')}}`;
 }
 
 /**

@@ -58,6 +58,82 @@ export interface AuthResponse {
 //  Query
 // ---------------------------------------------------------------------------
 
+/** Comparison operators understood by the DarshanQL planner. */
+export type WhereOp =
+  | "Eq"
+  | "Neq"
+  | "Gt"
+  | "Gte"
+  | "Lt"
+  | "Lte"
+  | "Contains"
+  | "Like";
+
+/** A single filter predicate. */
+export interface WhereClause {
+  attribute: string;
+  op: WhereOp;
+  value: unknown;
+}
+
+/** A single ordering directive. */
+export interface OrderClause {
+  attribute: string;
+  direction: "Asc" | "Desc";
+}
+
+/** A nested reference to resolve inline in the results. */
+export interface NestedQuery {
+  via_attribute: string;
+  sub_query?: DarshanQuery;
+}
+
+/** Vector / semantic search directive. */
+export interface SemanticQuery {
+  vector?: number[];
+  query?: string;
+  limit?: number;
+}
+
+/**
+ * A DarshanQL query object — the JSON body `/api/query` expects.
+ *
+ * @example
+ * ```typescript
+ * { type: 'users', $where: [{ attribute: 'age', op: 'Gt', value: 18 }], $limit: 10 }
+ * ```
+ */
+export interface DarshanQuery {
+  /** Entity type (table) to read. Required by the server. */
+  type: string;
+  $where?: WhereClause[];
+  $order?: OrderClause[];
+  $limit?: number;
+  $offset?: number;
+  $search?: string;
+  $semantic?: string | SemanticQuery | null;
+  $hybrid?: Record<string, unknown> | null;
+  $nested?: NestedQuery[];
+}
+
+/** Pagination options for select(). */
+export interface SelectOptions {
+  /** Rows per request. The server caps this at 1000. */
+  limit?: number;
+  /** Opaque cursor returned by a previous page. */
+  cursor?: string;
+}
+
+/** A single page of records from `/api/data/:entity`. */
+export interface Page<T = Record<string, unknown>> {
+  /** Records in this page. */
+  data: T[];
+  /** Cursor for the next page, or null when the server issued none. */
+  cursor: string | null;
+  /** True when the server has more rows beyond this page. */
+  hasMore: boolean;
+}
+
 /** Result from a query or mutation. */
 export interface QueryResult<T = Record<string, unknown>> {
   /** List of result records. */
@@ -123,11 +199,28 @@ export interface Mutation {
 //  Batch
 // ---------------------------------------------------------------------------
 
-/** A single operation in a batch request. */
-export interface BatchOperation {
-  method: "GET" | "POST" | "PATCH" | "DELETE";
-  path: string;
-  body?: Record<string, unknown>;
+/**
+ * A single operation in a `/api/batch` request.
+ *
+ * The server discriminates on `type` (see `BatchOp` in
+ * `packages/server/src/api/batch.rs`).
+ */
+export type BatchOp =
+  | { type: "query"; id: string; body: DarshanQuery }
+  | { type: "mutate"; id: string; body: { mutations: Mutation[] } }
+  | {
+      type: "fn";
+      id: string;
+      name: string;
+      args?: Record<string, unknown>;
+    };
+
+/** Result of a single operation within a batch. */
+export interface BatchOpResult {
+  id: string;
+  status: number;
+  data?: unknown;
+  error?: string;
 }
 
 // ---------------------------------------------------------------------------

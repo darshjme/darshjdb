@@ -122,7 +122,7 @@ impl PoolStats {
         let sum = self.total_sum_us.load(Ordering::Relaxed);
         let min = self.min_us.load(Ordering::Relaxed);
         let max = self.max_us.load(Ordering::Relaxed);
-        let avg_us = if total > 0 { sum / total } else { 0 };
+        let avg_us = sum.checked_div(total).unwrap_or(0);
 
         serde_json::json!({
             "connections": {

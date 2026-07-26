@@ -48,10 +48,13 @@ reqwest.workspace = true
 hex.workspace = true
 futures.workspace = true
 axum-server.workspace = true
-aws-sdk-s3.workspace = true
-aws-config.workspace = true
-aws-credential-types.workspace = true
-aws-types.workspace = true
+# NOTE: the aws-sdk-s3 / aws-config / aws-credential-types / aws-types
+# dependencies were removed in 0.4.0 along with `storage::S3Backend`, which no
+# code path constructed. Even as *disabled optional* dependencies they stayed
+# in Cargo.lock, where `aws-smithy-http-client`'s `legacy-rustls` dep kept
+# rustls 0.21 -> rustls-webpki 0.101.7 in the graph and kept `cargo audit`
+# reporting RUSTSEC-2026-0098/-0099/-0104. Reinstating S3 support means taking
+# those advisories back until the AWS SDK drops its legacy rustls deps.
 async-trait.workspace = true
 csv.workspace = true
 config.workspace = true
@@ -61,6 +64,7 @@ dirs.workspace = true
 # Phase 10 — Observability (slice 29/30): Prometheus metrics + JSON logging + request_id.
 metrics.workspace = true
 metrics-exporter-prometheus.workspace = true
+metrics-util.workspace = true
 
 # Slice 19/30 — embedded admin dashboard (Vite dist baked via include_dir!).
 include_dir.workspace = true
@@ -103,7 +107,7 @@ deno_core = { version = "0.398", optional = true }
 
 # v0.3.2 — SQLite backend. Gated behind the `sqlite-store` feature so
 # default builds stay Postgres-only. See packages/server/src/store/sqlite.rs.
-rusqlite = { version = "0.31", optional = true, features = ["bundled"] }
+rusqlite = { workspace = true, optional = true }
 
 # v0.3.2 — embedded mlua 0.10 Lua runtime for server functions. Gated behind
 # the `mlua-runtime` Cargo feature so default builds skip the vendored Lua

@@ -9,6 +9,7 @@ use std::sync::Arc;
 use ddb_cache::DdbCache;
 use futures::{SinkExt, StreamExt};
 use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::mpsc;
 use tokio_util::codec::Framed;
 
 use crate::codec::{RESP3Codec, RespFrame};
@@ -65,23 +66,35 @@ async fn handle_connection(
 ) -> std::io::Result<()> {
     tracing::debug!(%peer, "new RESP3 connection");
     let mut framed = Framed::new(socket, RESP3Codec);
-    let mut session = Session::new(auth_required);
+    let (push_tx, mut push_rx) = mpsc::unbounded_channel();
+    let mut session = Session::new(auth_required, push_tx);
 
-    while let Some(frame_res) = framed.next().await {
-        let frame = match frame_res {
-            Ok(f) => f,
-            Err(e) => {
-                tracing::debug!(%peer, error = %e, "decode error");
-                let _ = framed
-                    .send(RespFrame::err(format!("ERR protocol error: {e}")))
-                    .await;
-                break;
+    loop {
+        tokio::select! {
+            Some(push) = push_rx.recv() => {
+                if let Err(e) = framed.send(push).await {
+                    tracing::debug!(%peer, error = %e, "write error");
+                    break;
+                }
             }
-        };
-        let response = dispatcher.handle(&mut session, frame).await;
-        if let Err(e) = framed.send(response).await {
-            tracing::debug!(%peer, error = %e, "write error");
-            break;
+            incoming = framed.next() => {
+                let Some(frame_res) = incoming else { break };
+                let frame = match frame_res {
+                    Ok(f) => f,
+                    Err(e) => {
+                        tracing::debug!(%peer, error = %e, "decode error");
+                        let _ = framed
+                            .send(RespFrame::err(format!("ERR protocol error: {e}")))
+                            .await;
+                        break;
+                    }
+                };
+                let response = dispatcher.handle(&mut session, frame).await;
+                if let Err(e) = framed.send(response).await {
+                    tracing::debug!(%peer, error = %e, "write error");
+                    break;
+                }
+            }
         }
     }
 

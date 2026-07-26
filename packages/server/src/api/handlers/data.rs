@@ -17,8 +17,8 @@ use crate::sync::broadcaster::ChangeEvent;
 use crate::triple_store::{PgTripleStore, TripleInput, TripleStore};
 
 use super::helpers::{
-    check_permission, extract_auth_context, infer_value_type,
-    negotiate_response, negotiate_response_status, validate_entity_name,
+    check_permission, extract_auth_context, infer_value_type, negotiate_response,
+    negotiate_response_status, validate_entity_name,
 };
 
 // ---------------------------------------------------------------------------
@@ -54,18 +54,14 @@ pub async fn data_list(
         "type": entity,
         "$limit": limit
     });
-    let mut ast = query::parse_darshan_ql(&query_json)
+    let ast = query::parse_darshan_ql(&query_json)
         .map_err(|e| ApiError::internal(format!("Failed to build list query: {e}")))?;
 
-    if let Some(where_sql) = perm_result.build_where_clause(auth_ctx.user_id) {
-        ast.where_clauses.push(query::WhereClause {
-            attribute: "__permission_filter".to_string(),
-            op: query::WhereOp::Eq,
-            value: serde_json::Value::String(where_sql),
-        });
-    }
+    let permission =
+        query::PermissionFilter::from_clauses(&perm_result.where_clauses, auth_ctx.user_id)
+            .map_err(|e| ApiError::internal(format!("Failed to build list query: {e}")))?;
 
-    let plan = query::plan_query(&ast)
+    let plan = query::plan_query_with_permission(&ast, &permission)
         .map_err(|e| ApiError::internal(format!("Failed to plan list query: {e}")))?;
     let results = query::execute_query(&state.pool, &plan)
         .await
@@ -149,7 +145,7 @@ pub async fn data_create(
         ttl_seconds,
     }];
     for (key, value) in obj {
-        if key.starts_with('$') {
+        if key.starts_with('$') || key == "owner_id" {
             continue;
         }
         let value_type = infer_value_type(value);
@@ -161,6 +157,13 @@ pub async fn data_create(
             ttl_seconds,
         });
     }
+    triples.push(TripleInput {
+        entity_id: id,
+        attribute: format!("{entity}/owner_id"),
+        value: Value::String(auth_ctx.user_id.to_string()),
+        value_type: 0,
+        ttl_seconds,
+    });
 
     let tx_id = state
         .triple_store
@@ -265,12 +268,13 @@ pub async fn data_get(
             owner_id
         };
 
-        if let Some(owner) = entity_owner
-            && owner != auth_ctx.user_id
-        {
-            return Err(ApiError::permission_denied(format!(
-                "Access denied: you do not own this {entity}"
-            )));
+        match entity_owner {
+            Some(owner) if owner == auth_ctx.user_id => {}
+            _ => {
+                return Err(ApiError::permission_denied(format!(
+                    "Access denied: you do not own this {entity}"
+                )));
+            }
         }
     }
 
@@ -340,12 +344,13 @@ pub async fn data_patch(
             owner_id
         };
 
-        if let Some(owner) = entity_owner
-            && owner != auth_ctx.user_id
-        {
-            return Err(ApiError::permission_denied(format!(
-                "Access denied: you do not own this {entity}"
-            )));
+        match entity_owner {
+            Some(owner) if owner == auth_ctx.user_id => {}
+            _ => {
+                return Err(ApiError::permission_denied(format!(
+                    "Access denied: you do not own this {entity}"
+                )));
+            }
         }
     }
 
@@ -531,12 +536,13 @@ pub async fn data_delete(
             owner_id
         };
 
-        if let Some(owner) = entity_owner
-            && owner != auth_ctx.user_id
-        {
-            return Err(ApiError::permission_denied(format!(
-                "Access denied: you do not own this {entity}"
-            )));
+        match entity_owner {
+            Some(owner) if owner == auth_ctx.user_id => {}
+            _ => {
+                return Err(ApiError::permission_denied(format!(
+                    "Access denied: you do not own this {entity}"
+                )));
+            }
         }
     }
 

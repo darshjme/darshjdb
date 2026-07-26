@@ -7,20 +7,32 @@
 //! DATABASE_URL=postgres://darshan:darshan@localhost:5432/darshjdb_test cargo test --test integration
 //! ```
 //!
-//! If `DATABASE_URL` is not set, every test silently passes (returns early).
-//! Each test creates its own data in isolated entity namespaces and cleans
-//! up after itself so tests can run in parallel without interference.
+//! If `DATABASE_URL` is not set, each test prints an explicit skip notice via
+//! `setup_pool` and returns early (visible with `cargo test -- --nocapture`).
+//! If `DATABASE_URL` *is* set but the database is unreachable or schema setup
+//! fails, `setup_pool` panics so the failure surfaces instead of silently
+//! passing. Each test creates its own data in isolated entity namespaces and
+//! cleans up after itself so tests can run in parallel without interference.
 //!
-//! **71 integration tests** across 9 categories:
+//! **118 integration tests** (115 active + 3 ignored) across 18 categories:
 //! - Triple store core: 11
-//! - Auth password provider: 10
-//! - Auth session manager: 7
-//! - Data CRUD: 15
+//! - Auth password provider: 15
+//! - Auth session manager: 10
+//! - Data CRUD: 14
 //! - DarshJQL query engine: 10
 //! - Mutations: 5
 //! - Permissions: 5
 //! - Audit/Merkle: 4
 //! - Edge cases: 5
+//! - Full lifecycle: 5
+//! - Permission enforcement: 5
+//! - Rate limiting: 5
+//! - Concurrent writes: 5
+//! - Cache behavior: 3
+//! - TTL: 3
+//! - Batch operations: 5
+//! - Query engine extended: 5
+//! - Point-in-time & history: 3
 
 use ddb_server::triple_store::TripleStore;
 use serde_json::json;
@@ -32,14 +44,21 @@ use uuid::Uuid;
 // ---------------------------------------------------------------------------
 
 async fn setup_pool() -> Option<PgPool> {
-    let url = std::env::var("DATABASE_URL").ok()?;
-    let pool = PgPool::connect(&url).await.ok()?;
+    let Ok(url) = std::env::var("DATABASE_URL") else {
+        eprintln!("SKIP: DATABASE_URL not set — skipping integration test (no database available)");
+        return None;
+    };
+    // DATABASE_URL is set: a connection or schema failure is a real error,
+    // not a reason to silently pass.
+    let pool = PgPool::connect(&url)
+        .await
+        .expect("DATABASE_URL is set but connecting to Postgres failed");
     ddb_server::triple_store::PgTripleStore::new(pool.clone())
         .await
-        .ok()?;
+        .expect("DATABASE_URL is set but triple-store schema setup failed");
     ddb_server::api::rest::ensure_auth_schema(&pool)
         .await
-        .ok()?;
+        .expect("DATABASE_URL is set but auth schema setup failed");
     Some(pool)
 }
 

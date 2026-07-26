@@ -63,12 +63,13 @@ RUN apt-get update && \
 WORKDIR /app
 
 # Copy binaries from builder
-COPY --from=builder /build/target/release/ddb-server /usr/local/bin/ddb-server
-COPY --from=builder /build/target/release/ddb         /usr/local/bin/ddb
-COPY --from=frontend /build/packages/admin/dist       /usr/share/darshan/admin
+COPY --from=builder /build/target/release/ddb-server       /usr/local/bin/ddb-server
+COPY --from=builder /build/target/release/ddb              /usr/local/bin/ddb
+COPY --from=builder /build/target/release/ddb-cache-server /usr/local/bin/ddb-cache-server
+COPY --from=frontend /build/packages/admin/dist            /usr/share/darshan/admin
 
 # Lock down binary permissions
-RUN chmod 555 /usr/local/bin/ddb-server /usr/local/bin/ddb && \
+RUN chmod 555 /usr/local/bin/ddb-server /usr/local/bin/ddb /usr/local/bin/ddb-cache-server && \
     mkdir -p /app/data && \
     chown -R darshan:darshan /app
 

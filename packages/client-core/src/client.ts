@@ -8,12 +8,15 @@
  */
 
 import { encode, decode } from '@msgpack/msgpack';
+import { RestTransport } from './rest.js';
 import type {
   DarshanConfig,
   ConnectionState,
   ConnectionStateListener,
   TransportMode,
   ClientMessage,
+  ClientNotification,
+  ClientRequest,
   ServerMessage,
 } from './types.js';
 
@@ -85,11 +88,18 @@ export class DarshJDB {
     string,
     (msg: ServerMessage) => void
   >();
+  private _privatePresenceHandlers = new Map<
+    string,
+    (msg: ServerMessage) => void
+  >();
+  private _privateReconnectListeners = new Set<() => void | Promise<void>>();
   private _privateBackoff = INITIAL_BACKOFF_MS;
   private _privateReconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private _privatePingTimer: ReturnType<typeof setInterval> | null = null;
   private _privateIntentionalClose = false;
   private _privateAuthToken: string | null = null;
+  private _privateHasConnected = false;
+  private _privateRest: RestTransport | null = null;
 
   constructor(config: DarshanConfig) {
     this.serverUrl = config.serverUrl.replace(/\/+$/, '');
@@ -129,6 +139,27 @@ export class DarshJDB {
     }
   }
 
+  /* -- Transport selection ------------------------------------------------ */
+
+  /**
+   * Whether query/transact traffic is carried over HTTP + SSE instead of
+   * the WebSocket. True only for `transport: 'rest'`.
+   */
+  get usesRest(): boolean {
+    return this.transport === 'rest';
+  }
+
+  /**
+   * The REST/SSE transport for this client, created on first access.
+   * Used by the query and transaction layers when {@link usesRest} is true.
+   */
+  get rest(): RestTransport {
+    if (!this._privateRest) {
+      this._privateRest = new RestTransport(this);
+    }
+    return this._privateRest;
+  }
+
   /* -- Auth token (set by auth module) ------------------------------------ */
 
   /**
@@ -155,7 +186,7 @@ export class DarshJDB {
       return;
     }
 
-    if (this.transport === 'rest') {
+    if (this.usesRest) {
       // REST mode has no persistent connection; mark as connected immediately.
       this._privateSetState('connected');
       return;
@@ -174,6 +205,9 @@ export class DarshJDB {
       this._privateSocket.close(1000, 'client disconnect');
       this._privateSocket = null;
     }
+    if (this._privateRest) {
+      this._privateRest.closeAll();
+    }
     this._privateRejectAllPending(new Error('Client disconnected'));
     this._privateSetState('disconnected');
   }
@@ -181,15 +215,22 @@ export class DarshJDB {
   /* -- Messaging ---------------------------------------------------------- */
 
   /**
-   * Send a message to the server and await a correlated response.
+   * Send a request frame to the server and await its correlated reply.
    *
-   * @param msg - Client message (the `id` field is auto-generated if absent).
+   * @param msg - Client request frame (the `id` field is auto-generated).
    * @param timeoutMs - How long to wait for a response (default 10 000 ms).
    * @returns The correlated {@link ServerMessage}.
    */
-  async send(msg: Omit<ClientMessage, 'id'>, timeoutMs = 10_000): Promise<ServerMessage> {
+  async send(
+    msg: ClientRequest | Extract<ClientMessage, { type: 'auth' }>,
+    timeoutMs = 10_000,
+  ): Promise<ServerMessage> {
     const id = nextId();
-    const fullMsg: ClientMessage = { ...msg, id };
+    // The `auth` frame is the one request the server answers without echoing
+    // a correlation id, so it is sent verbatim.
+    const fullMsg = (
+      msg.type === 'auth' ? msg : { ...msg, id }
+    ) as ClientMessage;
 
     return new Promise<ServerMessage>((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -198,12 +239,26 @@ export class DarshJDB {
       }, timeoutMs);
 
       this._privatePendingRequests.set(id, { resolve, reject, timer });
-      this._privateSendRaw(fullMsg);
+
+      try {
+        this._privateSendRaw(fullMsg);
+      } catch (err) {
+        clearTimeout(timer);
+        this._privatePendingRequests.delete(id);
+        reject(err as Error);
+      }
     });
   }
 
   /**
-   * Register a handler for server-pushed messages on a given subscription id.
+   * Send a frame the server never replies to (`ping`, presence updates).
+   */
+  notify(msg: ClientNotification): void {
+    this._privateSendRaw(msg);
+  }
+
+  /**
+   * Register a handler for server-pushed frames carrying a given `sub_id`.
    */
   registerSubscriptionHandler(
     subId: string,
@@ -220,10 +275,42 @@ export class DarshJDB {
   }
 
   /**
-   * Get the REST base URL (for the REST transport fallback).
+   * Register a handler for the server's presence frames for a given room.
+   */
+  registerPresenceHandler(
+    room: string,
+    handler: (msg: ServerMessage) => void,
+  ): void {
+    this._privatePresenceHandlers.set(room, handler);
+  }
+
+  /**
+   * Remove a presence handler.
+   */
+  unregisterPresenceHandler(room: string): void {
+    this._privatePresenceHandlers.delete(room);
+  }
+
+  /**
+   * Register a callback invoked after every successful reconnect.
+   *
+   * Server-side subscriptions live on the socket, so they are lost when it
+   * drops. The query and presence layers use this hook to re-establish them.
+   *
+   * @returns A function that removes the callback when called.
+   */
+  onReconnected(callback: () => void | Promise<void>): () => void {
+    this._privateReconnectListeners.add(callback);
+    return () => {
+      this._privateReconnectListeners.delete(callback);
+    };
+  }
+
+  /**
+   * Build a URL for the server's REST API, which is mounted at `/api`.
    */
   getRestUrl(path: string): string {
-    return `${this.serverUrl}/v1/apps/${this.appId}${path}`;
+    return `${this.serverUrl}/api${path}`;
   }
 
   /**
@@ -240,9 +327,15 @@ export class DarshJDB {
       this._privateSetState('connecting');
       this._privateIntentionalClose = false;
 
-      const wsUrl = this.serverUrl
-        .replace(/^http/, 'ws')
-        .concat(`/v1/apps/${this.appId}/ws`);
+      let settled = false;
+      const settle = (err?: Error): void => {
+        if (settled) return;
+        settled = true;
+        if (err) reject(err);
+        else resolve();
+      };
+
+      const wsUrl = this.serverUrl.replace(/^http/, 'ws').concat('/ws');
 
       const socket = new WebSocket(wsUrl);
       socket.binaryType = 'arraybuffer';
@@ -253,13 +346,16 @@ export class DarshJDB {
         this._privateSetState('authenticating');
         this._privateAuthenticate()
           .then(() => {
+            const isReconnect = this._privateHasConnected;
+            this._privateHasConnected = true;
             this._privateSetState('connected');
             this._privateStartPing();
-            resolve();
+            if (isReconnect) this._privateNotifyReconnected();
+            settle();
           })
-          .catch((err) => {
+          .catch((err: Error) => {
             this.disconnect();
-            reject(err);
+            settle(err);
           });
       };
 
@@ -273,39 +369,33 @@ export class DarshJDB {
 
       socket.onclose = (event) => {
         this._privateClearTimers();
+        this._privateRejectAllPending(
+          new Error(`WebSocket closed: ${event.code} ${event.reason}`),
+        );
         if (this._privateIntentionalClose) return;
         this._privateSetState('reconnecting');
         this._privateScheduleReconnect();
-        // If we never connected, reject the initial promise.
-        if (this._privateState !== 'connected') {
-          reject(new Error(`WebSocket closed: ${event.code} ${event.reason}`));
-        }
+        // If we never reached `connected`, reject the initial promise.
+        settle(new Error(`WebSocket closed: ${event.code} ${event.reason}`));
       };
     });
   }
 
   private async _privateAuthenticate(): Promise<void> {
     if (!this._privateAuthToken) {
-      // Anonymous connection; server must accept it or reject.
-      const resp = await this.send({
-        type: 'auth',
-        payload: { appId: this.appId, anonymous: true },
-      });
-      if (resp.type === 'auth-error') {
-        throw new Error(
-          `Authentication failed: ${JSON.stringify(resp.payload)}`,
-        );
-      }
-      return;
+      throw new Error(
+        'Cannot authenticate: no access token. Sign in first, or call setAuthToken().',
+      );
     }
 
     const resp = await this.send({
       type: 'auth',
-      payload: { appId: this.appId, token: this._privateAuthToken },
+      token: this._privateAuthToken,
     });
-    if (resp.type === 'auth-error') {
+
+    if (resp.type !== 'auth-ok') {
       throw new Error(
-        `Authentication failed: ${JSON.stringify(resp.payload)}`,
+        `Authentication failed: ${resp.type === 'auth-err' ? resp.error : resp.type}`,
       );
     }
   }
@@ -321,8 +411,15 @@ export class DarshJDB {
   private _privateHandleMessage(raw: ArrayBuffer): void {
     const msg = decode(new Uint8Array(raw)) as ServerMessage;
 
+    // The `auth` frame carries no id, so its reply cannot be correlated by
+    // one. Resolve the single in-flight request instead.
+    if (msg.type === 'auth-ok' || msg.type === 'auth-err') {
+      this._privateResolveOldest(msg);
+      return;
+    }
+
     // Correlated response?
-    if (msg.id) {
+    if ('id' in msg && msg.id) {
       const pending = this._privatePendingRequests.get(msg.id);
       if (pending) {
         clearTimeout(pending.timer);
@@ -330,13 +427,20 @@ export class DarshJDB {
         pending.resolve(msg);
         return;
       }
+    }
 
-      // Subscription push?
-      const handler = this._privateSubscriptionHandlers.get(msg.id);
-      if (handler) {
-        handler(msg);
-        return;
-      }
+    // Subscription push, keyed by the server-assigned sub_id.
+    if (msg.type === 'sub' || msg.type === 'diff') {
+      const handler = this._privateSubscriptionHandlers.get(msg.sub_id);
+      if (handler) handler(msg);
+      return;
+    }
+
+    // Presence push, keyed by room.
+    if (msg.type === 'pres-snap' || msg.type === 'pres-diff') {
+      const handler = this._privatePresenceHandlers.get(msg.room);
+      if (handler) handler(msg);
+      return;
     }
 
     // Pong — no action needed.
@@ -344,8 +448,18 @@ export class DarshJDB {
 
     // Uncorrelated error — log as a warning in non-production.
     if (msg.type === 'error') {
-      console.warn('[DarshJDB] Server error:', msg.payload);
+      console.warn('[DarshJDB] Server error:', msg.error);
     }
+  }
+
+  /** Resolve the oldest in-flight request with an uncorrelated reply. */
+  private _privateResolveOldest(msg: ServerMessage): void {
+    const first = this._privatePendingRequests.entries().next();
+    if (first.done) return;
+    const [id, pending] = first.value;
+    clearTimeout(pending.timer);
+    this._privatePendingRequests.delete(id);
+    pending.resolve(msg);
   }
 
   /* -- Reconnection ------------------------------------------------------- */
@@ -361,16 +475,24 @@ export class DarshJDB {
     }, delay);
   }
 
+  private _privateNotifyReconnected(): void {
+    for (const fn of this._privateReconnectListeners) {
+      try {
+        void Promise.resolve(fn()).catch((err: unknown) => {
+          console.warn('[DarshJDB] Re-subscribe failed after reconnect:', err);
+        });
+      } catch (err) {
+        console.warn('[DarshJDB] Re-subscribe failed after reconnect:', err);
+      }
+    }
+  }
+
   /* -- Ping / keepalive --------------------------------------------------- */
 
   private _privateStartPing(): void {
     this._privatePingTimer = setInterval(() => {
       try {
-        this._privateSendRaw({
-          type: 'ping',
-          id: nextId(),
-          payload: null,
-        });
+        this._privateSendRaw({ type: 'ping' });
       } catch {
         /* swallow – onclose will handle reconnection */
       }

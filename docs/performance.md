@@ -4,22 +4,15 @@ DarshJDB is built for speed at every layer.
 
 ## Why DarshJDB Is Faster Than REST
 
-| What REST Does | What DarshJDB Does | Improvement |
+| What REST Does | What DarshJDB Does | Why It Helps |
 |---------------|---------------------|-------------|
-| New TCP+TLS per request | Single persistent connection | **15x lower latency** |
-| JSON text encoding | MsgPack binary encoding | **28% smaller payloads** |
-| Full response on every poll | Delta-only patches on change | **98% less bandwidth** |
-| Client polls for changes | Server pushes instantly | **Zero polling** |
-| HTTP headers repeated | Zero header overhead | **No per-request tax** |
+| New TCP+TLS per request | Single persistent connection | No handshake on every call |
+| JSON text encoding | MsgPack binary encoding | Fewer bytes for the same document |
+| Full response on every poll | Delta-only patches on change | Only what changed goes on the wire |
+| Client polls for changes | Server pushes instantly | No polling interval to tune |
+| HTTP headers repeated | Zero header overhead | No per-request tax |
 
-### Real-World Numbers
-
-A typical app making 20 requests/second with 10 active subscriptions:
-
-| Metric | REST | DarshJDB | Factor |
-|--------|------|-----------|--------|
-| Latency | ~248ms | ~1.2ms | **206x** |
-| Bandwidth overhead | ~4,800 B/s | ~180 B/s | **26x** |
+We do not publish comparison numbers here because we have not run controlled benchmarks yet. See [benchmarks](benchmarks/README.md) for how to measure on your own hardware.
 
 ## Tuning Guide
 

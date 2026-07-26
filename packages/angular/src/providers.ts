@@ -28,6 +28,7 @@ import {
   makeEnvironmentProviders,
   APP_INITIALIZER,
   ENVIRONMENT_INITIALIZER,
+  DestroyRef,
   inject,
 } from '@angular/core';
 
@@ -75,23 +76,15 @@ export function provideDarshan(
     },
     {
       provide: ENVIRONMENT_INITIALIZER,
-      useFactory: () => {
-        // Register disconnect on injector destroy via DestroyRef
-        // (available Angular 16+). The ENVIRONMENT_INITIALIZER runs
-        // once at injector creation, giving us a hook to schedule cleanup.
+      // Runs once in the environment injection context, where DestroyRef
+      // (Angular 16+) lets us disconnect when the injector is destroyed.
+      useValue: () => {
         const client = inject(DDB_CLIENT);
-        return () => {
-          // The return value of ENVIRONMENT_INITIALIZER factories is
-          // not used, but we capture the client reference for the
-          // DestroyRef teardown registered below.
-          if (typeof globalThis !== 'undefined') {
-            // Register a beforeunload listener as a safety net for
-            // graceful disconnect in browser environments.
-            globalThis.addEventListener?.('beforeunload', () => {
-              client.disconnect();
-            });
-          }
-        };
+        const destroyRef = inject(DestroyRef);
+
+        destroyRef.onDestroy(() => {
+          client.disconnect();
+        });
       },
       multi: true,
     },

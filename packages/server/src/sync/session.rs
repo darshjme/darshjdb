@@ -46,6 +46,10 @@ pub struct SyncSession {
     /// Authenticated user ID. `None` until auth completes.
     pub user_id: Option<String>,
 
+    /// Verified identity context from the auth subsystem. `None` until auth
+    /// completes; used for permission evaluation on subscribe and mutate.
+    pub auth_ctx: Option<crate::auth::AuthContext>,
+
     /// Active subscriptions keyed by subscription ID.
     pub subscriptions: HashMap<SubId, ActiveSubscription>,
 
@@ -65,6 +69,7 @@ impl SyncSession {
         Self {
             id,
             user_id: None,
+            auth_ctx: None,
             subscriptions: HashMap::new(),
             last_tx: 0,
             connected_at: Instant::now(),
@@ -72,9 +77,10 @@ impl SyncSession {
         }
     }
 
-    /// Mark this session as authenticated.
-    pub fn authenticate(&mut self, user_id: String) {
-        self.user_id = Some(user_id);
+    /// Mark this session as authenticated with a verified identity context.
+    pub fn authenticate(&mut self, auth_ctx: crate::auth::AuthContext) {
+        self.user_id = Some(auth_ctx.user_id.to_string());
+        self.auth_ctx = Some(auth_ctx);
     }
 
     /// Returns `true` if the session has completed authentication.
@@ -191,8 +197,20 @@ impl Default for SessionManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::auth::AuthContext;
     use serde_json::json;
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+    fn test_auth_ctx(user_id: uuid::Uuid) -> AuthContext {
+        AuthContext {
+            user_id,
+            session_id: uuid::Uuid::new_v4(),
+            roles: Vec::new(),
+            ip: "127.0.0.1".into(),
+            user_agent: "test".into(),
+            device_fingerprint: String::new(),
+        }
+    }
 
     #[test]
     fn session_creation_defaults() {
@@ -213,9 +231,13 @@ mod tests {
         let mut session = SyncSession::new(SessionId::new_v4(), None);
         assert!(!session.is_authenticated());
 
-        session.authenticate("user-42".into());
+        let user_id = uuid::Uuid::new_v4();
+        session.authenticate(test_auth_ctx(user_id));
         assert!(session.is_authenticated());
-        assert_eq!(session.user_id.as_deref(), Some("user-42"));
+        assert_eq!(
+            session.user_id.as_deref(),
+            Some(user_id.to_string().as_str())
+        );
     }
 
     #[test]
@@ -298,7 +320,7 @@ mod tests {
         let id = mgr.create_session(None);
 
         mgr.with_session_mut(&id, |s| {
-            s.authenticate("alice".into());
+            s.authenticate(test_auth_ctx(uuid::Uuid::new_v4()));
         });
 
         let is_auth = mgr.with_session(&id, |s| s.is_authenticated());

@@ -32,27 +32,14 @@ services:
       dockerfile: Dockerfile
     ports:
       - "${DDB_HOST_PORT:-7700}:7700"
-      # Slice 11 — RESP3 protocol server (Redis-compatible) exposed on 7701.
-      - "${DDB_CACHE_HOST_PORT:-7701}:7701"
     environment:
       DATABASE_URL: "postgres://darshan:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@postgres:5432/darshjdb"
       DDB_PORT: "7700"
       DDB_ADMIN_DIR: /usr/share/darshan/admin
       DDB_JWT_SECRET: ${DDB_JWT_SECRET:?Set DDB_JWT_SECRET in .env}
-      DDB_REDIS_URL: "redis://redis:6379/0"
-      DDB_QDRANT_URL: "http://qdrant:6334"
-      # Slice 11 — DdbCache (RESP3 + HTTP REST) tunables.
-      DARSH_CACHE_PORT: "7701"
-      # REQUIRED: fail to start if unset. The RESP3 cache server refuses
-      # to boot without AUTH configured — see packages/cache-server.
-      DARSH_CACHE_PASSWORD: ${DARSH_CACHE_PASSWORD:?Set DARSH_CACHE_PASSWORD in .env}
       RUST_LOG: ${RUST_LOG:-info}
     depends_on:
       postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-      qdrant:
         condition: service_healthy
     restart: unless-stopped
     read_only: true
@@ -74,6 +61,46 @@ services:
     security_opt:
       - no-new-privileges:true
 
+  # ── DarshJDB cache server (RESP3, Redis-compatible) ──────────────────
+  # Slice 11 — a standalone binary (packages/cache-server), NOT part of
+  # ddb-server. Same image, different command.
+  ddb-cache:
+    image: darshjme/darshjdb:${DDB_VERSION:-latest}
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["ddb-cache-server"]
+    ports:
+      - "${DDB_CACHE_HOST_PORT:-7701}:7701"
+    environment:
+      DARSH_CACHE_PORT: "7701"
+      # AUTH is optional in the binary; require it here so a published
+      # port is never left unauthenticated.
+      DARSH_CACHE_PASSWORD: ${DARSH_CACHE_PASSWORD:?Set DARSH_CACHE_PASSWORD in .env}
+      RUST_LOG: ${RUST_LOG:-info}
+    healthcheck:
+      test: ["CMD-SHELL", "timeout 2 bash -c '</dev/tcp/127.0.0.1/7701'"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:size=16M
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: "1.0"
+        reservations:
+          memory: 64M
+    logging: *default-logging
+    networks:
+      - darshjdb
+    security_opt:
+      - no-new-privileges:true
+
   # ── PostgreSQL 16 with TimescaleDB + pgvector ────────────────────────
   # Base image: timescale/timescaledb-ha:pg16-latest (ships with timescaledb,
   # pgvector, postgis and pg_cron preloaded — covers the full DarshJDB stack).
@@ -84,9 +111,11 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
       POSTGRES_DB: darshjdb
       POSTGRES_INITDB_ARGS: "--data-checksums"
+    # No /docker-entrypoint-initdb.d mount: ddb-server applies the full
+    # packages/server/migrations set at boot. Seeding only 001_initial.sql
+    # here left the schema several migrations behind.
     volumes:
       - pgdata:/var/lib/postgresql/data
-      - ./packages/server/migrations/001_initial.sql:/docker-entrypoint-initdb.d/001_initial.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U darshan -d darshjdb"]
       interval: 10s
@@ -107,64 +136,12 @@ services:
       - darshjdb
     # Not exposed to host in production — access via darshjdb service only
 
-  # ── Redis (cache + pub/sub for real-time sync) ──────────────────────
-  redis:
-    image: redis:7-alpine
-    command: >
-      redis-server
-        --maxmemory 128mb
-        --maxmemory-policy allkeys-lru
-        --save 60 1000
-        --appendonly yes
-        --requirepass ${REDIS_PASSWORD:?Set REDIS_PASSWORD}
-    volumes:
-      - redis_data:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
-      start_period: 5s
-    restart: unless-stopped
-    deploy:
-      resources:
-        limits:
-          memory: 192M
-          cpus: "0.5"
-    logging: *default-logging
-    networks:
-      - darshjdb
-
-  # ── Qdrant (vector search) ──────────────────────────────────────────
-  qdrant:
-    image: qdrant/qdrant:v1.13.2
-    volumes:
-      - qdrant_data:/qdrant/storage
-    environment:
-      QDRANT__SERVICE__GRPC_PORT: "6334"
-      QDRANT__SERVICE__HTTP_PORT: "6333"
-    healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:6333/healthz || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
-      start_period: 10s
-    restart: unless-stopped
-    deploy:
-      resources:
-        limits:
-          memory: 512M
-          cpus: "1.0"
-    logging: *default-logging
-    networks:
-      - darshjdb
+  # Redis and Qdrant were removed: no crate in the workspace links a Redis
+  # or Qdrant client, and DDB_REDIS_URL / DDB_QDRANT_URL were read by
+  # nothing. Caching is ddb-cache (RESP3), vectors are pgvector in Postgres.
 
 volumes:
   pgdata:
-    driver: local
-  redis_data:
-    driver: local
-  qdrant_data:
     driver: local
   ddb_data:
     driver: local

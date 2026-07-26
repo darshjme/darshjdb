@@ -1,3 +1,5 @@
+'use client';
+
 /**
  * @module use-presence
  * @description Hook for real-time presence in a DarshJDB room.
@@ -39,7 +41,82 @@
 import { useCallback, useEffect, useRef, useSyncExternalStore } from 'react';
 
 import { useDarshanClient } from './provider';
-import type { PresencePeer, Unsubscribe } from './types';
+import type { DarshanClientInterface, PresencePeer, Unsubscribe } from './types';
+
+// ---------------------------------------------------------------------------
+// Room membership registry
+//
+// Join and leave are asynchronous, so a naive "join on mount / leave on
+// cleanup" pair races: a leave issued for a torn-down effect can land *after*
+// the join of the next effect (StrictMode double-mount, or a room id that
+// flips back), silently kicking the peer out of a room it is still rendering.
+//
+// Every room therefore gets a reference count plus a serialised operation
+// queue: joins and leaves for the same room never overlap, and a room is only
+// left once the last subscriber releases it.
+// ---------------------------------------------------------------------------
+
+interface RoomEntry {
+  count: number;
+  /** Tail of the operation queue, `null` when no operation is in flight. */
+  tail: Promise<void> | null;
+}
+
+const ROOMS = new WeakMap<DarshanClientInterface, Map<string, RoomEntry>>();
+
+function getRoomEntry(client: DarshanClientInterface, roomId: string): RoomEntry {
+  let byRoom = ROOMS.get(client);
+  if (!byRoom) {
+    byRoom = new Map<string, RoomEntry>();
+    ROOMS.set(client, byRoom);
+  }
+
+  let entry = byRoom.get(roomId);
+  if (!entry) {
+    entry = { count: 0, tail: null };
+    byRoom.set(roomId, entry);
+  }
+  return entry;
+}
+
+/** Queue `op` after any in-flight operation for the same room. */
+function enqueue(entry: RoomEntry, op: () => Promise<void>): Promise<void> {
+  const next = entry.tail === null ? op() : entry.tail.then(op, op);
+  entry.tail = next;
+
+  const settled = next.catch(() => undefined);
+  void settled.then(() => {
+    if (entry.tail === next) entry.tail = null;
+  });
+
+  return settled;
+}
+
+/**
+ * Join the room (only the first subscriber issues the join).
+ * @returns A promise that settles once the room is joined.
+ */
+function acquireRoom(client: DarshanClientInterface, roomId: string): Promise<void> {
+  const entry = getRoomEntry(client, roomId);
+  entry.count += 1;
+
+  if (entry.count > 1) {
+    return entry.tail ? entry.tail.catch(() => undefined) : Promise.resolve();
+  }
+
+  return enqueue(entry, () => client.joinRoom(roomId));
+}
+
+/** Release the room, leaving it once the last subscriber is gone. */
+function releaseRoom(client: DarshanClientInterface, roomId: string): void {
+  const entry = getRoomEntry(client, roomId);
+  if (entry.count === 0) return;
+
+  entry.count -= 1;
+  if (entry.count > 0) return;
+
+  void enqueue(entry, () => client.leaveRoom(roomId));
+}
 
 // ---------------------------------------------------------------------------
 // Types
@@ -110,12 +187,8 @@ export function usePresence<S = Record<string, unknown>>(
     let unsub: Unsubscribe | null = null;
     let cancelled = false;
 
-    void client.joinRoom(roomId).then(() => {
-      if (cancelled) {
-        // Already unmounted before join resolved.
-        void client.leaveRoom(roomId);
-        return;
-      }
+    void acquireRoom(client, roomId).then(() => {
+      if (cancelled) return;
 
       unsub = client.onPresenceChange<S>(roomId, (peers) => {
         store.snapshot = peers;
@@ -126,7 +199,7 @@ export function usePresence<S = Record<string, unknown>>(
     return () => {
       cancelled = true;
       unsub?.();
-      void client.leaveRoom(roomId);
+      releaseRoom(client, roomId);
       // Reset peers on leave so stale data is never shown.
       store.snapshot = EMPTY_PEERS as ReadonlyArray<PresencePeer<S>>;
       emit(store);

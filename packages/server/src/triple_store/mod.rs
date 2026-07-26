@@ -189,7 +189,35 @@ impl PgTripleStore {
 
     /// Create the `triples` table and all supporting indexes if they
     /// do not already exist. This is idempotent.
+    ///
+    /// Serialised against other schema-setup callers by
+    /// [`crate::cluster::LOCK_SCHEMA_SETUP`]. The DDL below runs as a single
+    /// implicit transaction that takes `AccessExclusiveLock` on `triples`
+    /// several times over; two concurrent callers interleave those locks and
+    /// deadlock (SQLSTATE 40P01). The advisory lock makes them queue instead.
     async fn ensure_schema(&self) -> Result<()> {
+        let mut lock_conn = self.pool.acquire().await?;
+        sqlx::query("SELECT pg_advisory_lock($1)")
+            .bind(crate::cluster::LOCK_SCHEMA_SETUP)
+            .execute(&mut *lock_conn)
+            .await?;
+
+        let result = self.ensure_schema_locked().await;
+
+        // Release explicitly rather than relying on the connection being
+        // dropped: it returns to the pool still holding a session-level
+        // lock otherwise.
+        let _ = sqlx::query("SELECT pg_advisory_unlock($1)")
+            .bind(crate::cluster::LOCK_SCHEMA_SETUP)
+            .execute(&mut *lock_conn)
+            .await;
+
+        result
+    }
+
+    /// The body of [`Self::ensure_schema`], run while holding
+    /// [`crate::cluster::LOCK_SCHEMA_SETUP`].
+    async fn ensure_schema_locked(&self) -> Result<()> {
         sqlx::raw_sql(
             r#"
             CREATE TABLE IF NOT EXISTS triples (
@@ -238,6 +266,40 @@ impl PgTripleStore {
 
             -- Add expires_at column to existing tables (idempotent migration).
             ALTER TABLE triples ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ;
+
+            -- Transaction id at which a triple was retracted. NULL means the
+            -- triple is still live. Point-in-time reads use this instead of
+            -- the mutable `retracted` flag, which carries no temporal
+            -- information and would otherwise make historical rows look
+            -- retracted at every past tx.
+            ALTER TABLE triples ADD COLUMN IF NOT EXISTS retracted_tx_id BIGINT;
+
+            CREATE INDEX IF NOT EXISTS idx_triples_retracted_tx
+                ON triples (retracted_tx_id)
+                WHERE retracted_tx_id IS NOT NULL;
+
+            -- Backfill rows retracted before this column existed. The
+            -- assertion tx is the best available approximation.
+            UPDATE triples
+            SET retracted_tx_id = tx_id
+            WHERE retracted AND retracted_tx_id IS NULL;
+
+            -- Stamp the retraction tx automatically so every retraction
+            -- path (including raw SQL) stays time-versioned.
+            CREATE OR REPLACE FUNCTION darshan_stamp_retraction_tx()
+            RETURNS trigger AS $fn$
+            BEGIN
+                NEW.retracted_tx_id := nextval('darshan_tx_seq');
+                RETURN NEW;
+            END;
+            $fn$ LANGUAGE plpgsql;
+
+            DROP TRIGGER IF EXISTS trg_triples_retraction_tx ON triples;
+            CREATE TRIGGER trg_triples_retraction_tx
+                BEFORE UPDATE ON triples
+                FOR EACH ROW
+                WHEN (NEW.retracted AND NEW.retracted_tx_id IS NULL)
+                EXECUTE FUNCTION darshan_stamp_retraction_tx();
             "#,
         )
         .execute(&self.pool)
@@ -691,6 +753,7 @@ impl TripleStore for PgTripleStore {
                 id, entity_id, attribute, value, value_type, tx_id, created_at, retracted, expires_at
             FROM triples
             WHERE entity_id = $1 AND tx_id <= $2
+              AND (retracted_tx_id IS NULL OR retracted_tx_id > $2)
             ORDER BY attribute, tx_id DESC
             "#,
         )
@@ -699,9 +762,7 @@ impl TripleStore for PgTripleStore {
         .fetch_all(&self.pool)
         .await?;
 
-        // Filter out triples that were retracted as of that tx.
-        let active: Vec<Triple> = triples.into_iter().filter(|t| !t.retracted).collect();
-        Ok(active)
+        Ok(triples)
     }
 }
 

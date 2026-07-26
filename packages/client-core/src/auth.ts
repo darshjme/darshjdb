@@ -29,6 +29,41 @@ const TOKEN_KEY_EXPIRES = 'darshan_token_expires';
 const REFRESH_BUFFER_MS = 60_000;
 
 /* -------------------------------------------------------------------------- */
+/*  Server wire shapes                                                        */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Token pair as returned by `/api/auth/{signup,signin,refresh}` — flat and
+ * snake_case, with a relative `expires_in` rather than an absolute expiry.
+ */
+interface TokenPairResponse {
+  user_id?: string;
+  email?: string;
+  access_token: string;
+  refresh_token: string;
+  expires_in: number;
+  token_type?: string;
+}
+
+/** Profile shape returned by `GET /api/auth/me`. */
+interface MeResponse {
+  user_id: string;
+  email?: string;
+  roles?: unknown;
+  session_id?: string;
+  created_at?: string;
+}
+
+/** Convert a server token pair into the SDK's absolute-expiry form. */
+function toTokens(resp: TokenPairResponse): AuthTokens {
+  return {
+    accessToken: resp.access_token,
+    refreshToken: resp.refresh_token,
+    expiresAt: Date.now() + resp.expires_in * 1000,
+  };
+}
+
+/* -------------------------------------------------------------------------- */
 /*  Default localStorage adapter                                              */
 /* -------------------------------------------------------------------------- */
 
@@ -163,7 +198,11 @@ export class AuthClient {
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(params),
+        body: JSON.stringify({
+          email: params.email,
+          password: params.password,
+          name: params.displayName,
+        }),
       },
     );
 
@@ -172,9 +211,14 @@ export class AuthClient {
       throw new Error(`Sign-up failed (${resp.status}): ${body}`);
     }
 
-    const data = (await resp.json()) as { user: User; tokens: AuthTokens };
-    await this._privateSetSession(data.user, data.tokens);
-    return data.user;
+    const data = (await resp.json()) as TokenPairResponse;
+    const user: User = {
+      id: data.user_id ?? '',
+      email: data.email ?? params.email,
+      displayName: params.displayName,
+    };
+    await this._privateSetSession(user, toTokens(data));
+    return user;
   }
 
   /* -- Sign In ------------------------------------------------------------ */
@@ -200,9 +244,20 @@ export class AuthClient {
       throw new Error(`Sign-in failed (${resp.status}): ${body}`);
     }
 
-    const data = (await resp.json()) as { user: User; tokens: AuthTokens };
-    await this._privateSetSession(data.user, data.tokens);
-    return data.user;
+    const data = (await resp.json()) as TokenPairResponse & {
+      mfa_required?: boolean;
+    };
+
+    if (data.mfa_required) {
+      throw new Error('Sign-in requires multi-factor authentication');
+    }
+
+    const user: User = {
+      id: data.user_id ?? '',
+      email: data.email ?? params.email,
+    };
+    await this._privateSetSession(user, toTokens(data));
+    return user;
   }
 
   /* -- OAuth -------------------------------------------------------------- */
@@ -217,9 +272,28 @@ export class AuthClient {
    * @returns The authenticated user.
    */
   async signInWithOAuth(provider: OAuthProvider): Promise<User> {
-    const authUrl = this._privateClient.getRestUrl(
-      `/auth/oauth/${provider}/authorize`,
+    // Step 1: ask the server for the provider authorize URL plus the CSRF
+    // state and PKCE verifier needed to redeem the code afterwards.
+    const initResp = await fetch(
+      this._privateClient.getRestUrl(`/auth/oauth/${provider}`),
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{}',
+      },
     );
+
+    if (!initResp.ok) {
+      const body = await initResp.text();
+      throw new Error(`OAuth init failed (${initResp.status}): ${body}`);
+    }
+
+    const { authorize_url: authUrl, state: csrfState, pkce_verifier: verifier } =
+      (await initResp.json()) as {
+        authorize_url: string;
+        state: string;
+        pkce_verifier: string;
+      };
 
     return new Promise<User>((resolve, reject) => {
       const width = 500;
@@ -246,14 +320,15 @@ export class AuthClient {
 
         const data = event.data as {
           type?: string;
-          user?: User;
-          tokens?: AuthTokens;
+          code?: string;
+          state?: string;
           error?: string;
         };
 
         if (data.type !== 'ddb-oauth-callback') return;
 
         window.removeEventListener('message', handleMessage);
+        clearInterval(pollTimer);
         popup.close();
 
         if (data.error) {
@@ -261,11 +336,41 @@ export class AuthClient {
           return;
         }
 
-        if (data.user && data.tokens) {
-          await this._privateSetSession(data.user, data.tokens);
-          resolve(data.user);
-        } else {
-          reject(new Error('OAuth callback missing user or tokens'));
+        if (!data.code) {
+          reject(new Error('OAuth callback missing authorization code'));
+          return;
+        }
+
+        // Step 2: redeem the authorization code for a token pair.
+        try {
+          const resp = await fetch(
+            this._privateClient.getRestUrl(`/auth/oauth/${provider}`),
+            {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                code: data.code,
+                state: data.state ?? csrfState,
+                pkce_verifier: verifier,
+              }),
+            },
+          );
+
+          if (!resp.ok) {
+            const body = await resp.text();
+            reject(new Error(`OAuth exchange failed (${resp.status}): ${body}`));
+            return;
+          }
+
+          const payload = (await resp.json()) as TokenPairResponse;
+          const user: User = {
+            id: payload.user_id ?? '',
+            email: payload.email,
+          };
+          await this._privateSetSession(user, toTokens(payload));
+          resolve(user);
+        } catch (err) {
+          reject(err as Error);
         }
       };
 
@@ -393,7 +498,7 @@ export class AuthClient {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          refreshToken: this._privateTokens.refreshToken,
+          refresh_token: this._privateTokens.refreshToken,
         }),
       },
     );
@@ -402,18 +507,18 @@ export class AuthClient {
       throw new Error(`Token refresh failed (${resp.status})`);
     }
 
-    const data = (await resp.json()) as { tokens: AuthTokens };
-    this._privateTokens = data.tokens;
+    const tokens = toTokens((await resp.json()) as TokenPairResponse);
+    this._privateTokens = tokens;
 
-    await this._privateStorage.set(TOKEN_KEY_ACCESS, data.tokens.accessToken);
-    await this._privateStorage.set(TOKEN_KEY_REFRESH, data.tokens.refreshToken);
+    await this._privateStorage.set(TOKEN_KEY_ACCESS, tokens.accessToken);
+    await this._privateStorage.set(TOKEN_KEY_REFRESH, tokens.refreshToken);
     await this._privateStorage.set(
       TOKEN_KEY_EXPIRES,
-      data.tokens.expiresAt.toString(),
+      tokens.expiresAt.toString(),
     );
 
-    this._privateClient.setAuthToken(data.tokens.accessToken);
-    this._privateScheduleRefresh(data.tokens.expiresAt);
+    this._privateClient.setAuthToken(tokens.accessToken);
+    this._privateScheduleRefresh(tokens.expiresAt);
   }
 
   private _privateScheduleRefresh(expiresAt: number): void {
@@ -444,8 +549,12 @@ export class AuthClient {
       throw new Error(`Failed to fetch user (${resp.status})`);
     }
 
-    const data = (await resp.json()) as { user: User };
-    this._privateUser = data.user;
+    const data = (await resp.json()) as MeResponse;
+    this._privateUser = {
+      id: data.user_id,
+      email: data.email,
+      ...(data.roles !== undefined && { metadata: { roles: data.roles } }),
+    };
     this._privateNotify();
   }
 

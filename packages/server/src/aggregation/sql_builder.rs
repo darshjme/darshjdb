@@ -25,8 +25,24 @@ fn sanitize_attr(attr: &str) -> String {
 }
 
 /// Generate a safe SQL column alias from an attribute name.
+///
+/// Every character that is not alphanumeric or an underscore is replaced
+/// with an underscore so the result is always a bare, safe SQL identifier.
 fn attr_to_alias(attr: &str) -> String {
-    attr.replace(['/', ':', '-', '.'], "_")
+    let mut alias: String = attr
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if alias.starts_with(|c: char| c.is_numeric()) {
+        alias.insert(0, '_');
+    }
+    alias
 }
 
 /// Build the SQL expression for an aggregate function.
@@ -203,7 +219,8 @@ pub fn build_aggregate_sql(query: &AggregateQuery) -> (String, Vec<Value>) {
         .map(|agg| {
             let col = format!("{}_val", attr_to_alias(&agg.field));
             let expr = agg_fn_sql(&agg.function, &col);
-            format!("    '{}', {}", agg.alias, expr)
+            let escaped_alias = agg.alias.replace('\'', "''");
+            format!("    '{escaped_alias}', {expr}")
         })
         .collect();
     sql.push_str(&agg_parts.join(",\n"));

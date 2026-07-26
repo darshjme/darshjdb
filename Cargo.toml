@@ -65,10 +65,6 @@ toml = "0.8"
 hex = "0.4"
 futures = "0.3"
 axum-server = { version = "0.7", features = ["tls-rustls"] }
-aws-sdk-s3 = "1"
-aws-config = "1"
-aws-credential-types = "1"
-aws-types = "1"
 rustyline = { version = "14", features = ["derive"] }
 comfy-table = "7"
 ctrlc = { version = "3", features = ["termination"] }
@@ -86,7 +82,7 @@ metrics = "0.23"
 
 # Grand Transformation dependencies (slice 1/30 — dependency manifest)
 pgvector = { version = "0.4", features = ["sqlx"] }
-rusqlite = { version = "0.31", features = ["bundled", "serde_json"] }
+rusqlite = { version = "0.32", features = ["bundled", "serde_json"] }
 pg_embed = { package = "pg-embed", version = "1", default-features = false, features = ["rt_tokio_migrate"] }
 tiktoken-rs = "0.6"
 # Slice 16 upgrades async-openai to 0.34 with the rustls `embedding` feature
@@ -107,6 +103,7 @@ mime_guess = "2"
 config = { version = "0.15", default-features = false, features = ["toml", "convert-case"] }
 dotenvy = "0.15"
 metrics-exporter-prometheus = "0.15"
+metrics-util = { version = "0.17", default-features = false }
 # Phase 0.3 (slice 4/30) — SMTP delivery for magic-link authentication.
 # Declared with rustls features for cross-slice SMTP usage.
 lettre = { version = "0.11", default-features = false, features = ["smtp-transport", "tokio1-rustls-tls", "builder", "tokio1", "hostname"] }

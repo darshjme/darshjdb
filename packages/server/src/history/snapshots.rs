@@ -89,7 +89,8 @@ pub async fn create_snapshot(
         r#"
         SELECT COUNT(DISTINCT entity_id)
         FROM triples
-        WHERE attribute LIKE $1 AND NOT retracted AND tx_id <= $2
+        WHERE attribute LIKE $1 AND tx_id <= $2
+          AND (retracted_tx_id IS NULL OR retracted_tx_id > $2)
         "#,
     )
     .bind(&prefix)
@@ -296,11 +297,13 @@ pub async fn restore_snapshot(pool: &PgPool, snapshot_id: Uuid) -> Result<i64> {
         // Get all triples for this entity up to the snapshot tx_id.
         let snapshot_triples: Vec<Triple> = sqlx::query_as(
             r#"
-            SELECT id, entity_id, attribute, value, value_type, tx_id,
+            SELECT DISTINCT ON (attribute)
+                   id, entity_id, attribute, value, value_type, tx_id,
                    created_at, retracted, expires_at
             FROM triples
             WHERE entity_id = $1 AND attribute LIKE $2 AND tx_id <= $3
-            ORDER BY tx_id ASC, id ASC
+              AND (retracted_tx_id IS NULL OR retracted_tx_id > $3)
+            ORDER BY attribute, tx_id DESC
             "#,
         )
         .bind(entity_id)
@@ -309,14 +312,9 @@ pub async fn restore_snapshot(pool: &PgPool, snapshot_id: Uuid) -> Result<i64> {
         .fetch_all(&mut *db_tx)
         .await?;
 
-        // Replay to build snapshot state.
         let mut snapshot_state: HashMap<String, Value> = HashMap::new();
         for t in &snapshot_triples {
-            if t.retracted {
-                snapshot_state.remove(&t.attribute);
-            } else {
-                snapshot_state.insert(t.attribute.clone(), t.value.clone());
-            }
+            snapshot_state.insert(t.attribute.clone(), t.value.clone());
         }
 
         // Get current active state.

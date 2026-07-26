@@ -273,6 +273,28 @@ async fn main() -> Result<()> {
         })?;
     tracing::info!("chunked_uploads schema ensured");
 
+    // -- Embedded migrations --------------------------------------------------
+    // Applies every file in `packages/server/migrations/` that is not yet in
+    // the `_ddb_migrations` ledger. Runs last inside the advisory lock: the
+    // dated migrations ALTER `users`, `sessions`, `agent_*` and
+    // `admin_audit_log`, and `002_views_fields_tables.sql` carries a
+    // `REFERENCES users(id)`, all of which are created by the bootstraps
+    // above rather than by any migration file. Every migration is itself
+    // idempotent, so a database bootstrapped by hand from `001_initial.sql`
+    // re-applies them as no-ops.
+    match ddb_server::migrations::run(&pool).await {
+        Ok(report) => tracing::info!(
+            applied = report.applied,
+            skipped = report.skipped,
+            failed = report.failed,
+            "embedded migrations processed"
+        ),
+        Err(e) => tracing::error!(
+            error = %e,
+            "migration ledger unavailable — embedded migrations not applied"
+        ),
+    }
+
     sqlx::query(&format!("SELECT pg_advisory_unlock({})", SCHEMA_LOCK_ID))
         .execute(&pool)
         .await
@@ -624,6 +646,7 @@ async fn main() -> Result<()> {
 
     let ws_state = WsState {
         sessions: sync_sessions.clone(),
+        auth_sessions: session_manager.clone(),
         registry: subscription_registry,
         presence: presence_manager,
         diff_tx,
@@ -636,6 +659,7 @@ async fn main() -> Result<()> {
         rule_engine: rule_engine.clone(),
         query_cache: query_cache.clone(),
         subscription_snapshots: Arc::new(dashmap::DashMap::new()),
+        permissions: Arc::new(ddb_server::auth::build_default_engine()),
     };
 
     tracing::info!("sync engine initialized");
@@ -752,10 +776,14 @@ async fn main() -> Result<()> {
                 .map(|v| v == "1" || v == "true")
                 .unwrap_or(false);
             if is_dev {
-                tracing::warn!("DDB_STORAGE_KEY not set — using insecure dev fallback. Do NOT use in production.");
+                tracing::warn!(
+                    "DDB_STORAGE_KEY not set — using insecure dev fallback. Do NOT use in production."
+                );
                 "dev-signing-key-insecure".to_string()
             } else {
-                panic!("DDB_STORAGE_KEY must be set in production. Set DDB_DEV=1 for development mode.");
+                panic!(
+                    "DDB_STORAGE_KEY must be set in production. Set DDB_DEV=1 for development mode."
+                );
             }
         }
     };
@@ -776,6 +804,7 @@ async fn main() -> Result<()> {
     // here (before AppState construction) so the same handle threads into both
     // the function runtime and AppState below.
     let shared_ddb_cache = std::sync::Arc::new(ddb_cache::DdbCache::new());
+    shared_ddb_cache.start_expiry_sweeper();
 
     let (fn_registry, fn_runtime) = if functions_dir_path.is_dir() {
         // Harness lives next to the functions directory.

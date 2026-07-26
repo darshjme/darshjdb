@@ -69,6 +69,11 @@ pub const MAX_TOTAL_CHUNKS: i32 = 4096;
 /// Maximum size of a single chunk the server will accept (64 MiB).
 pub const MAX_CHUNK_BYTES: usize = 64 * 1024 * 1024;
 
+/// Fallback cap on the total assembled size of a single chunked upload
+/// (512 MiB). Used only when the storage engine is configured with an
+/// unlimited (`0`) upload size; otherwise the engine's own limit wins.
+pub const MAX_ASSEMBLED_BYTES: u64 = 512 * 1024 * 1024;
+
 /// Root tmp directory where in-flight chunks are staged on disk.
 pub const TMP_UPLOAD_ROOT: &str = "/tmp/darshjdb-uploads";
 
@@ -235,6 +240,14 @@ pub async fn init_upload(
     {
         return Err(ApiError::bad_request("file_size must not be negative"));
     }
+    let budget = assembled_byte_budget(state.storage_engine.max_upload_size());
+    if let Some(size) = req.file_size
+        && size as u64 > budget
+    {
+        return Err(ApiError::bad_request(format!(
+            "file_size {size} exceeds the maximum assembled upload size of {budget} bytes"
+        )));
+    }
 
     // --- insert -------------------------------------------------------
     let upload_id: Uuid = sqlx::query_scalar::<_, Uuid>(
@@ -316,6 +329,17 @@ pub async fn put_chunk(
 
     // --- stage to /tmp atomically ------------------------------------
     let upload_dir = PathBuf::from(TMP_UPLOAD_ROOT).join(upload_id.to_string());
+
+    let budget = assembled_byte_budget(state.storage_engine.max_upload_size());
+    let staged = staged_bytes(&upload_dir, Some(index))
+        .await
+        .map_err(|e| ApiError::internal(format!("failed to measure staged chunks: {e}")))?;
+    if staged.saturating_add(body_bytes.len() as u64) > budget {
+        return Err(ApiError::bad_request(format!(
+            "upload {upload_id} exceeds the maximum assembled upload size of {budget} bytes"
+        )));
+    }
+
     fs::create_dir_all(&upload_dir)
         .await
         .map_err(|e| ApiError::internal(format!("failed to create upload tmp dir: {e}")))?;
@@ -365,9 +389,17 @@ pub async fn put_chunk(
     let mut assembled: Option<Vec<u8>> = None;
     if received.len() as i32 >= total_chunks {
         // All chunks present — assemble in index order.
+        let total_bytes = staged_bytes(&upload_dir, None)
+            .await
+            .map_err(|e| ApiError::internal(format!("failed to measure staged chunks: {e}")))?;
+        if total_bytes > budget {
+            return Err(ApiError::bad_request(format!(
+                "upload {upload_id} exceeds the maximum assembled upload size of {budget} bytes"
+            )));
+        }
         let mut sorted: Vec<i32> = (0..total_chunks).collect();
         sorted.sort_unstable();
-        let mut buf: Vec<u8> = Vec::new();
+        let mut buf: Vec<u8> = Vec::with_capacity(usize::try_from(total_bytes).unwrap_or(0));
         for idx in sorted {
             let chunk_path = upload_dir.join(format!("{idx}.part"));
             let bytes = fs::read(&chunk_path).await.map_err(|e| {
@@ -549,6 +581,39 @@ async fn purge_tmp_dir(dir: &StdPath) -> std::io::Result<()> {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// Total number of bytes a single upload may occupy once assembled.
+/// Mirrors the storage engine's own limit so we never stage more than the
+/// backend is willing to accept.
+fn assembled_byte_budget(engine_limit: u64) -> u64 {
+    if engine_limit == 0 {
+        MAX_ASSEMBLED_BYTES
+    } else {
+        engine_limit
+    }
+}
+
+/// Sum the on-disk size of the `*.part` files already staged for an upload,
+/// optionally ignoring one index (the chunk currently being replaced by a
+/// retry). A missing directory counts as zero bytes.
+async fn staged_bytes(dir: &StdPath, skip_index: Option<i32>) -> std::io::Result<u64> {
+    let skip = skip_index.map(|i| format!("{i}.part"));
+    let mut entries = match fs::read_dir(dir).await {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(e) => return Err(e),
+    };
+    let mut total: u64 = 0;
+    while let Some(entry) = entries.next_entry().await? {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if !name.ends_with(".part") || skip.as_deref() == Some(name.as_ref()) {
+            continue;
+        }
+        total = total.saturating_add(entry.metadata().await?.len());
+    }
+    Ok(total)
+}
 
 fn pct_from(received: usize, total: i32) -> u8 {
     if total <= 0 {
