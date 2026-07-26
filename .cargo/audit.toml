@@ -1,0 +1,91 @@
+# cargo-audit configuration for DarshJDB
+#
+# Every entry in `ignore` below is an advisory we have decided to ACCEPT, not
+# one we have fixed. Each is recorded with: why no upgrade exists, why it is
+# not exploitable in this workspace, and what would let us drop the ignore.
+#
+# Rules for this file:
+#   1. An advisory with a safe upgrade path does NOT belong here. Take the
+#      upgrade instead. (See commit e117710, which bumped quinn-proto,
+#      rustls-webpki, crossbeam-epoch and lettre rather than ignoring them.)
+#   2. Every ignore must carry a re-check condition. If you cannot say what
+#      would let us remove the entry, you do not understand it well enough to
+#      add it.
+#   3. Re-verify these justifications whenever Cargo.lock changes materially.
+#      They are claims about the dependency graph, and the graph moves.
+#
+# Last verified: 2026-07-26, cargo-audit 0.22.2, advisory-db with 1169
+# advisories, against a 796-crate Cargo.lock.
+
+[advisories]
+ignore = [
+  # ---------------------------------------------------------------------
+  # RUSTSEC-2023-0071 — rsa 0.9.10
+  # "Marvin Attack: potential key recovery through timing sidechannels"
+  # Severity 5.9 (medium). Advisory states: "No fixed upgrade is available!"
+  #
+  # No upgrade exists: the RustSec entry lists no patched version. The rsa
+  # crate has had no fix released for this since 2023-11-22; the fix requires
+  # constant-time work that upstream has not shipped.
+  #
+  # Not exploitable here: rsa is never compiled into any artifact we produce.
+  # It appears in Cargo.lock only as a dependency of sqlx-mysql
+  # (Cargo.lock:6233, whose dependency list includes "rsa"). This workspace
+  # configures sqlx for postgres only — Cargo.toml:25 declares
+  # features = ["runtime-tokio", "postgres", "uuid", "json", "chrono"],
+  # with no "mysql" feature anywhere in the tree. Verified empirically:
+  # both `cargo tree -i rsa` and `cargo tree -i sqlx-mysql` print
+  # "warning: nothing to print.", and `cargo tree -i rsa --target all`
+  # returns no output at all. The crate is in the lockfile, not in the build.
+  #
+  # Drop this ignore when: rsa ships a patched release (then upgrade), or
+  # sqlx stops pulling rsa into the lockfile for postgres-only builds.
+  # Re-check urgently if anyone ever enables the sqlx "mysql" feature —
+  # that would make this advisory genuinely reachable and this ignore wrong.
+  "RUSTSEC-2023-0071",
+
+  # ---------------------------------------------------------------------
+  # RUSTSEC-2026-0194 — quick-xml 0.23.1
+  # "Quadratic run time when checking a start tag for duplicate attribute
+  # names". Severity 7.5 (high). Solution: upgrade to >=0.41.0.
+  #
+  # RUSTSEC-2026-0195 — quick-xml 0.23.1
+  # "Unbounded namespace-declaration allocation in `NsReader` enables
+  # memory-exhaustion denial of service". Severity 7.5 (high).
+  # Solution: upgrade to >=0.41.0.
+  #
+  # Both are the same crate and the same blocked upgrade, so they are
+  # justified together.
+  #
+  # No upgrade we can safely take: we do not depend on quick-xml directly.
+  # It is pinned transitively — `cargo tree -i quick-xml` shows exactly
+  # quick-xml v0.23.1 <- self_update v0.41.0 <- ddb-cli v0.4.0.
+  # self_update 0.41.0 is the latest STABLE release; the only successor that
+  # moves quick-xml forward is self_update 1.0.0-rc.6, a release candidate
+  # (confirmed via `cargo info self_update`: "version: 0.41.0 (latest
+  # 1.0.0-rc.6)"). We are deliberately deferring that upgrade until 1.0 is
+  # stable, because self_update sits on the binary self-update path: it
+  # downloads and replaces the running ddb executable. Shipping an RC on the
+  # code path that rewrites the user's binary is a worse risk than the two
+  # DoS advisories below, which we show are unreachable.
+  #
+  # Not reachable from our code: inside self_update 0.41.0, quick-xml is
+  # imported in exactly one file — src/backends/s3.rs (lines 11-12,
+  # `use quick_xml::events::Event;` / `use quick_xml::Reader;`). It is the
+  # S3 release backend's XML listing parser. ddb-cli does not use that
+  # backend; packages/cli/src/main.rs:411 constructs
+  # `self_update::backends::github::Update::configure()`, and github is the
+  # only backend referenced anywhere in packages/cli/src. So quick-xml is
+  # linked but no call path in this project reaches it.
+  #
+  # Note the residual risk honestly: both advisories are denial-of-service
+  # against a parser fed hostile XML. Even if the S3 backend were reachable,
+  # the attacker would have to control the release-listing XML, i.e. already
+  # control our update origin. Neither is a code-execution or key-disclosure
+  # bug.
+  #
+  # Drop both ignores when: self_update 1.0.0 ships stable (then upgrade and
+  # delete these two entries), or a 0.41.x patch bumps quick-xml to >=0.41.0.
+  "RUSTSEC-2026-0194",
+  "RUSTSEC-2026-0195",
+]
