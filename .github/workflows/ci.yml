@@ -80,13 +80,16 @@ jobs:
           test -x ./target/release/ddb-server
           echo "Binary built successfully at ./target/release/ddb-server"
 
-          # Start the server and verify it responds to /health
+          # Start the server and verify it responds to /health.
+          # DDB_JWT_SECRET must be >= 32 bytes: KeyManager::from_secret
+          # enforces the RFC 7518 3.2 minimum for HS256 and panics on
+          # anything shorter.
+          # Keep every assignment below on one unbroken backslash chain --
+          # a comment between them ends the command, and the remaining
+          # variables silently never reach the server.
           DATABASE_URL=postgres://darshan:darshan@localhost:5432/darshjdb_test \
           DDB_PORT=7799 \
           DDB_DEV=1 \
-          # Must be >= 32 bytes: KeyManager::from_secret enforces the RFC 7518
-          # §3.2 minimum for HS256 and panics on anything shorter. The previous
-          # value here was 20 bytes, so the smoke test could never boot.
           DDB_JWT_SECRET=ci-smoke-test-secret-do-not-use-in-production \
           RUST_LOG=info \
             ./target/release/ddb-server &
