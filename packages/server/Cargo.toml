@@ -48,10 +48,13 @@ reqwest.workspace = true
 hex.workspace = true
 futures.workspace = true
 axum-server.workspace = true
-aws-sdk-s3.workspace = true
-aws-config.workspace = true
-aws-credential-types.workspace = true
-aws-types.workspace = true
+# NOTE: the aws-sdk-s3 / aws-config / aws-credential-types / aws-types
+# dependencies were removed in 0.4.0 along with `storage::S3Backend`, which no
+# code path constructed. Even as *disabled optional* dependencies they stayed
+# in Cargo.lock, where `aws-smithy-http-client`'s `legacy-rustls` dep kept
+# rustls 0.21 -> rustls-webpki 0.101.7 in the graph and kept `cargo audit`
+# reporting RUSTSEC-2026-0098/-0099/-0104. Reinstating S3 support means taking
+# those advisories back until the AWS SDK drops its legacy rustls deps.
 async-trait.workspace = true
 csv.workspace = true
 config.workspace = true
