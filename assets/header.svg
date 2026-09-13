@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 250" role="img" aria-labelledby="title desc">
+<title id="title">DarshJDB</title><desc id="desc">Application data, realtime and agent memory.</desc>
+<rect width="960" height="250" rx="16" fill="#17191d"/>
+<path d="M720 0v250M800 0v250M880 0v250M680 60h280M680 140h280M680 220h280" stroke="#303337" stroke-width="1"/>
+<path d="M724 190h64v-64h64V62h64" fill="none" stroke="#c79b7a" stroke-width="2"/>
+<g fill="#17191d" stroke="#c79b7a" stroke-width="2"><circle cx="724" cy="190" r="6"/><circle cx="788" cy="126" r="6"/><circle cx="852" cy="62" r="6"/></g>
+<text x="42" y="49" fill="#c79b7a" font-family="monospace" font-size="13" letter-spacing="2">SELF-HOSTED BACKEND / RUST + POSTGRESQL</text>
+<text x="40" y="135" fill="#eeeae3" font-family="system-ui, sans-serif" font-size="68" font-weight="650">DarshJDB</text>
+<text x="42" y="189" fill="#b5b3ae" font-family="system-ui, sans-serif" font-size="18">Application data, realtime and agent memory.</text>
+<path d="M42 218h62" stroke="#c79b7a" stroke-width="3"/>
+</svg>
