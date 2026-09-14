@@ -12,7 +12,7 @@ import {
   ChevronLeft,
   ChevronRight,
 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { cn } from "../lib/utils";
 
 const navItems = [
@@ -29,6 +29,11 @@ const navItems = [
 
 export function Sidebar() {
   const [collapsed, setCollapsed] = useState(() => window.innerWidth < 768);
+  useEffect(() => {
+    const onResize = () => { if (window.innerWidth < 768) setCollapsed(true); };
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
 
   return (
     <aside
