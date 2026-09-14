@@ -80,7 +80,7 @@ ENV DDB_ADMIN_DIR=/usr/share/darshan/admin \
 EXPOSE 7700
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
-    CMD curl -sf http://localhost:7700/health || exit 1
+    CMD curl -sf http://127.0.0.1:7700/health || exit 1
 
 ENTRYPOINT ["tini", "--"]
 CMD ["ddb-server"]
