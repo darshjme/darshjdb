@@ -513,96 +513,72 @@ impl StorageBackend for LocalFsBackend {
     }
 
     async fn head_object(&self, path: &str) -> Result<ObjectMeta, StorageError> {
-        let full_path = self.resolve_path(path)?;
-
-        let fs_meta = tokio::fs::metadata(&full_path)
-            .await
-            .map_err(|e| match e.kind() {
-                std::io::ErrorKind::NotFound => StorageError::NotFound(path.to_string()),
-                _ => StorageError::Io(e.to_string()),
-            })?;
-
-        let data = tokio::fs::read(&full_path)
-            .await
-            .map_err(|e| StorageError::Io(e.to_string()))?;
-
-        let created_at = fs_meta.created().unwrap_or(SystemTime::UNIX_EPOCH).into();
-        let modified_at = fs_meta.modified().unwrap_or(SystemTime::UNIX_EPOCH).into();
-
-        let etag = Self::compute_etag(&data);
-
-        Ok(ObjectMeta {
-            path: path.to_string(),
-            size: fs_meta.len(),
-            content_type: "application/octet-stream".to_string(),
-            etag,
-            created_at,
-            modified_at,
-            metadata: HashMap::new(),
-        })
+        let (_, metadata) = self.get_object(path).await?;
+        Ok(metadata)
     }
 
     async fn list_objects(
         &self,
         prefix: &str,
         limit: usize,
-        _cursor: Option<&str>,
+        cursor: Option<&str>,
     ) -> Result<Vec<ObjectMeta>, StorageError> {
-        let dir = self.resolve_path(prefix)?;
-        let mut entries = Vec::new();
-
-        let mut read_dir = tokio::fs::read_dir(&dir)
+        let dir = if prefix.is_empty() {
+            self.root.clone()
+        } else {
+            self.resolve_path(prefix)?
+        };
+        let root = tokio::fs::canonicalize(&self.root)
             .await
-            .map_err(|e| match e.kind() {
-                std::io::ErrorKind::NotFound => StorageError::NotFound(prefix.to_string()),
-                _ => StorageError::Io(e.to_string()),
-            })?;
-
-        while let Some(entry) = read_dir
-            .next_entry()
+            .map_err(|e| StorageError::Io(e.to_string()))?;
+        let resolved = tokio::fs::canonicalize(&dir)
             .await
-            .map_err(|e| StorageError::Io(e.to_string()))?
-        {
-            if entries.len() >= limit {
-                break;
-            }
-
-            let file_name = entry.file_name().to_string_lossy().to_string();
-
-            // Skip metadata sidecar files.
-            if file_name.ends_with(".meta.json") {
-                continue;
-            }
-
-            let fs_meta = entry
-                .metadata()
+            .map_err(|e| StorageError::Io(e.to_string()))?;
+        if !resolved.starts_with(&root) {
+            return Err(StorageError::Io("storage prefix escapes root".into()));
+        }
+        let mut directories = vec![dir];
+        let mut paths = Vec::new();
+        while let Some(directory) = directories.pop() {
+            let mut entries = tokio::fs::read_dir(directory)
                 .await
                 .map_err(|e| StorageError::Io(e.to_string()))?;
-
-            if fs_meta.is_file() {
-                let obj_path = format!(
-                    "{}{}{}",
-                    prefix,
-                    if prefix.ends_with('/') { "" } else { "/" },
-                    file_name
-                );
-
-                let created_at = fs_meta.created().unwrap_or(SystemTime::UNIX_EPOCH).into();
-                let modified_at = fs_meta.modified().unwrap_or(SystemTime::UNIX_EPOCH).into();
-
-                entries.push(ObjectMeta {
-                    path: obj_path,
-                    size: fs_meta.len(),
-                    content_type: "application/octet-stream".to_string(),
-                    etag: String::new(),
-                    created_at,
-                    modified_at,
-                    metadata: HashMap::new(),
-                });
+            while let Some(entry) = entries
+                .next_entry()
+                .await
+                .map_err(|e| StorageError::Io(e.to_string()))?
+            {
+                let kind = entry
+                    .file_type()
+                    .await
+                    .map_err(|e| StorageError::Io(e.to_string()))?;
+                // Never traverse symlinks or expose internal metadata sidecars.
+                if kind.is_symlink() {
+                    continue;
+                }
+                if kind.is_dir() {
+                    directories.push(entry.path());
+                } else if kind.is_file()
+                    && !entry.file_name().to_string_lossy().ends_with(".meta.json")
+                {
+                    let path = entry
+                        .path()
+                        .strip_prefix(&self.root)
+                        .map_err(|e| StorageError::Io(e.to_string()))?
+                        .to_string_lossy()
+                        .replace('\\', "/");
+                    if cursor.is_none_or(|cursor| path.as_str() > cursor) {
+                        paths.push(path);
+                    }
+                }
             }
         }
-
-        Ok(entries)
+        paths.sort();
+        let mut objects = Vec::new();
+        for path in paths.into_iter().take(limit) {
+            objects.push(self.head_object(&path).await?);
+        }
+        Ok(objects)
     }
 }
 
@@ -1307,6 +1283,20 @@ mod tests {
             .await
             .expect("list");
         assert_eq!(all.len(), 5);
+
+        let root_listing = backend
+            .list_objects("", 100, None)
+            .await
+            .expect("root listing");
+        assert_eq!(root_listing.len(), 5);
+        assert_eq!(root_listing[0].path, "listing/0.txt");
+        assert_eq!(root_listing[0].content_type, "text/plain");
+        let page = backend
+            .list_objects("", 2, Some("listing/1.txt"))
+            .await
+            .expect("cursor");
+        assert_eq!(page[0].path, "listing/2.txt");
+        assert_eq!(page.len(), 2);
 
         // Limit should be respected.
         let limited = backend

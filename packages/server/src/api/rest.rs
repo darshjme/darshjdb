@@ -694,6 +694,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/admin/bulk-load", post(admin_bulk_load))
         .route("/admin/cache", get(admin_cache))
         .route("/admin/storage", get(admin_storage_list))
+        .route("/admin/users", get(admin_users_list))
         // -- Audit (Merkle tree) ------------------------------------------
         .route(
             "/admin/audit/verify/{tx_id}",
@@ -2600,7 +2601,7 @@ async fn mutate(
     headers: HeaderMap,
     axum::Json(body): axum::Json<MutateRequest>,
 ) -> Result<Response, ApiError> {
-    let _token = extract_bearer_token(&headers)?;
+    let auth_ctx = extract_auth_context(&headers, &state).await?;
     let mutate_start = Instant::now();
 
     if body.mutations.is_empty() {
@@ -2673,9 +2674,35 @@ async fn mutate(
     let mut entity_ids: Vec<Uuid> = Vec::new();
 
     for m in &body.mutations {
+        let entity_id = m.id.unwrap_or_else(Uuid::new_v4);
+        let op = match m.op {
+            MutationOp::Insert => "insert",
+            MutationOp::Update => "update",
+            MutationOp::Upsert => "upsert",
+            MutationOp::Delete => "delete",
+        };
+        let creating = authorize_mutation(
+            &state,
+            &auth_ctx,
+            &mut db_tx,
+            &m.entity,
+            op,
+            entity_id,
+            m.data.as_ref(),
+        )
+        .await?;
+        let offset = all_triples.len();
+        if creating && op == "upsert" {
+            all_triples.push(TripleInput {
+                entity_id,
+                attribute: ":db/type".into(),
+                value: Value::String(m.entity.clone()),
+                value_type: 0,
+                ttl_seconds: None,
+            });
+        }
         match m.op {
             MutationOp::Insert => {
-                let entity_id = m.id.unwrap_or_else(Uuid::new_v4);
                 entity_ids.push(entity_id);
 
                 all_triples.push(TripleInput {
@@ -2702,7 +2729,6 @@ async fn mutate(
                 }
             }
             MutationOp::Update | MutationOp::Upsert => {
-                let entity_id = m.id.unwrap_or_else(Uuid::new_v4);
                 entity_ids.push(entity_id);
 
                 if let Some(data) = &m.data
@@ -2753,13 +2779,12 @@ async fn mutate(
                 }
             }
         }
-    }
-
-    // Write all insert/update triples inside the same transaction.
-    if !all_triples.is_empty() {
-        PgTripleStore::set_triples_in_tx(&mut db_tx, &all_triples, tx_id)
-            .await
-            .map_err(|e| ApiError::internal(format!("Failed to write triples: {e}")))?;
+        // Flush each operation so later operations see its state in this transaction.
+        if all_triples.len() > offset {
+            PgTripleStore::set_triples_in_tx(&mut db_tx, &all_triples[offset..], tx_id)
+                .await
+                .map_err(|e| ApiError::internal(format!("Failed to write triples: {e}")))?;
+        }
     }
 
     // Evaluate forward-chaining rules: implied triples are written in the
@@ -4217,6 +4242,20 @@ async fn admin_functions(
 /// Routed through [`SessionManager::list_active`] so the admin view
 /// shares the same query path as the rest of the auth subsystem —
 /// keeping session-schema knowledge out of the HTTP handler.
+async fn admin_users_list(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    require_admin_role(&headers, &state).await?;
+    let rows: Vec<(Uuid, String, Value, chrono::DateTime<chrono::Utc>)> = sqlx::query_as("SELECT id, email, roles, created_at FROM users WHERE deleted_at IS NULL ORDER BY created_at DESC LIMIT 500")
+        .fetch_all(&state.pool).await.map_err(|e| ApiError::internal(format!("Could not list users: {e}")))?;
+    let users: Vec<Value> = rows.into_iter().map(|(id,email,roles,created)| serde_json::json!({"_id":id,"email":email,"roles":roles,"created_at":created})).collect();
+    Ok(negotiate_response(
+        &headers,
+        &serde_json::json!({"users":users}),
+    ))
+}
+
 async fn admin_sessions(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -4484,7 +4523,7 @@ pub(crate) async fn require_admin_role(
 }
 
 /// Extract an [`AuthContext`] by validating the JWT via the [`SessionManager`].
-async fn extract_auth_context(
+pub(super) async fn extract_auth_context(
     headers: &HeaderMap,
     state: &AppState,
 ) -> Result<AuthContext, ApiError> {
@@ -4506,6 +4545,120 @@ async fn extract_auth_context(
         .validate_token(&token, ip, ua, dfp)
         .await
         .map_err(|e| ApiError::unauthenticated(format!("Invalid token: {e}")))
+}
+
+/// Authorize each mutation against the transaction's current entity and proposed row.
+pub(super) async fn authorize_mutation(
+    state: &AppState,
+    auth: &AuthContext,
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    entity: &str,
+    op: &str,
+    id: Uuid,
+    data: Option<&Value>,
+) -> Result<bool, ApiError> {
+    validate_entity_name(entity)?;
+    if !matches!(op, "insert" | "set" | "update" | "upsert" | "delete") {
+        return Err(ApiError::bad_request("Unknown mutation operation"));
+    }
+    if op != "delete" && !data.is_some_and(Value::is_object) {
+        return Err(ApiError::bad_request("Mutation data must be an object"));
+    }
+    let existing = PgTripleStore::get_entity_in_tx(tx, id)
+        .await
+        .map_err(|e| ApiError::internal(format!("Failed to read mutation target: {e}")))?;
+    let creating = existing.is_empty();
+    if !creating
+        && !existing
+            .iter()
+            .any(|t| t.attribute == ":db/type" && t.value.as_str() == Some(entity))
+    {
+        return Err(ApiError::permission_denied(
+            "Mutation target belongs to another entity type",
+        ));
+    }
+    if !creating && matches!(op, "insert" | "set") {
+        return Err(ApiError::new(
+            super::error::ErrorCode::Conflict,
+            "Entity already exists",
+        ));
+    }
+    if creating && matches!(op, "update" | "delete") {
+        return Err(ApiError::not_found("Mutation target not found"));
+    }
+    let operation = if creating {
+        Operation::Create
+    } else if op == "delete" {
+        Operation::Delete
+    } else {
+        Operation::Update
+    };
+    let perm = check_permission(auth, entity, operation, &state.permissions)?;
+    let filters = query::PermissionFilter::from_clauses(&perm.where_clauses, auth.user_id)
+        .map_err(|_| ApiError::permission_denied("Unsupported mutation permission predicate"))?;
+    let mut before = serde_json::Map::new();
+    for triple in &existing {
+        if let Some(key) = triple.attribute.strip_prefix(&format!("{entity}/")) {
+            before.insert(key.into(), triple.value.clone());
+        }
+    }
+    let mut after = before.clone();
+    if let Some(obj) = data.and_then(Value::as_object) {
+        for (key, value) in obj {
+            if key.starts_with('$') || key.contains('/') || key.starts_with(':') {
+                return Err(ApiError::bad_request("Invalid mutation field name"));
+            }
+            if perm
+                .restricted_fields
+                .iter()
+                .any(|f| f == key || f == &format!("{entity}/{key}"))
+                || (!perm.allowed_fields.is_empty()
+                    && !perm
+                        .allowed_fields
+                        .iter()
+                        .any(|f| f == key || f == &format!("{entity}/{key}")))
+            {
+                return Err(ApiError::permission_denied(format!(
+                    "Field {key} is not writable"
+                )));
+            }
+            after.insert(key.clone(), value.clone());
+        }
+    }
+    for filter in filters {
+        let key = filter
+            .attribute
+            .strip_prefix(&format!("{entity}/"))
+            .unwrap_or(&filter.attribute);
+        let matches = |row: &serde_json::Map<String, Value>| {
+            if key == "id" {
+                id == auth.user_id
+            } else {
+                row.get(key)
+                    .and_then(Value::as_str)
+                    .is_some_and(|v| v == auth.user_id.to_string())
+            }
+        };
+        if (!creating && !matches(&before)) || (op != "delete" && !matches(&after)) {
+            return Err(ApiError::permission_denied(
+                "Mutation violates row permissions",
+            ));
+        }
+    }
+    if let (Some(registry), Some(obj)) = (&state.schema_registry, data.and_then(Value::as_object)) {
+        if let Some(schema) = registry.get(entity) {
+            let doc = obj.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+            let validation = if creating {
+                crate::schema::validator::SchemaValidator::validate_insert(&schema, &doc)
+            } else {
+                crate::schema::validator::SchemaValidator::validate_update(&schema, &doc)
+            };
+            if !validation.is_valid() {
+                return Err(ApiError::bad_request(validation.error_message()));
+            }
+        }
+    }
+    Ok(creating)
 }
 
 /// Decode JWT claims from the Bearer token **without** signature
@@ -4564,7 +4717,7 @@ fn decode_jwt_claims(headers: &HeaderMap) -> Result<AuthContext, ApiError> {
 /// rules if no entity-specific rule is configured.
 ///
 /// Returns `Err(ApiError)` with 403 if the operation is denied.
-fn check_permission(
+pub(super) fn check_permission(
     auth_ctx: &AuthContext,
     entity_type: &str,
     operation: Operation,
@@ -6637,4 +6790,144 @@ mod tests {
         assert_eq!(ast.where_clauses[0].attribute, "status");
         assert!(matches!(ast.where_clauses[0].op, WhereOp::Eq));
     }
+}
+
+#[cfg(test)]
+#[tokio::test]
+#[ignore = "requires an isolated DDB_TEST_DATABASE_URL"]
+async fn mutation_permissions_postgres() {
+    let pool =
+        PgPool::connect(&std::env::var("DDB_TEST_DATABASE_URL").expect("isolated database URL"))
+            .await
+            .unwrap();
+    let mut state = AppState::new();
+    state.pool = pool.clone();
+    state.triple_store = Arc::new(PgTripleStore::new(pool).await.unwrap());
+    let owner = AuthContext {
+        user_id: Uuid::new_v4(),
+        session_id: Uuid::new_v4(),
+        roles: vec!["user".into()],
+        ip: "test".into(),
+        user_agent: "test".into(),
+        device_fingerprint: "".into(),
+    };
+    let mut stranger = owner.clone();
+    stranger.user_id = Uuid::new_v4();
+    let id = Uuid::new_v4();
+    let mut tx = state.triple_store.begin_tx().await.unwrap();
+    let tx_id = PgTripleStore::next_tx_id_in_tx(&mut tx).await.unwrap();
+    let data = serde_json::json!({"owner_id": owner.user_id.to_string(), "name": "fixture"});
+    assert!(
+        authorize_mutation(&state, &owner, &mut tx, "notes", "upsert", id, Some(&data))
+            .await
+            .unwrap()
+    );
+    let triples = vec![
+        TripleInput {
+            entity_id: id,
+            attribute: ":db/type".into(),
+            value: serde_json::json!("notes"),
+            value_type: 0,
+            ttl_seconds: None,
+        },
+        TripleInput {
+            entity_id: id,
+            attribute: "notes/owner_id".into(),
+            value: serde_json::json!(owner.user_id),
+            value_type: 0,
+            ttl_seconds: None,
+        },
+    ];
+    PgTripleStore::set_triples_in_tx(&mut tx, &triples, tx_id)
+        .await
+        .unwrap();
+    let ast = query::parse_darshan_ql(&serde_json::json!({"type": "notes"})).unwrap();
+    let plan = query::plan_query(&ast).unwrap();
+    assert!(
+        query::execute_query_on(&mut tx, &plan)
+            .await
+            .unwrap()
+            .iter()
+            .any(|row| row.entity_id == id)
+    );
+    assert!(
+        !query::execute_query(&state.pool, &plan)
+            .await
+            .unwrap()
+            .iter()
+            .any(|row| row.entity_id == id)
+    );
+    assert!(
+        !authorize_mutation(&state, &owner, &mut tx, "notes", "update", id, Some(&data))
+            .await
+            .unwrap()
+    );
+    for op in ["update", "upsert", "delete"] {
+        assert_eq!(
+            authorize_mutation(&state, &stranger, &mut tx, "notes", op, id, Some(&data))
+                .await
+                .unwrap_err()
+                .code
+                .status(),
+            StatusCode::FORBIDDEN
+        );
+    }
+    assert!(
+        authorize_mutation(&state, &owner, &mut tx, "users", "update", id, Some(&data))
+            .await
+            .is_err()
+    );
+    assert!(
+        authorize_mutation(&state, &owner, &mut tx, "notes", "insert", id, Some(&data))
+            .await
+            .is_err()
+    );
+    assert!(
+        authorize_mutation(
+            &state,
+            &owner,
+            &mut tx,
+            "notes",
+            "update",
+            id,
+            Some(&serde_json::json!({"owner_id": stranger.user_id}))
+        )
+        .await
+        .is_err()
+    );
+    assert!(
+        authorize_mutation(
+            &state,
+            &owner,
+            &mut tx,
+            "notes",
+            "update",
+            Uuid::new_v4(),
+            Some(&data)
+        )
+        .await
+        .is_err()
+    );
+    assert!(
+        authorize_mutation(
+            &state,
+            &owner,
+            &mut tx,
+            "notes",
+            "insert",
+            Uuid::new_v4(),
+            Some(&serde_json::json!([]))
+        )
+        .await
+        .is_err()
+    );
+    tx.rollback().await.unwrap();
+    let mut tx = state.triple_store.begin_tx().await.unwrap();
+    assert!(
+        PgTripleStore::get_entity_in_tx(&mut tx, id)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    tx.rollback().await.unwrap();
 }

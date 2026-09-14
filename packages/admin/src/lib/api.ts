@@ -2,79 +2,17 @@
  * DarshJDB REST API client.
  *
  * Talks to the live server when available, with every function returning
- * a typed result. Callers handle fallback to mock data themselves.
+ * a typed result. Failures remain visible to callers.
  *
  * The base URL is configurable via `VITE_DDB_URL` (defaults to
- * `http://localhost:7700` for local development).
+ * the current origin).
  */
 
 import type { EntityType, EntityField, EntityRecord } from "../types";
 
-// ---------------------------------------------------------------------------
-// Configuration
-// ---------------------------------------------------------------------------
-
-const API_URL = import.meta.env.VITE_DDB_URL || "http://localhost:7700";
-
-/**
- * Admin bearer token. In production this comes from a real auth flow
- * (signup/login -> JWT). For local dev, set `VITE_DDB_TOKEN` to a valid
- * admin JWT issued by the server's auth endpoints.
- */
-const AUTH_TOKEN =
-  import.meta.env.VITE_DDB_TOKEN || "ddb-admin-dev-token";
-
-// ---------------------------------------------------------------------------
-// Internals
-// ---------------------------------------------------------------------------
-
-async function apiFetch<T>(
-  path: string,
-  init?: RequestInit,
-): Promise<T> {
-  const url = `${API_URL}${path}`;
-  const headers: Record<string, string> = {
-    Accept: "application/json",
-    ...(init?.body ? { "Content-Type": "application/json" } : {}),
-    Authorization: `Bearer ${AUTH_TOKEN}`,
-  };
-
-  const res = await fetch(url, {
-    ...init,
-    headers: { ...headers, ...(init?.headers as Record<string, string>) },
-  });
-
-  if (!res.ok) {
-    const body = await res.text().catch(() => "");
-    throw new ApiError(res.status, body || res.statusText, path);
-  }
-
-  return res.json() as Promise<T>;
-}
-
-/** Lightweight fetch without auth — used for the /health endpoint. */
-async function publicFetch<T>(path: string): Promise<T> {
-  const res = await fetch(`${API_URL}${path}`, {
-    headers: { Accept: "application/json" },
-  });
-  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
-  return res.json() as Promise<T>;
-}
-
-// ---------------------------------------------------------------------------
-// Error type
-// ---------------------------------------------------------------------------
-
-export class ApiError extends Error {
-  constructor(
-    public status: number,
-    public body: string,
-    public path: string,
-  ) {
-    super(`API ${status} on ${path}: ${body}`);
-    this.name = "ApiError";
-  }
-}
+import { apiFetch } from "./http";
+export { ApiError } from "./http";
+async function publicFetch<T>(path: string): Promise<T> { return apiFetch<T>(path, undefined, ""); }
 
 // ---------------------------------------------------------------------------
 // Server-side schema shapes (what the Rust API actually returns)
@@ -146,8 +84,8 @@ export async function fetchSchema(): Promise<EntityType[]> {
         indexed: true,
         unique: true,
       },
-      ...Object.values(et.attributes).map((attr) => ({
-        name: attr.name,
+      ...Object.values(et.attributes).filter(attr => attr.name !== ":db/type").map((attr) => ({
+        name: attr.name.startsWith(`${et.name}/`) ? attr.name.slice(et.name.length + 1) : attr.name,
         type: attr.value_types.join(" | ") || "unknown",
         required: attr.required,
         indexed: false,
@@ -159,6 +97,7 @@ export async function fetchSchema(): Promise<EntityType[]> {
       name: et.name,
       count: et.entity_count,
       fields,
+      references: et.references,
     };
   });
 }
@@ -184,8 +123,8 @@ export async function fetchEntities(
     };
     for (const [key, value] of Object.entries(row.attributes)) {
       // Attributes come as "users/email" — strip the entity prefix
-      const shortKey = key.includes("/") ? key.split("/").pop()! : key;
-      if (shortKey === ":db/type") continue; // internal, skip
+      if (key === ":db/type") continue;
+      const shortKey = key.includes("/") ? key.split("/").pop()! : key; // internal, skip
       record[shortKey] = value;
     }
     return record;
@@ -229,7 +168,7 @@ export async function queryDarshJQL(
 ): Promise<EntityRecord[]> {
   const res = await apiFetch<{ data: ServerQueryRow[] }>("/api/query", {
     method: "POST",
-    body: JSON.stringify(query),
+    body: JSON.stringify({ query }),
   });
 
   return res.data.map((row) => {
@@ -238,8 +177,8 @@ export async function queryDarshJQL(
       _creationTime: Date.now(),
     };
     for (const [key, value] of Object.entries(row.attributes)) {
+      if (key === ":db/type") continue;
       const shortKey = key.includes("/") ? key.split("/").pop()! : key;
-      if (shortKey === ":db/type") continue;
       record[shortKey] = value;
     }
     return record;
@@ -378,7 +317,11 @@ export interface HealthResponse {
  * Returns the full health response object instead of just a boolean.
  */
 export async function fetchHealthDetailed(): Promise<HealthResponse> {
-  return publicFetch<HealthResponse>("/health");
+  const data = await publicFetch<HealthResponse>("/health/full");
+  if (typeof data?.triples !== "number" || typeof data?.uptime_secs !== "number" || !data?.pool || !data?.websockets) {
+    throw new Error("Server returned an incomplete health response.");
+  }
+  return data;
 }
 
 // ---------------------------------------------------------------------------

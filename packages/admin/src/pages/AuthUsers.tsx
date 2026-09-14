@@ -4,7 +4,6 @@ import {
   Shield,
   ShieldCheck,
   Eye,
-  MoreVertical,
   Monitor,
   Smartphone,
   Clock,
@@ -17,12 +16,14 @@ import {
   AlertTriangle,
 } from "lucide-react";
 import { Badge } from "../components/Badge";
-import { fetchEntities, fetchSchema, fetchSessions, createUser, ApiError } from "../lib/api";
+import { fetchSessions, createUser, ApiError } from "../lib/api";
+import { apiFetch } from "../lib/http";
 import type { AdminSessionsResponse } from "../lib/api";
 import { cn, formatRelativeTime, formatTimestamp } from "../lib/utils";
 import type { User } from "../types";
 
 const roleBadge: Record<User["role"], { variant: "amber" | "emerald" | "sky"; icon: typeof Shield }> = {
+  user: { variant: "emerald", icon: Eye },
   admin: { variant: "amber", icon: ShieldCheck },
   developer: { variant: "sky", icon: Shield },
   viewer: { variant: "emerald", icon: Eye },
@@ -58,9 +59,7 @@ function entityToUser(
     id: userId,
     email: (rec.email as string) ?? "",
     name: (rec.name as string) ?? (rec.email as string) ?? "Unknown",
-    role: (["admin", "developer", "viewer"].includes(rec.role as string)
-      ? (rec.role as User["role"])
-      : "viewer"),
+    role: Array.isArray(rec.roles) && rec.roles.includes("admin") ? "admin" : "user",
     createdAt: typeof rec.createdAt === "number"
       ? (rec.createdAt as number)
       : typeof rec.created_at === "string"
@@ -97,31 +96,10 @@ export function AuthUsers() {
     setLoading(true);
     setError(null);
     try {
-      // Fetch sessions in parallel with schema+entities.
-      const sessionsPromise = fetchSessions().catch(() => ({
-        sessions: [],
-        count: 0,
-      } as AdminSessionsResponse));
-
-      // Try fetching "users" entity type from the data API.
-      const schema = await fetchSchema();
-      const userType = schema.find(
-        (et) => et.name === "users" || et.name === "user",
-      );
-
-      if (!userType) {
-        // No user entity type in schema
-        setUsers([]);
-        setLoading(false);
-        return;
-      }
-
       const [res, sessionsData] = await Promise.all([
-        fetchEntities(userType.name, 200),
-        sessionsPromise,
+        apiFetch<{users: Record<string, unknown>[]}>("/api/admin/users"), fetchSessions(),
       ]);
-
-      setUsers(res.data.map((r, i) => entityToUser(r, i, sessionsData)));
+      setUsers(res.users.map((r, i) => entityToUser(r, i, sessionsData)));
     } catch (err) {
       setUsers([]);
       if (err instanceof ApiError) {
@@ -377,9 +355,7 @@ export function AuthUsers() {
                         {user.sessions.length > 0 && (
                           <div className="w-2 h-2 rounded-full bg-emerald-400" title="Active" />
                         )}
-                        <button className="btn-ghost p-1" aria-label={`More options for ${user.name}`}>
-                          <MoreVertical className="w-3.5 h-3.5" />
-                        </button>
+
                       </div>
                     </div>
                   </button>

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import {
   Grid,
   List,
@@ -18,7 +18,8 @@ import {
   RefreshCw,
 } from "lucide-react";
 import { Badge } from "../components/Badge";
-import { fetchHealth, fetchStorageFiles } from "../lib/api";
+import { fetchStorageFiles } from "../lib/api";
+import { apiFetch, API_URL, getToken } from "../lib/http";
 import { cn, formatBytes, formatRelativeTime } from "../lib/utils";
 import type { StorageFile } from "../types";
 
@@ -35,6 +36,8 @@ const mimeIcons: Record<string, typeof File> = {
 };
 
 export function Storage() {
+  const picker = useRef<HTMLInputElement>(null);
+  const [uploading, setUploading] = useState(false);
   const [view, setView] = useState<"grid" | "list">("grid");
   const [search, setSearch] = useState("");
   const [dragOver, setDragOver] = useState(false);
@@ -54,14 +57,14 @@ export function Storage() {
           name: f.name,
           size: f.size,
           mimeType: f.mimeType,
-          url: `/api/storage/${f.path}`,
+          url: `/api/storage/${f.path.split("/").map(encodeURIComponent).join("/")}`,
           uploadedAt: f.uploadedAt,
           uploadedBy: f.metadata?.["uploaded-by"] ?? "Unknown",
         })),
       );
-    } catch {
+    } catch (e) {
       setFiles([]);
-      setError("Cannot connect to DarshJDB server. Is the server running?");
+      setError(e instanceof Error ? e.message : "Failed to load storage files");
     } finally {
       setLoading(false);
     }
@@ -87,14 +90,39 @@ export function Storage() {
     setDragOver(false);
   }, []);
 
-  const handleDrop = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    setDragOver(false);
-    // Upload handling would go here
-  }, []);
+  async function upload(items: FileList | null) {
+    if (!items?.length) return;
+    setUploading(true); setError(null);
+    try {
+      for (const file of Array.from(items)) {
+        const body = new FormData(); body.append("file", file); body.append("path", `${crypto.randomUUID()}/${file.name}`);
+        await apiFetch("/api/storage/upload", { method: "POST", body });
+      }
+      await loadFiles();
+    } catch (e) { setError(e instanceof Error ? e.message : "Upload failed"); }
+    finally { setUploading(false); if (picker.current) picker.current.value = ""; }
+  }
+  async function download(file: StorageFile) {
+    try {
+      const response = await fetch(`${API_URL}${file.url}`, {headers: {Authorization: `Bearer ${getToken()}`}});
+      if (!response.ok) throw new Error(`Download failed (${response.status})`);
+      const url = URL.createObjectURL(await response.blob());
+      const link = document.createElement("a"); link.href = url; link.download = file.name; link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (e) { setError(e instanceof Error ? e.message : "Download failed"); }
+  }
+  async function remove(file: StorageFile) {
+    if (!window.confirm(`Permanently delete ${file.name}?`)) return;
+    try { await apiFetch(file.url, {method:"DELETE"}); setSelectedFile(null); await loadFiles(); }
+    catch (e) { setError(e instanceof Error ? e.message : "Delete failed"); }
+  }
+  const handleDrop = (e: React.DragEvent) => { e.preventDefault(); setDragOver(false); if (!uploading) void upload(e.dataTransfer.files); };
 
   return (
     <div className="p-6">
+      <input ref={picker} type="file" multiple hidden onChange={e => { void upload(e.target.files); }} aria-label="Choose files to upload" />
+      {uploading && <p role="status" className="text-amber-400 mb-3">Uploading files…</p>}
+      {selectedFile && <div className="glass-panel p-4 mb-4 text-sm text-zinc-300"><strong>{selectedFile.name}</strong><p>{selectedFile.mimeType} · {formatBytes(selectedFile.size)}</p><button className="btn-ghost" onClick={() => setSelectedFile(null)}>Close details</button></div>}
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
         <div>
@@ -118,7 +146,7 @@ export function Storage() {
           >
             <RefreshCw className={cn("w-3.5 h-3.5", loading && "animate-spin")} />
           </button>
-          <button className="btn-primary text-sm" disabled={!!error}>
+          <button className="btn-primary text-sm" disabled={uploading} onClick={() => picker.current?.click()}>
             <Upload className="w-4 h-4" />
             Upload Files
           </button>
@@ -230,10 +258,10 @@ export function Storage() {
                         isImage ? "text-amber-500/40" : "text-zinc-700",
                       )} />
                       <div className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity flex gap-1">
-                        <button className="p-1 rounded bg-zinc-900/90 text-zinc-400 hover:text-zinc-100" aria-label={`Preview ${file.name}`}>
+                        <button className="p-1 rounded bg-zinc-900/90 text-zinc-400 hover:text-zinc-100" aria-label={`Details for ${file.name}`} onClick={e => { e.stopPropagation(); setSelectedFile(file); }}>
                           <Eye className="w-3 h-3" />
                         </button>
-                        <button className="p-1 rounded bg-zinc-900/90 text-zinc-400 hover:text-zinc-100" aria-label={`Download ${file.name}`}>
+                        <button className="p-1 rounded bg-zinc-900/90 text-zinc-400 hover:text-zinc-100" aria-label={`Download ${file.name}`} onClick={e => { e.stopPropagation(); void download(file); }}>
                           <Download className="w-3 h-3" />
                         </button>
                       </div>
@@ -295,10 +323,10 @@ export function Storage() {
                         </td>
                         <td className="table-cell text-right">
                           <div className="flex items-center justify-end gap-1">
-                            <button className="btn-ghost p-1" aria-label={`Download ${file.name}`}>
+                            <button className="btn-ghost p-1" aria-label={`Download ${file.name}`} onClick={e => { e.stopPropagation(); void download(file); }}>
                               <Download className="w-3.5 h-3.5" />
                             </button>
-                            <button className="btn-ghost p-1 text-red-400 hover:text-red-300" aria-label={`Delete ${file.name}`}>
+                            <button className="btn-ghost p-1 text-red-400 hover:text-red-300" aria-label={`Delete ${file.name}`} onClick={e => { e.stopPropagation(); void remove(file); }}>
                               <Trash2 className="w-3.5 h-3.5" />
                             </button>
                           </div>

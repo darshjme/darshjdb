@@ -36,6 +36,7 @@ services:
       DATABASE_URL: "postgres://darshan:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@postgres:5432/darshjdb"
       DDB_PORT: "7700"
       DDB_ADMIN_DIR: /usr/share/darshan/admin
+      DDB_STORAGE_KEY: ${DDB_STORAGE_KEY:?Set DDB_STORAGE_KEY in .env}
       DDB_JWT_SECRET: ${DDB_JWT_SECRET:?Set DDB_JWT_SECRET in .env}
       RUST_LOG: ${RUST_LOG:-info}
     depends_on:

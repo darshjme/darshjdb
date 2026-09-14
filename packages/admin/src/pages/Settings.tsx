@@ -1,12 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import {
-  Plus,
-  Download,
-  Upload,
   Shield,
-  Bell,
-  Globe,
-  Clock,
   RefreshCw,
   Loader2,
   Database,
@@ -27,9 +21,9 @@ import type {
   HealthResponse,
   AuditChainResult,
 } from "../lib/api";
-import { cn, formatRelativeTime } from "../lib/utils";
+import { cn } from "../lib/utils";
 
-type SettingsTab = "env" | "system" | "backup" | "rate-limits" | "webhooks";
+type SettingsTab = "system" | "operations";
 
 export function Settings() {
   const [activeTab, setActiveTab] = useState<SettingsTab>("system");
@@ -61,13 +55,12 @@ export function Settings() {
       setAuditChain(results[2].value);
     }
 
-    // If all failed, show error
-    if (results.every((r) => r.status === "rejected")) {
-      const err = results[0].status === "rejected" ? results[0].reason : null;
+    if (results.some((r) => r.status === "rejected")) {
+      const err = results.find(r => r.status === "rejected")?.reason;
       setSystemError(
         err instanceof ApiError
           ? `Cannot connect to DarshJDB server (${err.status}). Is the server running?`
-          : "Cannot connect to DarshJDB server. Is the server running?",
+          : err instanceof Error ? err.message : "Some system metrics are unavailable.",
       );
     }
 
@@ -80,10 +73,7 @@ export function Settings() {
 
   const tabs: { id: SettingsTab; label: string; icon: typeof Shield }[] = [
     { id: "system", label: "System Status", icon: Server },
-    { id: "env", label: "Environment Variables", icon: Globe },
-    { id: "backup", label: "Backup & Restore", icon: Download },
-    { id: "rate-limits", label: "Rate Limits", icon: Shield },
-    { id: "webhooks", label: "Webhooks", icon: Bell },
+    { id: "operations", label: "Operations", icon: Shield },
   ];
 
   function formatUptime(secs: number): string {
@@ -250,7 +240,7 @@ export function Settings() {
                               ? Number.isInteger(value)
                                 ? value.toLocaleString()
                                 : (value as number).toFixed(2)
-                              : String(value)}
+                              : typeof value === "object" ? JSON.stringify(value) : String(value)}
                           </span>
                         </div>
                       ))}
@@ -281,7 +271,7 @@ export function Settings() {
                             ? Number.isInteger(value)
                               ? value.toLocaleString()
                               : (value as number).toFixed(2)
-                            : String(value)}
+                            : typeof value === "object" ? JSON.stringify(value) : String(value)}
                         </span>
                       </div>
                     ))}
@@ -353,207 +343,10 @@ export function Settings() {
         </div>
       )}
 
-      {/* Environment Variables */}
-      {activeTab === "env" && (
-        <div className="space-y-4">
-          <div className="flex items-center justify-between">
-            <p className="text-sm text-zinc-400">
-              Environment variables are encrypted at rest and available to your functions.
-            </p>
-            <button className="btn-primary text-xs">
-              <Plus className="w-3.5 h-3.5" />
-              Add Variable
-            </button>
-          </div>
-
-          <div className="glass-panel p-8 text-center text-sm text-zinc-500">
-            Environment variables API not yet available. Configure variables via the server config file.
-          </div>
-        </div>
-      )}
-
-      {/* Backup & Restore */}
-      {activeTab === "backup" && (
-        <div className="space-y-6">
-          <div className="glass-panel p-6">
-            <h3 className="text-sm font-semibold text-zinc-100 mb-1">Create Backup</h3>
-            <p className="text-xs text-zinc-500 mb-4">
-              Export a snapshot of your database, schema, and configuration.
-            </p>
-            <div className="flex gap-3">
-              <button className="btn-primary text-sm">
-                <Download className="w-4 h-4" />
-                Full Backup
-              </button>
-              <button className="btn-secondary text-sm">
-                <Download className="w-4 h-4" />
-                Schema Only
-              </button>
-            </div>
-          </div>
-
-          <div className="glass-panel p-6">
-            <h3 className="text-sm font-semibold text-zinc-100 mb-1">Restore</h3>
-            <p className="text-xs text-zinc-500 mb-4">
-              Restore from a previous backup. This will overwrite current data.
-            </p>
-            <button className="btn-secondary text-sm">
-              <Upload className="w-4 h-4" />
-              Upload Backup File
-            </button>
-          </div>
-
-          <div className="glass-panel p-6">
-            <h3 className="text-sm font-semibold text-zinc-100 mb-2">Recent Backups</h3>
-            <div className="space-y-2">
-              {[
-                { name: "backup-20240401-full.ddb", size: "45.2 MB", date: "Apr 1, 2024 03:00 AM", type: "Automatic" },
-                { name: "backup-20240315-manual.ddb", size: "44.8 MB", date: "Mar 15, 2024 02:30 PM", type: "Manual" },
-                { name: "backup-20240301-full.ddb", size: "42.1 MB", date: "Mar 1, 2024 03:00 AM", type: "Automatic" },
-              ].map((backup) => (
-                <div
-                  key={backup.name}
-                  className="flex items-center justify-between py-2 px-3 rounded-lg hover:bg-zinc-800/30"
-                >
-                  <div className="flex items-center gap-3">
-                    <Download className="w-4 h-4 text-zinc-600" />
-                    <div>
-                      <p className="text-xs font-medium text-zinc-200">{backup.name}</p>
-                      <p className="text-[10px] text-zinc-500">{backup.size} -- {backup.date}</p>
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <Badge variant={backup.type === "Automatic" ? "sky" : "amber"} className="text-[9px]">
-                      {backup.type}
-                    </Badge>
-                    <button className="btn-ghost text-xs">
-                      <RefreshCw className="w-3 h-3" />
-                      Restore
-                    </button>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Rate Limits */}
-      {activeTab === "rate-limits" && (
-        <div className="space-y-4">
-          <p className="text-sm text-zinc-400">
-            Configure rate limiting for your API endpoints.
-          </p>
-          <div className="glass-panel p-0 overflow-hidden">
-            {[
-              { endpoint: "Queries", limit: "1,000/min", current: 342, max: 1000 },
-              { endpoint: "Mutations", limit: "500/min", current: 128, max: 500 },
-              { endpoint: "Actions", limit: "100/min", current: 45, max: 100 },
-              { endpoint: "File uploads", limit: "50/min", current: 3, max: 50 },
-              { endpoint: "Auth attempts", limit: "10/min", current: 1, max: 10 },
-            ].map((item, i, arr) => (
-              <div
-                key={item.endpoint}
-                className={cn(
-                  "flex items-center gap-4 px-4 py-3",
-                  i !== arr.length - 1 && "border-b border-zinc-800/60",
-                )}
-              >
-                <span className="text-sm text-zinc-200 w-36">{item.endpoint}</span>
-                <div className="flex-1">
-                  <div className="flex items-center justify-between mb-1">
-                    <span className="text-xs text-zinc-500">{item.current} / {item.max}</span>
-                    <span className="text-xs text-zinc-600">{item.limit}</span>
-                  </div>
-                  <div className="w-full h-1.5 bg-zinc-800 rounded-full overflow-hidden">
-                    <div
-                      className={cn(
-                        "h-full rounded-full transition-all",
-                        item.current / item.max > 0.8
-                          ? "bg-red-500"
-                          : item.current / item.max > 0.5
-                            ? "bg-amber-500"
-                            : "bg-emerald-500",
-                      )}
-                      style={{ width: `${(item.current / item.max) * 100}%` }}
-                    />
-                  </div>
-                </div>
-                <button className="btn-ghost text-xs">Edit</button>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Webhooks */}
-      {activeTab === "webhooks" && (
-        <div className="space-y-4">
-          <div className="flex items-center justify-between">
-            <p className="text-sm text-zinc-400">
-              Send real-time notifications to external services.
-            </p>
-            <button className="btn-primary text-xs">
-              <Plus className="w-3.5 h-3.5" />
-              Add Webhook
-            </button>
-          </div>
-
-          <div className="space-y-3">
-            {[
-              {
-                url: "https://hooks.slack.com/services/T00/B00/xxx",
-                events: ["mutation:*", "error:*"],
-                status: "active",
-                lastDelivery: Date.now() - 300_000,
-              },
-              {
-                url: "https://api.example.com/webhooks/ddb",
-                events: ["user:created", "user:deleted"],
-                status: "active",
-                lastDelivery: Date.now() - 3600_000,
-              },
-              {
-                url: "https://old-service.example.com/hook",
-                events: ["document:created"],
-                status: "failing",
-                lastDelivery: Date.now() - 86400_000,
-              },
-            ].map((webhook, i) => (
-              <div key={i} className="glass-panel p-4">
-                <div className="flex items-center justify-between mb-2">
-                  <div className="flex items-center gap-2">
-                    <span className="font-mono text-xs text-zinc-300 truncate max-w-md">
-                      {webhook.url}
-                    </span>
-                    <Badge
-                      variant={webhook.status === "active" ? "emerald" : "red"}
-                      className="text-[9px]"
-                    >
-                      {webhook.status}
-                    </Badge>
-                  </div>
-                  <div className="flex items-center gap-1">
-                    <button className="btn-ghost text-xs">Edit</button>
-                    <button className="btn-ghost text-xs text-red-400">Delete</button>
-                  </div>
-                </div>
-                <div className="flex items-center gap-2 flex-wrap">
-                  {webhook.events.map((event) => (
-                    <Badge key={event} variant="zinc" className="text-[10px] font-mono">
-                      {event}
-                    </Badge>
-                  ))}
-                  <span className="text-[10px] text-zinc-600 ml-auto flex items-center gap-1">
-                    <Clock className="w-2.5 h-2.5" />
-                    Last: {formatRelativeTime(webhook.lastDelivery)}
-                  </span>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
+      {activeTab === "operations" && <div className="space-y-5">
+        <section className="glass-panel p-6"><h3 className="font-medium text-zinc-100 mb-2">Backups and restore</h3><p className="text-sm text-zinc-400">Use PostgreSQL backup tooling on the server and back up the storage volume separately. This console does not create or restore backups. No backup history is reported by the server.</p></section>
+        <section className="glass-panel p-6"><h3 className="font-medium text-zinc-100 mb-2">Server configuration</h3><p className="text-sm text-zinc-400">Manage environment variables and rate limits in your deployment configuration. Webhook management is available through the authenticated /api/webhooks API; this console does not yet provide a webhook editor.</p></section>
+      </div>}
     </div>
   );
 }

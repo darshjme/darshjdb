@@ -26,12 +26,12 @@ const navItems = [
 ];
 
 export function Sidebar() {
-  const [collapsed, setCollapsed] = useState(false);
+  const [collapsed, setCollapsed] = useState(() => window.innerWidth < 768);
 
   return (
     <aside
       className={cn(
-        "flex flex-col h-screen bg-zinc-950 border-r border-zinc-800 transition-all duration-200",
+        "flex shrink-0 flex-col h-screen bg-zinc-950 border-r border-zinc-800 transition-all duration-200",
         collapsed ? "w-16" : "w-60",
       )}
       aria-label="Main navigation"

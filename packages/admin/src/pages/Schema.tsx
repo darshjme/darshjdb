@@ -5,16 +5,9 @@ import { fetchSchema } from "../lib/api";
 import { cn } from "../lib/utils";
 import type { EntityType } from "../types";
 
-const relationships = [
-  { from: "documents", to: "users", field: "authorId", type: "many-to-one" },
-  { from: "messages", to: "channels", field: "channelId", type: "many-to-one" },
-  { from: "messages", to: "users", field: "authorId", type: "many-to-one" },
-  { from: "sessions", to: "users", field: "userId", type: "many-to-one" },
-  { from: "files", to: "users", field: "uploadedBy", type: "many-to-one" },
-];
-
 export function Schema() {
   const [entityTypes, setEntityTypes] = useState<EntityType[]>([]);
+  const relationships = entityTypes.flatMap(entity => (entity.references || []).map(ref => ({ from: entity.name, to: ref.target_type, field: ref.attribute, type: ref.cardinality > 1 ? "many" : "one" })));
   const [selectedEntity, setSelectedEntity] = useState<EntityType | null>(null);
   const [view, setView] = useState<"diagram" | "list">("diagram");
   const [loading, setLoading] = useState(true);

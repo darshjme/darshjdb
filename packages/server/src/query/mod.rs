@@ -856,6 +856,15 @@ pub struct QueryResultRow {
 /// Returns a list of entity result rows with their attributes merged
 /// and nested entities resolved inline.
 pub async fn execute_query(pool: &PgPool, plan: &QueryPlan) -> Result<Vec<QueryResultRow>> {
+    let mut connection = pool.acquire().await?;
+    execute_query_on(&mut connection, plan).await
+}
+
+/// Execute reads on the same connection as a batch's uncommitted writes.
+pub async fn execute_query_on(
+    connection: &mut sqlx::PgConnection,
+    plan: &QueryPlan,
+) -> Result<Vec<QueryResultRow>> {
     // Build the query with dynamic binds.
     let mut query = sqlx::query_as::<
         _,
@@ -873,7 +882,7 @@ pub async fn execute_query(pool: &PgPool, plan: &QueryPlan) -> Result<Vec<QueryR
         query = bind_json_param(query, p);
     }
 
-    let rows = query.fetch_all(pool).await?;
+    let rows = query.fetch_all(&mut *connection).await?;
 
     // Group by entity_id.
     let mut entities: std::collections::HashMap<
@@ -894,7 +903,7 @@ pub async fn execute_query(pool: &PgPool, plan: &QueryPlan) -> Result<Vec<QueryR
     // all referenced UUIDs and fetch them in a single WHERE entity_id = ANY($1)
     // query per nested plan. This turns N+1 into 1+P where P = number of nested
     // plans (typically 1-3), regardless of how many parent entities exist.
-    let nested_maps = batch_resolve_nested(pool, &entities, &plan.nested_plans).await?;
+    let nested_maps = batch_resolve_nested(connection, &entities, &plan.nested_plans).await?;
 
     // Collect entity keys in deterministic order for stable pagination.
     let mut entity_keys: Vec<uuid::Uuid> = entities.keys().copied().collect();
@@ -950,7 +959,7 @@ pub async fn execute_query(pool: &PgPool, plan: &QueryPlan) -> Result<Vec<QueryR
 /// `nested_plans`, where each map entry is `referenced_uuid -> attributes`.
 #[allow(clippy::type_complexity)]
 fn batch_resolve_nested<'a>(
-    pool: &'a PgPool,
+    connection: &'a mut sqlx::PgConnection,
     parent_entities: &'a std::collections::HashMap<
         uuid::Uuid,
         serde_json::Map<String, serde_json::Value>,
@@ -1000,7 +1009,7 @@ fn batch_resolve_nested<'a>(
              ORDER BY entity_id, attribute, tx_id DESC",
             )
             .bind(&ref_uuids)
-            .fetch_all(pool)
+            .fetch_all(&mut *connection)
             .await?;
 
             // Step 3: Group fetched triples by entity_id.
@@ -1017,7 +1026,7 @@ fn batch_resolve_nested<'a>(
 
             // Step 4: Recursively resolve sub-nested references if any.
             if !np.sub_nested.is_empty() {
-                let sub_maps = batch_resolve_nested(pool, &grouped, &np.sub_nested).await?;
+                let sub_maps = batch_resolve_nested(connection, &grouped, &np.sub_nested).await?;
 
                 // Attach sub-nested results to each grouped entity.
                 for (eid, attrs) in grouped.iter_mut() {

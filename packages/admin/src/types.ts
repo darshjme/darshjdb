@@ -2,6 +2,7 @@ export interface EntityType {
   name: string;
   count: number;
   fields: EntityField[];
+  references?: { attribute: string; target_type: string; cardinality: number }[];
 }
 
 export interface EntityField {
@@ -43,7 +44,7 @@ export interface User {
   id: string;
   email: string;
   name: string;
-  role: "admin" | "developer" | "viewer";
+  role: "admin" | "developer" | "viewer" | "user";
   createdAt: number;
   lastLogin: number;
   sessions: UserSession[];

@@ -6,14 +6,14 @@ import {
   Code,
   RefreshCw,
   Plus,
-  Trash2,
   Download,
   AlertTriangle,
   Loader2,
 } from "lucide-react";
 import { DataTable } from "../components/DataTable";
 import { Badge } from "../components/Badge";
-import { fetchSchema, fetchEntities, queryDarshJQL } from "../lib/api";
+import { fetchSchema, fetchEntities, queryDarshJQL, createEntity, deleteEntity } from "../lib/api";
+import { apiFetch } from "../lib/http";
 import { cn, formatNumber } from "../lib/utils";
 import type { EntityType, EntityRecord } from "../types";
 
@@ -26,6 +26,11 @@ export function DataExplorer() {
   const [liveMode, setLiveMode] = useState(false);
   const [showQuery, setShowQuery] = useState(false);
   const [queryText, setQueryText] = useState("");
+  const [editor, setEditor] = useState<{id?: string} | null>(null);
+  const [draft, setDraft] = useState("{}");
+  const [entityName, setEntityName] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [editError, setEditError] = useState("");
   const [filter, setFilter] = useState("");
 
   // ── Load schema (entity types) from API on mount ──────────────────
@@ -40,7 +45,7 @@ export function DataExplorer() {
         setEntityTypes(types);
         if (types.length > 0) {
           setSelectedEntity(types[0]);
-          setQueryText(`SELECT * FROM "${types[0].name}" LIMIT 100`);
+          setQueryText(JSON.stringify({type: types[0].name, "$limit": 100}, null, 2));
         }
       } catch {
         if (cancelled) return;
@@ -83,7 +88,7 @@ export function DataExplorer() {
   // ── Update query text when entity changes ─────────────────────────
   useEffect(() => {
     if (selectedEntity) {
-      setQueryText(`SELECT * FROM "${selectedEntity.name}" LIMIT 100`);
+      setQueryText(JSON.stringify({type: selectedEntity.name, "$limit": 100}, null, 2));
     }
   }, [selectedEntity]);
 
@@ -92,19 +97,15 @@ export function DataExplorer() {
     if (!selectedEntity) return;
     setLoading(true);
     try {
-      // Parse simple SELECT-style into DarshJQL JSON object
-      // For now, just fetch entity data; real DarshJQL goes through /api/query
-      const results = await queryDarshJQL({
-        type: selectedEntity.name,
-        $limit: 100,
-      });
+      setError(null);
+      const results = await queryDarshJQL(JSON.parse(queryText));
       setRecords(results);
-    } catch {
-      // Keep existing records on query failure
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Query failed");
     } finally {
       setLoading(false);
     }
-  }, [selectedEntity]);
+  }, [selectedEntity, queryText]);
 
   const columns = selectedEntity
     ? selectedEntity.fields.map((f) => ({
@@ -124,11 +125,49 @@ export function DataExplorer() {
     ? entityTypes.filter((e) => e.name.toLowerCase().includes(filter.toLowerCase()))
     : entityTypes;
 
+  function edit(row?: EntityRecord) {
+    setEditor(row ? {id: row._id} : {}); setEditError(""); setEntityName(selectedEntity?.name || "");
+    setDraft(JSON.stringify(row ? Object.fromEntries(Object.entries(row).filter(([k]) => !k.startsWith("_"))) : {}, null, 2));
+  }
+  async function refreshSchema() {
+    const types = await fetchSchema(); setEntityTypes(types);
+    const selected = types.find(t => t.name === entityName); setSelectedEntity(selected || types[0] || null);
+    if (selected) await loadRecords(selected);
+  }
+  async function save() {
+    setSaving(true); setEditError("");
+    try {
+      const data = JSON.parse(draft);
+      if (!data || Array.isArray(data) || typeof data !== "object") throw new Error("Enter a JSON object.");
+      if (editor?.id) await apiFetch(`/api/data/${encodeURIComponent(entityName)}/${editor.id}`, {method:"PATCH",body:JSON.stringify(data)});
+      else await createEntity(entityName, data);
+      setEditor(null); await refreshSchema();
+    } catch (e) { setEditError(e instanceof Error ? e.message : "Save failed"); }
+    finally { setSaving(false); }
+  }
+  async function remove() {
+    if (!editor?.id || !window.confirm("Permanently delete this record?")) return;
+    try { await deleteEntity(entityName, editor.id); setEditor(null); await refreshSchema(); }
+    catch (e) { setEditError(e instanceof Error ? e.message : "Delete failed"); }
+  }
+  function download() {
+    const url = URL.createObjectURL(new Blob([JSON.stringify(records, null, 2)], {type:"application/json"}));
+    const link = document.createElement("a"); link.href=url; link.download=`${selectedEntity?.name || "records"}.json`; link.click(); setTimeout(() => URL.revokeObjectURL(url),1000);
+  }
+
   return (
     <div className="flex h-full">
+      {editor && <div role="dialog" aria-modal="true" aria-label={editor.id ? "Edit record" : "Add record"} className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4"><section className="glass-panel p-6 w-full max-w-xl space-y-4">
+        <h2 className="text-lg text-zinc-100">{editor.id ? "Edit record" : "Add record"}</h2>
+        <label className="block text-sm text-zinc-300">Entity type<input className="input-field mt-2" value={entityName} disabled={Boolean(editor.id)} onChange={e => setEntityName(e.target.value)} /></label>
+        <label className="block text-sm text-zinc-300">Record JSON<textarea className="input-field mt-2 font-mono h-56" value={draft} onChange={e => setDraft(e.target.value)} /></label>
+        {editError && <p role="alert" className="text-red-300 text-sm">{editError}</p>}
+        <div className="flex gap-3"><button className="btn-primary" disabled={saving || !entityName} onClick={() => { void save(); }}>{saving ? "Saving…" : "Save record"}</button><button className="btn-secondary" onClick={() => setEditor(null)}>Cancel</button>{editor.id && <button className="btn-ghost text-red-400" onClick={() => { void remove(); }}>Delete record</button>}</div>
+      </section></div>}
       {/* Entity list panel */}
-      <div className="w-56 flex-shrink-0 border-r border-zinc-800 bg-zinc-950/50">
+      <div className="w-32 sm:w-56 flex-shrink-0 border-r border-zinc-800 bg-zinc-950/50">
         <div className="p-3 border-b border-zinc-800">
+          <button className="btn-ghost text-xs mb-2" onClick={() => edit()}>New record</button>
           <input
             placeholder="Filter entities..."
             value={filter}
@@ -179,7 +218,7 @@ export function DataExplorer() {
 
         {/* Toolbar */}
         {selectedEntity && (
-        <div className="flex items-center justify-between px-4 py-2.5 border-b border-zinc-800">
+        <div className="flex flex-wrap gap-2 items-center justify-between px-4 py-2.5 border-b border-zinc-800">
           <div className="flex items-center gap-3">
             <h2 className="text-sm font-semibold text-zinc-100">
               {selectedEntity.name}
@@ -218,15 +257,13 @@ export function DataExplorer() {
             >
               <RefreshCw className="w-3.5 h-3.5" />
             </button>
-            <button className="btn-ghost text-xs" aria-label="Download data">
+            <button className="btn-ghost text-xs" aria-label="Download loaded records" onClick={download}>
               <Download className="w-3.5 h-3.5" />
             </button>
-            <button className="btn-ghost text-xs" aria-label="Add record">
+            <button className="btn-ghost text-xs" aria-label="Add record" onClick={() => edit()}>
               <Plus className="w-3.5 h-3.5" />
             </button>
-            <button className="btn-ghost text-xs text-red-400 hover:text-red-300" aria-label="Delete selected">
-              <Trash2 className="w-3.5 h-3.5" />
-            </button>
+
           </div>
         </div>
         )}
@@ -244,7 +281,7 @@ export function DataExplorer() {
                   className="w-full bg-transparent px-4 py-3 font-mono text-sm text-zinc-200 placeholder-zinc-600 resize-none focus:outline-none"
                   rows={3}
                   spellCheck={false}
-                  placeholder='SELECT * FROM "users" WHERE role = "admin"'
+                  placeholder='{"type": "notes", "$limit": 100}'
                   aria-label="SQL query editor"
                   onKeyDown={(e) => {
                     if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
@@ -276,7 +313,8 @@ export function DataExplorer() {
             </div>
           ) : selectedEntity ? (
             <DataTable
-              columns={columns}
+              key={selectedEntity.name}
+              columns={[...columns, {key:"_edit", label:"Actions", render: (_value, row) => <button className="btn-ghost text-xs" onClick={() => edit(row)}>Edit record</button>}]}
               data={records}
               pageSize={10}
             />

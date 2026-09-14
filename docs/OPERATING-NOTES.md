@@ -12,7 +12,7 @@ Set `DDB_JWT_SECRET` and `DDB_STORAGE_KEY` for the relevant authentication and s
 
 ## Compose and packaging
 
-The current [Compose file](../docker-compose.yml) defines three services: `darshjdb`, `ddb-cache`, and `postgres`. It requires the Postgres, JWT and cache passwords. The README supplies a local override for `DDB_STORAGE_KEY`, which the base file does not forward to the application container.
+The current [Compose file](../docker-compose.yml) defines three services: `darshjdb`, `ddb-cache`, and `postgres`. It requires the Postgres, JWT, storage-signing and cache secrets. The base file now forwards `DDB_STORAGE_KEY`; the README override remains compatible.
 
 The [Dockerfile](../Dockerfile) builds the dashboard and copies **all three binaries**—`ddb-server`, `ddb`, and `ddb-cache-server`—into its runtime image. The cache listens in a separate service on port 7701; the application uses 7700. Earlier claims that the cache executable was missing or that this stack always started Redis and Qdrant are outdated.
 
@@ -26,7 +26,7 @@ Check startup logs and the migration ledger when enabling pgvector or TimescaleD
 
 ## API boundaries to review
 
-- **Mutation authorization:** the general `mutate` handler in [REST](../packages/server/src/api/rest.rs) extracts a bearer token but does not use the same `check_permission` path as the entity CRUD handlers. Review this path before exposing it in a multi-user deployment. Authentication and row-level authorization are separate checks.
+- **Mutation authorization:** general mutations and sequential/parallel batch queries now verify sessions and apply permission rules. Mutations check the existing entity type, row predicates before and after changes, field restrictions and schema constraints. Batch reads use the transaction connection so they see earlier writes. The isolated PostgreSQL regression covers ownership and rollback. This does not establish equivalent protection for every other API surface.
 - **Memory recall:** [`semantic_recall`](../packages/server/src/agent_memory/repo.rs) uses case-insensitive SQL `LIKE` matching. Embedding generation and embedding columns do not make this endpoint a vector recall API.
 - **Entity search:** semantic and hybrid handlers in [REST](../packages/server/src/api/rest.rs) are separate from agent-memory recall and use PostgreSQL vector queries. Confirm extension and schema availability for the selected endpoint.
 - **File storage:** startup constructs [`LocalFsBackend`](../packages/server/src/main.rs). Configuration fields alone do not establish support for an S3-compatible backend.
@@ -35,3 +35,9 @@ Check startup logs and the migration ledger when enabling pgvector or TimescaleD
 ## Verification
 
 Run builds and tests locally or on an authorized server. GitHub Actions is disabled. The README rewrite checked these statements against source and validated documentation structure; it did not rerun the application suite, launch a database, or establish production-readiness claims.
+
+## Admin console
+
+The embedded console lives at `/admin/`, including assets and deep links. It uses same-origin APIs and runtime email/password sign-in; there is no bundled development bearer token. Only an account with the admin role enters the console. Sessions live in tab session storage and are cleared on sign-out or a 401 response. For separate development servers, set `DDB_DEV_PROXY` to the backend URL.
+
+Schema relationships, authentication users, storage and system status come from server APIs. Storage supports upload, download and deletion. Server logs remain available through process output, and backups through PostgreSQL/deployment tooling. A webhook editor is not yet present; use `/api/webhooks`. The console does not manufacture backup history, metrics or webhook deliveries.

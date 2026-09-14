@@ -35,7 +35,8 @@ use serde_json::Value;
 use uuid::Uuid;
 
 use super::error::ApiError;
-use super::rest::AppState;
+use super::rest::{AppState, authorize_mutation, check_permission, extract_auth_context};
+use crate::auth::{AuthContext, Operation};
 use crate::query::{self, QueryResultRow};
 use crate::triple_store::{PgTripleStore, TripleInput};
 
@@ -109,6 +110,7 @@ pub async fn batch_handler(
     headers: HeaderMap,
     axum::Json(body): axum::Json<BatchRequest>,
 ) -> Result<Response, ApiError> {
+    let auth = extract_auth_context(&headers, &state).await?;
     let batch_start = Instant::now();
 
     // Validate batch size.
@@ -170,7 +172,7 @@ pub async fn batch_handler(
             BatchOp::Query {
                 id,
                 body: query_body,
-            } => execute_batch_query(id, query_body, &state).await,
+            } => execute_batch_query(id, query_body, &state, &auth, db_tx.as_mut()).await,
             BatchOp::Mutate {
                 id,
                 body: mutate_body,
@@ -179,6 +181,7 @@ pub async fn batch_handler(
                     id,
                     mutate_body,
                     &state,
+                    &auth,
                     db_tx.as_mut().expect("tx must exist for mutate ops"),
                     &mut tx_id,
                     &mut all_entity_ids,
@@ -248,7 +251,13 @@ pub async fn batch_handler(
 // ---------------------------------------------------------------------------
 
 /// Execute a query operation within a batch.
-async fn execute_batch_query(id: &str, query_body: &Value, state: &AppState) -> BatchOpResult {
+async fn execute_batch_query(
+    id: &str,
+    query_body: &Value,
+    state: &AppState,
+    auth: &AuthContext,
+    transaction: Option<&mut sqlx::Transaction<'_, sqlx::Postgres>>,
+) -> BatchOpResult {
     let start = Instant::now();
 
     // Parse the DarshJQL JSON into an AST.
@@ -264,8 +273,23 @@ async fn execute_batch_query(id: &str, query_body: &Value, state: &AppState) -> 
         }
     };
 
-    // Plan the query.
-    let plan = match query::plan_query(&ast) {
+    let permission =
+        match check_permission(auth, &ast.entity_type, Operation::Read, &state.permissions)
+            .and_then(|p| {
+                query::PermissionFilter::from_clauses(&p.where_clauses, auth.user_id)
+                    .map_err(|e| ApiError::permission_denied(e.to_string()))
+            }) {
+            Ok(p) => p,
+            Err(e) => {
+                return BatchOpResult {
+                    id: id.into(),
+                    status: e.code.status().as_u16(),
+                    data: None,
+                    error: Some(e.message),
+                };
+            }
+        };
+    let plan = match query::plan_query_with_permission(&ast, &permission) {
         Ok(plan) => plan,
         Err(e) => {
             return BatchOpResult {
@@ -278,7 +302,11 @@ async fn execute_batch_query(id: &str, query_body: &Value, state: &AppState) -> 
     };
 
     // Execute against Postgres.
-    let results: Vec<QueryResultRow> = match query::execute_query(&state.pool, &plan).await {
+    let execution = match transaction {
+        Some(tx) => query::execute_query_on(tx, &plan).await,
+        None => query::execute_query(&state.pool, &plan).await,
+    };
+    let results: Vec<QueryResultRow> = match execution {
         Ok(rows) => rows,
         Err(e) => {
             return BatchOpResult {
@@ -314,6 +342,7 @@ async fn execute_batch_mutate(
     id: &str,
     mutate_body: &Value,
     state: &AppState,
+    auth: &AuthContext,
     db_tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     shared_tx_id: &mut Option<i64>,
     all_entity_ids: &mut Vec<Uuid>,
@@ -385,15 +414,63 @@ async fn execute_batch_mutate(
             }
         };
 
+        let entity_id = match mutation.get("id") {
+            Some(Value::String(s)) => match Uuid::parse_str(s) {
+                Ok(id) => id,
+                Err(_) => {
+                    return BatchOpResult {
+                        id: id.into(),
+                        status: 400,
+                        data: None,
+                        error: Some("Invalid mutation id".into()),
+                    };
+                }
+            },
+            None if matches!(op, "insert" | "set" | "upsert") => Uuid::new_v4(),
+            _ => {
+                return BatchOpResult {
+                    id: id.into(),
+                    status: 400,
+                    data: None,
+                    error: Some("Mutation id is required".into()),
+                };
+            }
+        };
+        let offset = triples.len();
+        let creating = match authorize_mutation(
+            state,
+            auth,
+            db_tx,
+            entity,
+            op,
+            entity_id,
+            mutation.get("data"),
+        )
+        .await
+        {
+            Ok(creating) => creating,
+            Err(e) => {
+                return BatchOpResult {
+                    id: id.into(),
+                    status: e.code.status().as_u16(),
+                    data: None,
+                    error: Some(e.message),
+                };
+            }
+        };
+        if creating && op == "upsert" {
+            triples.push(TripleInput {
+                entity_id,
+                attribute: ":db/type".into(),
+                value: Value::String(entity.into()),
+                value_type: 0,
+                ttl_seconds: None,
+            });
+        }
         all_entity_types.push(entity.to_string());
 
         match op {
             "insert" | "set" => {
-                let entity_id = mutation
-                    .get("id")
-                    .and_then(|v| v.as_str())
-                    .and_then(|s| Uuid::parse_str(s).ok())
-                    .unwrap_or_else(Uuid::new_v4);
                 entity_ids.push(entity_id);
 
                 // Add type triple.
@@ -419,21 +496,6 @@ async fn execute_batch_mutate(
                 }
             }
             "update" | "upsert" => {
-                let entity_id = match mutation
-                    .get("id")
-                    .and_then(|v| v.as_str())
-                    .and_then(|s| Uuid::parse_str(s).ok())
-                {
-                    Some(id) => id,
-                    None => {
-                        return BatchOpResult {
-                            id: id.to_string(),
-                            status: 400,
-                            data: None,
-                            error: Some(format!("Mutation {i}: 'id' required for {op}")),
-                        };
-                    }
-                };
                 entity_ids.push(entity_id);
 
                 if let Some(data) = mutation.get("data").and_then(|d| d.as_object()) {
@@ -462,21 +524,6 @@ async fn execute_batch_mutate(
                 }
             }
             "delete" => {
-                let entity_id = match mutation
-                    .get("id")
-                    .and_then(|v| v.as_str())
-                    .and_then(|s| Uuid::parse_str(s).ok())
-                {
-                    Some(id) => id,
-                    None => {
-                        return BatchOpResult {
-                            id: id.to_string(),
-                            status: 400,
-                            data: None,
-                            error: Some(format!("Mutation {i}: 'id' required for delete")),
-                        };
-                    }
-                };
                 entity_ids.push(entity_id);
 
                 // Retract all triples for this entity.
@@ -515,18 +562,17 @@ async fn execute_batch_mutate(
                 };
             }
         }
-    }
-
-    // Write all triples inside the shared transaction.
-    if !triples.is_empty()
-        && let Err(e) = PgTripleStore::set_triples_in_tx(db_tx, &triples, tx_id).await
-    {
-        return BatchOpResult {
-            id: id.to_string(),
-            status: 500,
-            data: None,
-            error: Some(format!("Failed to write triples: {e}")),
-        };
+        if triples.len() > offset {
+            if let Err(e) = PgTripleStore::set_triples_in_tx(db_tx, &triples[offset..], tx_id).await
+            {
+                return BatchOpResult {
+                    id: id.into(),
+                    status: 500,
+                    data: None,
+                    error: Some(format!("Failed to write triples: {e}")),
+                };
+            }
+        }
     }
 
     // Run forward-chaining rules inside the same transaction.
@@ -722,6 +768,7 @@ pub async fn parallel_batch_handler(
 ) -> Result<Response, ApiError> {
     use crate::query::parallel::{compute_stats, profile_op, schedule_waves};
 
+    let auth = extract_auth_context(&headers, &state).await?;
     let batch_start = Instant::now();
 
     // Validate batch size.
@@ -800,7 +847,7 @@ pub async fn parallel_batch_handler(
         if wave.op_indices.len() == 1 {
             // Single op in wave -- no need for tokio::join overhead.
             let idx = wave.op_indices[0];
-            let result = execute_single_op(&body.ops[idx], &state, token.as_deref()).await;
+            let result = execute_single_op(&body.ops[idx], &state, token.as_deref(), &auth).await;
             results[idx] = Some(result);
         } else {
             // Multiple ops in wave -- execute in parallel.
@@ -811,7 +858,13 @@ pub async fn parallel_batch_handler(
                     let state_ref = &state;
                     let token_ref = token.as_deref();
                     let op = &body.ops[idx];
-                    async move { (idx, execute_single_op(op, state_ref, token_ref).await) }
+                    let auth_ref = &auth;
+                    async move {
+                        (
+                            idx,
+                            execute_single_op(op, state_ref, token_ref, auth_ref).await,
+                        )
+                    }
                 })
                 .collect();
 
@@ -864,9 +917,14 @@ pub async fn parallel_batch_handler(
 }
 
 /// Execute a single read-only operation (query or function call).
-async fn execute_single_op(op: &BatchOp, state: &AppState, token: Option<&str>) -> BatchOpResult {
+async fn execute_single_op(
+    op: &BatchOp,
+    state: &AppState,
+    token: Option<&str>,
+    auth: &AuthContext,
+) -> BatchOpResult {
     match op {
-        BatchOp::Query { id, body } => execute_batch_query(id, body, state).await,
+        BatchOp::Query { id, body } => execute_batch_query(id, body, state, auth, None).await,
         BatchOp::Fn { id, name, args } => execute_batch_fn(id, name, args, state, token).await,
         BatchOp::Mutate { id, .. } => {
             // Should not reach here in the parallel path, but handle gracefully.

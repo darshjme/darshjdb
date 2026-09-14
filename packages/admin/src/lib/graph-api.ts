@@ -7,25 +7,7 @@
  * admin page.
  */
 
-const API_URL = import.meta.env.VITE_DDB_URL || "http://localhost:7700";
-const AUTH_TOKEN = import.meta.env.VITE_DDB_TOKEN || "ddb-admin-dev-token";
-
-async function graphFetch<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${API_URL}${path}`, {
-    ...init,
-    headers: {
-      Accept: "application/json",
-      ...(init?.body ? { "Content-Type": "application/json" } : {}),
-      Authorization: `Bearer ${AUTH_TOKEN}`,
-      ...(init?.headers as Record<string, string> | undefined),
-    },
-  });
-  if (!res.ok) {
-    const body = await res.text().catch(() => "");
-    throw new Error(`Graph API ${res.status} on ${path}: ${body || res.statusText}`);
-  }
-  return res.json() as Promise<T>;
-}
+import { apiFetch as graphFetch } from "./http";
 
 // ---------------------------------------------------------------------------
 // Server shapes (must stay in sync with `packages/server/src/graph/traverse.rs`)

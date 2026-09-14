@@ -3,6 +3,7 @@ import react from "@vitejs/plugin-react";
 import path from "path";
 
 export default defineConfig({
+  base: "/admin/",
   plugins: [react()],
   resolve: {
     alias: {
@@ -12,8 +13,9 @@ export default defineConfig({
   server: {
     port: 3100,
     proxy: {
+      "/health": process.env.DDB_DEV_PROXY || "http://127.0.0.1:7700",
       "/api": {
-        target: "http://localhost:4000",
+        target: process.env.DDB_DEV_PROXY || "http://127.0.0.1:7700",
         changeOrigin: true,
       },
     },

@@ -599,9 +599,11 @@ impl SessionManager {
         let clamped: i64 = limit.clamp(1, 500);
         let sessions: Vec<SessionRecord> = sqlx::query_as(
             "SELECT session_id, user_id, device_fingerprint, ip, user_agent,
-                    created_at, revoked, refresh_token_hash, refresh_expires_at
+                    created_at, revoked, refresh_token_hash, refresh_expires_at,
+                    last_active_at, absolute_expires_at, revoked_at, revoke_reason
              FROM sessions
-             WHERE revoked = false AND refresh_expires_at > NOW()
+             WHERE revoked = false AND revoked_at IS NULL
+               AND refresh_expires_at > NOW() AND absolute_expires_at > NOW()
              ORDER BY created_at DESC
              LIMIT $1",
         )
