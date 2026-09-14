@@ -58,17 +58,17 @@ export function DataTable<T extends Record<string, unknown>>({
   const paged = sorted.slice(page * pageSize, (page + 1) * pageSize);
 
   const SortIcon = ({ col }: { col: string }) => {
-    if (sortKey !== col) return <ArrowUpDown className="w-3 h-3 text-zinc-600" />;
+    if (sortKey !== col) return <ArrowUpDown className="w-3 h-3 text-ink-muted" />;
     return sortDir === "asc" ? (
-      <ArrowUp className="w-3 h-3 text-amber-500" />
+      <ArrowUp className="w-3 h-3 text-brand-500" />
     ) : (
-      <ArrowDown className="w-3 h-3 text-amber-500" />
+      <ArrowDown className="w-3 h-3 text-brand-500" />
     );
   };
 
   if (data.length === 0) {
     return (
-      <div className="flex items-center justify-center py-16 text-zinc-500 text-sm">
+      <div className="flex items-center justify-center py-16 text-ink-muted text-sm">
         {emptyMessage}
       </div>
     );
@@ -79,13 +79,13 @@ export function DataTable<T extends Record<string, unknown>>({
       <div className="overflow-x-auto">
         <table className="w-full">
           <thead>
-            <tr className="bg-zinc-900/50">
+            <tr className="bg-surface-subtle/50">
               {columns.map((col) => (
                 <th
                   key={col.key}
                   className={cn(
                     "table-header text-left",
-                    col.sortable && "cursor-pointer select-none hover:text-zinc-300",
+                    col.sortable && "cursor-pointer select-none hover:text-ink-secondary",
                   )}
                   style={col.width ? { width: col.width } : undefined}
                   onClick={() => col.sortable && handleSort(col.key)}
@@ -103,7 +103,7 @@ export function DataTable<T extends Record<string, unknown>>({
               <tr
                 key={i}
                 className={cn(
-                  "hover:bg-zinc-800/40 transition-colors",
+                  "hover:bg-surface-muted/40 transition-colors",
                   onRowClick && "cursor-pointer",
                 )}
                 onClick={() => onRowClick?.(row)}
@@ -122,8 +122,8 @@ export function DataTable<T extends Record<string, unknown>>({
       </div>
 
       {totalPages > 1 && (
-        <div className="flex items-center justify-between px-4 py-3 border-t border-zinc-800">
-          <span className="text-xs text-zinc-500">
+        <div className="flex items-center justify-between px-4 py-3 border-t border-line">
+          <span className="text-xs text-ink-muted">
             Showing {page * pageSize + 1}-{Math.min((page + 1) * pageSize, data.length)} of{" "}
             {data.length}
           </span>
@@ -145,8 +145,8 @@ export function DataTable<T extends Record<string, unknown>>({
                   className={cn(
                     "w-8 h-8 rounded-lg text-xs font-medium transition-colors",
                     p === page
-                      ? "bg-amber-500/10 text-amber-500"
-                      : "text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800/60",
+                      ? "bg-brand-500/10 text-brand-500"
+                      : "text-ink-muted hover:text-ink-secondary hover:bg-surface-muted/60",
                   )}
                 >
                   {p + 1}
@@ -170,24 +170,24 @@ export function DataTable<T extends Record<string, unknown>>({
 
 function renderValue(val: unknown): React.ReactNode {
   if (val === null || val === undefined) {
-    return <span className="text-zinc-600 italic">null</span>;
+    return <span className="text-ink-muted italic">null</span>;
   }
   if (typeof val === "boolean") {
     return (
-      <span className={val ? "text-emerald-400" : "text-red-400"}>
+      <span className={val ? "text-emerald-700" : "text-red-700"}>
         {String(val)}
       </span>
     );
   }
   if (typeof val === "number") {
     if (val > 1_600_000_000_000 && val < 2_000_000_000_000) {
-      return <span className="text-zinc-400">{formatRelativeTime(val)}</span>;
+      return <span className="text-ink-secondary">{formatRelativeTime(val)}</span>;
     }
-    return <span className="text-sky-400 font-mono text-xs">{val}</span>;
+    return <span className="text-sky-700 font-mono text-xs">{val}</span>;
   }
   if (typeof val === "string") {
     if (val.length > 60) return <span title={val}>{val.slice(0, 60)}...</span>;
     return <span>{val}</span>;
   }
-  return <span className="text-zinc-500 font-mono text-xs">{JSON.stringify(val)}</span>;
+  return <span className="text-ink-muted font-mono text-xs">{JSON.stringify(val)}</span>;
 }

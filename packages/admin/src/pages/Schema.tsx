@@ -38,8 +38,8 @@ export function Schema() {
       <div className="flex-1 overflow-auto p-6">
         <div className="flex items-center justify-between mb-6">
           <div>
-            <h2 className="text-lg font-semibold text-zinc-100">Schema</h2>
-            <p className="text-sm text-zinc-500 mt-0.5">
+            <h2 className="text-lg font-semibold text-ink">Schema</h2>
+            <p className="text-sm text-ink-muted mt-0.5">
               {loading ? (
                 <span className="flex items-center gap-1.5">
                   <Loader2 className="w-3 h-3 animate-spin" />
@@ -50,14 +50,14 @@ export function Schema() {
               )}
             </p>
           </div>
-          <div className="flex items-center gap-1 bg-zinc-900 rounded-lg p-0.5 border border-zinc-800">
+          <div className="flex items-center gap-1 bg-surface-subtle rounded-lg p-0.5 border border-line">
             <button
               onClick={() => setView("diagram")}
               className={cn(
                 "px-3 py-1.5 rounded-md text-xs font-medium transition-colors",
                 view === "diagram"
-                  ? "bg-zinc-800 text-zinc-100"
-                  : "text-zinc-500 hover:text-zinc-300",
+                  ? "bg-surface-muted text-ink"
+                  : "text-ink-muted hover:text-ink-secondary",
               )}
             >
               <GitBranch className="w-3.5 h-3.5 inline mr-1.5" />
@@ -68,8 +68,8 @@ export function Schema() {
               className={cn(
                 "px-3 py-1.5 rounded-md text-xs font-medium transition-colors",
                 view === "list"
-                  ? "bg-zinc-800 text-zinc-100"
-                  : "text-zinc-500 hover:text-zinc-300",
+                  ? "bg-surface-muted text-ink"
+                  : "text-ink-muted hover:text-ink-secondary",
               )}
             >
               <List className="w-3.5 h-3.5 inline mr-1.5" />
@@ -79,21 +79,21 @@ export function Schema() {
         </div>
 
         {error && (
-          <div className="flex items-center gap-2 px-4 py-3 mb-4 rounded-lg bg-red-500/10 border border-red-500/20 text-red-400 text-xs">
+          <div className="flex items-center gap-2 px-4 py-3 mb-4 rounded-lg bg-red-500/10 border border-red-500/20 text-red-700 text-xs">
             <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0" />
             <span>{error}</span>
           </div>
         )}
 
         {loading && (
-          <div className="flex items-center justify-center gap-2 py-16 text-sm text-zinc-500">
+          <div className="flex items-center justify-center gap-2 py-16 text-sm text-ink-muted">
             <Loader2 className="w-4 h-4 animate-spin" />
             Loading schema...
           </div>
         )}
 
         {!loading && !error && entityTypes.length === 0 && (
-          <div className="flex items-center justify-center py-16 text-sm text-zinc-500">
+          <div className="flex items-center justify-center py-16 text-sm text-ink-muted">
             No entity types found in the database.
           </div>
         )}
@@ -105,12 +105,12 @@ export function Schema() {
                 key={entity.name}
                 onClick={() => setSelectedEntity(entity)}
                 className={cn(
-                  "glass-panel p-0 text-left transition-all hover:border-zinc-700",
-                  selectedEntity?.name === entity.name && "border-amber-500/50 ring-1 ring-amber-500/20",
+                  "glass-panel p-0 text-left transition-all hover:border-line-strong",
+                  selectedEntity?.name === entity.name && "border-brand-500/50 ring-1 ring-brand-500/20",
                 )}
               >
-                <div className="flex items-center justify-between px-4 py-3 border-b border-zinc-800/60">
-                  <span className="text-sm font-semibold text-zinc-100">
+                <div className="flex items-center justify-between px-4 py-3 border-b border-line/60">
+                  <span className="text-sm font-semibold text-ink">
                     {entity.name}
                   </span>
                   <Badge variant="zinc" className="text-[10px]">
@@ -125,7 +125,7 @@ export function Schema() {
                     >
                       <div className="flex items-center gap-1 w-5">
                         {field.unique && field.name === "_id" && (
-                          <Key className="w-3 h-3 text-amber-500" />
+                          <Key className="w-3 h-3 text-brand-500" />
                         )}
                         {field.indexed && field.name !== "_id" && (
                           <Hash className="w-3 h-3 text-sky-500/60" />
@@ -133,11 +133,11 @@ export function Schema() {
                       </div>
                       <span className={cn(
                         "font-mono",
-                        field.name === "_id" ? "text-amber-500/80" : "text-zinc-300",
+                        field.name === "_id" ? "text-brand-500/80" : "text-ink-secondary",
                       )}>
                         {field.name}
                       </span>
-                      <span className="text-zinc-600 ml-auto font-mono">
+                      <span className="text-ink-muted ml-auto font-mono">
                         {field.type}
                       </span>
                     </div>
@@ -150,12 +150,12 @@ export function Schema() {
                   .map((rel) => (
                     <div
                       key={`${rel.from}-${rel.to}`}
-                      className="flex items-center gap-2 px-4 py-1.5 text-[10px] text-zinc-500 border-t border-zinc-800/40"
+                      className="flex items-center gap-2 px-4 py-1.5 text-[10px] text-ink-muted border-t border-line/40"
                     >
                       <ArrowRight className="w-3 h-3" />
                       <span>{rel.field}</span>
-                      <span className="text-zinc-600">-&gt;</span>
-                      <span className="text-sky-400">{rel.to}</span>
+                      <span className="text-ink-muted">-&gt;</span>
+                      <span className="text-sky-700">{rel.to}</span>
                       <Badge variant="zinc" className="ml-auto text-[9px] py-0">
                         {rel.type}
                       </Badge>
@@ -168,9 +168,9 @@ export function Schema() {
           <div className="space-y-3">
             {entityTypes.map((entity) => (
               <div key={entity.name} className="glass-panel">
-                <div className="flex items-center justify-between px-4 py-3 border-b border-zinc-800/60">
+                <div className="flex items-center justify-between px-4 py-3 border-b border-line/60">
                   <div className="flex items-center gap-3">
-                    <span className="text-sm font-semibold text-zinc-100">{entity.name}</span>
+                    <span className="text-sm font-semibold text-ink">{entity.name}</span>
                     <Badge variant="zinc">{entity.fields.length} fields</Badge>
                     <Badge variant="amber">{entity.count} rows</Badge>
                   </div>
@@ -204,18 +204,18 @@ export function Schema() {
                             </td>
                             <td className="table-cell">
                               {field.required ? (
-                                <span className="text-emerald-400 text-xs">Yes</span>
+                                <span className="text-emerald-700 text-xs">Yes</span>
                               ) : (
-                                <span className="text-zinc-600 text-xs">No</span>
+                                <span className="text-ink-muted text-xs">No</span>
                               )}
                             </td>
                             <td className="table-cell">
-                              {field.indexed && <Hash className="w-3.5 h-3.5 text-sky-400" />}
+                              {field.indexed && <Hash className="w-3.5 h-3.5 text-sky-700" />}
                             </td>
                             <td className="table-cell">
-                              {field.unique && <Key className="w-3.5 h-3.5 text-amber-500" />}
+                              {field.unique && <Key className="w-3.5 h-3.5 text-brand-500" />}
                             </td>
-                            <td className="table-cell font-mono text-xs text-zinc-500">
+                            <td className="table-cell font-mono text-xs text-ink-muted">
                               {field.default || "--"}
                             </td>
                           </tr>

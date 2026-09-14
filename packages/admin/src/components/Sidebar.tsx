@@ -1,6 +1,7 @@
 import { NavLink } from "react-router";
 import {
   Database,
+  Home,
   GitBranch,
   Network,
   Zap,
@@ -15,7 +16,8 @@ import { useState } from "react";
 import { cn } from "../lib/utils";
 
 const navItems = [
-  { to: "/", icon: Database, label: "Data Explorer" },
+  { to: "/", icon: Home, label: "Overview" },
+  { to: "/data", icon: Database, label: "Data Explorer" },
   { to: "/schema", icon: GitBranch, label: "Schema" },
   { to: "/graph", icon: Network, label: "Graph" },
   { to: "/functions", icon: Zap, label: "Functions" },
@@ -31,22 +33,22 @@ export function Sidebar() {
   return (
     <aside
       className={cn(
-        "flex shrink-0 flex-col h-screen bg-zinc-950 border-r border-zinc-800 transition-all duration-200",
-        collapsed ? "w-16" : "w-60",
+        "flex shrink-0 flex-col h-screen bg-surface-subtle border-r border-line transition-all duration-200",
+        collapsed ? "w-16" : "w-52",
       )}
       aria-label="Main navigation"
     >
-      <div className="flex items-center gap-3 px-4 h-14 border-b border-zinc-800">
-        <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-amber-400 to-amber-600 flex items-center justify-center flex-shrink-0">
-          <span className="text-zinc-950 font-bold text-sm">D</span>
+      <div className="flex items-center gap-3 px-4 h-14 border-b border-line">
+        <div className="w-7 h-7 rounded-md bg-[#DFEDF0] flex items-center justify-center flex-shrink-0">
+          <span className="text-[#597683] font-semibold text-sm">D</span>
         </div>
         {!collapsed && (
           <div className="flex flex-col min-w-0">
-            <span className="text-sm font-semibold text-zinc-100 truncate">
+            <span className="text-sm font-semibold text-ink truncate">
               DarshJDB
             </span>
-            <span className="text-[10px] text-zinc-500 truncate">
-              Dashboard
+            <span className="text-[10px] text-ink-muted truncate">
+              Workspace
             </span>
           </div>
         )}
@@ -69,7 +71,7 @@ export function Sidebar() {
         ))}
       </nav>
 
-      <div className="px-2 py-3 border-t border-zinc-800">
+      <div className="px-2 py-3 border-t border-line">
         <button
           onClick={() => setCollapsed(!collapsed)}
           className="sidebar-link w-full justify-center"

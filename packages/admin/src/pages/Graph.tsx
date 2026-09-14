@@ -39,7 +39,7 @@ import { cn } from "../lib/utils";
 // ---------------------------------------------------------------------------
 
 const palette = [
-  "#f59e0b", // amber-500
+  "#f59e0b", // brand-500
   "#38bdf8", // sky-400
   "#34d399", // emerald-400
   "#a78bfa", // purple-400
@@ -262,8 +262,8 @@ export function Graph() {
         {/* Header */}
         <div className="flex items-center justify-between mb-4">
           <div>
-            <h2 className="text-lg font-semibold text-zinc-100">Graph Explorer</h2>
-            <p className="text-sm text-zinc-500 mt-0.5">
+            <h2 className="text-lg font-semibold text-ink">Graph Explorer</h2>
+            <p className="text-sm text-ink-muted mt-0.5">
               Traverse record-link edges from any entity. BFS up to depth 5.
             </p>
           </div>
@@ -274,13 +274,13 @@ export function Graph() {
           <div className="flex flex-wrap items-end gap-3">
             {/* Start entity type */}
             <div className="flex flex-col gap-1 min-w-[140px]">
-              <label className="text-[10px] uppercase tracking-wide text-zinc-500">
+              <label className="text-[10px] uppercase tracking-wide text-ink-muted">
                 Entity type
               </label>
               <select
                 value={startTable}
                 onChange={(e) => setStartTable(e.target.value)}
-                className="bg-zinc-900 border border-zinc-800 rounded-md px-2 py-1.5 text-xs text-zinc-200 focus:outline-none focus:border-amber-500/50"
+                className="bg-surface-subtle border border-line rounded-md px-2 py-1.5 text-xs text-ink focus:outline-none focus:border-brand-500/50"
               >
                 {entityTypes.length === 0 && (
                   <option value="">(no schema)</option>
@@ -295,7 +295,7 @@ export function Graph() {
 
             {/* Entity id */}
             <div className="flex flex-col gap-1 min-w-[200px] flex-1">
-              <label className="text-[10px] uppercase tracking-wide text-zinc-500">
+              <label className="text-[10px] uppercase tracking-wide text-ink-muted">
                 Entity id
               </label>
               <input
@@ -303,13 +303,13 @@ export function Graph() {
                 value={startId}
                 onChange={(e) => setStartId(e.target.value)}
                 placeholder="e.g. darsh or a uuid"
-                className="bg-zinc-900 border border-zinc-800 rounded-md px-2 py-1.5 text-xs text-zinc-200 font-mono focus:outline-none focus:border-amber-500/50"
+                className="bg-surface-subtle border border-line rounded-md px-2 py-1.5 text-xs text-ink font-mono focus:outline-none focus:border-brand-500/50"
               />
             </div>
 
             {/* Relation filter */}
             <div className="flex flex-col gap-1 min-w-[160px]">
-              <label className="text-[10px] uppercase tracking-wide text-zinc-500">
+              <label className="text-[10px] uppercase tracking-wide text-ink-muted">
                 Relation
               </label>
               <input
@@ -317,24 +317,24 @@ export function Graph() {
                 value={relation}
                 onChange={(e) => setRelation(e.target.value)}
                 placeholder="any"
-                className="bg-zinc-900 border border-zinc-800 rounded-md px-2 py-1.5 text-xs text-zinc-200 font-mono focus:outline-none focus:border-amber-500/50"
+                className="bg-surface-subtle border border-line rounded-md px-2 py-1.5 text-xs text-ink font-mono focus:outline-none focus:border-brand-500/50"
               />
             </div>
 
             {/* Direction toggle */}
             <div className="flex flex-col gap-1">
-              <label className="text-[10px] uppercase tracking-wide text-zinc-500">
+              <label className="text-[10px] uppercase tracking-wide text-ink-muted">
                 Direction
               </label>
-              <div className="flex items-center gap-1 bg-zinc-900 rounded-md p-0.5 border border-zinc-800">
+              <div className="flex items-center gap-1 bg-surface-subtle rounded-md p-0.5 border border-line">
                 <button
                   type="button"
                   onClick={() => setDirection("out")}
                   className={cn(
                     "px-2 py-1 rounded text-[11px] font-medium transition-colors flex items-center gap-1",
                     direction === "out"
-                      ? "bg-zinc-800 text-zinc-100"
-                      : "text-zinc-500 hover:text-zinc-300",
+                      ? "bg-surface-muted text-ink"
+                      : "text-ink-muted hover:text-ink-secondary",
                   )}
                   title="Outgoing edges"
                 >
@@ -347,8 +347,8 @@ export function Graph() {
                   className={cn(
                     "px-2 py-1 rounded text-[11px] font-medium transition-colors flex items-center gap-1",
                     direction === "in"
-                      ? "bg-zinc-800 text-zinc-100"
-                      : "text-zinc-500 hover:text-zinc-300",
+                      ? "bg-surface-muted text-ink"
+                      : "text-ink-muted hover:text-ink-secondary",
                   )}
                   title="Incoming edges"
                 >
@@ -361,8 +361,8 @@ export function Graph() {
                   className={cn(
                     "px-2 py-1 rounded text-[11px] font-medium transition-colors flex items-center gap-1",
                     direction === "both"
-                      ? "bg-zinc-800 text-zinc-100"
-                      : "text-zinc-500 hover:text-zinc-300",
+                      ? "bg-surface-muted text-ink"
+                      : "text-ink-muted hover:text-ink-secondary",
                   )}
                   title="Both directions"
                 >
@@ -374,9 +374,9 @@ export function Graph() {
 
             {/* Depth slider */}
             <div className="flex flex-col gap-1 min-w-[140px]">
-              <label className="text-[10px] uppercase tracking-wide text-zinc-500 flex items-center justify-between">
+              <label className="text-[10px] uppercase tracking-wide text-ink-muted flex items-center justify-between">
                 <span>Depth</span>
-                <span className="text-zinc-300 font-mono">{maxDepth}</span>
+                <span className="text-ink-secondary font-mono">{maxDepth}</span>
               </label>
               <input
                 type="range"
@@ -385,7 +385,7 @@ export function Graph() {
                 step={1}
                 value={maxDepth}
                 onChange={(e) => setMaxDepth(Number(e.target.value))}
-                className="accent-amber-500 h-[22px]"
+                className="accent-brand-500 h-[22px]"
               />
             </div>
 
@@ -394,7 +394,7 @@ export function Graph() {
               type="button"
               onClick={() => runTraversal()}
               disabled={loading || !startTable || !startId}
-              className="btn-ghost bg-amber-500/10 border border-amber-500/30 text-amber-400 hover:bg-amber-500/20 disabled:opacity-40 disabled:cursor-not-allowed text-xs h-[34px] px-3"
+              className="btn-ghost bg-brand-500/10 border border-brand-500/30 text-brand-400 hover:bg-brand-500/20 disabled:opacity-40 disabled:cursor-not-allowed text-xs h-[34px] px-3"
             >
               <RefreshCw className={cn("w-3.5 h-3.5", loading && "animate-spin")} />
               {loading ? "Traversing..." : "Traverse"}
@@ -404,14 +404,14 @@ export function Graph() {
 
         {/* Error banner */}
         {error && (
-          <div className="flex items-start justify-between gap-3 px-4 py-2.5 mb-4 rounded-lg bg-red-500/10 border border-red-500/20 text-red-400 text-xs">
+          <div className="flex items-start justify-between gap-3 px-4 py-2.5 mb-4 rounded-lg bg-red-500/10 border border-red-500/20 text-red-700 text-xs">
             <div className="flex items-start gap-2 min-w-0">
               <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
               <span className="break-words">{error}</span>
             </div>
             <button
               onClick={() => runTraversal()}
-              className="btn-ghost text-[11px] text-red-300 hover:text-red-200 flex-shrink-0"
+              className="btn-ghost text-[11px] text-red-700 hover:text-red-200 flex-shrink-0"
             >
               Retry
             </button>
@@ -424,8 +424,8 @@ export function Graph() {
           className="flex-1 glass-panel p-0 relative overflow-hidden min-h-[420px]"
         >
           {loading && (
-            <div className="absolute inset-0 flex items-center justify-center z-10 bg-zinc-950/40 backdrop-blur-sm">
-              <div className="flex items-center gap-2 text-xs text-zinc-400">
+            <div className="absolute inset-0 flex items-center justify-center z-10 bg-surface/40 backdrop-blur-sm">
+              <div className="flex items-center gap-2 text-xs text-ink-secondary">
                 <RefreshCw className="w-4 h-4 animate-spin" />
                 Loading graph...
               </div>
@@ -434,7 +434,7 @@ export function Graph() {
 
           {isInitial && (
             <div className="absolute inset-0 flex items-center justify-center">
-              <div className="flex flex-col items-center gap-2 text-zinc-500">
+              <div className="flex flex-col items-center gap-2 text-ink-muted">
                 <Network className="w-10 h-10 opacity-40" />
                 <p className="text-sm">Pick a start entity and hit Traverse.</p>
               </div>
@@ -443,10 +443,10 @@ export function Graph() {
 
           {isEmpty && (
             <div className="absolute inset-0 flex items-center justify-center">
-              <div className="flex flex-col items-center gap-2 text-zinc-500">
+              <div className="flex flex-col items-center gap-2 text-ink-muted">
                 <Network className="w-10 h-10 opacity-40" />
                 <p className="text-sm">No nodes reachable from this start.</p>
-                <p className="text-[11px] text-zinc-600">
+                <p className="text-[11px] text-ink-muted">
                   Try increasing depth, switching direction, or clearing the relation filter.
                 </p>
               </div>
@@ -497,21 +497,21 @@ export function Graph() {
         </div>
 
         {/* Stats footer */}
-        <div className="flex items-center gap-3 mt-3 text-[11px] text-zinc-500">
+        <div className="flex items-center gap-3 mt-3 text-[11px] text-ink-muted">
           <span>
-            Nodes: <span className="text-zinc-300 font-mono">{nodeCount}</span>
+            Nodes: <span className="text-ink-secondary font-mono">{nodeCount}</span>
           </span>
           <span>
-            Edges: <span className="text-zinc-300 font-mono">{edgeCount}</span>
+            Edges: <span className="text-ink-secondary font-mono">{edgeCount}</span>
           </span>
           {data && (
             <>
               <span>
                 Examined:{" "}
-                <span className="text-zinc-300 font-mono">{data.edgesExamined}</span>
+                <span className="text-ink-secondary font-mono">{data.edgesExamined}</span>
               </span>
               <span>
-                Fetch: <span className="text-zinc-300 font-mono">{data.fetchMs}ms</span>
+                Fetch: <span className="text-ink-secondary font-mono">{data.fetchMs}ms</span>
               </span>
               {data.truncated && (
                 <Badge variant="amber" className="text-[9px]">
@@ -524,9 +524,9 @@ export function Graph() {
       </div>
 
       {/* Inspector sidebar ---------------------------------------------- */}
-      <aside className="w-80 border-l border-zinc-800 bg-zinc-950 flex flex-col">
-        <div className="flex items-center justify-between px-4 h-14 border-b border-zinc-800">
-          <h3 className="text-sm font-semibold text-zinc-100">Inspector</h3>
+      <aside className="w-80 border-l border-line bg-surface flex flex-col">
+        <div className="flex items-center justify-between px-4 h-14 border-b border-line">
+          <h3 className="text-sm font-semibold text-ink">Inspector</h3>
           {selectedNode && (
             <button
               type="button"
@@ -541,7 +541,7 @@ export function Graph() {
 
         <div className="flex-1 overflow-y-auto p-4 space-y-4">
           {!selectedNode && (
-            <p className="text-xs text-zinc-500">
+            <p className="text-xs text-ink-muted">
               Click a node in the graph to inspect it.
             </p>
           )}
@@ -549,7 +549,7 @@ export function Graph() {
           {selectedNode && (
             <>
               <div>
-                <label className="text-[10px] uppercase tracking-wide text-zinc-500">
+                <label className="text-[10px] uppercase tracking-wide text-ink-muted">
                   Entity type
                 </label>
                 <div className="flex items-center gap-2 mt-1">
@@ -562,29 +562,29 @@ export function Graph() {
               </div>
 
               <div>
-                <label className="text-[10px] uppercase tracking-wide text-zinc-500">
+                <label className="text-[10px] uppercase tracking-wide text-ink-muted">
                   Entity id
                 </label>
-                <div className="mt-1 font-mono text-xs text-zinc-200 break-all">
+                <div className="mt-1 font-mono text-xs text-ink break-all">
                   {selectedNode.entityId}
                 </div>
               </div>
 
               <div>
-                <label className="text-[10px] uppercase tracking-wide text-zinc-500">
+                <label className="text-[10px] uppercase tracking-wide text-ink-muted">
                   Depth from start
                 </label>
-                <div className="mt-1 font-mono text-xs text-zinc-200">
+                <div className="mt-1 font-mono text-xs text-ink">
                   {selectedNode.depth}
                 </div>
               </div>
 
-              <div className="pt-2 border-t border-zinc-800/60 space-y-2">
+              <div className="pt-2 border-t border-line/60 space-y-2">
                 <button
                   type="button"
                   onClick={handleExpand}
                   disabled={loading}
-                  className="btn-ghost w-full justify-center bg-zinc-900 border border-zinc-800 hover:border-amber-500/30 text-xs h-8 disabled:opacity-40 disabled:cursor-not-allowed"
+                  className="btn-ghost w-full justify-center bg-surface-subtle border border-line hover:border-brand-500/30 text-xs h-8 disabled:opacity-40 disabled:cursor-not-allowed"
                 >
                   <Maximize2 className="w-3.5 h-3.5" />
                   Expand neighbours
@@ -599,7 +599,7 @@ export function Graph() {
                     runTraversal({ start: selectedNode.id });
                   }}
                   disabled={loading}
-                  className="btn-ghost w-full justify-center bg-zinc-900 border border-zinc-800 hover:border-amber-500/30 text-xs h-8 disabled:opacity-40 disabled:cursor-not-allowed"
+                  className="btn-ghost w-full justify-center bg-surface-subtle border border-line hover:border-brand-500/30 text-xs h-8 disabled:opacity-40 disabled:cursor-not-allowed"
                 >
                   <Network className="w-3.5 h-3.5" />
                   Re-root traversal here

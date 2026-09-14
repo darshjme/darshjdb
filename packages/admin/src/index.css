@@ -4,7 +4,7 @@
 
 @layer base {
   * {
-    border-color: theme("colors.zinc.800");
+    border-color: theme("colors.line.DEFAULT");
   }
 
   ::-webkit-scrollbar {
@@ -17,37 +17,37 @@
   }
 
   ::-webkit-scrollbar-thumb {
-    background: theme("colors.zinc.700");
+    background: theme("colors.line.strong");
     border-radius: 3px;
   }
 
   ::-webkit-scrollbar-thumb:hover {
-    background: theme("colors.zinc.600");
+    background: theme("colors.ink.muted");
   }
 }
 
 @layer components {
   .glass-panel {
-    @apply bg-zinc-900/80 backdrop-blur-sm border border-zinc-800 rounded-lg;
+    @apply bg-surface-subtle/80 backdrop-blur-sm border border-line rounded-lg;
   }
 
   .sidebar-link {
-    @apply flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium
-           text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800/60
+    @apply flex items-center gap-3 px-3 py-2 rounded-md text-[13px] font-normal
+           text-ink-secondary hover:text-ink hover:bg-surface-muted/60
            transition-colors duration-150;
   }
 
   .sidebar-link.active {
-    @apply text-amber-500 bg-amber-500/10;
+    @apply text-ink bg-surface-muted;
   }
 
   .table-cell {
-    @apply px-4 py-3 text-sm text-zinc-300 border-b border-zinc-800/60;
+    @apply px-4 py-3 text-sm text-ink-secondary border-b border-line/60;
   }
 
   .table-header {
-    @apply px-4 py-3 text-xs font-semibold uppercase tracking-wider
-           text-zinc-500 border-b border-zinc-800;
+    @apply px-4 py-3 text-[11px] font-normal
+           text-ink-muted border-b border-line;
   }
 
   .badge {
@@ -55,27 +55,41 @@
   }
 
   .input-field {
-    @apply w-full bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2
-           text-sm text-zinc-100 placeholder-zinc-500
-           focus:outline-none focus:ring-2 focus:ring-amber-500/40 focus:border-amber-500/60
+    @apply w-full bg-surface-subtle border border-line rounded-lg px-3 py-2
+           text-sm text-ink placeholder-zinc-500
+           focus:outline-none focus:ring-2 focus:ring-brand-500/40 focus:border-brand-500/60
            transition-all duration-150;
   }
 
   .btn-primary {
-    @apply inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium
-           bg-amber-500 text-zinc-950 hover:bg-amber-400
+    @apply inline-flex items-center gap-2 px-4 py-2 rounded-full text-xs font-medium
+           bg-brand-500 text-white hover:bg-brand-400
            transition-colors duration-150;
   }
 
   .btn-secondary {
-    @apply inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium
-           bg-zinc-800 text-zinc-100 hover:bg-zinc-700 border border-zinc-700
+    @apply inline-flex items-center gap-2 px-4 py-2 rounded-full text-xs font-medium
+           bg-surface-muted text-ink hover:bg-surface-hover border border-line-strong
            transition-colors duration-150;
   }
 
   .btn-ghost {
     @apply inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm
-           text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800/60
+           text-ink-secondary hover:text-ink hover:bg-surface-muted/60
            transition-colors duration-150;
   }
 }
+
+@layer base {
+  body { @apply bg-surface text-ink antialiased; }
+  button:focus-visible, a:focus-visible { outline: 2px solid #766bed; outline-offset: 3px; }
+  button:disabled { cursor: not-allowed; opacity: .5; }
+}
+.overview { max-width: 1150px; margin: 0 auto; padding: 32px 40px; }
+.overview-card { border: 1px solid #eaebef; border-radius: 9px; padding: 24px; background: white; box-shadow: 0 2px 3px #292a3003; }
+.overview-number { font-size: 34px; letter-spacing: -1.2px; line-height: 1.4; color: #292a30; }
+.overview-label { font-size: 13px; color: #62646f; }
+.overview-bar { height: 5px; border-radius: 10px; background: #eceafd; overflow: hidden; }
+.overview-bar > span { display: block; height: 100%; background: #8c83ea; border-radius: inherit; transition: width .5s ease; }
+@media(max-width:640px) { .overview { padding: 24px 16px; } .overview-card { padding: 18px; } }
+@media(prefers-reduced-motion:reduce) { *, *::before, *::after { animation: none!important; transition: none!important; scroll-behavior: auto!important; } }

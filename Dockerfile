@@ -31,13 +31,8 @@ RUN apt-get update && \
 
 WORKDIR /build
 
-# v0.3.1: the stubbed warm-cache layer was corrupting cargo's crate
-# metadata for the multi-crate workspace (ddb-server would resolve
-# `ddb_cache::DdbCache` against the empty stub metadata even after the
-# real source was COPY'd in, because the stub compilation cache won). We
-# drop the warm cache and rely on GitHub Actions buildx cache-from/to
-# mounted via `cache-from: type=gha` in the CI workflow. The build stays
-# fast on incremental CI runs and is correct on cold builds.
+# Build locally or on the deployment server; GitHub Actions is disabled.
+# BuildKit caches registry downloads and compiled dependencies between runs.
 
 COPY Cargo.toml Cargo.lock ./
 COPY packages/server/        packages/server/
@@ -47,7 +42,8 @@ COPY packages/cache-server/  packages/cache-server/
 COPY packages/agent-memory/  packages/agent-memory/
 COPY --from=frontend /build/packages/admin/dist packages/admin/dist
 
-RUN cargo build --release --workspace && \
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    cargo build --release --workspace && \
     strip target/release/ddb-server target/release/ddb target/release/ddb-cache-server
 
 # ── Stage 3: Runtime (minimal) ───────────────────────────────────────

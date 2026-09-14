@@ -46,20 +46,20 @@ export function Modal({
       />
       <div
         className={cn(
-          "relative w-full bg-zinc-900 border border-zinc-800 rounded-xl shadow-2xl animate-fade-in",
+          "relative w-full bg-surface-subtle border border-line rounded-xl shadow-2xl animate-fade-in",
           sizeMap[size],
         )}
       >
-        <div className="flex items-center justify-between px-6 py-4 border-b border-zinc-800">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-line">
           <div>
-            <h2 className="text-base font-semibold text-zinc-100">{title}</h2>
+            <h2 className="text-base font-semibold text-ink">{title}</h2>
             {description && (
-              <p className="mt-0.5 text-sm text-zinc-500">{description}</p>
+              <p className="mt-0.5 text-sm text-ink-muted">{description}</p>
             )}
           </div>
           <button
             onClick={onClose}
-            className="p-1.5 rounded-lg hover:bg-zinc-800 text-zinc-500 hover:text-zinc-300 transition-colors"
+            className="p-1.5 rounded-lg hover:bg-surface-muted text-ink-muted hover:text-ink-secondary transition-colors"
             aria-label="Close dialog"
           >
             <X className="w-4 h-4" />

@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { Routes, Route, useLocation } from "react-router";
+import { Overview } from "./pages/Overview";
 import { Sidebar } from "./components/Sidebar";
 import { TopBar } from "./components/TopBar";
 import { CommandPalette } from "./components/CommandPalette";
@@ -13,7 +14,8 @@ import { Logs } from "./pages/Logs";
 import { Settings } from "./pages/Settings";
 
 const pageTitles: Record<string, string> = {
-  "/": "Data Explorer",
+  "/": "Overview",
+  "/data": "Data Explorer",
   "/schema": "Schema",
   "/graph": "Graph Explorer",
   "/functions": "Functions",
@@ -41,7 +43,7 @@ export function App() {
   }, [handleKeyDown]);
 
   return (
-    <div className="flex h-screen overflow-hidden bg-zinc-950">
+    <div className="flex h-screen overflow-hidden bg-surface">
       <Sidebar />
       <div className="flex flex-col flex-1 min-w-0">
         <TopBar
@@ -50,7 +52,8 @@ export function App() {
         />
         <main className="flex-1 overflow-y-auto">
           <Routes>
-            <Route path="/" element={<DataExplorer />} />
+            <Route path="/" element={<Overview />} />
+            <Route path="/data" element={<DataExplorer />} />
             <Route path="/schema" element={<Schema />} />
             <Route path="/graph" element={<Graph />} />
             <Route path="/functions" element={<Functions />} />

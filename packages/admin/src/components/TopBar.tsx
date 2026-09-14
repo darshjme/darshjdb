@@ -21,9 +21,9 @@ const statusConfig: Record<
   ConnectionStatus,
   { label: string; color: string; icon: typeof Wifi }
 > = {
-  connected: { label: "Connected", color: "text-emerald-400", icon: Wifi },
-  connecting: { label: "Connecting", color: "text-amber-400", icon: Loader2 },
-  disconnected: { label: "Disconnected", color: "text-red-400", icon: WifiOff },
+  connected: { label: "Connected", color: "text-emerald-700", icon: Wifi },
+  connecting: { label: "Connecting", color: "text-brand-400", icon: Loader2 },
+  disconnected: { label: "Disconnected", color: "text-red-700", icon: WifiOff },
 };
 
 export function TopBar({ title, onOpenCommandPalette }: TopBarProps) {
@@ -43,19 +43,20 @@ export function TopBar({ title, onOpenCommandPalette }: TopBarProps) {
   const statusInfo = statusConfig[status];
 
   return (
-    <header className="flex items-center justify-between min-h-14 px-3 sm:px-6 border-b border-zinc-800 bg-zinc-950/80 backdrop-blur-sm">
+    <header className="flex items-center justify-between min-h-14 px-3 sm:px-6 border-b border-line bg-surface/80 backdrop-blur-sm">
       <div className="flex items-center gap-4">
-        <h1 className="text-sm font-semibold text-zinc-100">{title}</h1>
+        <button onClick={onOpenCommandPalette} aria-label="Search workspace" className="hidden md:flex items-center gap-3 w-80 text-left px-3 py-1.5 rounded-md border border-line text-xs text-ink-muted"><Search className="w-3.5 h-3.5" /><span className="flex-1">Search or jump to</span><kbd>⌘ K</kbd></button>
+        <span className="md:hidden text-sm text-ink">{title}</span>
       </div>
 
       <div className="flex items-center gap-3">
         <button
           onClick={onOpenCommandPalette}
-          className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-zinc-900 border border-zinc-800 text-zinc-500 text-sm hover:border-zinc-700 transition-colors"
+          className="md:hidden flex items-center gap-2 px-3 py-1.5 rounded-lg bg-surface-subtle border border-line text-ink-muted text-sm hover:border-line-strong transition-colors"
         >
           <Search className="w-3.5 h-3.5" />
           <span className="hidden sm:inline">Search</span>
-          <kbd className="hidden sm:flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-zinc-800 text-[10px] font-mono text-zinc-500">
+          <kbd className="hidden sm:flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-surface-muted text-[10px] font-mono text-ink-muted">
             <Command className="w-2.5 h-2.5" />K
           </kbd>
         </button>
@@ -65,7 +66,7 @@ export function TopBar({ title, onOpenCommandPalette }: TopBarProps) {
           <span>{statusInfo.label}</span>
         </div>
 
-        <div className="w-px h-6 bg-zinc-800" />
+        <div className="w-px h-6 bg-surface-muted" />
 
         <button onClick={() => { void signOut().catch(() => {}); }} className="btn-ghost" aria-label="Sign out" title="Sign out"><LogOut className="w-4 h-4" /></button>
       </div>

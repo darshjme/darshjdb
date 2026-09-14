@@ -1,0 +1,31 @@
+import { useEffect, useState, useCallback } from "react";
+import { Link } from "react-router";
+import { Database, ArrowUpRight, RefreshCw, Users, HardDrive, GitBranch, Activity, AlertCircle } from "lucide-react";
+import { fetchHealthDetailed, fetchSchema, fetchSessions } from "../lib/api";
+import type { HealthResponse } from "../lib/api";
+import type { EntityType } from "../types";
+
+export function Overview() {
+ const [health,setHealth]=useState<HealthResponse|null>(null),[entities,setEntities]=useState<EntityType[]>([]),[sessions,setSessions]=useState<Record<string,unknown>[]>([]),[errors,setErrors]=useState<string[]>([]),[loading,setLoading]=useState(true),[updated,setUpdated]=useState<Date|null>(null);
+ const load=useCallback(async()=>{
+  setLoading(true);
+  const [h,e,s]=await Promise.allSettled([fetchHealthDetailed(),fetchSchema(),fetchSessions()]);
+  const failures:string[]=[];
+  if(h.status==='fulfilled')setHealth(h.value);else{setHealth(null);failures.push('System health is unavailable.');}
+  if(e.status==='fulfilled')setEntities(e.value);else{setEntities([]);failures.push('Entity counts could not be loaded.');}
+  if(s.status==='fulfilled')setSessions(s.value.sessions as Record<string,unknown>[]);else{setSessions([]);failures.push('Active sessions could not be loaded.');}
+  setErrors(failures);setUpdated(new Date());setLoading(false);
+ },[]);
+ useEffect(()=>{void load();},[load]);
+ const total=entities.reduce((sum,e)=>sum+e.count,0), max=Math.max(1,...entities.map(e=>e.count));
+ return <div className="overview animate-fade-in">
+  <div className="flex items-center justify-between gap-4 mb-6"><div><h1 className="text-xl font-normal tracking-tight text-ink">Workspace overview</h1><p className="text-xs text-ink-muted mt-2">Your data, connections and activity in one place.</p></div><button onClick={()=>void load()} disabled={loading} className="btn-ghost" aria-label="Refresh overview"><RefreshCw className={`w-4 h-4 ${loading?'animate-spin':''}`}/></button></div>
+  <div className="flex flex-wrap gap-2 mb-6"><Link to="/data" className="btn-primary"><Database className="w-3.5 h-3.5"/>Explore data</Link><Link to="/schema" className="btn-secondary"><GitBranch className="w-3.5 h-3.5"/>Schema</Link><Link to="/auth" className="btn-secondary"><Users className="w-3.5 h-3.5"/>Users</Link><Link to="/storage" className="btn-secondary"><HardDrive className="w-3.5 h-3.5"/>Storage</Link></div>
+  {errors.length>0&&<div role="alert" className="flex gap-2 text-xs text-red-700 bg-red-50 border border-red-100 p-3 rounded-lg mb-5"><AlertCircle className="w-4 h-4 shrink-0"/><span>{errors.join(' ')} <button className="underline" onClick={()=>void load()}>Retry</button></span></div>}
+  <div className="grid lg:grid-cols-2 gap-5">
+   <section className="overview-card"><div className="flex justify-between"><h2 className="overview-label">Database records</h2><Database className="w-4 h-4 text-ink-muted"/></div><p className="overview-number mt-2">{loading?'—':errors.some(e=>e.startsWith('Entity'))?'Unavailable':total.toLocaleString()}</p><p className="text-xs text-ink-muted">Across {entities.length} entity types</p><div className="mt-8 space-y-4">{entities.slice(0,4).map(e=><div key={e.name}><div className="flex justify-between text-xs mb-2"><span>{e.name}</span><span className="text-ink-muted">{e.count.toLocaleString()}</span></div><div className="overview-bar"><span style={{width:`${e.count/max*100}%`}}/></div></div>)}{!loading&&entities.length===0&&<p className="text-xs text-ink-muted py-4">No entity types to display. Create a record in the data explorer to get started.</p>}</div></section>
+   <section className="overview-card"><div className="flex justify-between"><h2 className="overview-label">System</h2><Link to="/settings" aria-label="View system details"><ArrowUpRight className="w-4 h-4 text-ink-muted"/></Link></div><div className="mt-5 flex items-center gap-2 text-sm"><span className={`w-2 h-2 rounded-full ${health?.database==='connected'?'bg-emerald-500':'bg-slate-300'}`}/>{health?`PostgreSQL · ${health.database}`:loading?'Connecting…':'Health unavailable'}</div><dl className="mt-6 space-y-4 text-xs"><div className="flex justify-between"><dt className="text-ink-muted">Server version</dt><dd>{health?.version??'—'}</dd></div><div className="flex justify-between"><dt className="text-ink-muted">Stored triples</dt><dd>{health?.triples.toLocaleString()??'—'}</dd></div><div className="flex justify-between"><dt className="text-ink-muted">Active connections</dt><dd>{health?.websockets.active_connections??'—'}</dd></div><div className="flex justify-between"><dt className="text-ink-muted">Uptime</dt><dd>{health?`${Math.floor(health.uptime_secs/60)} minutes`:'—'}</dd></div></dl><Link to="/settings" className="text-xs text-brand-600 mt-7 inline-flex items-center gap-1">View system details <ArrowUpRight className="w-3 h-3"/></Link></section>
+  </div>
+  <section className="mt-8"><div className="flex items-center gap-3 mb-4"><h2 className="text-sm">Active sessions</h2><Link to="/auth" className="text-xs text-brand-600">View all ↗</Link><span className="ml-auto text-[11px] text-ink-muted">{updated?`Checked ${updated.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}`:'Loading'}</span></div><div className="overflow-auto border border-line rounded-lg"><table className="w-full text-left"><thead className="bg-surface-subtle"><tr>{['User','Device','Last active','Status'].map(t=><th className="table-header" key={t}>{t}</th>)}</tr></thead><tbody>{sessions.slice(0,6).map(s=><tr key={String(s.session_id)}><td className="table-cell font-mono text-xs">{String(s.user_id).slice(0,8)}</td><td className="table-cell max-w-64 truncate">{String(s.user_agent||'Unknown device')}</td><td className="table-cell whitespace-nowrap">{new Date(String(s.last_active_at||s.created_at)).toLocaleString()}</td><td className="table-cell"><span className="inline-flex gap-1.5 items-center text-emerald-700 text-xs"><Activity className="w-3 h-3"/>Active</span></td></tr>)}{sessions.length===0&&<tr><td colSpan={4} className="p-10 text-center text-sm text-ink-muted">{loading?'Loading active sessions…':errors.some(e=>e.startsWith('Active'))?'Session data unavailable':'No active sessions'}</td></tr>}</tbody></table></div></section>
+ </div>;
+}

@@ -6,20 +6,10 @@ const config: Config = {
   theme: {
     extend: {
       colors: {
-        amber: {
-          DEFAULT: "#F59E0B",
-          50: "#FFFBEB",
-          100: "#FEF3C7",
-          200: "#FDE68A",
-          300: "#FCD34D",
-          400: "#FBBF24",
-          500: "#F59E0B",
-          600: "#D97706",
-          700: "#B45309",
-          800: "#92400E",
-          900: "#78350F",
-          950: "#451A03",
-        },
+        surface: { DEFAULT: "#FFFFFF", subtle: "#FAFBFC", muted: "#F3F4F6", hover: "#EDEEF3" },
+        ink: { DEFAULT: "#292A30", secondary: "#62646F", muted: "#797C87" },
+        line: { DEFAULT: "#EAEBEF", strong: "#DADCE3" },
+        brand: { DEFAULT: "#6258E8", 50:"#F5F4FF",100:"#EFEDFF",200:"#DFDBFF",300:"#BBB4FA",400:"#766BED",500:"#6258E8",600:"#5348D1",700:"#463CB1",800:"#3C348F",900:"#342D74",950:"#252052" },
       },
       fontFamily: {
         sans: [

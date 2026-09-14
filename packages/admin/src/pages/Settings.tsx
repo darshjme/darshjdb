@@ -87,13 +87,13 @@ export function Settings() {
 
   return (
     <div className="p-6 max-w-4xl">
-      <h2 className="text-lg font-semibold text-zinc-100 mb-1">Settings</h2>
-      <p className="text-sm text-zinc-500 mb-6">
+      <h2 className="text-lg font-semibold text-ink mb-1">Settings</h2>
+      <p className="text-sm text-ink-muted mb-6">
         Manage your DarshJDB deployment configuration
       </p>
 
       {/* Tabs */}
-      <div className="flex items-center gap-1 mb-6 bg-zinc-900 rounded-lg p-0.5 border border-zinc-800 w-fit">
+      <div className="flex items-center gap-1 mb-6 bg-surface-subtle rounded-lg p-0.5 border border-line w-fit">
         {tabs.map((tab) => (
           <button
             key={tab.id}
@@ -101,8 +101,8 @@ export function Settings() {
             className={cn(
               "flex items-center gap-2 px-3 py-1.5 rounded-md text-xs font-medium transition-colors",
               activeTab === tab.id
-                ? "bg-zinc-800 text-zinc-100"
-                : "text-zinc-500 hover:text-zinc-300",
+                ? "bg-surface-muted text-ink"
+                : "text-ink-muted hover:text-ink-secondary",
             )}
           >
             <tab.icon className="w-3.5 h-3.5" />
@@ -115,7 +115,7 @@ export function Settings() {
       {activeTab === "system" && (
         <div className="space-y-6">
           <div className="flex items-center justify-between">
-            <p className="text-sm text-zinc-400">
+            <p className="text-sm text-ink-secondary">
               Live system status from server health, cache, and audit endpoints.
             </p>
             <button
@@ -128,14 +128,14 @@ export function Settings() {
           </div>
 
           {systemError && (
-            <div className="glass-panel p-3 border-amber-500/30 flex items-center gap-2 text-xs text-amber-400">
+            <div className="glass-panel p-3 border-brand-500/30 flex items-center gap-2 text-xs text-brand-400">
               <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" />
               <span>{systemError}</span>
             </div>
           )}
 
           {systemLoading && !healthData && (
-            <div className="glass-panel p-8 flex items-center justify-center gap-2 text-sm text-zinc-500">
+            <div className="glass-panel p-8 flex items-center justify-center gap-2 text-sm text-ink-muted">
               <Loader2 className="w-4 h-4 animate-spin" />
               Loading system status...
             </div>
@@ -144,9 +144,9 @@ export function Settings() {
           {/* Health / Pool Stats */}
           {healthData && (
             <div className="glass-panel p-0 overflow-hidden">
-              <div className="px-4 py-3 border-b border-zinc-800/60 flex items-center gap-2">
-                <Activity className="w-4 h-4 text-emerald-400" />
-                <h3 className="text-sm font-semibold text-zinc-100">Server Health</h3>
+              <div className="px-4 py-3 border-b border-line/60 flex items-center gap-2">
+                <Activity className="w-4 h-4 text-emerald-700" />
+                <h3 className="text-sm font-semibold text-ink">Server Health</h3>
                 <Badge
                   variant={healthData.status === "ok" ? "emerald" : "red"}
                   className="text-[9px] ml-auto"
@@ -154,7 +154,7 @@ export function Settings() {
                   {healthData.status}
                 </Badge>
               </div>
-              <div className="grid grid-cols-2 gap-px bg-zinc-800/40">
+              <div className="grid grid-cols-2 gap-px bg-surface-muted/40">
                 {[
                   { label: "Version", value: healthData.version },
                   { label: "Uptime", value: formatUptime(healthData.uptime_secs) },
@@ -163,11 +163,11 @@ export function Settings() {
                   { label: "WebSocket Connections", value: String(healthData.websockets.active_connections) },
                   { label: "Service", value: healthData.service },
                 ].map((item) => (
-                  <div key={item.label} className="bg-zinc-950 px-4 py-3">
-                    <p className="text-[10px] font-semibold uppercase tracking-wider text-zinc-600">
+                  <div key={item.label} className="bg-surface px-4 py-3">
+                    <p className="text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
                       {item.label}
                     </p>
-                    <p className="text-sm text-zinc-200 mt-0.5 font-mono">{item.value}</p>
+                    <p className="text-sm text-ink mt-0.5 font-mono">{item.value}</p>
                   </div>
                 ))}
               </div>
@@ -177,23 +177,23 @@ export function Settings() {
           {/* Connection Pool */}
           {healthData && (
             <div className="glass-panel p-0 overflow-hidden">
-              <div className="px-4 py-3 border-b border-zinc-800/60 flex items-center gap-2">
-                <Database className="w-4 h-4 text-sky-400" />
-                <h3 className="text-sm font-semibold text-zinc-100">Connection Pool</h3>
+              <div className="px-4 py-3 border-b border-line/60 flex items-center gap-2">
+                <Database className="w-4 h-4 text-sky-700" />
+                <h3 className="text-sm font-semibold text-ink">Connection Pool</h3>
               </div>
               <div className="px-4 py-4">
                 <div className="grid grid-cols-4 gap-4 mb-4">
                   {[
-                    { label: "Size", value: healthData.pool.size, color: "text-zinc-200" },
-                    { label: "Active", value: healthData.pool.active, color: "text-amber-400" },
-                    { label: "Idle", value: healthData.pool.idle, color: "text-emerald-400" },
-                    { label: "Max", value: healthData.pool.max, color: "text-zinc-500" },
+                    { label: "Size", value: healthData.pool.size, color: "text-ink" },
+                    { label: "Active", value: healthData.pool.active, color: "text-brand-400" },
+                    { label: "Idle", value: healthData.pool.idle, color: "text-emerald-700" },
+                    { label: "Max", value: healthData.pool.max, color: "text-ink-muted" },
                   ].map((item) => (
                     <div key={item.label} className="text-center">
                       <p className={cn("text-2xl font-bold font-mono", item.color)}>
                         {item.value}
                       </p>
-                      <p className="text-[10px] text-zinc-600 uppercase tracking-wider mt-1">
+                      <p className="text-[10px] text-ink-muted uppercase tracking-wider mt-1">
                         {item.label}
                       </p>
                     </div>
@@ -201,21 +201,21 @@ export function Settings() {
                 </div>
                 {/* Pool utilization bar */}
                 <div className="space-y-1">
-                  <div className="flex items-center justify-between text-[10px] text-zinc-500">
+                  <div className="flex items-center justify-between text-[10px] text-ink-muted">
                     <span>Pool utilization</span>
                     <span>
                       {healthData.pool.active} / {healthData.pool.max} (
                       {Math.round((healthData.pool.active / healthData.pool.max) * 100)}%)
                     </span>
                   </div>
-                  <div className="w-full h-2 bg-zinc-800 rounded-full overflow-hidden">
+                  <div className="w-full h-2 bg-surface-muted rounded-full overflow-hidden">
                     <div
                       className={cn(
                         "h-full rounded-full transition-all",
                         healthData.pool.active / healthData.pool.max > 0.8
                           ? "bg-red-500"
                           : healthData.pool.active / healthData.pool.max > 0.5
-                            ? "bg-amber-500"
+                            ? "bg-brand-500"
                             : "bg-emerald-500",
                       )}
                       style={{
@@ -227,15 +227,15 @@ export function Settings() {
 
                 {/* Extended pool stats if available */}
                 {healthData.pool_stats && Object.keys(healthData.pool_stats).length > 0 && (
-                  <div className="mt-4 pt-4 border-t border-zinc-800/60">
-                    <p className="text-[10px] font-semibold uppercase tracking-wider text-zinc-600 mb-2">
+                  <div className="mt-4 pt-4 border-t border-line/60">
+                    <p className="text-[10px] font-semibold uppercase tracking-wider text-ink-muted mb-2">
                       Pool Metrics
                     </p>
                     <div className="grid grid-cols-2 gap-2">
                       {Object.entries(healthData.pool_stats).map(([key, value]) => (
                         <div key={key} className="flex items-center justify-between text-xs">
-                          <span className="text-zinc-500 font-mono">{key}</span>
-                          <span className="text-zinc-300 font-mono">
+                          <span className="text-ink-muted font-mono">{key}</span>
+                          <span className="text-ink-secondary font-mono">
                             {typeof value === "number"
                               ? Number.isInteger(value)
                                 ? value.toLocaleString()
@@ -254,9 +254,9 @@ export function Settings() {
           {/* Cache Stats */}
           {cacheStats && (
             <div className="glass-panel p-0 overflow-hidden">
-              <div className="px-4 py-3 border-b border-zinc-800/60 flex items-center gap-2">
-                <RefreshCw className="w-4 h-4 text-amber-400" />
-                <h3 className="text-sm font-semibold text-zinc-100">Query Cache</h3>
+              <div className="px-4 py-3 border-b border-line/60 flex items-center gap-2">
+                <RefreshCw className="w-4 h-4 text-brand-400" />
+                <h3 className="text-sm font-semibold text-ink">Query Cache</h3>
               </div>
               <div className="px-4 py-4">
                 {typeof cacheStats.cache === "object" &&
@@ -265,8 +265,8 @@ export function Settings() {
                   <div className="grid grid-cols-2 gap-3">
                     {Object.entries(cacheStats.cache).map(([key, value]) => (
                       <div key={key} className="flex items-center justify-between text-xs">
-                        <span className="text-zinc-500 font-mono">{key}</span>
-                        <span className="text-zinc-200 font-mono">
+                        <span className="text-ink-muted font-mono">{key}</span>
+                        <span className="text-ink font-mono">
                           {typeof value === "number"
                             ? Number.isInteger(value)
                               ? value.toLocaleString()
@@ -277,7 +277,7 @@ export function Settings() {
                     ))}
                   </div>
                 ) : (
-                  <p className="text-xs text-zinc-500 italic">
+                  <p className="text-xs text-ink-muted italic">
                     Cache is empty or no stats available yet.
                   </p>
                 )}
@@ -288,9 +288,9 @@ export function Settings() {
           {/* Audit Chain */}
           {auditChain && (
             <div className="glass-panel p-0 overflow-hidden">
-              <div className="px-4 py-3 border-b border-zinc-800/60 flex items-center gap-2">
-                <ShieldCheck className="w-4 h-4 text-emerald-400" />
-                <h3 className="text-sm font-semibold text-zinc-100">Audit Chain</h3>
+              <div className="px-4 py-3 border-b border-line/60 flex items-center gap-2">
+                <ShieldCheck className="w-4 h-4 text-emerald-700" />
+                <h3 className="text-sm font-semibold text-ink">Audit Chain</h3>
                 <Badge
                   variant={auditChain.valid ? "emerald" : "red"}
                   className="text-[9px] ml-auto"
@@ -301,34 +301,34 @@ export function Settings() {
               <div className="px-4 py-4 space-y-3">
                 <div className="grid grid-cols-2 gap-4">
                   <div>
-                    <p className="text-[10px] font-semibold uppercase tracking-wider text-zinc-600">
+                    <p className="text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
                       Chain Status
                     </p>
                     <p className={cn(
                       "text-sm font-semibold mt-0.5",
-                      auditChain.valid ? "text-emerald-400" : "text-red-400",
+                      auditChain.valid ? "text-emerald-700" : "text-red-700",
                     )}>
                       {auditChain.valid ? "All hashes valid" : "Chain integrity broken"}
                     </p>
                   </div>
                   <div>
-                    <p className="text-[10px] font-semibold uppercase tracking-wider text-zinc-600">
+                    <p className="text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
                       Total Transactions
                     </p>
-                    <p className="text-sm text-zinc-200 font-mono mt-0.5">
+                    <p className="text-sm text-ink font-mono mt-0.5">
                       {auditChain.total_transactions.toLocaleString()}
                     </p>
                   </div>
                 </div>
                 {auditChain.first_broken_tx !== null && (
                   <div className="glass-panel p-3 border-red-500/20">
-                    <p className="text-xs text-red-400">
+                    <p className="text-xs text-red-700">
                       First broken transaction: #{auditChain.first_broken_tx}
                     </p>
                   </div>
                 )}
                 {auditChain.detail && (
-                  <p className="text-xs text-zinc-500">{auditChain.detail}</p>
+                  <p className="text-xs text-ink-muted">{auditChain.detail}</p>
                 )}
               </div>
             </div>
@@ -336,7 +336,7 @@ export function Settings() {
 
           {/* Show placeholder when nothing loaded yet and no error */}
           {!systemLoading && !healthData && !cacheStats && !auditChain && !systemError && (
-            <div className="glass-panel p-8 text-center text-sm text-zinc-500">
+            <div className="glass-panel p-8 text-center text-sm text-ink-muted">
               No system data available. Is the server running?
             </div>
           )}
@@ -344,8 +344,8 @@ export function Settings() {
       )}
 
       {activeTab === "operations" && <div className="space-y-5">
-        <section className="glass-panel p-6"><h3 className="font-medium text-zinc-100 mb-2">Backups and restore</h3><p className="text-sm text-zinc-400">Use PostgreSQL backup tooling on the server and back up the storage volume separately. This console does not create or restore backups. No backup history is reported by the server.</p></section>
-        <section className="glass-panel p-6"><h3 className="font-medium text-zinc-100 mb-2">Server configuration</h3><p className="text-sm text-zinc-400">Manage environment variables and rate limits in your deployment configuration. Webhook management is available through the authenticated /api/webhooks API; this console does not yet provide a webhook editor.</p></section>
+        <section className="glass-panel p-6"><h3 className="font-medium text-ink mb-2">Backups and restore</h3><p className="text-sm text-ink-secondary">Use PostgreSQL backup tooling on the server and back up the storage volume separately. This console does not create or restore backups. No backup history is reported by the server.</p></section>
+        <section className="glass-panel p-6"><h3 className="font-medium text-ink mb-2">Server configuration</h3><p className="text-sm text-ink-secondary">Manage environment variables and rate limits in your deployment configuration. Webhook management is available through the authenticated /api/webhooks API; this console does not yet provide a webhook editor.</p></section>
       </div>}
     </div>
   );

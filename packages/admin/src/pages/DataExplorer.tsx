@@ -115,7 +115,7 @@ export function DataExplorer() {
         width: f.name === "_id" ? "140px" : undefined,
         render: f.name === "_id"
           ? (val: unknown) => (
-              <span className="font-mono text-xs text-amber-500/80">{String(val)}</span>
+              <span className="font-mono text-xs text-brand-500/80">{String(val)}</span>
             )
           : undefined,
       }))
@@ -158,15 +158,15 @@ export function DataExplorer() {
   return (
     <div className="flex h-full">
       {editor && <div role="dialog" aria-modal="true" aria-label={editor.id ? "Edit record" : "Add record"} className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4"><section className="glass-panel p-6 w-full max-w-xl space-y-4">
-        <h2 className="text-lg text-zinc-100">{editor.id ? "Edit record" : "Add record"}</h2>
-        <label className="block text-sm text-zinc-300">Entity type<input className="input-field mt-2" value={entityName} disabled={Boolean(editor.id)} onChange={e => setEntityName(e.target.value)} /></label>
-        <label className="block text-sm text-zinc-300">Record JSON<textarea className="input-field mt-2 font-mono h-56" value={draft} onChange={e => setDraft(e.target.value)} /></label>
-        {editError && <p role="alert" className="text-red-300 text-sm">{editError}</p>}
-        <div className="flex gap-3"><button className="btn-primary" disabled={saving || !entityName} onClick={() => { void save(); }}>{saving ? "Saving…" : "Save record"}</button><button className="btn-secondary" onClick={() => setEditor(null)}>Cancel</button>{editor.id && <button className="btn-ghost text-red-400" onClick={() => { void remove(); }}>Delete record</button>}</div>
+        <h2 className="text-lg text-ink">{editor.id ? "Edit record" : "Add record"}</h2>
+        <label className="block text-sm text-ink-secondary">Entity type<input className="input-field mt-2" value={entityName} disabled={Boolean(editor.id)} onChange={e => setEntityName(e.target.value)} /></label>
+        <label className="block text-sm text-ink-secondary">Record JSON<textarea className="input-field mt-2 font-mono h-56" value={draft} onChange={e => setDraft(e.target.value)} /></label>
+        {editError && <p role="alert" className="text-red-700 text-sm">{editError}</p>}
+        <div className="flex gap-3"><button className="btn-primary" disabled={saving || !entityName} onClick={() => { void save(); }}>{saving ? "Saving…" : "Save record"}</button><button className="btn-secondary" onClick={() => setEditor(null)}>Cancel</button>{editor.id && <button className="btn-ghost text-red-700" onClick={() => { void remove(); }}>Delete record</button>}</div>
       </section></div>}
       {/* Entity list panel */}
-      <div className="w-32 sm:w-56 flex-shrink-0 border-r border-zinc-800 bg-zinc-950/50">
-        <div className="p-3 border-b border-zinc-800">
+      <div className="w-32 sm:w-56 flex-shrink-0 border-r border-line bg-surface/50">
+        <div className="p-3 border-b border-line">
           <button className="btn-ghost text-xs mb-2" onClick={() => edit()}>New record</button>
           <input
             placeholder="Filter entities..."
@@ -178,7 +178,7 @@ export function DataExplorer() {
         </div>
         <div className="overflow-y-auto py-1">
           {loading && entityTypes.length === 0 && (
-            <div className="flex items-center justify-center gap-2 py-8 text-xs text-zinc-500">
+            <div className="flex items-center justify-center gap-2 py-8 text-xs text-ink-muted">
               <Loader2 className="w-3.5 h-3.5 animate-spin" />
               Loading...
             </div>
@@ -190,8 +190,8 @@ export function DataExplorer() {
               className={cn(
                 "flex items-center justify-between w-full px-3 py-2 text-sm transition-colors",
                 selectedEntity?.name === entity.name
-                  ? "bg-amber-500/10 text-amber-500"
-                  : "text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/40",
+                  ? "bg-brand-500/10 text-brand-500"
+                  : "text-ink-secondary hover:text-ink hover:bg-surface-muted/40",
               )}
             >
               <div className="flex items-center gap-2">
@@ -210,7 +210,7 @@ export function DataExplorer() {
       <div className="flex-1 flex flex-col min-w-0">
         {/* Error banner */}
         {error && (
-          <div className="flex items-center gap-2 px-4 py-3 bg-red-500/10 border-b border-red-500/20 text-red-400 text-xs">
+          <div className="flex items-center gap-2 px-4 py-3 bg-red-500/10 border-b border-red-500/20 text-red-700 text-xs">
             <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0" />
             <span>{error}</span>
           </div>
@@ -218,14 +218,14 @@ export function DataExplorer() {
 
         {/* Toolbar */}
         {selectedEntity && (
-        <div className="flex flex-wrap gap-2 items-center justify-between px-4 py-2.5 border-b border-zinc-800">
+        <div className="flex flex-wrap gap-2 items-center justify-between px-4 py-2.5 border-b border-line">
           <div className="flex items-center gap-3">
-            <h2 className="text-sm font-semibold text-zinc-100">
+            <h2 className="text-sm font-semibold text-ink">
               {selectedEntity.name}
             </h2>
             <Badge variant="zinc">{formatNumber(selectedEntity.count)} rows</Badge>
             {loading && (
-              <RefreshCw className="w-3.5 h-3.5 text-zinc-500 animate-spin" />
+              <RefreshCw className="w-3.5 h-3.5 text-ink-muted animate-spin" />
             )}
           </div>
           <div className="flex items-center gap-2">
@@ -233,7 +233,7 @@ export function DataExplorer() {
               onClick={() => setLiveMode(!liveMode)}
               className={cn(
                 "btn-ghost text-xs gap-1.5",
-                liveMode && "text-emerald-400",
+                liveMode && "text-emerald-700",
               )}
             >
               <Radio className={cn("w-3.5 h-3.5", liveMode && "animate-pulse-slow")} />
@@ -243,13 +243,13 @@ export function DataExplorer() {
               onClick={() => setShowQuery(!showQuery)}
               className={cn(
                 "btn-ghost text-xs gap-1.5",
-                showQuery && "text-amber-500",
+                showQuery && "text-brand-500",
               )}
             >
               <Code className="w-3.5 h-3.5" />
               Query
             </button>
-            <div className="w-px h-5 bg-zinc-800" />
+            <div className="w-px h-5 bg-surface-muted" />
             <button
               className="btn-ghost text-xs"
               aria-label="Refresh data"
@@ -270,15 +270,15 @@ export function DataExplorer() {
 
         {/* Query panel */}
         {showQuery && (
-          <div className="border-b border-zinc-800 bg-zinc-950/80">
+          <div className="border-b border-line bg-surface/80">
             <div className="p-3">
               <div
-                className="bg-zinc-900 border border-zinc-800 rounded-lg overflow-hidden"
+                className="bg-surface-subtle border border-line rounded-lg overflow-hidden"
               >
                 <textarea
                   value={queryText}
                   onChange={(e) => setQueryText(e.target.value)}
-                  className="w-full bg-transparent px-4 py-3 font-mono text-sm text-zinc-200 placeholder-zinc-600 resize-none focus:outline-none"
+                  className="w-full bg-transparent px-4 py-3 font-mono text-sm text-ink placeholder-zinc-600 resize-none focus:outline-none"
                   rows={3}
                   spellCheck={false}
                   placeholder='{"type": "notes", "$limit": 100}'
@@ -292,7 +292,7 @@ export function DataExplorer() {
                 />
               </div>
               <div className="flex items-center justify-between mt-2">
-                <span className="text-[10px] text-zinc-600">
+                <span className="text-[10px] text-ink-muted">
                   DarshJQL -- use Cmd+Enter to execute
                 </span>
                 <button className="btn-primary text-xs py-1.5" onClick={runQuery}>
@@ -307,7 +307,7 @@ export function DataExplorer() {
         {/* Data table */}
         <div className="flex-1 overflow-auto">
           {loading && !selectedEntity ? (
-            <div className="flex items-center justify-center gap-2 py-16 text-sm text-zinc-500">
+            <div className="flex items-center justify-center gap-2 py-16 text-sm text-ink-muted">
               <Loader2 className="w-4 h-4 animate-spin" />
               Loading...
             </div>
@@ -319,7 +319,7 @@ export function DataExplorer() {
               pageSize={10}
             />
           ) : !error ? (
-            <div className="flex items-center justify-center py-16 text-sm text-zinc-500">
+            <div className="flex items-center justify-center py-16 text-sm text-ink-muted">
               No entity types found.
             </div>
           ) : null}

@@ -121,13 +121,13 @@ export function Storage() {
   return (
     <div className="p-6">
       <input ref={picker} type="file" multiple hidden onChange={e => { void upload(e.target.files); }} aria-label="Choose files to upload" />
-      {uploading && <p role="status" className="text-amber-400 mb-3">Uploading files…</p>}
-      {selectedFile && <div className="glass-panel p-4 mb-4 text-sm text-zinc-300"><strong>{selectedFile.name}</strong><p>{selectedFile.mimeType} · {formatBytes(selectedFile.size)}</p><button className="btn-ghost" onClick={() => setSelectedFile(null)}>Close details</button></div>}
+      {uploading && <p role="status" className="text-brand-400 mb-3">Uploading files…</p>}
+      {selectedFile && <div className="glass-panel p-4 mb-4 text-sm text-ink-secondary"><strong>{selectedFile.name}</strong><p>{selectedFile.mimeType} · {formatBytes(selectedFile.size)}</p><button className="btn-ghost" onClick={() => setSelectedFile(null)}>Close details</button></div>}
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
         <div>
-          <h2 className="text-lg font-semibold text-zinc-100">Storage</h2>
-          <p className="text-sm text-zinc-500 mt-0.5 flex items-center gap-2">
+          <h2 className="text-lg font-semibold text-ink">Storage</h2>
+          <p className="text-sm text-ink-muted mt-0.5 flex items-center gap-2">
             {loading ? (
               <span className="flex items-center gap-1.5">
                 <Loader2 className="w-3 h-3 animate-spin" />
@@ -154,14 +154,14 @@ export function Storage() {
       </div>
 
       {error && (
-        <div className="flex items-center gap-2 px-4 py-3 mb-6 rounded-lg bg-red-500/10 border border-red-500/20 text-red-400 text-xs">
+        <div className="flex items-center gap-2 px-4 py-3 mb-6 rounded-lg bg-red-500/10 border border-red-500/20 text-red-700 text-xs">
           <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0" />
           <span>{error}</span>
         </div>
       )}
 
       {loading && (
-        <div className="flex items-center justify-center gap-2 py-16 text-sm text-zinc-500">
+        <div className="flex items-center justify-center gap-2 py-16 text-sm text-ink-muted">
           <Loader2 className="w-4 h-4 animate-spin" />
           Loading storage...
         </div>
@@ -177,27 +177,27 @@ export function Storage() {
             className={cn(
               "border-2 border-dashed rounded-xl p-8 mb-6 text-center transition-all",
               dragOver
-                ? "border-amber-500 bg-amber-500/5"
-                : "border-zinc-800 hover:border-zinc-700",
+                ? "border-brand-500 bg-brand-500/5"
+                : "border-line hover:border-line-strong",
             )}
           >
             <Upload className={cn(
               "w-8 h-8 mx-auto mb-3",
-              dragOver ? "text-amber-500" : "text-zinc-600",
+              dragOver ? "text-brand-500" : "text-ink-muted",
             )} />
-            <p className="text-sm text-zinc-400">
+            <p className="text-sm text-ink-secondary">
               Drag and drop files here, or{" "}
-              <button className="text-amber-500 hover:text-amber-400 font-medium">
+              <button className="text-brand-500 hover:text-brand-400 font-medium">
                 browse
               </button>
             </p>
-            <p className="text-xs text-zinc-600 mt-1">Max 100MB per file</p>
+            <p className="text-xs text-ink-muted mt-1">Max 100MB per file</p>
           </div>
 
           {/* Toolbar */}
           <div className="flex items-center gap-3 mb-4">
             <div className="relative flex-1 max-w-sm">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-zinc-500" />
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-ink-muted" />
               <input
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
@@ -205,21 +205,23 @@ export function Storage() {
                 className="input-field pl-9 text-xs"
               />
             </div>
-            <div className="flex items-center gap-1 bg-zinc-900 rounded-lg p-0.5 border border-zinc-800">
+            <div className="flex items-center gap-1 bg-surface-subtle rounded-lg p-0.5 border border-line">
               <button
+                aria-label="Grid view"
                 onClick={() => setView("grid")}
                 className={cn(
                   "p-1.5 rounded-md transition-colors",
-                  view === "grid" ? "bg-zinc-800 text-zinc-100" : "text-zinc-500",
+                  view === "grid" ? "bg-surface-muted text-ink" : "text-ink-muted",
                 )}
               >
                 <Grid className="w-3.5 h-3.5" />
               </button>
               <button
+                aria-label="List view"
                 onClick={() => setView("list")}
                 className={cn(
                   "p-1.5 rounded-md transition-colors",
-                  view === "list" ? "bg-zinc-800 text-zinc-100" : "text-zinc-500",
+                  view === "list" ? "bg-surface-muted text-ink" : "text-ink-muted",
                 )}
               >
                 <List className="w-3.5 h-3.5" />
@@ -229,57 +231,56 @@ export function Storage() {
 
           {/* Empty state */}
           {files.length === 0 && (
-            <div className="flex items-center justify-center py-16 text-sm text-zinc-500">
+            <div className="flex items-center justify-center py-16 text-sm text-ink-muted">
               No files stored yet.
             </div>
           )}
 
           {/* File display */}
           {files.length > 0 && view === "grid" ? (
-            <div className="grid grid-cols-4 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
               {filtered.map((file) => {
                 const Icon = mimeIcons[file.mimeType] || File;
                 const isImage = file.mimeType.startsWith("image/");
                 return (
-                  <button
+                  <article
                     key={file.id}
-                    onClick={() => setSelectedFile(file)}
                     className={cn(
-                      "glass-panel p-0 text-left transition-all hover:border-zinc-700 group",
-                      selectedFile?.id === file.id && "border-amber-500/40",
+                      "glass-panel p-0 text-left transition-all hover:border-line-strong group",
+                      selectedFile?.id === file.id && "border-brand-500/40",
                     )}
                   >
                     <div className={cn(
                       "aspect-[4/3] flex items-center justify-center rounded-t-lg relative",
-                      isImage ? "bg-gradient-to-br from-zinc-800 to-zinc-900" : "bg-zinc-900/50",
+                      isImage ? "bg-gradient-to-br from-surface-muted to-surface-subtle" : "bg-surface-subtle/50",
                     )}>
                       <Icon className={cn(
                         "w-10 h-10",
-                        isImage ? "text-amber-500/40" : "text-zinc-700",
+                        isImage ? "text-brand-500/40" : "text-ink",
                       )} />
-                      <div className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity flex gap-1">
-                        <button className="p-1 rounded bg-zinc-900/90 text-zinc-400 hover:text-zinc-100" aria-label={`Details for ${file.name}`} onClick={e => { e.stopPropagation(); setSelectedFile(file); }}>
+                      <div className="absolute top-2 right-2 opacity-100 sm:opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity flex gap-1">
+                        <button className="p-1 rounded bg-surface-subtle/90 text-ink-secondary hover:text-ink" aria-label={`Details for ${file.name}`} onClick={e => { e.stopPropagation(); setSelectedFile(file); }}>
                           <Eye className="w-3 h-3" />
                         </button>
-                        <button className="p-1 rounded bg-zinc-900/90 text-zinc-400 hover:text-zinc-100" aria-label={`Download ${file.name}`} onClick={e => { e.stopPropagation(); void download(file); }}>
+                        <button className="p-1 rounded bg-surface-subtle/90 text-ink-secondary hover:text-ink" aria-label={`Download ${file.name}`} onClick={e => { e.stopPropagation(); void download(file); }}>
                           <Download className="w-3 h-3" />
                         </button>
                       </div>
                     </div>
                     <div className="p-3">
-                      <p className="text-xs font-medium text-zinc-200 truncate">
+                      <button onClick={() => setSelectedFile(file)} className="text-xs font-medium text-ink truncate text-left w-full">
                         {file.name}
-                      </p>
+                      </button>
                       <div className="flex items-center justify-between mt-1">
-                        <span className="text-[10px] text-zinc-500">
+                        <span className="text-[10px] text-ink-muted">
                           {formatBytes(file.size)}
                         </span>
-                        <span className="text-[10px] text-zinc-600">
+                        <span className="text-[10px] text-ink-muted">
                           {formatRelativeTime(file.uploadedAt)}
                         </span>
                       </div>
                     </div>
-                  </button>
+                  </article>
                 );
               })}
             </div>
@@ -287,7 +288,7 @@ export function Storage() {
             <div className="glass-panel p-0 overflow-hidden">
               <table className="w-full">
                 <thead>
-                  <tr className="bg-zinc-900/50">
+                  <tr className="bg-surface-subtle/50">
                     <th className="table-header text-left">Name</th>
                     <th className="table-header text-left">Type</th>
                     <th className="table-header text-left">Size</th>
@@ -302,13 +303,13 @@ export function Storage() {
                     return (
                       <tr
                         key={file.id}
-                        className="hover:bg-zinc-800/40 transition-colors cursor-pointer"
+                        className="hover:bg-surface-muted/40 transition-colors cursor-pointer"
                         onClick={() => setSelectedFile(file)}
                       >
                         <td className="table-cell">
                           <div className="flex items-center gap-2">
-                            <Icon className="w-4 h-4 text-zinc-500" />
-                            <span className="text-sm text-zinc-200">{file.name}</span>
+                            <Icon className="w-4 h-4 text-ink-muted" />
+                            <span className="text-sm text-ink">{file.name}</span>
                           </div>
                         </td>
                         <td className="table-cell">
@@ -317,8 +318,8 @@ export function Storage() {
                           </Badge>
                         </td>
                         <td className="table-cell text-xs">{formatBytes(file.size)}</td>
-                        <td className="table-cell text-xs text-zinc-400">{file.uploadedBy}</td>
-                        <td className="table-cell text-xs text-zinc-500">
+                        <td className="table-cell text-xs text-ink-secondary">{file.uploadedBy}</td>
+                        <td className="table-cell text-xs text-ink-muted">
                           {formatRelativeTime(file.uploadedAt)}
                         </td>
                         <td className="table-cell text-right">
@@ -326,7 +327,7 @@ export function Storage() {
                             <button className="btn-ghost p-1" aria-label={`Download ${file.name}`} onClick={e => { e.stopPropagation(); void download(file); }}>
                               <Download className="w-3.5 h-3.5" />
                             </button>
-                            <button className="btn-ghost p-1 text-red-400 hover:text-red-300" aria-label={`Delete ${file.name}`} onClick={e => { e.stopPropagation(); void remove(file); }}>
+                            <button className="btn-ghost p-1 text-red-700 hover:text-red-700" aria-label={`Delete ${file.name}`} onClick={e => { e.stopPropagation(); void remove(file); }}>
                               <Trash2 className="w-3.5 h-3.5" />
                             </button>
                           </div>

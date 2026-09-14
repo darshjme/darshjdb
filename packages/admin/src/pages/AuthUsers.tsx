@@ -158,8 +158,8 @@ export function AuthUsers() {
       <div className="flex-1 overflow-auto p-6">
         <div className="flex items-center justify-between mb-6">
           <div>
-            <h2 className="text-lg font-semibold text-zinc-100">Auth & Users</h2>
-            <p className="text-sm text-zinc-500 mt-0.5">
+            <h2 className="text-lg font-semibold text-ink">Auth & Users</h2>
+            <p className="text-sm text-ink-muted mt-0.5">
               {loading ? (
                 <span className="flex items-center gap-1.5">
                   <Loader2 className="w-3 h-3 animate-spin" />
@@ -189,7 +189,7 @@ export function AuthUsers() {
         </div>
 
         {error && (
-          <div className="glass-panel p-3 mb-4 border-red-500/30 flex items-center gap-2 text-xs text-red-400">
+          <div className="glass-panel p-3 mb-4 border-red-500/30 flex items-center gap-2 text-xs text-red-700">
             <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0" />
             <span>{error}</span>
           </div>
@@ -197,11 +197,11 @@ export function AuthUsers() {
 
         {/* Create user dialog */}
         {showCreate && (
-          <div className="glass-panel p-4 mb-4 border-amber-500/20">
-            <h3 className="text-sm font-semibold text-zinc-100 mb-3">Create New User</h3>
+          <div className="glass-panel p-4 mb-4 border-brand-500/20">
+            <h3 className="text-sm font-semibold text-ink mb-3">Create New User</h3>
             <div className="space-y-3">
               <div>
-                <label className="text-[10px] font-semibold uppercase tracking-wider text-zinc-600">
+                <label className="text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
                   Email *
                 </label>
                 <input
@@ -213,7 +213,7 @@ export function AuthUsers() {
                 />
               </div>
               <div>
-                <label className="text-[10px] font-semibold uppercase tracking-wider text-zinc-600">
+                <label className="text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
                   Name
                 </label>
                 <input
@@ -224,7 +224,7 @@ export function AuthUsers() {
                 />
               </div>
               <div>
-                <label className="text-[10px] font-semibold uppercase tracking-wider text-zinc-600">
+                <label className="text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
                   Password * (min 8 chars)
                 </label>
                 <input
@@ -236,7 +236,7 @@ export function AuthUsers() {
                 />
               </div>
               {createError && (
-                <p className="text-xs text-red-400 flex items-center gap-1.5">
+                <p className="text-xs text-red-700 flex items-center gap-1.5">
                   <AlertCircle className="w-3 h-3" />
                   {createError}
                 </p>
@@ -270,7 +270,7 @@ export function AuthUsers() {
 
         {/* Loading state */}
         {loading && (
-          <div className="flex items-center justify-center gap-2 py-16 text-sm text-zinc-500">
+          <div className="flex items-center justify-center gap-2 py-16 text-sm text-ink-muted">
             <Loader2 className="w-4 h-4 animate-spin" />
             Loading users...
           </div>
@@ -278,7 +278,7 @@ export function AuthUsers() {
 
         {/* Empty state */}
         {!loading && !error && users.length === 0 && (
-          <div className="flex items-center justify-center py-16 text-sm text-zinc-500">
+          <div className="flex items-center justify-center py-16 text-sm text-ink-muted">
             No users found.
           </div>
         )}
@@ -288,7 +288,7 @@ export function AuthUsers() {
             {/* Filters */}
             <div className="flex items-center gap-3 mb-4">
               <div className="relative flex-1 max-w-sm">
-                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-zinc-500" />
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-ink-muted" />
                 <input
                   value={search}
                   onChange={(e) => setSearch(e.target.value)}
@@ -296,7 +296,7 @@ export function AuthUsers() {
                   className="input-field pl-9 text-xs"
                 />
               </div>
-              <div className="flex items-center gap-1 bg-zinc-900 rounded-lg p-0.5 border border-zinc-800">
+              <div className="flex items-center gap-1 bg-surface-subtle rounded-lg p-0.5 border border-line">
                 {["all", "admin", "developer", "viewer"].map((r) => (
                   <button
                     key={r}
@@ -304,8 +304,8 @@ export function AuthUsers() {
                     className={cn(
                       "px-2.5 py-1 rounded-md text-xs font-medium transition-colors capitalize",
                       roleFilter === r
-                        ? "bg-zinc-800 text-zinc-100"
-                        : "text-zinc-500 hover:text-zinc-300",
+                        ? "bg-surface-muted text-ink"
+                        : "text-ink-muted hover:text-ink-secondary",
                     )}
                   >
                     {r}
@@ -323,20 +323,20 @@ export function AuthUsers() {
                     key={user.id}
                     onClick={() => setSelectedUser(user)}
                     className={cn(
-                      "w-full glass-panel p-4 text-left transition-all hover:border-zinc-700",
-                      selectedUser?.id === user.id && "border-amber-500/40",
+                      "w-full glass-panel p-4 text-left transition-all hover:border-line-strong",
+                      selectedUser?.id === user.id && "border-brand-500/40",
                     )}
                   >
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-3">
                         <div className="w-9 h-9 rounded-full bg-gradient-to-br from-zinc-700 to-zinc-800 flex items-center justify-center">
-                          <span className="text-sm font-semibold text-zinc-300">
+                          <span className="text-sm font-semibold text-ink-secondary">
                             {user.name.charAt(0)}
                           </span>
                         </div>
                         <div>
                           <div className="flex items-center gap-2">
-                            <span className="text-sm font-medium text-zinc-100">
+                            <span className="text-sm font-medium text-ink">
                               {user.name}
                             </span>
                             <Badge variant={role.variant} className="text-[10px]">
@@ -344,10 +344,10 @@ export function AuthUsers() {
                               {user.role}
                             </Badge>
                           </div>
-                          <span className="text-xs text-zinc-500">{user.email}</span>
+                          <span className="text-xs text-ink-muted">{user.email}</span>
                         </div>
                       </div>
-                      <div className="flex items-center gap-3 text-xs text-zinc-500">
+                      <div className="flex items-center gap-3 text-xs text-ink-muted">
                         <span className="flex items-center gap-1">
                           <Clock className="w-3 h-3" />
                           {formatRelativeTime(user.lastLogin)}
@@ -368,9 +368,9 @@ export function AuthUsers() {
 
       {/* User detail panel */}
       {selectedUser && (
-        <div className="w-80 flex-shrink-0 border-l border-zinc-800 bg-zinc-950/50 overflow-y-auto">
-          <div className="px-4 py-3 border-b border-zinc-800 flex items-center justify-between">
-            <h3 className="text-sm font-semibold text-zinc-100">User Details</h3>
+        <div className="w-80 flex-shrink-0 border-l border-line bg-surface/50 overflow-y-auto">
+          <div className="px-4 py-3 border-b border-line flex items-center justify-between">
+            <h3 className="text-sm font-semibold text-ink">User Details</h3>
             <button
               onClick={() => setSelectedUser(null)}
               className="btn-ghost p-1"
@@ -382,13 +382,13 @@ export function AuthUsers() {
           <div className="p-4 space-y-6">
             {/* Profile */}
             <div className="flex flex-col items-center text-center">
-              <div className="w-16 h-16 rounded-full bg-gradient-to-br from-amber-400 to-orange-500 flex items-center justify-center mb-3">
-                <span className="text-xl font-bold text-zinc-950">
+              <div className="w-16 h-16 rounded-full bg-gradient-to-br from-brand-400 to-orange-500 flex items-center justify-center mb-3">
+                <span className="text-xl font-bold text-white">
                   {selectedUser.name.charAt(0)}
                 </span>
               </div>
-              <h4 className="text-sm font-semibold text-zinc-100">{selectedUser.name}</h4>
-              <p className="text-xs text-zinc-500">{selectedUser.email}</p>
+              <h4 className="text-sm font-semibold text-ink">{selectedUser.name}</h4>
+              <p className="text-xs text-ink-muted">{selectedUser.email}</p>
               <Badge variant={roleBadge[selectedUser.role].variant} className="mt-2 text-[10px]">
                 {selectedUser.role}
               </Badge>
@@ -397,26 +397,26 @@ export function AuthUsers() {
             {/* Info */}
             <div className="space-y-3">
               <div>
-                <label className="text-[10px] font-semibold uppercase tracking-wider text-zinc-600">
+                <label className="text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
                   User ID
                 </label>
-                <p className="text-xs text-zinc-300 mt-0.5 font-mono break-all">
+                <p className="text-xs text-ink-secondary mt-0.5 font-mono break-all">
                   {selectedUser.id}
                 </p>
               </div>
               <div>
-                <label className="text-[10px] font-semibold uppercase tracking-wider text-zinc-600">
+                <label className="text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
                   Created
                 </label>
-                <p className="text-xs text-zinc-300 mt-0.5">
+                <p className="text-xs text-ink-secondary mt-0.5">
                   {formatTimestamp(selectedUser.createdAt)}
                 </p>
               </div>
               <div>
-                <label className="text-[10px] font-semibold uppercase tracking-wider text-zinc-600">
+                <label className="text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
                   Last Login
                 </label>
-                <p className="text-xs text-zinc-300 mt-0.5">
+                <p className="text-xs text-ink-secondary mt-0.5">
                   {formatRelativeTime(selectedUser.lastLogin)}
                 </p>
               </div>
@@ -424,11 +424,11 @@ export function AuthUsers() {
 
             {/* Sessions */}
             <div>
-              <h4 className="text-xs font-semibold text-zinc-400 mb-2">
+              <h4 className="text-xs font-semibold text-ink-secondary mb-2">
                 Active Sessions ({selectedUser.sessions.length})
               </h4>
               {selectedUser.sessions.length === 0 ? (
-                <p className="text-xs text-zinc-600 italic">No active sessions</p>
+                <p className="text-xs text-ink-muted italic">No active sessions</p>
               ) : (
                 <div className="space-y-2">
                   {selectedUser.sessions.map((session) => (
@@ -438,18 +438,18 @@ export function AuthUsers() {
                     >
                       <div className="flex items-center gap-2 mb-1">
                         {session.device.includes("iOS") || session.device.includes("Android") ? (
-                          <Smartphone className="w-3.5 h-3.5 text-zinc-500" />
+                          <Smartphone className="w-3.5 h-3.5 text-ink-muted" />
                         ) : (
-                          <Monitor className="w-3.5 h-3.5 text-zinc-500" />
+                          <Monitor className="w-3.5 h-3.5 text-ink-muted" />
                         )}
-                        <span className="text-xs text-zinc-200">{session.device}</span>
+                        <span className="text-xs text-ink">{session.device}</span>
                         {session.current && (
                           <Badge variant="emerald" className="text-[9px] ml-auto">
                             Current
                           </Badge>
                         )}
                       </div>
-                      <div className="flex items-center gap-3 text-[10px] text-zinc-500 ml-5.5">
+                      <div className="flex items-center gap-3 text-[10px] text-ink-muted ml-5.5">
                         <span className="flex items-center gap-1">
                           <MapPin className="w-2.5 h-2.5" />
                           {session.ip}
@@ -464,7 +464,7 @@ export function AuthUsers() {
 
             {/* Permissions */}
             <div>
-              <h4 className="text-xs font-semibold text-zinc-400 mb-2">Permissions</h4>
+              <h4 className="text-xs font-semibold text-ink-secondary mb-2">Permissions</h4>
               <div className="space-y-1.5">
                 {[
                   { label: "Read data", allowed: true },
@@ -474,8 +474,8 @@ export function AuthUsers() {
                   { label: "Access settings", allowed: selectedUser.role === "admin" },
                 ].map((perm) => (
                   <div key={perm.label} className="flex items-center justify-between text-xs">
-                    <span className="text-zinc-400">{perm.label}</span>
-                    <span className={perm.allowed ? "text-emerald-400" : "text-zinc-600"}>
+                    <span className="text-ink-secondary">{perm.label}</span>
+                    <span className={perm.allowed ? "text-emerald-700" : "text-ink-muted"}>
                       {perm.allowed ? "Allowed" : "Denied"}
                     </span>
                   </div>

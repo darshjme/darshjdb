@@ -9,13 +9,13 @@ interface BadgeProps {
 }
 
 const variants: Record<BadgeVariant, string> = {
-  default: "bg-zinc-800 text-zinc-300",
-  amber: "bg-amber-500/10 text-amber-500 border border-amber-500/20",
-  emerald: "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20",
-  red: "bg-red-500/10 text-red-400 border border-red-500/20",
-  sky: "bg-sky-500/10 text-sky-400 border border-sky-500/20",
-  purple: "bg-purple-500/10 text-purple-400 border border-purple-500/20",
-  zinc: "bg-zinc-800/60 text-zinc-400 border border-zinc-700/50",
+  default: "bg-surface-muted text-ink-secondary",
+  amber: "bg-brand-500/10 text-brand-500 border border-brand-500/20",
+  emerald: "bg-emerald-500/10 text-emerald-700 border border-emerald-500/20",
+  red: "bg-red-500/10 text-red-700 border border-red-500/20",
+  sky: "bg-sky-500/10 text-sky-700 border border-sky-500/20",
+  purple: "bg-purple-500/10 text-purple-700 border border-purple-500/20",
+  zinc: "bg-surface-muted/60 text-ink-secondary border border-line-strong/50",
 };
 
 export function Badge({ children, variant = "default", className }: BadgeProps) {
