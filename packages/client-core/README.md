@@ -113,3 +113,13 @@ npm run clean      # Remove dist/
 - [Presence](../../docs/presence.md)
 - [Storage](../../docs/storage.md)
 - [API Reference](../../docs/api-reference.md)
+
+### Credential changes and subscriptions
+
+Subscriptions are shared only within one client instance and identical query. Changing
+the token with `setAuthToken` (including sign-out or token refresh) closes the previous
+connection and retires its subscriptions and cached rows. Callbacks receive empty data
+and `result.error` explaining that resubscription is required. Call `connect()` and subscribe
+again after changing credentials. The auth module reconnects after automatic token refresh,
+but subscriptions still require resubscription after their retirement error. Explicit `disconnect()` also retires subscriptions;
+automatic network reconnects preserve and re-register them.

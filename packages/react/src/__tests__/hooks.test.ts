@@ -320,6 +320,21 @@ describe('useQuery', () => {
     expect(result.current.error!.message).toBe('Query failed');
   });
 
+  it('clears the previous principal data when a subscription is retired', () => {
+    let receive!: (snapshot: QuerySnapshot<unknown>) => void;
+    const client = createMockClient({ subscribe: vi.fn((_query, callback) => {
+      receive = callback;
+      return () => {};
+    }) });
+    const { result } = renderHook(() => useQuery({ collection: 'notes' }), { wrapper: makeWrapper(client) });
+    act(() => receive({ data: [{ id: 'private' }], error: null }));
+    expect(result.current.data).toEqual([{ id: 'private' }]);
+    const error = Object.assign(new Error('Credentials changed; reconnect and subscribe again'), { name: 'SubscriptionEndedError' });
+    act(() => receive({ data: [], error }));
+    expect(result.current.data).toEqual([]);
+    expect(result.current.error).toBe(error);
+  });
+
   it('resubscribes when query changes', () => {
     const unsub = vi.fn();
     let subscribeCount = 0;

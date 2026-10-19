@@ -351,14 +351,14 @@ describe('QueryBuilder', () => {
     expect(q1.hash()).not.toBe(q2.hash());
   });
 
-  it('NOTE: hashQuery uses top-level sorted keys replacer — nested object differences may collide', () => {
-    // This documents current behavior: the JSON.stringify replacer only
-    // includes top-level descriptor keys, so nested WhereClause values
-    // are serialized as empty objects. This is a known limitation.
+  it('distinguishes nested predicates and preserves object key-order equivalence', () => {
     const q1 = new QueryBuilder(db, 'users').where('age', '>', 18);
     const q2 = new QueryBuilder(db, 'users').where('age', '>', 21);
-    // These currently produce the SAME hash due to the replacer behavior.
-    expect(q1.hash()).toBe(q2.hash());
+    expect(q1.hash()).not.toBe(q2.hash());
+    expect(new QueryBuilder(db, 'users').where('profile', '=', { a: 1, b: 2 }).hash())
+      .toBe(new QueryBuilder(db, 'users').where('profile', '=', { b: 2, a: 1 }).hash());
+    expect(new QueryBuilder(db, 'users').orderBy('age', 'asc').hash())
+      .not.toBe(new QueryBuilder(db, 'users').orderBy('age', 'desc').hash());
   });
 
   it('supports all where operators', () => {
@@ -637,6 +637,26 @@ describe('AuthClient', () => {
     // Should have persisted to storage
     expect(storage.get('darshan_access_token')).toBe('access-123');
     expect(storage.get('darshan_refresh_token')).toBe('refresh-123');
+  });
+
+  it('reconnects after automatic token refresh while retiring old subscriptions explicitly', async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => serverTokenPair });
+    await auth.signIn({ email: 'a@b.com', password: 'pass' });
+    (db as unknown as { _privateSetState(state: ConnectionState): void })._privateSetState('connected');
+    const connect = vi.spyOn(db, 'connect').mockResolvedValue();
+    vi.spyOn(db, 'send').mockResolvedValue({ type: 'sub-ok', id: 'r', sub_id: 's', initial: [{ id: 'old' }] });
+    const callback = vi.fn();
+    const stop = subscribe(db, { collection: 'notes' }, callback);
+    await Promise.resolve();
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true, json: async () => ({ ...serverTokenPair, access_token: 'refreshed-token' }),
+    });
+    await (auth as unknown as { _privateRefreshTokens(): Promise<void> })._privateRefreshTokens();
+    expect(connect).toHaveBeenCalledOnce();
+    expect(db.getAuthToken()).toBe('refreshed-token');
+    expect(callback.mock.lastCall?.[0].error.message).toContain('Credentials changed');
+    expect(callback.mock.lastCall?.[0].data).toEqual([]);
+    stop();
   });
 
   it('signUp posts the server field names', async () => {

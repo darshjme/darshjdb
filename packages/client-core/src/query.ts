@@ -28,7 +28,14 @@ import type {
  * Uses a simple JSON serialisation since query descriptors are small.
  */
 function hashQuery(desc: QueryDescriptor): string {
-  return JSON.stringify(desc, Object.keys(desc).sort());
+  return JSON.stringify(desc, (_key, value: unknown) => {
+    if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
+      return Object.fromEntries(
+        Object.entries(value).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0),
+      );
+    }
+    return value;
+  });
 }
 
 /** Client operator -> DarshJQL operator. */
@@ -217,6 +224,7 @@ interface ActiveSubscription<T> {
   /** Server-assigned subscription id; null until `sub-ok` arrives. */
   subId: string | null;
   refCount: number;
+  generation: number;
   /** Latest result set, replayed to late joiners and used as the diff base. */
   rows: Record<string, unknown>[];
   /** Removes the reconnect hook when the subscription is torn down. */
@@ -224,7 +232,27 @@ interface ActiveSubscription<T> {
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- type-safe at call-sites
-const _privateActiveSubs = new Map<string, ActiveSubscription<any>>();
+const _privateActiveSubs = new WeakMap<DarshJDB, Map<string, ActiveSubscription<any>>>();
+
+/** Terminal subscription error after a deliberate session boundary. */
+export class SubscriptionEndedError extends Error {
+  override readonly name = 'SubscriptionEndedError';
+}
+
+/** Retire subscriptions when the owning client explicitly ends its session. */
+export function resetClientSubscriptions(client: DarshJDB, error: Error): void {
+  const subscriptions = _privateActiveSubs.get(client);
+  if (!subscriptions) return;
+  _privateActiveSubs.delete(client);
+  for (const active of subscriptions.values()) {
+    active.disposeReconnect?.();
+    if (active.subId) client.unregisterSubscriptionHandler(active.subId);
+    active.rows = [];
+    deliver(active, { data: [], txId: '', error });
+    active.callbacks.clear();
+  }
+  subscriptions.clear();
+}
 
 /* -------------------------------------------------------------------------- */
 /*  Public API                                                                */
@@ -275,7 +303,7 @@ export async function queryOnce<T = Record<string, unknown>>(
 /**
  * Subscribe to live query results.
  *
- * Queries are deduplicated by their hash: if two callers subscribe to an
+ * Queries are deduplicated within each client by their hash: if two callers subscribe to an
  * identical query, only one server subscription is created. Subscriptions are
  * automatically re-established after a WebSocket reconnect.
  *
@@ -295,8 +323,13 @@ export function subscribe<T = Record<string, unknown>>(
   }
 
   const hash = hashQuery(descriptor);
+  let subscriptions = _privateActiveSubs.get(client);
+  if (!subscriptions) {
+    subscriptions = new Map();
+    _privateActiveSubs.set(client, subscriptions);
+  }
 
-  let sub = _privateActiveSubs.get(hash) as ActiveSubscription<T> | undefined;
+  let sub = subscriptions.get(hash) as ActiveSubscription<T> | undefined;
 
   if (sub) {
     // Dedup: reuse existing server subscription.
@@ -311,11 +344,12 @@ export function subscribe<T = Record<string, unknown>>(
       callbacks: new Set([callback]),
       subId: null,
       refCount: 1,
+      generation: 0,
       rows: [],
       disposeReconnect: null,
     };
 
-    _privateActiveSubs.set(hash, sub);
+    subscriptions.set(hash, sub);
 
     const active = sub;
     void openSubscription(client, hash, active);
@@ -333,14 +367,14 @@ export function subscribe<T = Record<string, unknown>>(
     if (unsubscribed) return;
     unsubscribed = true;
 
-    const active = _privateActiveSubs.get(hash);
-    if (!active) return;
+    const active = subscriptions.get(hash);
+    if (!active || active !== sub) return;
 
     active.callbacks.delete(callback);
     active.refCount--;
 
     if (active.refCount <= 0) {
-      _privateActiveSubs.delete(hash);
+      subscriptions.delete(hash);
       active.disposeReconnect?.();
       const { subId } = active;
       if (subId) {
@@ -363,6 +397,7 @@ async function openSubscription<T>(
   hash: string,
   active: ActiveSubscription<T>,
 ): Promise<void> {
+  const generation = ++active.generation;
   try {
     const resp = await client.send({
       type: 'sub',
@@ -377,7 +412,7 @@ async function openSubscription<T>(
     }
 
     // The caller may have unsubscribed while the request was in flight.
-    if (_privateActiveSubs.get(hash) !== active) {
+    if (_privateActiveSubs.get(client)?.get(hash) !== active || generation !== active.generation) {
       client.send({ type: 'unsub', sub_id: resp.sub_id }).catch(() => {
         /* best effort */
       });

@@ -9,6 +9,7 @@
 
 import { encode, decode } from '@msgpack/msgpack';
 import { RestTransport } from './rest.js';
+import { resetClientSubscriptions, SubscriptionEndedError } from './query.js';
 import type {
   DarshanConfig,
   ConnectionState,
@@ -164,9 +165,13 @@ export class DarshJDB {
 
   /**
    * Set the access token used for authenticating the connection.
-   * Typically called by the auth module after sign-in.
+   * Typically called by the auth module after sign-in. Changing credentials
+   * ends the existing session and subscriptions. Reconnect and subscribe again
+   * after a sign-in, sign-out, or token refresh.
    */
   setAuthToken(token: string | null): void {
+    if (token === this._privateAuthToken) return;
+    this.disconnect(new SubscriptionEndedError('Credentials changed; reconnect and subscribe again'));
     this._privateAuthToken = token;
   }
 
@@ -198,7 +203,7 @@ export class DarshJDB {
   /**
    * Gracefully close the connection.
    */
-  disconnect(): void {
+  disconnect(reason = new SubscriptionEndedError('Client disconnected; reconnect and subscribe again')): void {
     this._privateIntentionalClose = true;
     this._privateClearTimers();
     if (this._privateSocket) {
@@ -206,8 +211,12 @@ export class DarshJDB {
       this._privateSocket = null;
     }
     if (this._privateRest) {
-      this._privateRest.closeAll();
+      this._privateRest.closeAll(reason);
     }
+    resetClientSubscriptions(this, reason);
+    this._privateSubscriptionHandlers.clear();
+    this._privatePresenceHandlers.clear();
+    this._privateReconnectListeners.clear();
     this._privateRejectAllPending(new Error('Client disconnected'));
     this._privateSetState('disconnected');
   }
@@ -342,10 +351,12 @@ export class DarshJDB {
       this._privateSocket = socket;
 
       socket.onopen = () => {
+        if (this._privateSocket !== socket) return;
         this._privateBackoff = INITIAL_BACKOFF_MS;
         this._privateSetState('authenticating');
         this._privateAuthenticate()
           .then(() => {
+            if (this._privateSocket !== socket) return;
             const isReconnect = this._privateHasConnected;
             this._privateHasConnected = true;
             this._privateSetState('connected');
@@ -354,12 +365,13 @@ export class DarshJDB {
             settle();
           })
           .catch((err: Error) => {
-            this.disconnect();
+            if (this._privateSocket === socket) this.disconnect();
             settle(err);
           });
       };
 
       socket.onmessage = (event) => {
+        if (this._privateSocket !== socket) return;
         this._privateHandleMessage(event.data as ArrayBuffer);
       };
 
@@ -368,6 +380,10 @@ export class DarshJDB {
       };
 
       socket.onclose = (event) => {
+        if (this._privateSocket !== socket) {
+          settle(new Error('Connection session ended'));
+          return;
+        }
         this._privateClearTimers();
         this._privateRejectAllPending(
           new Error(`WebSocket closed: ${event.code} ${event.reason}`),

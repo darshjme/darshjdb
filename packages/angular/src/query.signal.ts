@@ -135,6 +135,7 @@ export function darshanQuery<T>(
       (result) => {
         const applyUpdate = () => {
           if (result.error) {
+            if (result.error.code === 'SubscriptionEndedError') _data.set(undefined);
             _error.set({
               code: result.error.code,
               message: result.error.message,
@@ -147,7 +148,10 @@ export function darshanQuery<T>(
           _isLoading.set(false);
         };
 
-        if (options?.debounceMs && options.debounceMs > 0) {
+        if (result.error?.code === 'SubscriptionEndedError') {
+          cancelPendingUpdate();
+          applyUpdate();
+        } else if (options?.debounceMs && options.debounceMs > 0) {
           cancelPendingUpdate();
           _debounceTimer = setTimeout(() => {
             _debounceTimer = null;

@@ -1,11 +1,12 @@
 // DarshJDB — created by Darshankumar Joshi (github.com/darshjme)
 //! Unit tests for the agent-memory subsystem.
 //!
-//! These tests intentionally avoid live Postgres so they run on every
+//! Most tests avoid live Postgres so they run on every
 //! `cargo test` without provisioning a database. The token counter,
 //! working memory, and the parts of [`ContextBuilder`] that operate on
 //! in-memory data are exercised directly. Full end-to-end coverage —
 //! including the REST handlers — lives in `packages/server/tests/`.
+//! The explicitly ignored durability regression below requires isolated Postgres.
 
 use super::tokens::TiktokenCounter;
 use super::types::{MemoryEntry, MemoryRole, MemoryTier};
@@ -158,4 +159,137 @@ fn budget_packing_respects_max_tokens() {
     let (packed, remaining) = pack_within_budget(&entries, 0);
     assert!(packed.is_empty());
     assert_eq!(remaining, 0);
+}
+
+/// Run explicitly with DDB_TEST_DATABASE_URL pointing at an isolated test server.
+/// This test fails rather than silently skipping when the database is unavailable.
+#[tokio::test]
+#[ignore = "requires isolated PostgreSQL; run with --ignored"]
+async fn durable_working_window_survives_restart_and_concurrent_writers() {
+    use super::{AgentMemoryRepo, ContextBuildOptions, ContextBuilder, ensure_agent_memory_schema};
+    use std::collections::HashSet;
+    let url = std::env::var("DDB_TEST_DATABASE_URL").expect("DDB_TEST_DATABASE_URL required");
+    let admin = sqlx::PgPool::connect(&url).await.unwrap();
+    let db_name = format!("memory_regression_{}", Uuid::new_v4().simple());
+    sqlx::query(&format!("CREATE DATABASE {db_name}"))
+        .execute(&admin)
+        .await
+        .unwrap();
+    let options: sqlx::postgres::PgConnectOptions = url.parse().unwrap();
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(8)
+        .connect_with(options.database(&db_name))
+        .await
+        .unwrap();
+    ensure_agent_memory_schema(&pool).await.unwrap();
+    let repo = AgentMemoryRepo::new(pool.clone());
+    let session = repo
+        .create_session(Uuid::new_v4(), "durability-test", None, json!({}))
+        .await
+        .unwrap();
+    let (first, promoted) = repo
+        .append_working(
+            session.id,
+            MemoryRole::User,
+            "survives restart",
+            3,
+            json!({"keep":true}),
+            32,
+        )
+        .await
+        .unwrap();
+    assert!(promoted.is_empty());
+    // Entirely fresh RAM state and repository handle, as on another replica.
+    let mut cold = ContextBuilder::new(
+        session.id,
+        TiktokenCounter::default_counter(),
+        AgentMemoryRepo::new(pool.clone()),
+        WorkingMemory::default(),
+    );
+    let bundle = cold.build(&ContextBuildOptions::default()).await.unwrap();
+    assert_eq!(bundle.messages.len(), 1);
+    assert_eq!(bundle.messages[0].content, first.content);
+    assert_eq!(
+        repo.session_stats(session.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .working_messages,
+        1
+    );
+    let mut writes = tokio::task::JoinSet::new();
+    for i in 0..39 {
+        let replica = AgentMemoryRepo::new(pool.clone());
+        writes.spawn(async move {
+            replica
+                .append_working(
+                    session.id,
+                    MemoryRole::User,
+                    &format!("message {i}"),
+                    3,
+                    json!({}),
+                    32,
+                )
+                .await
+                .unwrap()
+        });
+    }
+    let mut original_ids = HashSet::from([first.id]);
+    while let Some(result) = writes.join_next().await {
+        original_ids.insert(result.unwrap().0.id);
+    }
+    let rows = repo
+        .timeline(session.id, &Default::default())
+        .await
+        .unwrap();
+    assert_eq!(rows.len(), 40, "promotion must never duplicate messages");
+    assert_eq!(
+        rows.iter().map(|r| r.id).collect::<HashSet<_>>(),
+        original_ids
+    );
+    assert_eq!(
+        rows.iter()
+            .filter(|r| r.tier == MemoryTier::Working)
+            .count(),
+        32
+    );
+    assert_eq!(
+        rows.iter()
+            .filter(|r| r.tier == MemoryTier::Episodic)
+            .count(),
+        8
+    );
+    let original = rows.iter().find(|r| r.id == first.id).unwrap();
+    assert_eq!(original.tier, MemoryTier::Episodic);
+    assert_eq!(original.created_at, first.created_at);
+    assert_eq!(original.metadata, first.metadata);
+    let stats = repo.session_stats(session.id).await.unwrap().unwrap();
+    assert_eq!(stats.working_messages, 32);
+    assert_eq!(stats.episodic_messages, 8);
+    let bundle = cold.build(&ContextBuildOptions::default()).await.unwrap();
+    assert_eq!(bundle.messages.len(), 40);
+    assert_eq!(
+        bundle
+            .messages
+            .iter()
+            .filter(|m| m.tier == "working")
+            .count(),
+        32
+    );
+    assert_eq!(
+        bundle
+            .messages
+            .iter()
+            .map(|m| &m.content)
+            .collect::<HashSet<_>>()
+            .len(),
+        40
+    );
+    pool.close().await;
+    // Only this test's random, freshly-created database is removed.
+    sqlx::query(&format!("DROP DATABASE {db_name}"))
+        .execute(&admin)
+        .await
+        .unwrap();
+    admin.close().await;
 }

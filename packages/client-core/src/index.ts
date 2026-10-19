@@ -34,7 +34,7 @@
 export { DarshJDB, msgpackEncode, msgpackDecode } from './client.js';
 
 /* -- Query ---------------------------------------------------------------- */
-export { QueryBuilder, queryOnce, subscribe, toDarshJQL } from './query.js';
+export { QueryBuilder, queryOnce, subscribe, toDarshJQL, SubscriptionEndedError } from './query.js';
 
 /* -- Transaction ---------------------------------------------------------- */
 export {

@@ -9,7 +9,7 @@
  */
 
 import type { DarshJDB } from './client.js';
-import { toDarshJQL } from './query.js';
+import { toDarshJQL, SubscriptionEndedError } from './query.js';
 import { toServerMutations } from './transaction.js';
 import type {
   QueryDescriptor,
@@ -49,6 +49,7 @@ export class RestTransport {
   private _privateClient: DarshJDB;
   private _privateStreams = new Map<string, AbortController>();
   private _privateSubCounter = 0;
+  private _privateRetireCallbacks = new Map<string, (error: Error) => void>();
 
   constructor(client: DarshJDB) {
     this._privateClient = client;
@@ -114,6 +115,7 @@ export class RestTransport {
     const subId = `rest_sub_${(++this._privateSubCounter).toString(36)}`;
     const controller = new AbortController();
     this._privateStreams.set(subId, controller);
+    this._privateRetireCallbacks.set(subId, (error) => callback({ data: [], txId: '', error }));
 
     const emit = (): void => {
       this.query<T>(descriptor)
@@ -153,6 +155,7 @@ export class RestTransport {
       closed = true;
       controller.abort();
       this._privateStreams.delete(subId);
+      this._privateRetireCallbacks.delete(subId);
     };
   }
 
@@ -161,10 +164,13 @@ export class RestTransport {
   /**
    * Close all active SSE connections.
    */
-  closeAll(): void {
+  closeAll(error = new SubscriptionEndedError('Client disconnected; reconnect and subscribe again')): void {
     for (const [id, controller] of this._privateStreams) {
       controller.abort();
       this._privateStreams.delete(id);
+      const retire = this._privateRetireCallbacks.get(id);
+      this._privateRetireCallbacks.delete(id);
+      try { retire?.(error); } catch { /* isolate subscriber errors */ }
     }
   }
 

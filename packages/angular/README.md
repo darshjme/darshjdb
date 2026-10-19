@@ -214,3 +214,9 @@ npm run typecheck  # Type check
 - [Query Language](../../docs/query-language.md)
 - [Authentication](../../docs/authentication.md)
 - [Presence](../../docs/presence.md)
+
+### Core adapter behavior
+
+The Angular facade translates `where`, `order`, `limit`, and `offset` queries to the core protocol. `select` is retained in the core descriptor, but the current core wire encoder does not implement projection. Mutations accept `{insert: data}`, `{update: {id, data}}`, or `{delete: id}` and return `{txId}`. Authentication currently supports email/password. The core user model has no roles field, so Angular returns `roles: []`; this does not represent server authorization claims.
+
+Credential changes and disconnect retire subscriptions with `SubscriptionEndedError`, immediately clear signal/SSR data, and bypass observable debounce. Reconnect and resubscribe (or call the query signal's `refetch()` method) after authentication changes. Automatic token refresh reconnects transport but also retires existing subscriptions.

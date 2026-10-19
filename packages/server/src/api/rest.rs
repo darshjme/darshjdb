@@ -2192,7 +2192,8 @@ async fn darshql_handler(
     headers: HeaderMap,
     axum::Json(body): axum::Json<DarshQLRequest>,
 ) -> Result<Response, ApiError> {
-    let auth_ctx = extract_auth_context(&headers, &state).await?;
+    // The SQL executor does not implement row/field permissions yet.
+    let auth_ctx = require_admin_auth(&headers, &state).await?;
 
     let start = Instant::now();
 
@@ -4883,6 +4884,115 @@ pub async fn ensure_search_schema(pool: &PgPool) -> std::result::Result<(), sqlx
     Ok(())
 }
 
+/// Search authorization is applied in SQL before ranking and candidate limits.
+struct SearchAccess {
+    filters: Vec<query::PermissionFilter>,
+    allowed: Vec<String>,
+    denied: Vec<String>,
+}
+impl SearchAccess {
+    fn new(
+        auth: &AuthContext,
+        entity: &str,
+        operation: Operation,
+        state: &AppState,
+    ) -> Result<Self, ApiError> {
+        validate_entity_name(entity)?;
+        let permission = check_permission(auth, entity, operation, &state.permissions)?;
+        let qualify = |f: String| {
+            if f.contains('/') {
+                f
+            } else {
+                format!("{entity}/{f}")
+            }
+        };
+        Ok(Self {
+            filters: query::PermissionFilter::from_clauses(&permission.where_clauses, auth.user_id)
+                .map_err(|_| {
+                    ApiError::permission_denied("Unsupported search permission predicate")
+                })?,
+            allowed: permission.allowed_fields.into_iter().map(qualify).collect(),
+            denied: permission
+                .restricted_fields
+                .into_iter()
+                .map(qualify)
+                .collect(),
+        })
+    }
+    fn append_rows(
+        &self,
+        sql: &mut sqlx::QueryBuilder<'_, sqlx::Postgres>,
+        alias: &str,
+        entity: &str,
+    ) {
+        for filter in &self.filters {
+            if filter.attribute == "id" {
+                sql.push(format!(" AND {alias}.entity_id = "))
+                    .push_bind(filter.user_id);
+            } else {
+                let attribute = if filter.attribute.contains('/') {
+                    filter.attribute.clone()
+                } else {
+                    format!("{entity}/{}", filter.attribute)
+                };
+                sql.push(format!(" AND EXISTS (SELECT 1 FROM triples permission_row WHERE permission_row.entity_id = {alias}.entity_id AND NOT permission_row.retracted AND permission_row.attribute = "))
+                    .push_bind(attribute).push(" AND permission_row.value = ").push_bind(serde_json::json!(filter.user_id)).push(")");
+            }
+        }
+    }
+    fn append_fields(
+        &self,
+        sql: &mut sqlx::QueryBuilder<'_, sqlx::Postgres>,
+        expression: &str,
+        embedding: bool,
+    ) {
+        if !self.allowed.is_empty() {
+            sql.push(format!(" AND {expression} = ANY("))
+                .push_bind(self.allowed.clone())
+                .push(")");
+        }
+        if !self.denied.is_empty() {
+            sql.push(format!(" AND NOT ({expression} = ANY("))
+                .push_bind(self.denied.clone())
+                .push("))");
+        }
+        // The embedding table has labels, not verified source-field provenance.
+        // Even an attribute-labelled vector may encode other fields; fail closed.
+        if embedding && (!self.allowed.is_empty() || !self.denied.is_empty()) {
+            sql.push(" AND FALSE");
+        }
+    }
+}
+
+async fn embedding_access(
+    state: &AppState,
+    auth: &AuthContext,
+    id: Uuid,
+    operation: Operation,
+) -> Result<(String, SearchAccess), ApiError> {
+    let entity: Option<String> = sqlx::query_scalar("SELECT value #>> '{}' FROM triples WHERE entity_id = $1 AND attribute = ':db/type' AND NOT retracted LIMIT 1")
+        .bind(id).fetch_optional(&state.pool).await.map_err(|e| ApiError::internal(e.to_string()))?;
+    let entity = entity.ok_or_else(|| ApiError::not_found("Entity not found"))?;
+    let access = SearchAccess::new(auth, &entity, operation, state)?;
+    let mut sql = sqlx::QueryBuilder::new(
+        "SELECT EXISTS (SELECT 1 FROM triples target WHERE target.entity_id = ",
+    );
+    sql.push_bind(id).push(" AND NOT target.retracted");
+    access.append_rows(&mut sql, "target", &entity);
+    sql.push(")");
+    let permitted: bool = sql
+        .build_query_scalar()
+        .fetch_one(&state.pool)
+        .await
+        .map_err(|e| ApiError::internal(e.to_string()))?;
+    if !permitted {
+        return Err(ApiError::permission_denied(
+            "Embedding target violates row permissions",
+        ));
+    }
+    Ok((entity, access))
+}
+
 /// Request body for `POST /api/embeddings`.
 #[derive(Deserialize)]
 struct EmbeddingStoreRequest {
@@ -4904,6 +5014,28 @@ async fn embeddings_store(
     headers: HeaderMap,
     axum::Json(body): axum::Json<EmbeddingStoreRequest>,
 ) -> Result<Response, ApiError> {
+    let auth = extract_auth_context(&headers, &state).await?;
+    let (entity, access) =
+        embedding_access(&state, &auth, body.entity_id, Operation::Update).await?;
+    let qualified = if body.attribute.contains('/') {
+        body.attribute.clone()
+    } else {
+        format!("{entity}/{}", body.attribute)
+    };
+    if !qualified.starts_with(&format!("{entity}/")) {
+        return Err(ApiError::bad_request(
+            "Embedding attribute must belong to the target entity type",
+        ));
+    }
+    if access.denied.contains(&qualified)
+        || (!access.allowed.is_empty() && !access.allowed.contains(&qualified))
+        || (qualified == format!("{entity}/default")
+            && (!access.allowed.is_empty() || !access.denied.is_empty()))
+    {
+        return Err(ApiError::permission_denied(
+            "Embedding attribute is not writable",
+        ));
+    }
     if body.embedding.is_empty() {
         return Err(ApiError::bad_request("embedding vector must not be empty"));
     }
@@ -4914,22 +5046,28 @@ async fn embeddings_store(
     // Format the vector as a pgvector literal: [0.1,0.2,0.3]
     let vec_literal = format_pgvector_literal(&body.embedding);
 
-    let result = sqlx::query_scalar::<_, i64>(
-        "INSERT INTO embeddings (entity_id, attribute, embedding, model) \
-         VALUES ($1, $2, $3::vector, $4) \
-         ON CONFLICT (entity_id, attribute) DO UPDATE \
-            SET embedding  = EXCLUDED.embedding, \
-                model      = EXCLUDED.model, \
-                created_at = now() \
-         RETURNING id",
-    )
-    .bind(body.entity_id)
-    .bind(&body.attribute)
-    .bind(&vec_literal)
-    .bind(&body.model)
-    .fetch_one(&state.pool)
-    .await
-    .map_err(|e| ApiError::internal(format!("Failed to store embedding: {e}")))?;
+    let mut sql = sqlx::QueryBuilder::new(
+        "INSERT INTO embeddings (entity_id, attribute, embedding, model) SELECT ",
+    );
+    sql.push_bind(body.entity_id)
+        .push(", ")
+        .push_bind(body.attribute.clone())
+        .push(", ")
+        .push_bind(vec_literal)
+        .push("::vector, ")
+        .push_bind(body.model.clone())
+        .push(" WHERE EXISTS (SELECT 1 FROM triples target WHERE target.entity_id = ")
+        .push_bind(body.entity_id)
+        .push(" AND target.attribute = ':db/type' AND NOT target.retracted AND target.value = ")
+        .push_bind(serde_json::json!(entity));
+    access.append_rows(&mut sql, "target", &entity);
+    sql.push(") ON CONFLICT (entity_id, attribute) DO UPDATE SET embedding = EXCLUDED.embedding, model = EXCLUDED.model, created_at = now() RETURNING id");
+    let result: i64 = sql
+        .build_query_scalar()
+        .fetch_optional(&state.pool)
+        .await
+        .map_err(|e| ApiError::internal(format!("Failed to store embedding: {e}")))?
+        .ok_or_else(|| ApiError::permission_denied("Embedding target violates row permissions"))?;
 
     let response = serde_json::json!({
         "id": result,
@@ -4951,16 +5089,23 @@ async fn embeddings_get(
     headers: HeaderMap,
     Path(entity_id): Path<Uuid>,
 ) -> Result<Response, ApiError> {
-    let rows = sqlx::query_as::<_, (i64, String, String, chrono::DateTime<chrono::Utc>)>(
-        "SELECT id, attribute, model, created_at \
-         FROM embeddings \
-         WHERE entity_id = $1 \
-         ORDER BY created_at DESC",
-    )
-    .bind(entity_id)
-    .fetch_all(&state.pool)
-    .await
-    .map_err(|e| ApiError::internal(format!("Failed to fetch embeddings: {e}")))?;
+    let auth = extract_auth_context(&headers, &state).await?;
+    let (entity, access) = embedding_access(&state, &auth, entity_id, Operation::Read).await?;
+    let mut sql = sqlx::QueryBuilder::new(
+        "SELECT id, attribute, model, created_at FROM embeddings WHERE entity_id = ",
+    );
+    sql.push_bind(entity_id);
+    let expression = format!(
+        "CASE WHEN position('/' in attribute) > 0 THEN attribute ELSE '{entity}/' || attribute END"
+    );
+    access.append_rows(&mut sql, "embeddings", &entity);
+    access.append_fields(&mut sql, &expression, true);
+    sql.push(" ORDER BY created_at DESC");
+    let rows = sql
+        .build_query_as::<(i64, String, String, chrono::DateTime<chrono::Utc>)>()
+        .fetch_all(&state.pool)
+        .await
+        .map_err(|e| ApiError::internal(format!("Failed to fetch embeddings: {e}")))?;
 
     let embeddings: Vec<serde_json::Value> = rows
         .into_iter()
@@ -5004,6 +5149,8 @@ async fn search_semantic(
     headers: HeaderMap,
     axum::Json(body): axum::Json<SemanticSearchRequest>,
 ) -> Result<Response, ApiError> {
+    let auth = extract_auth_context(&headers, &state).await?;
+    let access = SearchAccess::new(&auth, &body.entity_type, Operation::Read, &state)?;
     if body.vector.is_empty() {
         return Err(ApiError::bad_request("vector must not be empty"));
     }
@@ -5013,6 +5160,7 @@ async fn search_semantic(
 
     let rows = run_semantic_search(
         &state.pool,
+        &access,
         &body.vector,
         &body.entity_type,
         body.attribute.as_deref(),
@@ -5053,48 +5201,27 @@ async fn search_semantic(
 /// directly through sqlx today.
 async fn run_semantic_search(
     pool: &PgPool,
+    access: &SearchAccess,
     vector: &[f32],
     entity_type: &str,
     attribute: Option<&str>,
     limit: u32,
 ) -> std::result::Result<Vec<(Uuid, String, f64)>, sqlx::Error> {
-    let vec_literal = format_pgvector_literal(vector);
-
-    if let Some(attr) = attribute {
-        let sql = "SELECT e.entity_id, e.attribute, \
-                          (e.embedding <=> $4::vector) AS distance \
-                   FROM embeddings e \
-                   INNER JOIN triples t_type ON t_type.entity_id = e.entity_id \
-                     AND t_type.attribute = ':db/type' \
-                     AND t_type.value = $1::jsonb \
-                     AND NOT t_type.retracted \
-                   WHERE e.attribute = $2 \
-                   ORDER BY e.embedding <=> $4::vector, e.entity_id ASC, e.attribute ASC \
-                   LIMIT $3";
-        sqlx::query_as::<_, (Uuid, String, f64)>(sql)
-            .bind(serde_json::Value::String(entity_type.to_string()))
-            .bind(attr)
-            .bind(limit as i32)
-            .bind(&vec_literal)
-            .fetch_all(pool)
-            .await
-    } else {
-        let sql = "SELECT e.entity_id, e.attribute, \
-                          (e.embedding <=> $3::vector) AS distance \
-                   FROM embeddings e \
-                   INNER JOIN triples t_type ON t_type.entity_id = e.entity_id \
-                     AND t_type.attribute = ':db/type' \
-                     AND t_type.value = $1::jsonb \
-                     AND NOT t_type.retracted \
-                   ORDER BY e.embedding <=> $3::vector, e.entity_id ASC, e.attribute ASC \
-                   LIMIT $2";
-        sqlx::query_as::<_, (Uuid, String, f64)>(sql)
-            .bind(serde_json::Value::String(entity_type.to_string()))
-            .bind(limit as i32)
-            .bind(&vec_literal)
-            .fetch_all(pool)
-            .await
+    let mut sql = sqlx::QueryBuilder::new("SELECT e.entity_id, e.attribute, (e.embedding <=> ");
+    sql.push_bind(format_pgvector_literal(vector)).push("::vector) AS distance FROM embeddings e WHERE EXISTS (SELECT 1 FROM triples t_type WHERE t_type.entity_id = e.entity_id AND t_type.attribute = ':db/type' AND NOT t_type.retracted AND t_type.value = ")
+        .push_bind(serde_json::json!(entity_type)).push(")");
+    if let Some(attribute) = attribute {
+        sql.push(" AND e.attribute = ")
+            .push_bind(attribute.to_owned());
     }
+    access.append_rows(&mut sql, "e", entity_type);
+    let expression = format!(
+        "CASE WHEN position('/' in e.attribute) > 0 THEN e.attribute ELSE '{entity_type}/' || e.attribute END"
+    );
+    access.append_fields(&mut sql, &expression, true);
+    sql.push(" ORDER BY distance ASC, e.entity_id ASC, e.attribute ASC LIMIT ")
+        .push_bind(i64::from(limit));
+    sql.build_query_as().fetch_all(pool).await
 }
 
 /// Query parameters for `GET /api/search/text`.
@@ -5118,6 +5245,8 @@ async fn search_text(
     headers: HeaderMap,
     axum::extract::Query(params): axum::extract::Query<TextSearchQuery>,
 ) -> Result<Response, ApiError> {
+    let auth = extract_auth_context(&headers, &state).await?;
+    let access = SearchAccess::new(&auth, &params.entity_type, Operation::Read, &state)?;
     if params.q.trim().is_empty() {
         return Err(ApiError::bad_request("q (query string) must not be empty"));
     }
@@ -5125,9 +5254,15 @@ async fn search_text(
         return Err(ApiError::bad_request("entity_type must not be empty"));
     }
 
-    let rows = run_text_search(&state.pool, &params.q, &params.entity_type, params.limit)
-        .await
-        .map_err(|e| ApiError::internal(format!("Text search failed: {e}")))?;
+    let rows = run_text_search(
+        &state.pool,
+        &access,
+        &params.q,
+        &params.entity_type,
+        params.limit,
+    )
+    .await
+    .map_err(|e| ApiError::internal(format!("Text search failed: {e}")))?;
 
     let results: Vec<serde_json::Value> = rows
         .iter()
@@ -5158,30 +5293,24 @@ async fn search_text(
 /// we want one row per entity.
 async fn run_text_search(
     pool: &PgPool,
+    access: &SearchAccess,
     q: &str,
     entity_type: &str,
     limit: u32,
 ) -> std::result::Result<Vec<(Uuid, f64)>, sqlx::Error> {
-    let sql = "SELECT t.entity_id, \
-                      MAX(ts_rank(to_tsvector('english', t.value::text), \
-                                  plainto_tsquery('english', $1))::float8) AS rank \
-               FROM triples t \
-               INNER JOIN triples t_type ON t_type.entity_id = t.entity_id \
-                 AND t_type.attribute = ':db/type' \
-                 AND t_type.value = $2::jsonb \
-                 AND NOT t_type.retracted \
-               WHERE NOT t.retracted \
-                 AND t.value IS NOT NULL \
-                 AND to_tsvector('english', t.value::text) @@ plainto_tsquery('english', $1) \
-               GROUP BY t.entity_id \
-               ORDER BY rank DESC, t.entity_id ASC \
-               LIMIT $3";
-    sqlx::query_as::<_, (Uuid, f64)>(sql)
-        .bind(q)
-        .bind(serde_json::Value::String(entity_type.to_string()))
-        .bind(limit as i32)
-        .fetch_all(pool)
-        .await
+    let mut sql = sqlx::QueryBuilder::new(
+        "SELECT t.entity_id, MAX(ts_rank(to_tsvector('english', t.value::text), plainto_tsquery('english', ",
+    );
+    sql.push_bind(q.to_owned()).push("))::float8) AS rank FROM triples t WHERE NOT t.retracted AND t.value IS NOT NULL AND EXISTS (SELECT 1 FROM triples t_type WHERE t_type.entity_id = t.entity_id AND t_type.attribute = ':db/type' AND NOT t_type.retracted AND t_type.value = ")
+        .push_bind(serde_json::json!(entity_type)).push(") AND to_tsvector('english', t.value::text) @@ plainto_tsquery('english', ").push_bind(q.to_owned()).push(")");
+    access.append_rows(&mut sql, "t", entity_type);
+    let expression = format!(
+        "CASE WHEN position('/' in t.attribute) > 0 THEN t.attribute ELSE '{entity_type}/' || t.attribute END"
+    );
+    access.append_fields(&mut sql, &expression, false);
+    sql.push(" GROUP BY t.entity_id ORDER BY rank DESC, t.entity_id ASC LIMIT ")
+        .push_bind(i64::from(limit));
+    sql.build_query_as().fetch_all(pool).await
 }
 
 /// Optional weight overrides for the hybrid RRF endpoint.
@@ -5265,6 +5394,8 @@ async fn search_hybrid(
     headers: HeaderMap,
     axum::Json(body): axum::Json<HybridSearchRequest>,
 ) -> Result<Response, ApiError> {
+    let auth = extract_auth_context(&headers, &state).await?;
+    let access = SearchAccess::new(&auth, &body.entity_type, Operation::Read, &state)?;
     if body.query_text.trim().is_empty() {
         return Err(ApiError::bad_request("query_text must not be empty"));
     }
@@ -5283,6 +5414,7 @@ async fn search_hybrid(
 
     let semantic_rows = run_semantic_search(
         &state.pool,
+        &access,
         &body.vector,
         &body.entity_type,
         body.attribute.as_deref(),
@@ -5293,6 +5425,7 @@ async fn search_hybrid(
 
     let text_rows = run_text_search(
         &state.pool,
+        &access,
         &body.query_text,
         &body.entity_type,
         candidate_window,

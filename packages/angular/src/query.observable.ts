@@ -28,7 +28,7 @@
  */
 
 import { inject } from '@angular/core';
-import { Observable, shareReplay, debounceTime, type OperatorFunction } from 'rxjs';
+import { Observable, shareReplay, debounce, of, timer, type OperatorFunction } from 'rxjs';
 
 import { DDB_CLIENT } from './tokens';
 import type { DarshJError, QueryOptions } from './types';
@@ -113,7 +113,7 @@ export function darshanQuery$<T>(
   const operators: OperatorFunction<ObservableQueryResult<T>, ObservableQueryResult<T>>[] = [];
 
   if (options?.debounceMs && options.debounceMs > 0) {
-    operators.push(debounceTime(options.debounceMs));
+    operators.push(debounce((result) => result.error?.code === 'SubscriptionEndedError' ? of(0) : timer(options.debounceMs!)));
   }
 
   // Always apply shareReplay for multicast + late-subscriber support.
