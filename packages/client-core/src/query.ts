@@ -38,6 +38,32 @@ function hashQuery(desc: QueryDescriptor): string {
   });
 }
 
+/** Normalize storage rows and WebSocket rows to the public document shape. */
+export function normalizeQueryRow(row: Record<string, unknown>): Record<string, unknown> {
+  const attributes = row.attributes;
+  const stored = row.entity_id !== undefined && attributes && typeof attributes === 'object' && !Array.isArray(attributes);
+  const source = stored ? attributes as Record<string, unknown> : row;
+  // Retain wire names as aliases: fields with the same suffix never overwrite
+  // one another. Only an unambiguous suffix gets a convenient public alias.
+  const result: Record<string, unknown> = { ...source };
+  const suffixes = new Map<string, string[]>();
+  for (const key of Object.keys(source)) {
+    if (key.startsWith(':') || !key.includes('/')) continue;
+    const name = key.slice(key.indexOf('/') + 1);
+    suffixes.set(name, [...(suffixes.get(name) ?? []), key]);
+  }
+  for (const [name, keys] of suffixes) {
+    if (keys.length === 1 && !(name in result)) result[name] = source[keys[0]!];
+  }
+  if (stored && row.nested && typeof row.nested === 'object') {
+    result.nested = row.nested; // Preserve nested payloads without flattening collisions.
+  }
+  const id = row.entity_id ?? row._id ?? row.id;
+  if (id !== undefined) result.id = id;
+  if (row.entity_id !== undefined || row._id !== undefined) result._id = id;
+  return result;
+}
+
 /** Client operator -> DarshJQL operator. */
 const OP_MAP: Partial<Record<WhereOp, DarshJQLOp>> = {
   '=': 'Eq',
@@ -297,7 +323,7 @@ export async function queryOnce<T = Record<string, unknown>>(
       /* best effort */
     });
 
-  return { data: resp.initial as T[], txId: '' };
+  return { data: resp.initial.map(normalizeQueryRow) as T[], txId: '' };
 }
 
 /**
@@ -420,7 +446,7 @@ async function openSubscription<T>(
     }
 
     active.subId = resp.sub_id;
-    active.rows = resp.initial;
+    active.rows = resp.initial.map(normalizeQueryRow);
 
     client.registerSubscriptionHandler(resp.sub_id, (msg: ServerMessage) => {
       applyPush(active, msg);
@@ -441,6 +467,7 @@ function applyPush<T>(active: ActiveSubscription<T>, msg: ServerMessage): void {
   );
   const updated = new Map(
     (msg.updated ?? [])
+      .map(normalizeQueryRow)
       .map((row) => [rowKey(row), row] as const)
       .filter((entry): entry is readonly [string, Record<string, unknown>] =>
         Boolean(entry[0]),
@@ -457,7 +484,7 @@ function applyPush<T>(active: ActiveSubscription<T>, msg: ServerMessage): void {
       return key ? (updated.get(key) ?? row) : row;
     });
 
-  active.rows = [...next, ...(msg.added ?? [])];
+  active.rows = [...next, ...(msg.added ?? []).map(normalizeQueryRow)];
   deliver(active, { data: active.rows as T[], txId: '' });
 }
 

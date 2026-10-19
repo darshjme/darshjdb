@@ -3994,82 +3994,68 @@ async fn subscribe(
     Query(params): Query<SubscribeParams>,
     headers: HeaderMap,
 ) -> Result<Sse<impl tokio_stream::Stream<Item = Result<Event, Infallible>>>, ApiError> {
-    let _token = extract_bearer_token(&headers)?;
-
+    let auth = extract_auth_context(&headers, &state).await?;
     if params.q.is_empty() {
         return Err(ApiError::bad_request("Query parameter 'q' is required"));
     }
-
-    // Parse the DarshJQL query. Clients pass the query as a JSON string
-    // in the `q` query-param; decode it into a `serde_json::Value` and
-    // route through the canonical parser so we inherit all validation.
     let q_json: Value = serde_json::from_str(&params.q)
         .map_err(|e| ApiError::bad_request(format!("Query 'q' must be JSON: {e}")))?;
     let ast = query::parse_darshan_ql(&q_json)
         .map_err(|e| ApiError::bad_request(format!("Invalid DarshJQL: {e}")))?;
-
-    let target_entity_type = ast.entity_type.clone();
-    let where_clauses = ast.where_clauses.clone();
-    let triple_store = Arc::clone(&state.triple_store);
-
-    // Subscribe to the real change-event bus. Every mutation that
-    // touches a triple flows through `pubsub.subscribe_events()` as a
-    // `PubSubEvent` carrying entity_type/entity_id/tx_id.
-    let rx = state.pubsub.subscribe_events();
-
-    // The `subscribe` filter has to perform an async DB lookup when the
-    // query carries `$where` predicates, so we cannot use the synchronous
-    // `tokio_stream::StreamExt::filter_map` combinator. Instead we
-    // `.then()` each broadcast item into a future producing
-    // `Option<Result<Event, Infallible>>`, then drop the `None`s with a
-    // synchronous `filter_map(|x| x)`.
+    let permission =
+        check_permission(&auth, &ast.entity_type, Operation::Read, &state.permissions)?;
+    let filters = query::PermissionFilter::from_clauses(&permission.where_clauses, auth.user_id)
+        .map_err(|e| ApiError::bad_request(e.to_string()))?;
+    let plan = query::plan_query_with_permission(&ast, &filters)
+        .map_err(|e| ApiError::bad_request(e.to_string()))?;
+    // Listen before the initial read to avoid losing a concurrent mutation.
+    let rx = state.change_tx.subscribe();
+    let initial = query::execute_query(&state.pool, &plan)
+        .await
+        .map_err(|e| ApiError::internal(e.to_string()))?;
+    let previous = Arc::new(tokio::sync::Mutex::new(
+        serde_json::to_value(initial).unwrap_or_default(),
+    ));
     let stream = BroadcastStream::new(rx)
-        .then(move |msg| {
-            let target = target_entity_type.clone();
-            let where_clauses = where_clauses.clone();
-            let triple_store = Arc::clone(&triple_store);
+        .then(move |_msg| {
+            let state = state.clone();
+            let headers = headers.clone();
+            let ast = ast.clone();
+            let previous = Arc::clone(&previous);
             async move {
-                let event = match msg {
-                    Ok(ev) => ev,
-                    Err(_) => return None,
+                // Lag also requires a fresh read. Events carry no row data to
+                // subscribers: only a changed authorized result invalidates it.
+                // Revalidate expiry/revocation and policy on every update.
+                let auth = match extract_auth_context(&headers, &state).await {
+                    Ok(auth) => auth,
+                    Err(_) => return Some(Ok(Event::default().event("auth-error").data("{}"))),
                 };
-
-                // (c) Entity-type gate — drop events for any other type.
-                match event.entity_type.as_deref() {
-                    Some(et) if et == target => {}
-                    _ => return None,
+                let permission = match check_permission(
+                    &auth,
+                    &ast.entity_type,
+                    Operation::Read,
+                    &state.permissions,
+                ) {
+                    Ok(permission) => permission,
+                    Err(_) => return Some(Ok(Event::default().event("auth-error").data("{}"))),
+                };
+                let filters =
+                    query::PermissionFilter::from_clauses(&permission.where_clauses, auth.user_id)
+                        .ok()?;
+                let plan = query::plan_query_with_permission(&ast, &filters).ok()?;
+                let rows = query::execute_query(&state.pool, &plan).await.ok()?;
+                let current = serde_json::to_value(rows).ok()?;
+                let mut previous = previous.lock().await;
+                if *previous == current {
+                    return None;
                 }
-
-                // (d) WHERE re-evaluation: only when the event carries
-                // a concrete entity_id and the query has predicates.
-                if !where_clauses.is_empty() {
-                    let Some(ref eid_str) = event.entity_id else {
-                        // Collection-level event without an entity id
-                        // cannot be checked against WHERE — drop it to
-                        // avoid false positives.
-                        return None;
-                    };
-                    let Ok(eid) = Uuid::parse_str(eid_str) else {
-                        return None;
-                    };
-                    let triples = match triple_store.get_entity(eid).await {
-                        Ok(t) => t,
-                        Err(_) => return None,
-                    };
-                    let attrs = triples_to_attr_map(&triples);
-                    if !eval_where_clauses(&where_clauses, &attrs) {
-                        return None;
-                    }
-                }
-
-                let data = serde_json::to_string(&event).unwrap_or_default();
-                Some(Ok(Event::default()
-                    .event("update")
-                    .data(data)
-                    .id(event.tx_id.to_string())))
+                *previous = current;
+                Some(Ok(Event::default().event("update").data("{}")))
             }
         })
         .filter_map(|opt| opt);
+    // Initial invalidation closes the client's initial-query/stream-open race.
+    let stream = tokio_stream::once(Ok(Event::default().event("update").data("{}"))).chain(stream);
 
     // Use a comment-style keepalive (": heartbeat\n\n") so it does not
     // trigger client `onmessage` handlers.
@@ -4097,7 +4083,7 @@ async fn events_sse(
     Query(params): Query<EventsParams>,
     headers: HeaderMap,
 ) -> Result<Sse<impl tokio_stream::Stream<Item = Result<Event, Infallible>>>, ApiError> {
-    let _token = extract_bearer_token(&headers)?;
+    let _auth = require_admin_auth(&headers, &state).await?;
 
     if params.channel.is_empty() {
         return Err(ApiError::bad_request(
@@ -4108,20 +4094,30 @@ async fn events_sse(
     let pattern = crate::sync::pubsub::ChannelPattern::parse(&params.channel);
     let rx = state.pubsub.subscribe_events();
 
-    let stream = BroadcastStream::new(rx).filter_map(move |msg| match msg {
-        Ok(event) => {
-            if pattern.matches(&event.channel) {
-                let data = serde_json::to_string(&event).unwrap_or_default();
-                Some(Ok(Event::default()
-                    .event("pub-event")
-                    .data(data)
-                    .id(event.tx_id.to_string())))
-            } else {
-                None
+    let stream = BroadcastStream::new(rx)
+        .then(move |msg| {
+            let state = state.clone();
+            let headers = headers.clone();
+            let pattern = pattern.clone();
+            async move {
+                require_admin_auth(&headers, &state).await.ok()?;
+                match msg {
+                    Ok(event) => {
+                        if pattern.matches(&event.channel) {
+                            let data = serde_json::to_string(&event).unwrap_or_default();
+                            Some(Ok(Event::default()
+                                .event("pub-event")
+                                .data(data)
+                                .id(event.tx_id.to_string())))
+                        } else {
+                            None
+                        }
+                    }
+                    Err(_) => None,
+                }
             }
-        }
-        Err(_) => None,
-    });
+        })
+        .filter_map(|event| event);
 
     Ok(Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15))))
 }
@@ -4148,7 +4144,7 @@ async fn events_publish(
     headers: HeaderMap,
     body: String,
 ) -> Result<Response, ApiError> {
-    let _token = extract_bearer_token(&headers)?;
+    let _auth = require_admin_auth(&headers, &state).await?;
 
     let req: PublishRequest = serde_json::from_str(&body)
         .map_err(|e| ApiError::bad_request(format!("invalid request body: {e}")))?;
@@ -4558,6 +4554,29 @@ pub(super) async fn authorize_mutation(
     id: Uuid,
     data: Option<&Value>,
 ) -> Result<bool, ApiError> {
+    authorize_mutation_with_permissions(
+        &state.permissions,
+        &state.schema_registry,
+        auth,
+        tx,
+        entity,
+        op,
+        id,
+        data,
+    )
+    .await
+}
+
+pub(super) async fn authorize_mutation_with_permissions(
+    permissions: &PermissionEngine,
+    schema_registry: &Option<Arc<crate::schema::SchemaRegistry>>,
+    auth: &AuthContext,
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    entity: &str,
+    op: &str,
+    id: Uuid,
+    data: Option<&Value>,
+) -> Result<bool, ApiError> {
     validate_entity_name(entity)?;
     if !matches!(op, "insert" | "set" | "update" | "upsert" | "delete") {
         return Err(ApiError::bad_request("Unknown mutation operation"));
@@ -4594,7 +4613,7 @@ pub(super) async fn authorize_mutation(
     } else {
         Operation::Update
     };
-    let perm = check_permission(auth, entity, operation, &state.permissions)?;
+    let perm = check_permission(auth, entity, operation, permissions)?;
     let filters = query::PermissionFilter::from_clauses(&perm.where_clauses, auth.user_id)
         .map_err(|_| ApiError::permission_denied("Unsupported mutation permission predicate"))?;
     let mut before = serde_json::Map::new();
@@ -4646,7 +4665,7 @@ pub(super) async fn authorize_mutation(
             ));
         }
     }
-    if let (Some(registry), Some(obj)) = (&state.schema_registry, data.and_then(Value::as_object)) {
+    if let (Some(registry), Some(obj)) = (schema_registry, data.and_then(Value::as_object)) {
         if let Some(schema) = registry.get(entity) {
             let doc = obj.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
             let validation = if creating {
@@ -6702,8 +6721,8 @@ mod tests {
     // These tests exercise `require_admin_auth`, the real extractor
     // guarding every `/api/admin/*` route. They construct a live
     // `SessionManager` with a symmetric test key, sign real access
-    // tokens with it, and call the extractor directly — DB-free because
-    // `SessionManager::validate_token` is stateless JWT verification.
+    // tokens with it, and call the extractor directly. Valid signed tokens
+    // also require a persisted active session; these cases use a live fixture.
     //
     // `require_admin_auth_rejects_forged_signature` is the regression
     // guard: the original stub only decoded claims and accepted any
@@ -6747,45 +6766,92 @@ mod tests {
         headers
     }
 
+    async fn live_admin_state(roles: Vec<&str>) -> (AppState, String, uuid::Uuid) {
+        let pool = PgPool::connect(
+            &std::env::var("DDB_TEST_DATABASE_URL").expect("isolated test database URL"),
+        )
+        .await
+        .expect("connect test database");
+        ensure_auth_schema(&pool).await.expect("auth schema");
+        let mut state = AppState::new();
+        state.pool = pool.clone();
+        state.session_manager = Arc::new(SessionManager::new(
+            pool.clone(),
+            KeyManager::from_secret(b"require-admin-auth-test-secret-32!!"),
+        ));
+        let uid = uuid::Uuid::new_v4();
+        sqlx::query("INSERT INTO users (id, email, password_hash) VALUES ($1, $2, 'test-unused')")
+            .bind(uid)
+            .bind(format!("admin-live-{uid}@example.test"))
+            .execute(&pool)
+            .await
+            .expect("seed user");
+        let pair = state
+            .session_manager
+            .create_session(
+                uid,
+                roles.into_iter().map(str::to_string).collect(),
+                "127.0.0.1",
+                "test",
+                "test",
+            )
+            .await
+            .expect("live session");
+        (state, pair.access_token, uid)
+    }
+
+    async fn cleanup_live_admin(state: &AppState, uid: uuid::Uuid) {
+        sqlx::query("DELETE FROM sessions WHERE user_id = $1")
+            .bind(uid)
+            .execute(&state.pool)
+            .await
+            .expect("cleanup sessions");
+        sqlx::query("DELETE FROM users WHERE id = $1")
+            .bind(uid)
+            .execute(&state.pool)
+            .await
+            .expect("cleanup user");
+    }
+
     #[tokio::test]
-    #[ignore = "pre-existing v0.2.0 baseline failure — tracked in v0.3.1 followup"]
+    #[ignore = "requires isolated DDB_TEST_DATABASE_URL"]
     async fn require_admin_auth_allows_admin() {
-        let (state, km) = make_state_with_secret(b"require-admin-auth-test-secret-32!!");
-        let token = sign_access_token(&km, vec!["admin"]);
+        let (state, token, uid) = live_admin_state(vec!["admin"]).await;
         let headers = bearer_headers(&token);
         let ctx = require_admin_auth(&headers, &state)
             .await
             .expect("admin allowed");
         assert!(ctx.roles.iter().any(|r| r == "admin"));
+        cleanup_live_admin(&state, uid).await;
     }
 
     #[tokio::test]
-    #[ignore = "pre-existing v0.2.0 baseline failure — tracked in v0.3.1 followup"]
+    #[ignore = "requires isolated DDB_TEST_DATABASE_URL"]
     async fn require_admin_auth_allows_admin_among_multiple_roles() {
-        let (state, km) = make_state_with_secret(b"require-admin-auth-test-secret-32!!");
-        let token = sign_access_token(&km, vec!["viewer", "developer", "admin"]);
+        let (state, token, uid) = live_admin_state(vec!["viewer", "developer", "admin"]).await;
         let headers = bearer_headers(&token);
         assert!(require_admin_auth(&headers, &state).await.is_ok());
+        cleanup_live_admin(&state, uid).await;
     }
 
     #[tokio::test]
-    #[ignore = "pre-existing v0.2.0 baseline failure — tracked in v0.3.1 followup"]
+    #[ignore = "requires isolated DDB_TEST_DATABASE_URL"]
     async fn require_admin_auth_rejects_non_admin() {
-        let (state, km) = make_state_with_secret(b"require-admin-auth-test-secret-32!!");
-        let token = sign_access_token(&km, vec!["viewer"]);
+        let (state, token, uid) = live_admin_state(vec!["viewer"]).await;
         let headers = bearer_headers(&token);
         let err = require_admin_auth(&headers, &state).await.unwrap_err();
         assert!(matches!(err.code, ErrorCode::PermissionDenied));
+        cleanup_live_admin(&state, uid).await;
     }
 
     #[tokio::test]
-    #[ignore = "pre-existing v0.2.0 baseline failure — tracked in v0.3.1 followup"]
+    #[ignore = "requires isolated DDB_TEST_DATABASE_URL"]
     async fn require_admin_auth_rejects_empty_roles() {
-        let (state, km) = make_state_with_secret(b"require-admin-auth-test-secret-32!!");
-        let token = sign_access_token(&km, vec![]);
+        let (state, token, uid) = live_admin_state(vec![]).await;
         let headers = bearer_headers(&token);
         let err = require_admin_auth(&headers, &state).await.unwrap_err();
         assert!(matches!(err.code, ErrorCode::PermissionDenied));
+        cleanup_live_admin(&state, uid).await;
     }
 
     #[tokio::test]

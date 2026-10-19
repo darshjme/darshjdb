@@ -148,7 +148,7 @@ impl HookContext {
 /// The result returned by a hook handler, controlling whether the
 /// pipeline continues, modifies data, or rejects the operation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "action", rename_all = "snake_case")]
+#[serde(tag = "action", content = "data", rename_all = "snake_case")]
 pub enum HookResult {
     /// Allow the operation to proceed unchanged.
     Continue,
@@ -596,7 +596,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "pre-existing v0.2.0 baseline failure — tracked in v0.3.1 followup"]
     fn hook_result_serde_roundtrip() {
         let results = vec![
             HookResult::Continue,

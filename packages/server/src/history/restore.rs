@@ -13,7 +13,7 @@ use uuid::Uuid;
 use crate::error::{DarshJError, Result};
 use crate::triple_store::{PgTripleStore, TripleInput};
 
-use super::versions::{build_versions, get_history};
+use super::versions::get_history;
 
 // ── Helpers ───────────────────────────────────────────────────────
 
@@ -63,7 +63,8 @@ async fn apply_state_diff(
             }
             _ => {
                 // Either value changed or attribute was removed in target.
-                PgTripleStore::retract_in_tx(&mut tx, entity_id, attr).await?;
+                sqlx::query("UPDATE triples SET retracted = true, retracted_tx_id = $3 WHERE entity_id = $1 AND attribute = $2 AND NOT retracted")
+                    .bind(entity_id).bind(attr).bind(tx_id).execute(&mut *tx).await?;
             }
         }
     }
@@ -169,20 +170,7 @@ pub async fn restore_deleted(pool: &PgPool, entity_id: Uuid) -> Result<i64> {
     }
 
     // Reconstruct the last known state from the full history.
-    let all_triples = sqlx::query_as::<_, crate::triple_store::Triple>(
-        r#"
-        SELECT id, entity_id, attribute, value, value_type, tx_id,
-               created_at, retracted, expires_at
-        FROM triples
-        WHERE entity_id = $1
-        ORDER BY tx_id ASC, id ASC
-        "#,
-    )
-    .bind(entity_id)
-    .fetch_all(pool)
-    .await?;
-
-    let versions = build_versions(&all_triples);
+    let versions = get_history(pool, entity_id, 0).await?;
 
     // Find the last version where the record had data (before full retraction).
     let last_populated = versions

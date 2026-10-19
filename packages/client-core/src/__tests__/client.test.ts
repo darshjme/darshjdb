@@ -18,7 +18,7 @@ import {
   msgpackEncode,
   msgpackDecode,
 } from '../client.js';
-import { QueryBuilder, queryOnce, subscribe, toDarshJQL } from '../query.js';
+import { QueryBuilder, queryOnce, subscribe, toDarshJQL, normalizeQueryRow } from '../query.js';
 import {
   TransactionBuilder,
   generateId,
@@ -969,5 +969,28 @@ describe('reconnect hooks', () => {
     await Promise.resolve();
 
     expect(subCount).toBe(2);
+  });
+});
+
+
+describe('live wire document normalization', () => {
+  it('normalizes storage rows without losing namespaced or nested data', () => {
+    const nested = { children: [{ entity_id: 'child', attributes: { 'child/name': 'kept' } }] };
+    expect(normalizeQueryRow({ entity_id: 'row', attributes: { 'notes/title': 'hello' }, nested })).toEqual({
+      id: 'row', _id: 'row', title: 'hello', 'notes/title': 'hello', nested,
+    });
+  });
+  it('preserves colliding field names and WebSocket identity', () => {
+    expect(normalizeQueryRow({ _id: 'row', 'a/name': 'first', 'b/name': 'second' })).not.toHaveProperty('name');
+    expect(normalizeQueryRow({ _id: 'row', 'a/name': 'first', 'b/name': 'second', name: 'explicit' })).toEqual({
+      id: 'row', _id: 'row', 'a/name': 'first', 'b/name': 'second', name: 'explicit',
+    });
+  });
+  it('decodes pre-negotiation JSON auth errors', () => {
+    const db = makeClient();
+    const internal = db as unknown as { _privateHandleMessage(raw: string): void; _privateResolveOldest(value: unknown): void };
+    const resolve = vi.spyOn(internal, '_privateResolveOldest');
+    internal._privateHandleMessage(JSON.stringify({ type: 'auth-err', error: 'session revoked' }));
+    expect(resolve).toHaveBeenCalledWith({ type: 'auth-err', error: 'session revoked' });
   });
 });

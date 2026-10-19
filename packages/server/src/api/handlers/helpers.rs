@@ -32,7 +32,7 @@ pub fn wants_msgpack(headers: &HeaderMap) -> bool {
 /// Serialize `value` as JSON or MessagePack depending on the `Accept` header.
 pub fn negotiate_response(headers: &HeaderMap, value: &impl Serialize) -> Response {
     if wants_msgpack(headers) {
-        match rmp_serde::to_vec(value) {
+        match rmp_serde::to_vec_named(value) {
             Ok(bytes) => {
                 let mut resp = (StatusCode::OK, bytes).into_response();
                 resp.headers_mut().insert(
@@ -55,7 +55,7 @@ pub fn negotiate_response_status(
     value: &impl Serialize,
 ) -> Response {
     if wants_msgpack(headers) {
-        match rmp_serde::to_vec(value) {
+        match rmp_serde::to_vec_named(value) {
             Ok(bytes) => {
                 let mut resp = (status, bytes).into_response();
                 resp.headers_mut().insert(

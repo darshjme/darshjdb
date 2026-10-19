@@ -694,7 +694,6 @@ mod tests {
 
     // ── Logic ──────────────────────────────────────────────────
     #[test]
-    #[ignore = "pre-existing v0.2.0 baseline failure — tracked in v0.3.1 followup"]
     fn test_logic_functions() {
         assert_eq!(eval("AND(TRUE, TRUE)"), Value::Bool(true));
         assert_eq!(eval("AND(TRUE, FALSE)"), Value::Bool(false));
@@ -836,7 +835,6 @@ mod tests {
 
     // ── Complex formulas ───────────────────────────────────────
     #[test]
-    #[ignore = "pre-existing v0.2.0 baseline failure — tracked in v0.3.1 followup"]
     fn test_complex_formula() {
         let f = fields(&[
             ("Status", Value::String("Done".into())),

@@ -75,27 +75,30 @@ pub async fn create_snapshot(
     description: &str,
     created_by: Option<Uuid>,
 ) -> Result<Snapshot> {
-    // Get the current max tx_id.
-    let max_tx: (Option<i64>,) = sqlx::query_as("SELECT MAX(tx_id) FROM triples")
-        .fetch_one(pool)
+    let mut tx = pool.begin().await?;
+    sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+        .execute(&mut *tx)
         .await?;
+    // Read the checkpoint and membership from the same database snapshot.
+    let max_tx: (Option<i64>,) =
+        sqlx::query_as("SELECT GREATEST(MAX(tx_id), MAX(retracted_tx_id)) FROM triples")
+            .fetch_one(&mut *tx)
+            .await?;
 
     let tx_id_at_snapshot = max_tx.0.unwrap_or(0);
 
     // Count distinct active entities of this type.
-    // Entity type is determined by the attribute prefix (e.g. "user/name" → type "user").
-    let prefix = format!("{entity_type}/%");
     let record_count: (i64,) = sqlx::query_as(
         r#"
         SELECT COUNT(DISTINCT entity_id)
         FROM triples
-        WHERE attribute LIKE $1 AND tx_id <= $2
+        WHERE attribute = ':db/type' AND value = to_jsonb($1::text) AND tx_id <= $2
           AND (retracted_tx_id IS NULL OR retracted_tx_id > $2)
         "#,
     )
-    .bind(&prefix)
+    .bind(entity_type)
     .bind(tx_id_at_snapshot)
-    .fetch_one(pool)
+    .fetch_one(&mut *tx)
     .await?;
 
     let snapshot = sqlx::query_as::<_, Snapshot>(
@@ -111,8 +114,10 @@ pub async fn create_snapshot(
     .bind(created_by)
     .bind(record_count.0 as i32)
     .bind(tx_id_at_snapshot)
-    .fetch_one(pool)
+    .fetch_one(&mut *tx)
     .await?;
+
+    tx.commit().await?;
 
     Ok(snapshot)
 }
@@ -150,105 +155,47 @@ pub async fn diff_snapshot(pool: &PgPool, snapshot_id: Uuid) -> Result<SnapshotD
     .await?
     .ok_or_else(|| DarshJError::InvalidQuery(format!("snapshot {snapshot_id} not found")))?;
 
-    let prefix = format!("{}/%", snapshot.entity_type);
-
-    // Current max tx_id.
-    let current_tx: (Option<i64>,) = sqlx::query_as("SELECT MAX(tx_id) FROM triples")
-        .fetch_one(pool)
-        .await?;
-    let current_tx_id = current_tx.0.unwrap_or(0);
-
-    // Count new non-retracted triples since snapshot.
-    let added: (i64,) = sqlx::query_as(
-        r#"
-        SELECT COUNT(*)
-        FROM triples
-        WHERE attribute LIKE $1 AND NOT retracted AND tx_id > $2
-        "#,
-    )
-    .bind(&prefix)
+    // Evaluate membership and changes in one database snapshot. Retractions
+    // have their own transaction ids; the assertion id never moves.
+    let counts: (i64, i64, i64, i64, i64, i64) = sqlx::query_as(r#"
+        WITH members AS (
+            SELECT entity_id,
+                bool_or(tx_id <= $2 AND (retracted_tx_id IS NULL OR retracted_tx_id > $2)) AS before,
+                bool_or(NOT retracted) AS now
+            FROM triples
+            WHERE attribute = ':db/type' AND value = to_jsonb($1::text)
+            GROUP BY entity_id
+        ), changes AS (
+            SELECT t.entity_id,
+                count(*) FILTER (WHERE t.tx_id > $2) AS added,
+                count(*) FILTER (WHERE t.retracted_tx_id > $2) AS removed
+            FROM triples t JOIN members m USING (entity_id)
+            WHERE m.before OR m.now
+            GROUP BY t.entity_id
+        )
+        SELECT
+            (SELECT COALESCE(GREATEST(MAX(tx_id), MAX(retracted_tx_id)), 0) FROM triples),
+            count(*) FILTER (WHERE NOT m.before AND m.now),
+            count(*) FILTER (WHERE m.before AND m.now AND (c.added > 0 OR c.removed > 0)),
+            count(*) FILTER (WHERE m.before AND NOT m.now),
+            COALESCE(sum(c.added), 0)::bigint,
+            COALESCE(sum(c.removed), 0)::bigint
+        FROM members m JOIN changes c USING (entity_id)
+    "#)
+    .bind(&snapshot.entity_type)
     .bind(snapshot.tx_id_at_snapshot)
-    .fetch_one(pool)
-    .await?;
-
-    // Count retractions since snapshot.
-    let retracted: (i64,) = sqlx::query_as(
-        r#"
-        SELECT COUNT(*)
-        FROM triples
-        WHERE attribute LIKE $1 AND retracted AND tx_id > $2
-        "#,
-    )
-    .bind(&prefix)
-    .bind(snapshot.tx_id_at_snapshot)
-    .fetch_one(pool)
-    .await?;
-
-    // Entities that have triples ONLY after the snapshot (created).
-    let created: (i64,) = sqlx::query_as(
-        r#"
-        SELECT COUNT(DISTINCT entity_id)
-        FROM triples
-        WHERE attribute LIKE $1 AND tx_id > $2
-          AND entity_id NOT IN (
-              SELECT DISTINCT entity_id FROM triples
-              WHERE attribute LIKE $1 AND tx_id <= $2
-          )
-        "#,
-    )
-    .bind(&prefix)
-    .bind(snapshot.tx_id_at_snapshot)
-    .fetch_one(pool)
-    .await?;
-
-    // Entities that had triples before AND after the snapshot (modified).
-    let modified: (i64,) = sqlx::query_as(
-        r#"
-        SELECT COUNT(DISTINCT entity_id)
-        FROM triples
-        WHERE attribute LIKE $1 AND tx_id > $2
-          AND entity_id IN (
-              SELECT DISTINCT entity_id FROM triples
-              WHERE attribute LIKE $1 AND tx_id <= $2
-          )
-        "#,
-    )
-    .bind(&prefix)
-    .bind(snapshot.tx_id_at_snapshot)
-    .fetch_one(pool)
-    .await?;
-
-    // Entities that were fully retracted after the snapshot.
-    // These existed at snapshot time but now have zero active triples.
-    let deleted: (i64,) = sqlx::query_as(
-        r#"
-        SELECT COUNT(DISTINCT t1.entity_id)
-        FROM triples t1
-        WHERE t1.attribute LIKE $1
-          AND t1.tx_id <= $2
-          AND NOT EXISTS (
-              SELECT 1 FROM triples t2
-              WHERE t2.entity_id = t1.entity_id
-                AND t2.attribute LIKE $1
-                AND NOT t2.retracted
-          )
-        "#,
-    )
-    .bind(&prefix)
-    .bind(snapshot.tx_id_at_snapshot)
-    .fetch_one(pool)
-    .await?;
+    .fetch_one(pool).await?;
 
     Ok(SnapshotDiff {
         snapshot_id,
         entity_type: snapshot.entity_type,
         snapshot_tx_id: snapshot.tx_id_at_snapshot,
-        current_tx_id,
-        entities_created: created.0 as usize,
-        entities_modified: modified.0 as usize,
-        entities_deleted: deleted.0 as usize,
-        triples_added: added.0,
-        triples_retracted: retracted.0,
+        current_tx_id: counts.0,
+        entities_created: counts.1 as usize,
+        entities_modified: counts.2 as usize,
+        entities_deleted: counts.3 as usize,
+        triples_added: counts.4,
+        triples_retracted: counts.5,
     })
 }
 
@@ -276,17 +223,17 @@ pub async fn restore_snapshot(pool: &PgPool, snapshot_id: Uuid) -> Result<i64> {
     .await?
     .ok_or_else(|| DarshJError::InvalidQuery(format!("snapshot {snapshot_id} not found")))?;
 
-    let prefix = format!("{}/%", snapshot.entity_type);
-
     // Find all entity_ids that have any triples matching this type.
     let entity_ids: Vec<(Uuid,)> = sqlx::query_as(
         r#"
         SELECT DISTINCT entity_id
         FROM triples
-        WHERE attribute LIKE $1
+        WHERE attribute = ':db/type' AND value = to_jsonb($1::text)
+          AND (NOT retracted OR (tx_id <= $2 AND (retracted_tx_id IS NULL OR retracted_tx_id > $2)))
         "#,
     )
-    .bind(&prefix)
+    .bind(&snapshot.entity_type)
+    .bind(snapshot.tx_id_at_snapshot)
     .fetch_all(pool)
     .await?;
 
@@ -301,14 +248,20 @@ pub async fn restore_snapshot(pool: &PgPool, snapshot_id: Uuid) -> Result<i64> {
                    id, entity_id, attribute, value, value_type, tx_id,
                    created_at, retracted, expires_at
             FROM triples
-            WHERE entity_id = $1 AND attribute LIKE $2 AND tx_id <= $3
-              AND (retracted_tx_id IS NULL OR retracted_tx_id > $3)
-            ORDER BY attribute, tx_id DESC
+            WHERE entity_id = $1 AND tx_id <= $2
+              AND (retracted_tx_id IS NULL OR retracted_tx_id > $2)
+              AND EXISTS (
+                  SELECT 1 FROM triples membership
+                  WHERE membership.entity_id = $1 AND membership.attribute = ':db/type'
+                    AND membership.value = to_jsonb($3::text) AND membership.tx_id <= $2
+                    AND (membership.retracted_tx_id IS NULL OR membership.retracted_tx_id > $2)
+              )
+            ORDER BY attribute, tx_id DESC, id DESC
             "#,
         )
         .bind(entity_id)
-        .bind(&prefix)
         .bind(snapshot.tx_id_at_snapshot)
+        .bind(&snapshot.entity_type)
         .fetch_all(&mut *db_tx)
         .await?;
 
@@ -324,12 +277,11 @@ pub async fn restore_snapshot(pool: &PgPool, snapshot_id: Uuid) -> Result<i64> {
                    id, entity_id, attribute, value, value_type, tx_id,
                    created_at, retracted, expires_at
             FROM triples
-            WHERE entity_id = $1 AND attribute LIKE $2 AND NOT retracted
+            WHERE entity_id = $1 AND NOT retracted
             ORDER BY attribute, tx_id DESC
             "#,
         )
         .bind(entity_id)
-        .bind(&prefix)
         .fetch_all(&mut *db_tx)
         .await?;
 
@@ -349,10 +301,11 @@ pub async fn restore_snapshot(pool: &PgPool, snapshot_id: Uuid) -> Result<i64> {
                 Some(snap_val) if snap_val == cur_val => {}
                 _ => {
                     sqlx::query(
-                        "UPDATE triples SET retracted = true WHERE entity_id = $1 AND attribute = $2 AND NOT retracted",
+                        "UPDATE triples SET retracted = true, retracted_tx_id = $3 WHERE entity_id = $1 AND attribute = $2 AND NOT retracted",
                     )
                     .bind(entity_id)
                     .bind(attr)
+                    .bind(tx_id)
                     .execute(&mut *db_tx)
                     .await?;
                 }

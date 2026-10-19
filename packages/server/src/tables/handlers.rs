@@ -41,6 +41,17 @@ pub struct CreateTableRequest {
     pub template: Option<String>,
 }
 
+// Missing fields preserve existing values; an explicit null clears them.
+fn deserialize_patch_field<'de, D, T>(
+    deserializer: D,
+) -> std::result::Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer).map(Some)
+}
+
 /// Request body for `PATCH /api/tables/{id}`.
 #[derive(Debug, Deserialize)]
 pub struct UpdateTableRequest {
@@ -48,16 +59,16 @@ pub struct UpdateTableRequest {
     #[serde(default)]
     pub name: Option<String>,
     /// New description.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_patch_field")]
     pub description: Option<Option<String>>,
     /// New icon.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_patch_field")]
     pub icon: Option<Option<String>>,
     /// New color.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_patch_field")]
     pub color: Option<Option<String>>,
     /// New primary field id.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_patch_field")]
     pub primary_field: Option<Option<FieldId>>,
     /// Reorder field ids.
     #[serde(default)]
@@ -519,7 +530,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "pre-existing v0.2.0 baseline failure — tracked in v0.3.1 followup"]
     fn update_table_request_clear_description() {
         let json = serde_json::json!({ "description": null });
         let req: UpdateTableRequest = serde_json::from_value(json).unwrap();

@@ -42,9 +42,13 @@ COPY packages/cache-server/  packages/cache-server/
 COPY packages/agent-memory/  packages/agent-memory/
 COPY --from=frontend /build/packages/admin/dist packages/admin/dist
 
+ARG CARGO_BUILD_JOBS=1
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    cargo build --release --workspace && \
-    strip target/release/ddb-server target/release/ddb target/release/ddb-cache-server
+    --mount=type=cache,target=/build/target \
+    cargo build --locked --release --workspace -j "$CARGO_BUILD_JOBS" && \
+    mkdir -p /build/bin && \
+    cp target/release/ddb-server target/release/ddb target/release/ddb-cache-server /build/bin/ && \
+    strip /build/bin/ddb-server /build/bin/ddb /build/bin/ddb-cache-server
 
 # ── Stage 3: Runtime (minimal) ───────────────────────────────────────
 FROM debian:bookworm-slim AS runtime
@@ -59,9 +63,9 @@ RUN apt-get update && \
 WORKDIR /app
 
 # Copy binaries from builder
-COPY --from=builder /build/target/release/ddb-server       /usr/local/bin/ddb-server
-COPY --from=builder /build/target/release/ddb              /usr/local/bin/ddb
-COPY --from=builder /build/target/release/ddb-cache-server /usr/local/bin/ddb-cache-server
+COPY --from=builder /build/bin/ddb-server       /usr/local/bin/ddb-server
+COPY --from=builder /build/bin/ddb              /usr/local/bin/ddb
+COPY --from=builder /build/bin/ddb-cache-server /usr/local/bin/ddb-cache-server
 COPY --from=frontend /build/packages/admin/dist            /usr/share/darshan/admin
 
 # Lock down binary permissions

@@ -372,7 +372,7 @@ export class DarshJDB {
 
       socket.onmessage = (event) => {
         if (this._privateSocket !== socket) return;
-        this._privateHandleMessage(event.data as ArrayBuffer);
+        this._privateHandleMessage(event.data as ArrayBuffer | string);
       };
 
       socket.onerror = () => {
@@ -424,8 +424,9 @@ export class DarshJDB {
     this._privateSocket.send(encoded);
   }
 
-  private _privateHandleMessage(raw: ArrayBuffer): void {
-    const msg = decode(new Uint8Array(raw)) as ServerMessage;
+  private _privateHandleMessage(raw: ArrayBuffer | string): void {
+    // Authentication failures may arrive as JSON before codec negotiation.
+    const msg = (typeof raw === 'string' ? JSON.parse(raw) : decode(new Uint8Array(raw))) as ServerMessage;
 
     // The `auth` frame carries no id, so its reply cannot be correlated by
     // one. Resolve the single in-flight request instead.

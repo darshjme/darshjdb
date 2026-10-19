@@ -32,10 +32,18 @@ use uuid::Uuid;
 
 async fn setup_pool() -> Option<PgPool> {
     let url = std::env::var("DATABASE_URL").ok()?;
-    let pool = PgPool::connect(&url).await.ok()?;
-    PgTripleStore::new(pool.clone()).await.ok()?;
-    rest::ensure_auth_schema(&pool).await.ok()?;
-    ensure_time_series_schema(&pool).await.ok()?;
+    let pool = PgPool::connect(&url)
+        .await
+        .expect("configured integration database setup must succeed");
+    PgTripleStore::new(pool.clone())
+        .await
+        .expect("configured integration database setup must succeed");
+    rest::ensure_auth_schema(&pool)
+        .await
+        .expect("configured integration database setup must succeed");
+    ensure_time_series_schema(&pool)
+        .await
+        .expect("configured integration database setup must succeed");
     Some(pool)
 }
 

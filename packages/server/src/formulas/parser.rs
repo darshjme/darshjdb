@@ -449,7 +449,9 @@ impl Parser {
     }
 
     fn parse_unary(&mut self) -> Result<Expr> {
-        if matches!(self.peek(), Some(Token::Operator(Op::Not))) {
+        if matches!(self.peek(), Some(Token::Operator(Op::Not)))
+            && self.tokens.get(self.pos + 1) != Some(&Token::OpenParen)
+        {
             self.advance();
             let operand = self.parse_unary()?;
             return Ok(Expr::UnaryOp(Op::Not, Box::new(operand)));
@@ -463,7 +465,12 @@ impl Parser {
     }
 
     fn parse_call(&mut self) -> Result<Expr> {
-        if let Some(Token::Function(name)) = self.peek().cloned() {
+        let function = match self.peek().cloned() {
+            Some(Token::Function(name)) => Some(name),
+            Some(Token::Operator(op @ (Op::And | Op::Or | Op::Not))) => Some(op.to_string()),
+            _ => None,
+        };
+        if let Some(name) = function {
             // Check if followed by `(` — otherwise it could be a bare identifier
             if self.tokens.get(self.pos + 1) == Some(&Token::OpenParen) {
                 self.advance(); // consume function name
@@ -641,7 +648,26 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "pre-existing v0.2.0 baseline failure — tracked in v0.3.1 followup"]
+    fn logical_functions_and_parenthesized_infix_coexist() {
+        assert!(matches!(
+            parse("TRUE AND (FALSE OR TRUE)").unwrap(),
+            Expr::BinaryOp(Op::And, _, _)
+        ));
+        assert!(matches!(
+            parse("AND(TRUE, OR(FALSE, TRUE))").unwrap(),
+            Expr::FunctionCall(_, _)
+        ));
+        assert!(matches!(
+            parse("NOT(TRUE)").unwrap(),
+            Expr::FunctionCall(_, _)
+        ));
+        assert!(matches!(
+            parse("NOT FALSE").unwrap(),
+            Expr::UnaryOp(Op::Not, _)
+        ));
+    }
+
+    #[test]
     fn test_complex_formula() {
         let expr = parse(r#"IF(AND({Status} = "Done", {Priority} > 3), "High", "Low")"#).unwrap();
         match expr {
