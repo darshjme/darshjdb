@@ -126,7 +126,7 @@ class DarshanClientAdapter implements DarshanClientInterface {
 
   subscribe<T>(query: Query<T>, callback: (snapshot: QuerySnapshot<T>) => void): Unsubscribe {
     return subscribeQuery<T>(this.db, toDescriptor(query), (result: QueryResult<T>) => {
-      callback({ data: result.data, error: null });
+      callback({ data: result.data, error: result.error ?? null });
     });
   }
 

@@ -505,11 +505,11 @@ pub fn expr_to_sql(
         PermExpr::FieldRef { field } => {
             // Validate field name to prevent SQL injection: only
             // alphanumeric and underscore allowed.
-            let safe_field: String = field
-                .chars()
-                .filter(|c| c.is_alphanumeric() || *c == '_')
-                .collect();
-            (format!("\"{safe_field}\""), vec![])
+            if field.is_empty() || !field.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+                // Invalid references must never silently become another column.
+                return ("NULL".into(), vec![]);
+            }
+            (format!("\"{field}\""), vec![])
         }
 
         PermExpr::AuthVar { path } => {
@@ -1130,7 +1130,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "pre-existing v0.2.0 baseline failure — tracked in v0.3.1 followup"]
     fn field_ref_sanitization_in_sql() {
         let ctx = test_ctx(&[]);
         let auth = test_auth_vars(&ctx);

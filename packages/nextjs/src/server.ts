@@ -10,8 +10,8 @@
  * import { queryServer } from '@darshjdb/nextjs/server';
  *
  * export default async function Page() {
- *   const data = await queryServer({ todos: { $where: { done: false } } });
- *   return <TodoList items={data.todos} />;
+ *   const data = await queryServer({ type: 'todos', $where: [{ attribute: 'done', op: 'Eq', value: false }] });
+ *   return <TodoList items={data.data} />;
  * }
  * ```
  *
@@ -32,7 +32,7 @@
 // ---------------------------------------------------------------------------
 
 /** DarshJQL query object — the same format used by client SDKs. */
-export type DarshanQuery = Record<string, unknown>;
+export type DarshanQuery = DarshJQL;
 
 /** Options controlling caching and revalidation behavior. */
 export interface QueryServerOptions {
@@ -59,7 +59,7 @@ export interface MutationOp {
 // Admin client factory (used by api.ts route helpers)
 // ---------------------------------------------------------------------------
 
-import { DarshJDB } from '@darshjdb/client';
+import { DarshJDB, type DarshJQL } from '@darshjdb/client';
 
 /**
  * Create an admin DarshJDB client from environment variables.
@@ -116,7 +116,7 @@ function getConfig(): { url: string; token: string } {
  * @example
  * ```tsx
  * const data = await queryServer(
- *   { posts: { $where: { published: true }, $limit: 20 } },
+ *   { type: 'posts', $where: [{ attribute: 'published', op: 'Eq', value: true }], $limit: 20 },
  *   { revalidate: 60, tags: ['posts'] },
  * );
  * ```
@@ -133,7 +133,7 @@ export async function queryServer<T = Record<string, unknown>>(
       'Content-Type': 'application/json',
       Authorization: `Bearer ${token}`,
     },
-    body: JSON.stringify(query),
+    body: JSON.stringify({ query }),
   };
 
   // Next.js fetch cache integration
@@ -185,7 +185,12 @@ export async function mutateServer<T = unknown>(ops: MutationOp[]): Promise<T> {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${token}`,
     },
-    body: JSON.stringify({ ops }),
+    body: JSON.stringify({
+      mutations: ops.map(({ op, ...mutation }) => ({
+        ...mutation,
+        op: op === 'set' ? 'insert' : op === 'merge' ? 'update' : op,
+      })),
+    }),
   });
 
   if (!response.ok) {

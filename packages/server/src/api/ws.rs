@@ -348,7 +348,7 @@ async fn handle_connection(
 
     // Phase 1: Authentication with timeout.
     let peer_ip = peer_addr.map_or_else(|| "unknown".to_string(), |a| a.ip().to_string());
-    let codec = match timeout(
+    let (codec, access_token) = match timeout(
         AUTH_TIMEOUT,
         authenticate(&mut socket, &state, session_id, &peer_ip),
     )
@@ -385,6 +385,8 @@ async fn handle_connection(
             msg = socket.recv() => {
                 match msg {
                     Some(Ok(msg)) => {
+                        let Ok(auth) = state.auth_sessions.validate_token(&access_token, &peer_ip, "websocket", "").await else { break; };
+                        state.sessions.with_session_mut(&session_id, |s| s.authenticate(auth));
                         let should_close = process_inbound(
                             msg, &mut socket, &state, session_id, codec,
                         ).await;
@@ -408,6 +410,8 @@ async fn handle_connection(
             change = change_rx.recv() => {
                 match change {
                     Ok(event) => {
+                        let Ok(auth) = state.auth_sessions.validate_token(&access_token, &peer_ip, "websocket", "").await else { break; };
+                        state.sessions.with_session_mut(&session_id, |s| s.authenticate(auth));
                         // Process live query subscriptions for this change event.
                         if handle_live_query_change(&event, &mut socket, &state, session_id, codec).await {
                             debug!(session_id = %session_id, "send failed during live query event, closing");
@@ -454,7 +458,7 @@ async fn authenticate(
     state: &WsState,
     session_id: SessionId,
     peer_ip: &str,
-) -> Result<Codec, WsError> {
+) -> Result<(Codec, String), WsError> {
     loop {
         let msg = socket
             .recv()
@@ -503,7 +507,7 @@ async fn authenticate(
                         "WebSocket authenticated"
                     );
 
-                    return Ok(codec);
+                    return Ok((codec, token));
                 }
                 Err(e) => {
                     return Err(WsError::AuthFailed(e.to_string()));
@@ -716,7 +720,7 @@ async fn handle_subscribe(
 
     // Execute the initial query against the real query engine.
     let initial_results: Vec<Value> = match query::parse_darshan_ql(&query) {
-        Ok(ast) => match query::plan_query(&ast) {
+        Ok(ast) => match authorized_plan(state, session_id, &ast) {
             Ok(plan) => match query::execute_query(&state.pool, &plan).await {
                 Ok(rows) => rows
                     .into_iter()
@@ -928,11 +932,64 @@ async fn handle_mutation(
             entity_types.push(entity.to_string());
         }
 
+        let eid = match id_str {
+            Some(id) => match uuid::Uuid::parse_str(id) {
+                Ok(id) => id,
+                Err(_) => {
+                    let _ = send_message(
+                        socket,
+                        &ServerMessage::MutErr {
+                            id: req_id,
+                            error: "invalid entity id".into(),
+                        },
+                        codec,
+                    )
+                    .await;
+                    return;
+                }
+            },
+            None if op_str == "insert" => uuid::Uuid::new_v4(),
+            None => {
+                let _ = send_message(
+                    socket,
+                    &ServerMessage::MutErr {
+                        id: req_id,
+                        error: "mutation requires id".into(),
+                    },
+                    codec,
+                )
+                .await;
+                return;
+            }
+        };
+        let Some(auth) = get_auth_ctx(state, session_id) else {
+            return;
+        };
+        if let Err(error) = super::rest::authorize_mutation_with_permissions(
+            &state.permissions,
+            &None,
+            &auth,
+            &mut db_tx,
+            entity,
+            op_str,
+            eid,
+            data,
+        )
+        .await
+        {
+            let _ = send_message(
+                socket,
+                &ServerMessage::MutErr {
+                    id: req_id,
+                    error: format!("{error:?}"),
+                },
+                codec,
+            )
+            .await;
+            return;
+        }
         match op_str {
             "insert" => {
-                let eid = id_str
-                    .and_then(|s| uuid::Uuid::parse_str(s).ok())
-                    .unwrap_or_else(uuid::Uuid::new_v4);
                 entity_ids.push(eid.to_string());
                 all_triples.push(TripleInput {
                     entity_id: eid,
@@ -1263,6 +1320,23 @@ fn get_auth_ctx(state: &WsState, session_id: SessionId) -> Option<AuthContext> {
 
 /// Authorize an entity operation for this session against the shared
 /// permission engine. Mirrors the REST `check_permission` path.
+fn authorized_plan(
+    state: &WsState,
+    session_id: SessionId,
+    ast: &query::QueryAST,
+) -> Result<query::QueryPlan, String> {
+    let auth = get_auth_ctx(state, session_id).ok_or("session not authenticated")?;
+    let rule = get_rule_with_fallback(&state.permissions, &ast.entity_type, Operation::Subscribe)
+        .ok_or("no subscription permission rule")?;
+    let result = evaluate_rule_public(&auth, rule);
+    if !result.allowed {
+        return Err("subscription permission denied".into());
+    }
+    let filters = query::PermissionFilter::from_clauses(&result.where_clauses, auth.user_id)
+        .map_err(|e| e.to_string())?;
+    query::plan_query_with_permission(ast, &filters).map_err(|e| e.to_string())
+}
+
 fn authorize(
     state: &WsState,
     session_id: SessionId,
@@ -1295,7 +1369,7 @@ fn authorize(
 ///
 /// Returns `true` if a send failed and the connection should be closed.
 async fn handle_change_event(
-    event: &ChangeEvent,
+    _event: &ChangeEvent,
     socket: &mut WebSocket,
     state: &WsState,
     session_id: SessionId,
@@ -1317,19 +1391,11 @@ async fn handle_change_event(
     }
 
     for (sub_id, query_ast, _query_hash) in subs {
-        // Check if this change could affect this subscription by matching entity type.
-        // A simple heuristic: if the query's "type" field matches the event's entity_type.
-        let query_type = query_ast.get("type").and_then(|v| v.as_str()).unwrap_or("");
-        if let Some(ref event_type) = event.entity_type
-            && !query_type.is_empty()
-            && query_type != event_type
-        {
-            continue;
-        }
-
+        // A mixed mutation batch reports only one entity type; re-plan every
+        // subscription with the current session policy before sending a diff.
         // Re-execute the query.
         let new_results: Vec<Value> = match query::parse_darshan_ql(&query_ast) {
-            Ok(ast) => match query::plan_query(&ast) {
+            Ok(ast) => match authorized_plan(state, session_id, &ast) {
                 Ok(plan) => match query::execute_query(&state.pool, &plan).await {
                     Ok(rows) => rows
                         .into_iter()
@@ -1519,6 +1585,19 @@ async fn handle_live_select(
     session_id: SessionId,
     codec: Codec,
 ) {
+    if !get_auth_ctx(state, session_id).is_some_and(|auth| auth.roles.iter().any(|r| r == "admin"))
+    {
+        let _ = send_message(
+            socket,
+            &ServerMessage::LiveSelectErr {
+                id: req_id,
+                error: "raw live feeds require admin; use scoped subscribe".into(),
+            },
+            codec,
+        )
+        .await;
+        return;
+    }
     match state.live_queries.register(session_id, &query_str) {
         Ok(live_id) => {
             let _ = send_message(
@@ -1716,6 +1795,18 @@ async fn handle_pub_sub(
     session_id: SessionId,
     codec: Codec,
 ) {
+    if !get_auth_ctx(state, session_id).is_some_and(|auth| auth.roles.iter().any(|r| r == "admin"))
+    {
+        let _ = send_message(
+            socket,
+            &ServerMessage::Error {
+                error: "raw pubsub requires admin; use scoped subscribe".into(),
+            },
+            codec,
+        )
+        .await;
+        return;
+    }
     if channel.is_empty() {
         let _ = send_message(
             socket,
@@ -1880,7 +1971,7 @@ async fn handle_ws_batch(
                     .to_string();
                 let query_val = op.get("query").cloned().unwrap_or(Value::Null);
                 let query_result = match crate::query::parse_darshan_ql(&query_val) {
-                    Ok(ast) => match crate::query::plan_query(&ast) {
+                    Ok(ast) => match authorized_plan(state, session_id, &ast) {
                         Ok(plan) => match crate::query::execute_query(&state.pool, &plan).await {
                             Ok(rows) => {
                                 let initial: Vec<Value> = rows
@@ -1985,7 +2076,8 @@ async fn send_message(
             Message::Text(payload.into())
         }
         Codec::MessagePack => {
-            let payload = rmp_serde::to_vec(msg).map_err(|e| WsError::Codec(e.to_string()))?;
+            let payload =
+                rmp_serde::to_vec_named(msg).map_err(|e| WsError::Codec(e.to_string()))?;
             Message::Binary(payload.into())
         }
     };

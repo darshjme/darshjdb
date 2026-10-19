@@ -305,6 +305,10 @@ impl PgTripleStore {
         .execute(&self.pool)
         .await?;
 
+        sqlx::raw_sql(include_str!("../../migrations/20261020000000_retraction_time.sql"))
+            .execute(&self.pool)
+            .await?;
+
         // Ensure the Merkle audit trail table exists.
         crate::audit::ensure_audit_schema(&self.pool)
             .await

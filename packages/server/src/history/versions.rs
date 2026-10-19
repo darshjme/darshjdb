@@ -65,11 +65,18 @@ pub struct RecordVersion {
 async fn fetch_all_triples(pool: &PgPool, entity_id: Uuid) -> Result<Vec<Triple>> {
     let triples = sqlx::query_as::<_, Triple>(
         r#"
-        SELECT id, entity_id, attribute, value, value_type, tx_id,
-               created_at, retracted, expires_at
-        FROM triples
-        WHERE entity_id = $1
-        ORDER BY tx_id ASC, id ASC
+        SELECT * FROM (
+            SELECT id, entity_id, attribute, value, value_type, tx_id,
+                   created_at, false AS retracted, expires_at
+            FROM triples WHERE entity_id = $1
+            UNION ALL
+            SELECT id, entity_id, attribute, value, value_type,
+                   retracted_tx_id AS tx_id,
+                   COALESCE(retracted_at, created_at) AS created_at,
+                   true AS retracted, expires_at
+            FROM triples WHERE entity_id = $1 AND retracted_tx_id IS NOT NULL
+        ) events
+        ORDER BY tx_id ASC, retracted DESC, id ASC
         "#,
     )
     .bind(entity_id)
@@ -102,6 +109,7 @@ pub(crate) fn build_versions(triples: &[Triple]) -> Vec<RecordVersion> {
 
     let mut versions = Vec::new();
     let mut state: HashMap<String, Value> = HashMap::new();
+    let mut active: HashMap<String, HashMap<i64, (i64, Value)>> = HashMap::new();
     let mut version_number: u32 = 0;
 
     for (tx_id, created_at, group) in &tx_groups {
@@ -110,10 +118,18 @@ pub(crate) fn build_versions(triples: &[Triple]) -> Vec<RecordVersion> {
 
         // Apply this transaction's triples to the running state.
         for triple in group {
+            let rows = active.entry(triple.attribute.clone()).or_default();
             if triple.retracted {
-                state.remove(&triple.attribute);
+                rows.remove(&triple.id);
             } else {
-                state.insert(triple.attribute.clone(), triple.value.clone());
+                rows.insert(triple.id, (triple.tx_id, triple.value.clone()));
+            }
+            // A delayed retraction of an older row must not erase a newer
+            // assertion. Keep row identity when replaying the event stream.
+            if let Some((_, (_, value))) = rows.iter().max_by_key(|(id, (tx, _))| (*tx, **id)) {
+                state.insert(triple.attribute.clone(), value.clone());
+            } else {
+                state.remove(&triple.attribute);
             }
 
             // Check for a `_changed_by` meta-attribute.
@@ -246,19 +262,11 @@ pub async fn get_at_time(
     entity_id: Uuid,
     timestamp: DateTime<Utc>,
 ) -> Result<HashMap<String, Value>> {
-    let triples = sqlx::query_as::<_, Triple>(
-        r#"
-        SELECT id, entity_id, attribute, value, value_type, tx_id,
-               created_at, retracted, expires_at
-        FROM triples
-        WHERE entity_id = $1 AND created_at <= $2
-        ORDER BY tx_id ASC, id ASC
-        "#,
-    )
-    .bind(entity_id)
-    .bind(timestamp)
-    .fetch_all(pool)
-    .await?;
+    let triples: Vec<Triple> = fetch_all_triples(pool, entity_id)
+        .await?
+        .into_iter()
+        .filter(|event| event.created_at <= timestamp)
+        .collect();
 
     if triples.is_empty() {
         return Err(DarshJError::EntityNotFound(entity_id));
@@ -297,6 +305,20 @@ mod tests {
             retracted,
             expires_at: None,
         }
+    }
+
+    #[test]
+    fn delayed_old_row_retraction_preserves_new_value() {
+        let eid = Uuid::new_v4();
+        let mut old = make_triple(eid, "name", json!("old"), 1, false);
+        old.id = 1;
+        let mut new = make_triple(eid, "name", json!("new"), 2, false);
+        new.id = 2;
+        let mut retraction = old.clone();
+        retraction.tx_id = 3;
+        retraction.retracted = true;
+        let versions = build_versions(&[old, new, retraction]);
+        assert_eq!(versions.last().unwrap().snapshot["name"], json!("new"));
     }
 
     #[test]

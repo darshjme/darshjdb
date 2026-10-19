@@ -219,6 +219,7 @@ export function darshanTransferQuery<T>(
       query,
       (result) => {
         if (result.error) {
+          if (result.error.code === 'SubscriptionEndedError') _data.set(undefined);
           _error.set({
             code: result.error.code,
             message: result.error.message,

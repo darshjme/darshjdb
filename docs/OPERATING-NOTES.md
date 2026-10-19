@@ -28,7 +28,9 @@ Check startup logs and the migration ledger when enabling pgvector or TimescaleD
 
 - **Mutation authorization:** general mutations and sequential/parallel batch queries now verify sessions and apply permission rules. Mutations check the existing entity type, row predicates before and after changes, field restrictions and schema constraints. Batch reads use the transaction connection so they see earlier writes. The isolated PostgreSQL regression covers ownership and rollback. This does not establish equivalent protection for every other API surface.
 - **Memory recall:** [`semantic_recall`](../packages/server/src/agent_memory/repo.rs) uses case-insensitive SQL `LIKE` matching. Embedding generation and embedding columns do not make this endpoint a vector recall API.
-- **Entity search:** semantic and hybrid handlers in [REST](../packages/server/src/api/rest.rs) are separate from agent-memory recall and use PostgreSQL vector queries. Confirm extension and schema availability for the selected endpoint.
+- **DarshQL:** `/api/darshql` and `/api/sql/darshql` require an admin session. The SQL executor does not implement row/field permissions; regular application users should use the permission-aware DarshJQL `/api/query` and `/api/mutate` APIs.
+- **Entity search:** text, semantic and hybrid handlers apply row permissions before ranking limits. Text search excludes restricted fields. Vector retrieval returns no candidates for principals with field restrictions because embedding source-field provenance is not verified; hybrid search can still use authorized text results. Embedding writes require update permission on the target entity and attribute. These routes are separate from agent-memory recall. Semantic and hybrid queries require the PostgreSQL vector schema; text search does not.
+- **Working memory:** PostgreSQL is authoritative for context, counts and summaries across restarts. Appending a message and promoting overflow to episodic memory share one transaction and a session row lock; promotion preserves IDs. Existing oversized working windows are retained until the next append promotes overflow. Old duplicate rows created by earlier versions are not automatically deleted.
 - **File storage:** startup constructs [`LocalFsBackend`](../packages/server/src/main.rs). Configuration fields alone do not establish support for an S3-compatible backend.
 - **Audit and realtime:** inspect the selected mutation route, [triple-store implementation](../packages/server/src/store/) and [subscriptions documentation](subscriptions.md) before assuming that every write has the same audit-root and cross-replica notification behavior.
 
@@ -41,3 +43,30 @@ Run builds and tests locally or on an authorized server. GitHub Actions is disab
 The embedded console lives at `/admin/`, including assets and deep links. It uses same-origin APIs and runtime email/password sign-in; there is no bundled development bearer token. Only an account with the admin role enters the console. Sessions live in tab session storage and are cleared on sign-out or a 401 response. For separate development servers, set `DDB_DEV_PROXY` to the backend URL.
 
 Schema relationships, authentication users, storage and system status come from server APIs. Storage supports upload, download and deletion. Server logs remain available through process output, and backups through PostgreSQL/deployment tooling. A webhook editor is not yet present; use `/api/webhooks`. The console does not manufacture backup history, metrics or webhook deliveries.
+
+### History and live transport repairs (2026-10-20)
+
+History now replays assertions and retractions at their own transaction ids.
+A separately committed retract and insert are two versions; undo returns to the
+previous committed version. Atomic restores use one transaction id for both.
+Snapshots select records by `:db/type`, including their type marker, and count
+retractions using the retraction transaction rather than the original assertion.
+
+The additive `20261020000000_retraction_time.sql` migration records timestamps
+for future retractions. Existing retractions have no recoverable timestamp;
+point-in-time history uses their original assertion time as a legacy fallback.
+Transaction-based history retains the recorded retraction transaction ids.
+No migration can reconstruct timestamps or transaction ids already lost by an
+older installation.
+
+HTTP and WebSocket MessagePack responses use named maps, matching JSON and the
+JavaScript SDK. Reverse proxies must route `/ws` to the API service, alongside
+`/api`, `/admin`, and `/health`. Hook results now use an adjacent `data` payload
+for non-unit actions so string rejection reasons can serialize and round-trip.
+
+Query subscriptions enforce row permissions for initial data and every update.
+SSE sends generic invalidations after comparing the authorized result, and
+WebSocket sessions revalidate their token before requests and change delivery.
+Raw LIVE SELECT and pub/sub feeds require admin access because their event
+payloads have no row policy contract; ordinary clients should use scoped query
+subscriptions. REST event publication also requires admin access.

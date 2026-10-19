@@ -2192,7 +2192,8 @@ async fn darshql_handler(
     headers: HeaderMap,
     axum::Json(body): axum::Json<DarshQLRequest>,
 ) -> Result<Response, ApiError> {
-    let auth_ctx = extract_auth_context(&headers, &state).await?;
+    // The SQL executor does not implement row/field permissions yet.
+    let auth_ctx = require_admin_auth(&headers, &state).await?;
 
     let start = Instant::now();
 
@@ -3993,82 +3994,68 @@ async fn subscribe(
     Query(params): Query<SubscribeParams>,
     headers: HeaderMap,
 ) -> Result<Sse<impl tokio_stream::Stream<Item = Result<Event, Infallible>>>, ApiError> {
-    let _token = extract_bearer_token(&headers)?;
-
+    let auth = extract_auth_context(&headers, &state).await?;
     if params.q.is_empty() {
         return Err(ApiError::bad_request("Query parameter 'q' is required"));
     }
-
-    // Parse the DarshJQL query. Clients pass the query as a JSON string
-    // in the `q` query-param; decode it into a `serde_json::Value` and
-    // route through the canonical parser so we inherit all validation.
     let q_json: Value = serde_json::from_str(&params.q)
         .map_err(|e| ApiError::bad_request(format!("Query 'q' must be JSON: {e}")))?;
     let ast = query::parse_darshan_ql(&q_json)
         .map_err(|e| ApiError::bad_request(format!("Invalid DarshJQL: {e}")))?;
-
-    let target_entity_type = ast.entity_type.clone();
-    let where_clauses = ast.where_clauses.clone();
-    let triple_store = Arc::clone(&state.triple_store);
-
-    // Subscribe to the real change-event bus. Every mutation that
-    // touches a triple flows through `pubsub.subscribe_events()` as a
-    // `PubSubEvent` carrying entity_type/entity_id/tx_id.
-    let rx = state.pubsub.subscribe_events();
-
-    // The `subscribe` filter has to perform an async DB lookup when the
-    // query carries `$where` predicates, so we cannot use the synchronous
-    // `tokio_stream::StreamExt::filter_map` combinator. Instead we
-    // `.then()` each broadcast item into a future producing
-    // `Option<Result<Event, Infallible>>`, then drop the `None`s with a
-    // synchronous `filter_map(|x| x)`.
+    let permission =
+        check_permission(&auth, &ast.entity_type, Operation::Read, &state.permissions)?;
+    let filters = query::PermissionFilter::from_clauses(&permission.where_clauses, auth.user_id)
+        .map_err(|e| ApiError::bad_request(e.to_string()))?;
+    let plan = query::plan_query_with_permission(&ast, &filters)
+        .map_err(|e| ApiError::bad_request(e.to_string()))?;
+    // Listen before the initial read to avoid losing a concurrent mutation.
+    let rx = state.change_tx.subscribe();
+    let initial = query::execute_query(&state.pool, &plan)
+        .await
+        .map_err(|e| ApiError::internal(e.to_string()))?;
+    let previous = Arc::new(tokio::sync::Mutex::new(
+        serde_json::to_value(initial).unwrap_or_default(),
+    ));
     let stream = BroadcastStream::new(rx)
-        .then(move |msg| {
-            let target = target_entity_type.clone();
-            let where_clauses = where_clauses.clone();
-            let triple_store = Arc::clone(&triple_store);
+        .then(move |_msg| {
+            let state = state.clone();
+            let headers = headers.clone();
+            let ast = ast.clone();
+            let previous = Arc::clone(&previous);
             async move {
-                let event = match msg {
-                    Ok(ev) => ev,
-                    Err(_) => return None,
+                // Lag also requires a fresh read. Events carry no row data to
+                // subscribers: only a changed authorized result invalidates it.
+                // Revalidate expiry/revocation and policy on every update.
+                let auth = match extract_auth_context(&headers, &state).await {
+                    Ok(auth) => auth,
+                    Err(_) => return Some(Ok(Event::default().event("auth-error").data("{}"))),
                 };
-
-                // (c) Entity-type gate — drop events for any other type.
-                match event.entity_type.as_deref() {
-                    Some(et) if et == target => {}
-                    _ => return None,
+                let permission = match check_permission(
+                    &auth,
+                    &ast.entity_type,
+                    Operation::Read,
+                    &state.permissions,
+                ) {
+                    Ok(permission) => permission,
+                    Err(_) => return Some(Ok(Event::default().event("auth-error").data("{}"))),
+                };
+                let filters =
+                    query::PermissionFilter::from_clauses(&permission.where_clauses, auth.user_id)
+                        .ok()?;
+                let plan = query::plan_query_with_permission(&ast, &filters).ok()?;
+                let rows = query::execute_query(&state.pool, &plan).await.ok()?;
+                let current = serde_json::to_value(rows).ok()?;
+                let mut previous = previous.lock().await;
+                if *previous == current {
+                    return None;
                 }
-
-                // (d) WHERE re-evaluation: only when the event carries
-                // a concrete entity_id and the query has predicates.
-                if !where_clauses.is_empty() {
-                    let Some(ref eid_str) = event.entity_id else {
-                        // Collection-level event without an entity id
-                        // cannot be checked against WHERE — drop it to
-                        // avoid false positives.
-                        return None;
-                    };
-                    let Ok(eid) = Uuid::parse_str(eid_str) else {
-                        return None;
-                    };
-                    let triples = match triple_store.get_entity(eid).await {
-                        Ok(t) => t,
-                        Err(_) => return None,
-                    };
-                    let attrs = triples_to_attr_map(&triples);
-                    if !eval_where_clauses(&where_clauses, &attrs) {
-                        return None;
-                    }
-                }
-
-                let data = serde_json::to_string(&event).unwrap_or_default();
-                Some(Ok(Event::default()
-                    .event("update")
-                    .data(data)
-                    .id(event.tx_id.to_string())))
+                *previous = current;
+                Some(Ok(Event::default().event("update").data("{}")))
             }
         })
         .filter_map(|opt| opt);
+    // Initial invalidation closes the client's initial-query/stream-open race.
+    let stream = tokio_stream::once(Ok(Event::default().event("update").data("{}"))).chain(stream);
 
     // Use a comment-style keepalive (": heartbeat\n\n") so it does not
     // trigger client `onmessage` handlers.
@@ -4096,7 +4083,7 @@ async fn events_sse(
     Query(params): Query<EventsParams>,
     headers: HeaderMap,
 ) -> Result<Sse<impl tokio_stream::Stream<Item = Result<Event, Infallible>>>, ApiError> {
-    let _token = extract_bearer_token(&headers)?;
+    let _auth = require_admin_auth(&headers, &state).await?;
 
     if params.channel.is_empty() {
         return Err(ApiError::bad_request(
@@ -4107,20 +4094,30 @@ async fn events_sse(
     let pattern = crate::sync::pubsub::ChannelPattern::parse(&params.channel);
     let rx = state.pubsub.subscribe_events();
 
-    let stream = BroadcastStream::new(rx).filter_map(move |msg| match msg {
-        Ok(event) => {
-            if pattern.matches(&event.channel) {
-                let data = serde_json::to_string(&event).unwrap_or_default();
-                Some(Ok(Event::default()
-                    .event("pub-event")
-                    .data(data)
-                    .id(event.tx_id.to_string())))
-            } else {
-                None
+    let stream = BroadcastStream::new(rx)
+        .then(move |msg| {
+            let state = state.clone();
+            let headers = headers.clone();
+            let pattern = pattern.clone();
+            async move {
+                require_admin_auth(&headers, &state).await.ok()?;
+                match msg {
+                    Ok(event) => {
+                        if pattern.matches(&event.channel) {
+                            let data = serde_json::to_string(&event).unwrap_or_default();
+                            Some(Ok(Event::default()
+                                .event("pub-event")
+                                .data(data)
+                                .id(event.tx_id.to_string())))
+                        } else {
+                            None
+                        }
+                    }
+                    Err(_) => None,
+                }
             }
-        }
-        Err(_) => None,
-    });
+        })
+        .filter_map(|event| event);
 
     Ok(Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15))))
 }
@@ -4147,7 +4144,7 @@ async fn events_publish(
     headers: HeaderMap,
     body: String,
 ) -> Result<Response, ApiError> {
-    let _token = extract_bearer_token(&headers)?;
+    let _auth = require_admin_auth(&headers, &state).await?;
 
     let req: PublishRequest = serde_json::from_str(&body)
         .map_err(|e| ApiError::bad_request(format!("invalid request body: {e}")))?;
@@ -4557,6 +4554,29 @@ pub(super) async fn authorize_mutation(
     id: Uuid,
     data: Option<&Value>,
 ) -> Result<bool, ApiError> {
+    authorize_mutation_with_permissions(
+        &state.permissions,
+        &state.schema_registry,
+        auth,
+        tx,
+        entity,
+        op,
+        id,
+        data,
+    )
+    .await
+}
+
+pub(super) async fn authorize_mutation_with_permissions(
+    permissions: &PermissionEngine,
+    schema_registry: &Option<Arc<crate::schema::SchemaRegistry>>,
+    auth: &AuthContext,
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    entity: &str,
+    op: &str,
+    id: Uuid,
+    data: Option<&Value>,
+) -> Result<bool, ApiError> {
     validate_entity_name(entity)?;
     if !matches!(op, "insert" | "set" | "update" | "upsert" | "delete") {
         return Err(ApiError::bad_request("Unknown mutation operation"));
@@ -4593,7 +4613,7 @@ pub(super) async fn authorize_mutation(
     } else {
         Operation::Update
     };
-    let perm = check_permission(auth, entity, operation, &state.permissions)?;
+    let perm = check_permission(auth, entity, operation, permissions)?;
     let filters = query::PermissionFilter::from_clauses(&perm.where_clauses, auth.user_id)
         .map_err(|_| ApiError::permission_denied("Unsupported mutation permission predicate"))?;
     let mut before = serde_json::Map::new();
@@ -4645,7 +4665,7 @@ pub(super) async fn authorize_mutation(
             ));
         }
     }
-    if let (Some(registry), Some(obj)) = (&state.schema_registry, data.and_then(Value::as_object)) {
+    if let (Some(registry), Some(obj)) = (schema_registry, data.and_then(Value::as_object)) {
         if let Some(schema) = registry.get(entity) {
             let doc = obj.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
             let validation = if creating {
@@ -4883,6 +4903,115 @@ pub async fn ensure_search_schema(pool: &PgPool) -> std::result::Result<(), sqlx
     Ok(())
 }
 
+/// Search authorization is applied in SQL before ranking and candidate limits.
+struct SearchAccess {
+    filters: Vec<query::PermissionFilter>,
+    allowed: Vec<String>,
+    denied: Vec<String>,
+}
+impl SearchAccess {
+    fn new(
+        auth: &AuthContext,
+        entity: &str,
+        operation: Operation,
+        state: &AppState,
+    ) -> Result<Self, ApiError> {
+        validate_entity_name(entity)?;
+        let permission = check_permission(auth, entity, operation, &state.permissions)?;
+        let qualify = |f: String| {
+            if f.contains('/') {
+                f
+            } else {
+                format!("{entity}/{f}")
+            }
+        };
+        Ok(Self {
+            filters: query::PermissionFilter::from_clauses(&permission.where_clauses, auth.user_id)
+                .map_err(|_| {
+                    ApiError::permission_denied("Unsupported search permission predicate")
+                })?,
+            allowed: permission.allowed_fields.into_iter().map(qualify).collect(),
+            denied: permission
+                .restricted_fields
+                .into_iter()
+                .map(qualify)
+                .collect(),
+        })
+    }
+    fn append_rows(
+        &self,
+        sql: &mut sqlx::QueryBuilder<'_, sqlx::Postgres>,
+        alias: &str,
+        entity: &str,
+    ) {
+        for filter in &self.filters {
+            if filter.attribute == "id" {
+                sql.push(format!(" AND {alias}.entity_id = "))
+                    .push_bind(filter.user_id);
+            } else {
+                let attribute = if filter.attribute.contains('/') {
+                    filter.attribute.clone()
+                } else {
+                    format!("{entity}/{}", filter.attribute)
+                };
+                sql.push(format!(" AND EXISTS (SELECT 1 FROM triples permission_row WHERE permission_row.entity_id = {alias}.entity_id AND NOT permission_row.retracted AND permission_row.attribute = "))
+                    .push_bind(attribute).push(" AND permission_row.value = ").push_bind(serde_json::json!(filter.user_id)).push(")");
+            }
+        }
+    }
+    fn append_fields(
+        &self,
+        sql: &mut sqlx::QueryBuilder<'_, sqlx::Postgres>,
+        expression: &str,
+        embedding: bool,
+    ) {
+        if !self.allowed.is_empty() {
+            sql.push(format!(" AND {expression} = ANY("))
+                .push_bind(self.allowed.clone())
+                .push(")");
+        }
+        if !self.denied.is_empty() {
+            sql.push(format!(" AND NOT ({expression} = ANY("))
+                .push_bind(self.denied.clone())
+                .push("))");
+        }
+        // The embedding table has labels, not verified source-field provenance.
+        // Even an attribute-labelled vector may encode other fields; fail closed.
+        if embedding && (!self.allowed.is_empty() || !self.denied.is_empty()) {
+            sql.push(" AND FALSE");
+        }
+    }
+}
+
+async fn embedding_access(
+    state: &AppState,
+    auth: &AuthContext,
+    id: Uuid,
+    operation: Operation,
+) -> Result<(String, SearchAccess), ApiError> {
+    let entity: Option<String> = sqlx::query_scalar("SELECT value #>> '{}' FROM triples WHERE entity_id = $1 AND attribute = ':db/type' AND NOT retracted LIMIT 1")
+        .bind(id).fetch_optional(&state.pool).await.map_err(|e| ApiError::internal(e.to_string()))?;
+    let entity = entity.ok_or_else(|| ApiError::not_found("Entity not found"))?;
+    let access = SearchAccess::new(auth, &entity, operation, state)?;
+    let mut sql = sqlx::QueryBuilder::new(
+        "SELECT EXISTS (SELECT 1 FROM triples target WHERE target.entity_id = ",
+    );
+    sql.push_bind(id).push(" AND NOT target.retracted");
+    access.append_rows(&mut sql, "target", &entity);
+    sql.push(")");
+    let permitted: bool = sql
+        .build_query_scalar()
+        .fetch_one(&state.pool)
+        .await
+        .map_err(|e| ApiError::internal(e.to_string()))?;
+    if !permitted {
+        return Err(ApiError::permission_denied(
+            "Embedding target violates row permissions",
+        ));
+    }
+    Ok((entity, access))
+}
+
 /// Request body for `POST /api/embeddings`.
 #[derive(Deserialize)]
 struct EmbeddingStoreRequest {
@@ -4904,6 +5033,28 @@ async fn embeddings_store(
     headers: HeaderMap,
     axum::Json(body): axum::Json<EmbeddingStoreRequest>,
 ) -> Result<Response, ApiError> {
+    let auth = extract_auth_context(&headers, &state).await?;
+    let (entity, access) =
+        embedding_access(&state, &auth, body.entity_id, Operation::Update).await?;
+    let qualified = if body.attribute.contains('/') {
+        body.attribute.clone()
+    } else {
+        format!("{entity}/{}", body.attribute)
+    };
+    if !qualified.starts_with(&format!("{entity}/")) {
+        return Err(ApiError::bad_request(
+            "Embedding attribute must belong to the target entity type",
+        ));
+    }
+    if access.denied.contains(&qualified)
+        || (!access.allowed.is_empty() && !access.allowed.contains(&qualified))
+        || (qualified == format!("{entity}/default")
+            && (!access.allowed.is_empty() || !access.denied.is_empty()))
+    {
+        return Err(ApiError::permission_denied(
+            "Embedding attribute is not writable",
+        ));
+    }
     if body.embedding.is_empty() {
         return Err(ApiError::bad_request("embedding vector must not be empty"));
     }
@@ -4914,22 +5065,28 @@ async fn embeddings_store(
     // Format the vector as a pgvector literal: [0.1,0.2,0.3]
     let vec_literal = format_pgvector_literal(&body.embedding);
 
-    let result = sqlx::query_scalar::<_, i64>(
-        "INSERT INTO embeddings (entity_id, attribute, embedding, model) \
-         VALUES ($1, $2, $3::vector, $4) \
-         ON CONFLICT (entity_id, attribute) DO UPDATE \
-            SET embedding  = EXCLUDED.embedding, \
-                model      = EXCLUDED.model, \
-                created_at = now() \
-         RETURNING id",
-    )
-    .bind(body.entity_id)
-    .bind(&body.attribute)
-    .bind(&vec_literal)
-    .bind(&body.model)
-    .fetch_one(&state.pool)
-    .await
-    .map_err(|e| ApiError::internal(format!("Failed to store embedding: {e}")))?;
+    let mut sql = sqlx::QueryBuilder::new(
+        "INSERT INTO embeddings (entity_id, attribute, embedding, model) SELECT ",
+    );
+    sql.push_bind(body.entity_id)
+        .push(", ")
+        .push_bind(body.attribute.clone())
+        .push(", ")
+        .push_bind(vec_literal)
+        .push("::vector, ")
+        .push_bind(body.model.clone())
+        .push(" WHERE EXISTS (SELECT 1 FROM triples target WHERE target.entity_id = ")
+        .push_bind(body.entity_id)
+        .push(" AND target.attribute = ':db/type' AND NOT target.retracted AND target.value = ")
+        .push_bind(serde_json::json!(entity));
+    access.append_rows(&mut sql, "target", &entity);
+    sql.push(") ON CONFLICT (entity_id, attribute) DO UPDATE SET embedding = EXCLUDED.embedding, model = EXCLUDED.model, created_at = now() RETURNING id");
+    let result: i64 = sql
+        .build_query_scalar()
+        .fetch_optional(&state.pool)
+        .await
+        .map_err(|e| ApiError::internal(format!("Failed to store embedding: {e}")))?
+        .ok_or_else(|| ApiError::permission_denied("Embedding target violates row permissions"))?;
 
     let response = serde_json::json!({
         "id": result,
@@ -4951,16 +5108,23 @@ async fn embeddings_get(
     headers: HeaderMap,
     Path(entity_id): Path<Uuid>,
 ) -> Result<Response, ApiError> {
-    let rows = sqlx::query_as::<_, (i64, String, String, chrono::DateTime<chrono::Utc>)>(
-        "SELECT id, attribute, model, created_at \
-         FROM embeddings \
-         WHERE entity_id = $1 \
-         ORDER BY created_at DESC",
-    )
-    .bind(entity_id)
-    .fetch_all(&state.pool)
-    .await
-    .map_err(|e| ApiError::internal(format!("Failed to fetch embeddings: {e}")))?;
+    let auth = extract_auth_context(&headers, &state).await?;
+    let (entity, access) = embedding_access(&state, &auth, entity_id, Operation::Read).await?;
+    let mut sql = sqlx::QueryBuilder::new(
+        "SELECT id, attribute, model, created_at FROM embeddings WHERE entity_id = ",
+    );
+    sql.push_bind(entity_id);
+    let expression = format!(
+        "CASE WHEN position('/' in attribute) > 0 THEN attribute ELSE '{entity}/' || attribute END"
+    );
+    access.append_rows(&mut sql, "embeddings", &entity);
+    access.append_fields(&mut sql, &expression, true);
+    sql.push(" ORDER BY created_at DESC");
+    let rows = sql
+        .build_query_as::<(i64, String, String, chrono::DateTime<chrono::Utc>)>()
+        .fetch_all(&state.pool)
+        .await
+        .map_err(|e| ApiError::internal(format!("Failed to fetch embeddings: {e}")))?;
 
     let embeddings: Vec<serde_json::Value> = rows
         .into_iter()
@@ -5004,6 +5168,8 @@ async fn search_semantic(
     headers: HeaderMap,
     axum::Json(body): axum::Json<SemanticSearchRequest>,
 ) -> Result<Response, ApiError> {
+    let auth = extract_auth_context(&headers, &state).await?;
+    let access = SearchAccess::new(&auth, &body.entity_type, Operation::Read, &state)?;
     if body.vector.is_empty() {
         return Err(ApiError::bad_request("vector must not be empty"));
     }
@@ -5013,6 +5179,7 @@ async fn search_semantic(
 
     let rows = run_semantic_search(
         &state.pool,
+        &access,
         &body.vector,
         &body.entity_type,
         body.attribute.as_deref(),
@@ -5053,48 +5220,27 @@ async fn search_semantic(
 /// directly through sqlx today.
 async fn run_semantic_search(
     pool: &PgPool,
+    access: &SearchAccess,
     vector: &[f32],
     entity_type: &str,
     attribute: Option<&str>,
     limit: u32,
 ) -> std::result::Result<Vec<(Uuid, String, f64)>, sqlx::Error> {
-    let vec_literal = format_pgvector_literal(vector);
-
-    if let Some(attr) = attribute {
-        let sql = "SELECT e.entity_id, e.attribute, \
-                          (e.embedding <=> $4::vector) AS distance \
-                   FROM embeddings e \
-                   INNER JOIN triples t_type ON t_type.entity_id = e.entity_id \
-                     AND t_type.attribute = ':db/type' \
-                     AND t_type.value = $1::jsonb \
-                     AND NOT t_type.retracted \
-                   WHERE e.attribute = $2 \
-                   ORDER BY e.embedding <=> $4::vector \
-                   LIMIT $3";
-        sqlx::query_as::<_, (Uuid, String, f64)>(sql)
-            .bind(serde_json::Value::String(entity_type.to_string()))
-            .bind(attr)
-            .bind(limit as i32)
-            .bind(&vec_literal)
-            .fetch_all(pool)
-            .await
-    } else {
-        let sql = "SELECT e.entity_id, e.attribute, \
-                          (e.embedding <=> $3::vector) AS distance \
-                   FROM embeddings e \
-                   INNER JOIN triples t_type ON t_type.entity_id = e.entity_id \
-                     AND t_type.attribute = ':db/type' \
-                     AND t_type.value = $1::jsonb \
-                     AND NOT t_type.retracted \
-                   ORDER BY e.embedding <=> $3::vector \
-                   LIMIT $2";
-        sqlx::query_as::<_, (Uuid, String, f64)>(sql)
-            .bind(serde_json::Value::String(entity_type.to_string()))
-            .bind(limit as i32)
-            .bind(&vec_literal)
-            .fetch_all(pool)
-            .await
+    let mut sql = sqlx::QueryBuilder::new("SELECT e.entity_id, e.attribute, (e.embedding <=> ");
+    sql.push_bind(format_pgvector_literal(vector)).push("::vector) AS distance FROM embeddings e WHERE EXISTS (SELECT 1 FROM triples t_type WHERE t_type.entity_id = e.entity_id AND t_type.attribute = ':db/type' AND NOT t_type.retracted AND t_type.value = ")
+        .push_bind(serde_json::json!(entity_type)).push(")");
+    if let Some(attribute) = attribute {
+        sql.push(" AND e.attribute = ")
+            .push_bind(attribute.to_owned());
     }
+    access.append_rows(&mut sql, "e", entity_type);
+    let expression = format!(
+        "CASE WHEN position('/' in e.attribute) > 0 THEN e.attribute ELSE '{entity_type}/' || e.attribute END"
+    );
+    access.append_fields(&mut sql, &expression, true);
+    sql.push(" ORDER BY distance ASC, e.entity_id ASC, e.attribute ASC LIMIT ")
+        .push_bind(i64::from(limit));
+    sql.build_query_as().fetch_all(pool).await
 }
 
 /// Query parameters for `GET /api/search/text`.
@@ -5118,6 +5264,8 @@ async fn search_text(
     headers: HeaderMap,
     axum::extract::Query(params): axum::extract::Query<TextSearchQuery>,
 ) -> Result<Response, ApiError> {
+    let auth = extract_auth_context(&headers, &state).await?;
+    let access = SearchAccess::new(&auth, &params.entity_type, Operation::Read, &state)?;
     if params.q.trim().is_empty() {
         return Err(ApiError::bad_request("q (query string) must not be empty"));
     }
@@ -5125,9 +5273,15 @@ async fn search_text(
         return Err(ApiError::bad_request("entity_type must not be empty"));
     }
 
-    let rows = run_text_search(&state.pool, &params.q, &params.entity_type, params.limit)
-        .await
-        .map_err(|e| ApiError::internal(format!("Text search failed: {e}")))?;
+    let rows = run_text_search(
+        &state.pool,
+        &access,
+        &params.q,
+        &params.entity_type,
+        params.limit,
+    )
+    .await
+    .map_err(|e| ApiError::internal(format!("Text search failed: {e}")))?;
 
     let results: Vec<serde_json::Value> = rows
         .iter()
@@ -5158,34 +5312,28 @@ async fn search_text(
 /// we want one row per entity.
 async fn run_text_search(
     pool: &PgPool,
+    access: &SearchAccess,
     q: &str,
     entity_type: &str,
     limit: u32,
 ) -> std::result::Result<Vec<(Uuid, f64)>, sqlx::Error> {
-    let sql = "SELECT t.entity_id, \
-                      MAX(ts_rank(to_tsvector('english', t.value::text), \
-                                  plainto_tsquery('english', $1))::float8) AS rank \
-               FROM triples t \
-               INNER JOIN triples t_type ON t_type.entity_id = t.entity_id \
-                 AND t_type.attribute = ':db/type' \
-                 AND t_type.value = $2::jsonb \
-                 AND NOT t_type.retracted \
-               WHERE NOT t.retracted \
-                 AND t.value IS NOT NULL \
-                 AND to_tsvector('english', t.value::text) @@ plainto_tsquery('english', $1) \
-               GROUP BY t.entity_id \
-               ORDER BY rank DESC \
-               LIMIT $3";
-    sqlx::query_as::<_, (Uuid, f64)>(sql)
-        .bind(q)
-        .bind(serde_json::Value::String(entity_type.to_string()))
-        .bind(limit as i32)
-        .fetch_all(pool)
-        .await
+    let mut sql = sqlx::QueryBuilder::new(
+        "SELECT t.entity_id, MAX(ts_rank(to_tsvector('english', t.value::text), plainto_tsquery('english', ",
+    );
+    sql.push_bind(q.to_owned()).push("))::float8) AS rank FROM triples t WHERE NOT t.retracted AND t.value IS NOT NULL AND EXISTS (SELECT 1 FROM triples t_type WHERE t_type.entity_id = t.entity_id AND t_type.attribute = ':db/type' AND NOT t_type.retracted AND t_type.value = ")
+        .push_bind(serde_json::json!(entity_type)).push(") AND to_tsvector('english', t.value::text) @@ plainto_tsquery('english', ").push_bind(q.to_owned()).push(")");
+    access.append_rows(&mut sql, "t", entity_type);
+    let expression = format!(
+        "CASE WHEN position('/' in t.attribute) > 0 THEN t.attribute ELSE '{entity_type}/' || t.attribute END"
+    );
+    access.append_fields(&mut sql, &expression, false);
+    sql.push(" GROUP BY t.entity_id ORDER BY rank DESC, t.entity_id ASC LIMIT ")
+        .push_bind(i64::from(limit));
+    sql.build_query_as().fetch_all(pool).await
 }
 
 /// Optional weight overrides for the hybrid RRF endpoint.
-#[derive(Deserialize, Default)]
+#[derive(Deserialize)]
 struct HybridWeights {
     #[serde(default = "default_weight")]
     semantic: f64,
@@ -5193,8 +5341,38 @@ struct HybridWeights {
     text: f64,
 }
 
+impl Default for HybridWeights {
+    fn default() -> Self {
+        Self {
+            semantic: default_weight(),
+            text: default_weight(),
+        }
+    }
+}
+
 fn default_weight() -> f64 {
     1.0
+}
+
+/// Bound both SQL candidate windows and the final result set. Matches the
+/// existing 1,000-result cap used by other REST list endpoints.
+const MAX_HYBRID_LIMIT: u32 = 1_000;
+
+fn validate_hybrid_options(limit: u32, weights: &HybridWeights) -> Result<(), ApiError> {
+    if limit > MAX_HYBRID_LIMIT {
+        return Err(ApiError::bad_request("hybrid limit must be at most 1000"));
+    }
+    if !weights.semantic.is_finite()
+        || !weights.text.is_finite()
+        || weights.semantic < 0.0
+        || weights.text < 0.0
+        || (weights.semantic == 0.0 && weights.text == 0.0)
+    {
+        return Err(ApiError::bad_request(
+            "hybrid weights must be finite and nonnegative, with at least one positive weight",
+        ));
+    }
+    Ok(())
 }
 
 /// Request body for `POST /api/search/hybrid`.
@@ -5235,6 +5413,8 @@ async fn search_hybrid(
     headers: HeaderMap,
     axum::Json(body): axum::Json<HybridSearchRequest>,
 ) -> Result<Response, ApiError> {
+    let auth = extract_auth_context(&headers, &state).await?;
+    let access = SearchAccess::new(&auth, &body.entity_type, Operation::Read, &state)?;
     if body.query_text.trim().is_empty() {
         return Err(ApiError::bad_request("query_text must not be empty"));
     }
@@ -5245,12 +5425,15 @@ async fn search_hybrid(
         return Err(ApiError::bad_request("entity_type must not be empty"));
     }
 
+    validate_hybrid_options(body.limit, &body.weights)?;
+
     // Pull more candidates per side than the requested limit so the fusion
     // step has room to reorder. A 4× window is a common heuristic.
     let candidate_window = (body.limit.saturating_mul(4)).max(body.limit);
 
     let semantic_rows = run_semantic_search(
         &state.pool,
+        &access,
         &body.vector,
         &body.entity_type,
         body.attribute.as_deref(),
@@ -5261,6 +5444,7 @@ async fn search_hybrid(
 
     let text_rows = run_text_search(
         &state.pool,
+        &access,
         &body.query_text,
         &body.entity_type,
         candidate_window,
@@ -5354,8 +5538,12 @@ fn reciprocal_rank_fuse(
         entry.rrf_score += contribution;
     }
 
+    let mut seen_text: HashSet<Uuid> = HashSet::new();
     let mut text_rank = 0usize;
     for (entity_id, rank) in text_rows {
+        if !seen_text.insert(*entity_id) {
+            continue;
+        }
         text_rank += 1;
         let contribution = w_text / (RRF_K + text_rank as f64);
         let entry = hits.entry(*entity_id).or_insert_with(|| FusedHit {
@@ -5371,8 +5559,8 @@ fn reciprocal_rank_fuse(
     let mut out: Vec<FusedHit> = hits.into_values().collect();
     out.sort_by(|a, b| {
         b.rrf_score
-            .partial_cmp(&a.rrf_score)
-            .unwrap_or(std::cmp::Ordering::Equal)
+            .total_cmp(&a.rrf_score)
+            .then_with(|| a.entity_id.cmp(&b.entity_id))
     });
     out
 }
@@ -5468,6 +5656,104 @@ mod search_unit_tests {
         // Heavy text weighting should put B first.
         let fused_text = reciprocal_rank_fuse(&semantic, &text, 1.0, 5.0);
         assert_eq!(fused_text[0].entity_id, b);
+    }
+
+    #[test]
+    fn rrf_deduplicates_both_lists_and_keeps_first_raw_scores() {
+        let a = Uuid::from_u128(1);
+        let b = Uuid::from_u128(2);
+        let semantic = vec![
+            (a, "first".into(), 0.1),
+            (a, "later".into(), 0.9),
+            (b, "".into(), 0.2),
+        ];
+        let text = vec![(b, 0.7), (b, 0.1), (a, 0.4)];
+        let fused = reciprocal_rank_fuse(&semantic, &text, 1.0, 1.0);
+        assert_eq!(fused.len(), 2);
+        // Symmetric compact ranks tie exactly; ascending UUID breaks the tie.
+        assert_eq!(fused[0].entity_id, a);
+        assert_eq!(fused[1].entity_id, b);
+        assert_eq!(fused[0].rrf_score, 1.0 / 61.0 + 1.0 / 62.0);
+        assert_eq!(fused[0].rrf_score, fused[1].rrf_score);
+        assert_eq!(fused[0].semantic_score, Some(0.9));
+        assert_eq!(fused[1].text_score, Some(0.7));
+    }
+
+    #[test]
+    fn rrf_handles_empty_branches_and_zero_weight() {
+        let a = Uuid::from_u128(1);
+        assert!(reciprocal_rank_fuse(&[], &[], 1.0, 1.0).is_empty());
+        let text = reciprocal_rank_fuse(&[], &[(a, 0.2)], 0.0, 1.0);
+        assert_eq!(text[0].rrf_score, 1.0 / 61.0);
+        assert_eq!(text[0].semantic_score, None);
+        let semantic = reciprocal_rank_fuse(&[(a, "".into(), 0.2)], &[], 1.0, 0.0);
+        assert_eq!(semantic[0].rrf_score, 1.0 / 61.0);
+        assert_eq!(semantic[0].text_score, None);
+    }
+
+    #[test]
+    fn hybrid_options_bound_candidates_and_reject_invalid_weights() {
+        let request: HybridSearchRequest = serde_json::from_value(serde_json::json!({
+            "query_text": "test", "vector": [1.0], "entity_type": "Document"
+        }))
+        .unwrap();
+        assert_eq!(request.weights.semantic, 1.0);
+        assert_eq!(request.weights.text, 1.0);
+        assert!(validate_hybrid_options(request.limit, &request.weights).is_ok());
+        for limit in [0, 1, MAX_HYBRID_LIMIT] {
+            assert!(
+                validate_hybrid_options(
+                    limit,
+                    &HybridWeights {
+                        semantic: 1.0,
+                        text: 0.0
+                    }
+                )
+                .is_ok()
+            );
+        }
+        assert!(
+            validate_hybrid_options(
+                u32::MAX,
+                &HybridWeights {
+                    semantic: 1.0,
+                    text: 1.0
+                }
+            )
+            .is_err()
+        );
+        for invalid in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -1.0] {
+            assert!(
+                validate_hybrid_options(
+                    10,
+                    &HybridWeights {
+                        semantic: invalid,
+                        text: 1.0
+                    }
+                )
+                .is_err()
+            );
+            assert!(
+                validate_hybrid_options(
+                    10,
+                    &HybridWeights {
+                        semantic: 1.0,
+                        text: invalid
+                    }
+                )
+                .is_err()
+            );
+        }
+        assert!(
+            validate_hybrid_options(
+                10,
+                &HybridWeights {
+                    semantic: 0.0,
+                    text: 0.0
+                }
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -6435,8 +6721,8 @@ mod tests {
     // These tests exercise `require_admin_auth`, the real extractor
     // guarding every `/api/admin/*` route. They construct a live
     // `SessionManager` with a symmetric test key, sign real access
-    // tokens with it, and call the extractor directly — DB-free because
-    // `SessionManager::validate_token` is stateless JWT verification.
+    // tokens with it, and call the extractor directly. Valid signed tokens
+    // also require a persisted active session; these cases use a live fixture.
     //
     // `require_admin_auth_rejects_forged_signature` is the regression
     // guard: the original stub only decoded claims and accepted any
@@ -6480,45 +6766,92 @@ mod tests {
         headers
     }
 
+    async fn live_admin_state(roles: Vec<&str>) -> (AppState, String, uuid::Uuid) {
+        let pool = PgPool::connect(
+            &std::env::var("DDB_TEST_DATABASE_URL").expect("isolated test database URL"),
+        )
+        .await
+        .expect("connect test database");
+        ensure_auth_schema(&pool).await.expect("auth schema");
+        let mut state = AppState::new();
+        state.pool = pool.clone();
+        state.session_manager = Arc::new(SessionManager::new(
+            pool.clone(),
+            KeyManager::from_secret(b"require-admin-auth-test-secret-32!!"),
+        ));
+        let uid = uuid::Uuid::new_v4();
+        sqlx::query("INSERT INTO users (id, email, password_hash) VALUES ($1, $2, 'test-unused')")
+            .bind(uid)
+            .bind(format!("admin-live-{uid}@example.test"))
+            .execute(&pool)
+            .await
+            .expect("seed user");
+        let pair = state
+            .session_manager
+            .create_session(
+                uid,
+                roles.into_iter().map(str::to_string).collect(),
+                "127.0.0.1",
+                "test",
+                "test",
+            )
+            .await
+            .expect("live session");
+        (state, pair.access_token, uid)
+    }
+
+    async fn cleanup_live_admin(state: &AppState, uid: uuid::Uuid) {
+        sqlx::query("DELETE FROM sessions WHERE user_id = $1")
+            .bind(uid)
+            .execute(&state.pool)
+            .await
+            .expect("cleanup sessions");
+        sqlx::query("DELETE FROM users WHERE id = $1")
+            .bind(uid)
+            .execute(&state.pool)
+            .await
+            .expect("cleanup user");
+    }
+
     #[tokio::test]
-    #[ignore = "pre-existing v0.2.0 baseline failure — tracked in v0.3.1 followup"]
+    #[ignore = "requires isolated DDB_TEST_DATABASE_URL"]
     async fn require_admin_auth_allows_admin() {
-        let (state, km) = make_state_with_secret(b"require-admin-auth-test-secret-32!!");
-        let token = sign_access_token(&km, vec!["admin"]);
+        let (state, token, uid) = live_admin_state(vec!["admin"]).await;
         let headers = bearer_headers(&token);
         let ctx = require_admin_auth(&headers, &state)
             .await
             .expect("admin allowed");
         assert!(ctx.roles.iter().any(|r| r == "admin"));
+        cleanup_live_admin(&state, uid).await;
     }
 
     #[tokio::test]
-    #[ignore = "pre-existing v0.2.0 baseline failure — tracked in v0.3.1 followup"]
+    #[ignore = "requires isolated DDB_TEST_DATABASE_URL"]
     async fn require_admin_auth_allows_admin_among_multiple_roles() {
-        let (state, km) = make_state_with_secret(b"require-admin-auth-test-secret-32!!");
-        let token = sign_access_token(&km, vec!["viewer", "developer", "admin"]);
+        let (state, token, uid) = live_admin_state(vec!["viewer", "developer", "admin"]).await;
         let headers = bearer_headers(&token);
         assert!(require_admin_auth(&headers, &state).await.is_ok());
+        cleanup_live_admin(&state, uid).await;
     }
 
     #[tokio::test]
-    #[ignore = "pre-existing v0.2.0 baseline failure — tracked in v0.3.1 followup"]
+    #[ignore = "requires isolated DDB_TEST_DATABASE_URL"]
     async fn require_admin_auth_rejects_non_admin() {
-        let (state, km) = make_state_with_secret(b"require-admin-auth-test-secret-32!!");
-        let token = sign_access_token(&km, vec!["viewer"]);
+        let (state, token, uid) = live_admin_state(vec!["viewer"]).await;
         let headers = bearer_headers(&token);
         let err = require_admin_auth(&headers, &state).await.unwrap_err();
         assert!(matches!(err.code, ErrorCode::PermissionDenied));
+        cleanup_live_admin(&state, uid).await;
     }
 
     #[tokio::test]
-    #[ignore = "pre-existing v0.2.0 baseline failure — tracked in v0.3.1 followup"]
+    #[ignore = "requires isolated DDB_TEST_DATABASE_URL"]
     async fn require_admin_auth_rejects_empty_roles() {
-        let (state, km) = make_state_with_secret(b"require-admin-auth-test-secret-32!!");
-        let token = sign_access_token(&km, vec![]);
+        let (state, token, uid) = live_admin_state(vec![]).await;
         let headers = bearer_headers(&token);
         let err = require_admin_auth(&headers, &state).await.unwrap_err();
         assert!(matches!(err.code, ErrorCode::PermissionDenied));
+        cleanup_live_admin(&state, uid).await;
     }
 
     #[tokio::test]

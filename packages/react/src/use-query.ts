@@ -143,7 +143,7 @@ function startSubscription<T>(
   store.snapshot = { data: EMPTY_DATA as ReadonlyArray<T>, isLoading: true, error: null };
 
   store.unsub = client.subscribe<T>(query, (snap: QuerySnapshot<T>) => {
-    const nextData = snap.error
+    const nextData = snap.error && snap.error.name !== 'SubscriptionEndedError'
       ? store.previousData
       : shallowArrayEqual(store.previousData, snap.data)
         ? store.previousData

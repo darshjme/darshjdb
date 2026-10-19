@@ -39,7 +39,7 @@ pub struct AgentMemoryState {
     pub pool: PgPool,
     /// Persistent repo handle.
     pub repo: AgentMemoryRepo,
-    /// In-memory working tier shared across requests.
+    /// Working-window configuration; persisted rows are authoritative.
     pub working: WorkingMemory,
 }
 
@@ -296,47 +296,26 @@ async fn insert_message(
     let token_count = counter.count(&body.content) as i32;
     let metadata = body.metadata.unwrap_or_else(|| json!({}));
 
-    // Persist into the working tier first (Postgres row marked
-    // `working`) so callers can audit the message even before eviction.
-    let stored = match state
+    let (stored, promoted) = match state
         .repo
-        .insert_message(
+        .append_working(
             session_id,
-            MemoryTier::Working,
             role,
             &body.content,
             token_count,
             metadata,
+            state.working.capacity(),
         )
         .await
     {
-        Ok(m) => m,
+        Ok(result) => result,
         Err(e) => return db_err(e),
     };
-
-    // Push into the in-memory working window. If something falls out
-    // the back, promote it to episodic by writing a fresh row marked
-    // `episodic` and deleting the original `working` row.
-    let evicted = state.working.push(session_id, stored.clone());
-    let evicted_response = if let Some(old) = evicted {
-        match state
-            .repo
-            .insert_message(
-                session_id,
-                MemoryTier::Episodic,
-                old.role,
-                &old.content,
-                old.token_count,
-                old.metadata.clone(),
-            )
-            .await
-        {
-            Ok(promoted) => Some(promoted),
-            Err(e) => return db_err(e),
-        }
-    } else {
-        None
-    };
+    // Normally one row overflows. Older installations may have accumulated
+    // excess working rows; all are promoted, while the wire field stays singular.
+    let evicted_response = promoted
+        .into_iter()
+        .min_by_key(|entry| (entry.created_at, entry.id));
 
     let response = InsertMessageResponse {
         message: stored,
@@ -544,10 +523,7 @@ async fn get_stats(
     }
 
     match state.repo.session_stats(session_id).await {
-        Ok(Some(mut stats)) => {
-            stats.working_messages = state.working.len(session_id);
-            Json(stats).into_response()
-        }
+        Ok(Some(stats)) => Json(stats).into_response(),
         Ok(None) => reject(StatusCode::NOT_FOUND, "session not found"),
         Err(e) => db_err(e),
     }
@@ -566,9 +542,20 @@ async fn close_session(
         Err(r) => return r,
     };
 
-    let summary = body
-        .and_then(|Json(b)| b.final_summary)
-        .unwrap_or_else(|| build_auto_summary(&state, session_id));
+    // Resolve ownership before reading content for an automatic summary.
+    match state.repo.get_session(session_id, auth.user_id).await {
+        Ok(Some(_)) => {}
+        Ok(None) => return reject(StatusCode::NOT_FOUND, "session not found"),
+        Err(e) => return db_err(e),
+    }
+
+    let summary = match body.and_then(|Json(b)| b.final_summary) {
+        Some(summary) => summary,
+        None => match build_auto_summary(&state, session_id).await {
+            Ok(summary) => summary,
+            Err(e) => return db_err(e),
+        },
+    };
 
     match state
         .repo
@@ -585,20 +572,31 @@ async fn close_session(
     }
 }
 
-fn build_auto_summary(state: &AgentMemoryState, session_id: Uuid) -> String {
-    let snap = state.working.snapshot(session_id);
+async fn build_auto_summary(
+    state: &AgentMemoryState,
+    session_id: Uuid,
+) -> Result<String, sqlx::Error> {
+    let mut snap = state
+        .repo
+        .recent_in_tier(
+            session_id,
+            MemoryTier::Working,
+            state.working.capacity() as i64,
+        )
+        .await?;
+    snap.reverse();
     if snap.is_empty() {
-        return "Session closed — no in-memory working window.".into();
+        return Ok("Session closed — no working messages.".into());
     }
     let lines: Vec<String> = snap
         .iter()
         .map(|m| format!("- {}: {}", m.role.as_str(), preview(&m.content, 120)))
         .collect();
-    format!(
+    Ok(format!(
         "Auto-summary of last {} messages:\n{}",
         snap.len(),
         lines.join("\n")
-    )
+    ))
 }
 
 fn preview(s: &str, max: usize) -> String {

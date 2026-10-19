@@ -1,527 +1,160 @@
-/**
- * Integration tests for @darshjdb/client against a live DarshJDB server.
- *
- * These tests verify the full client-server round trip over REST.
- * They require a running DarshJDB server and are SKIPPED unless the
- * environment variable DDB_URL is set.
- *
- * Usage:
- *   DDB_URL=http://localhost:7700 npx vitest run src/__tests__/integration.test.ts
- *
- * The server's REST API lives under /api, and the health endpoint is at /health.
+/** Live authenticated HTTP, SSE and WebSocket regression tests.
+ * Run against a disposable normal-auth server: DDB_URL=http://127.0.0.1:7700 npm test.
+ * No endpoint/auth failure is treated as a passing test. Fixtures use unique users.
  */
-
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { DarshJDB } from '../client.js';
-import { RestTransport } from '../rest.js';
 import { AuthClient } from '../auth.js';
-import { TransactionBuilder, generateId } from '../transaction.js';
-import type { TokenStorage } from '../types.js';
-
-/* -------------------------------------------------------------------------- */
-/*  Skip guard                                                                */
-/* -------------------------------------------------------------------------- */
-
-const DDB_URL = process.env.DDB_URL;
-const APP_ID = process.env.DDB_APP_ID ?? 'integration-test';
-
-const describeIntegration = DDB_URL ? describe : describe.skip;
-
-/* -------------------------------------------------------------------------- */
-/*  In-memory token storage (no localStorage in Node)                         */
-/* -------------------------------------------------------------------------- */
-
+import { TransactionBuilder, generateId, submitOps } from '../transaction.js';
+import { subscribe, queryOnce, SubscriptionEndedError } from '../query.js';
+import type { TokenStorage, QueryResult } from '../types.js';
+const URL = process.env.DDB_URL;
+const live = URL ? describe : describe.skip;
 class MemoryTokenStorage implements TokenStorage {
-  private store = new Map<string, string>();
-  get(key: string): string | null {
-    return this.store.get(key) ?? null;
-  }
-  set(key: string, value: string): void {
-    this.store.set(key, value);
-  }
-  remove(key: string): void {
-    this.store.delete(key);
-  }
+  private values = new Map<string, string>();
+  get(key: string) { return this.values.get(key) ?? null; }
+  set(key: string, value: string) { this.values.set(key, value); }
+  remove(key: string) { this.values.delete(key); }
 }
-
-/* -------------------------------------------------------------------------- */
-/*  Helpers                                                                   */
-/* -------------------------------------------------------------------------- */
-
-/** Raw fetch wrapper for endpoints outside the SDK surface. */
-async function rawGet(path: string): Promise<Response> {
-  return fetch(`${DDB_URL}${path}`);
+async function json(response: Response) {
+  expect(response.ok, `HTTP ${response.status}: ${await response.clone().text()}`).toBe(true);
+  return response.json();
 }
-
-/** Convenience: fetch JSON from a raw path. */
-async function rawGetJson(path: string): Promise<unknown> {
-  const resp = await rawGet(path);
-  if (!resp.ok) {
-    throw new Error(`GET ${path} failed: ${resp.status} ${await resp.text()}`);
-  }
-  return resp.json();
+async function until(predicate: () => boolean) {
+  const end = Date.now() + 7000;
+  while (!predicate() && Date.now() < end) await new Promise(r => setTimeout(r, 20));
+  expect(predicate()).toBe(true);
 }
-
-/* -------------------------------------------------------------------------- */
-/*  Tests                                                                     */
-/* -------------------------------------------------------------------------- */
-
-describeIntegration('DarshJDB Client Integration', () => {
+live('DarshJDB Client Integration', () => {
   let db: DarshJDB;
-  let rest: RestTransport;
-
+  let a: { user_id: string; access_token: string };
+  let b: typeof a;
+  const collection = `live_${Date.now()}`;
+  const idA = generateId(), idB = generateId();
+  const password = 'DisposableLiveTest123!';
+  const email = `live-a-${Date.now()}@darshjdb.test`;
+  const clients: DarshJDB[] = [];
+  const request = (path: string, body?: unknown, token = a?.access_token) => fetch(`${URL}${path}`, {
+    method: body === undefined ? 'GET' : 'POST',
+    headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+  });
+  const makeClient = async (token: string, transport: 'rest' | 'ws' = 'rest') => {
+    const client = new DarshJDB({ serverUrl: URL!, appId: 'live-test', transport });
+    clients.push(client); client.setAuthToken(token); await client.connect(); return client;
+  };
   beforeAll(async () => {
-    db = new DarshJDB({
-      serverUrl: DDB_URL!,
-      appId: APP_ID,
-      transport: 'rest',
-    });
-    await db.connect();
-    rest = new RestTransport(db);
-  });
-
-  afterAll(() => {
-    db.disconnect();
-  });
-
-  /* ====================================================================== */
-  /*  Test 1: Health check proves the server is alive                       */
-  /* ====================================================================== */
-
-  it('server health endpoint returns status ok', async () => {
-    const health = (await rawGetJson('/health')) as Record<string, unknown>;
-
-    expect(health).toHaveProperty('status', 'ok');
-    expect(health).toHaveProperty('service', 'darshjdb');
-  });
-
-  /* ====================================================================== */
-  /*  Test 2: Client connects in REST mode and state is correct             */
-  /* ====================================================================== */
-
-  it('client enters connected state in REST transport mode', () => {
-    expect(db.state).toBe('connected');
-    expect(db.transport).toBe('rest');
-  });
-
-  /* ====================================================================== */
-  /*  Test 3: REST URL builder produces correct paths                       */
-  /* ====================================================================== */
-
-  it('getRestUrl builds the correct /api path', () => {
-    const url = db.getRestUrl('/query');
-    expect(url).toBe(`${DDB_URL}/api/query`);
-  });
-
-  /* ====================================================================== */
-  /*  Test 4: OpenAPI spec is served                                        */
-  /* ====================================================================== */
-
-  it('OpenAPI spec is accessible at /api/openapi.json', async () => {
-    const spec = (await rawGetJson('/api/openapi.json')) as Record<string, unknown>;
-
-    expect(spec).toHaveProperty('openapi');
-    expect(spec).toHaveProperty('info');
-    expect(spec).toHaveProperty('paths');
-  });
-
-  /* ====================================================================== */
-  /*  Test 5: Data create via /api/data/:entity POST                        */
-  /* ====================================================================== */
-
-  it('can create an entity via REST /api/data/:entity', async () => {
-    const entityId = generateId();
-    const payload = {
-      id: entityId,
-      name: 'integration-test-user',
-      email: `test-${entityId.slice(0, 8)}@darshjdb.test`,
-      createdAt: new Date().toISOString(),
-    };
-
-    const resp = await fetch(`${DDB_URL}/api/data/test_entities`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-
-    // Accept 200, 201, or 501 (if data routes are stubbed).
-    // The server may not have full data CRUD yet, so we gracefully handle.
-    if (resp.status === 501 || resp.status === 404) {
-      console.warn(
-        `  [SKIP] POST /api/data/test_entities returned ${resp.status} ` +
-          '(endpoint may not be fully implemented yet)',
-      );
-      return;
+    a = await json(await request('/api/auth/signup', { email, password }, ''));
+    b = await json(await request('/api/auth/signup', { email: `live-b-${Date.now()}@darshjdb.test`, password }, ''));
+    db = await makeClient(a.access_token);
+    for (const [identity, id, label] of [[a, idA, 'alice'], [b, idB, 'bob']] as const) {
+      await json(await request('/api/mutate', { mutations: [{ op: 'insert', entity: collection, id, data: { label, owner_id: identity.user_id } }] }, identity.access_token));
     }
-
-    expect(resp.ok).toBe(true);
-    const body = (await resp.json()) as Record<string, unknown>;
-    expect(body).toBeDefined();
-  });
-
-  /* ====================================================================== */
-  /*  Test 6: Data list via /api/data/:entity GET                           */
-  /* ====================================================================== */
-
-  it('can list entities via REST /api/data/:entity', async () => {
-    const resp = await fetch(`${DDB_URL}/api/data/test_entities`, {
-      method: 'GET',
-      headers: { Accept: 'application/json' },
-    });
-
-    if (resp.status === 501 || resp.status === 404) {
-      console.warn(
-        `  [SKIP] GET /api/data/test_entities returned ${resp.status} ` +
-          '(endpoint may not be fully implemented yet)',
-      );
-      return;
-    }
-
-    expect(resp.ok).toBe(true);
-    const body = await resp.json();
-    expect(body).toBeDefined();
-  });
-
-  /* ====================================================================== */
-  /*  Test 7: Query endpoint via POST /api/query                            */
-  /* ====================================================================== */
-
-  it('can issue a query via POST /api/query', async () => {
-    const resp = await fetch(`${DDB_URL}/api/query`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        query: { type: 'test_entities', $limit: 5 },
-      }),
-    });
-
-    if (resp.status === 501 || resp.status === 404) {
-      console.warn(
-        `  [SKIP] POST /api/query returned ${resp.status} ` +
-          '(endpoint may not be fully implemented yet)',
-      );
-      return;
-    }
-
-    expect(resp.ok).toBe(true);
-    const body = (await resp.json()) as Record<string, unknown>;
-    expect(body).toBeDefined();
-  });
-
-  /* ====================================================================== */
-  /*  Test 8: Mutate endpoint via POST /api/mutate                          */
-  /* ====================================================================== */
-
-  it('can submit mutations via POST /api/mutate', async () => {
-    const testId = generateId();
-
-    const resp = await fetch(`${DDB_URL}/api/mutate`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        mutations: [
-          {
-            op: 'insert',
-            entity: 'integration_test',
-            id: testId,
-            data: { label: 'round-trip-test', ts: Date.now() },
-          },
-        ],
-      }),
-    });
-
-    if (resp.status === 501 || resp.status === 404) {
-      console.warn(
-        `  [SKIP] POST /api/mutate returned ${resp.status} ` +
-          '(endpoint may not be fully implemented yet)',
-      );
-      return;
-    }
-
-    expect(resp.ok).toBe(true);
-    const body = (await resp.json()) as Record<string, unknown>;
-    expect(body).toBeDefined();
-  });
-
-  /* ====================================================================== */
-  /*  Test 9: Auth signup/signin flow (graceful skip if not available)      */
-  /* ====================================================================== */
-
-  it('auth signup and signin round-trip works', async () => {
-    const uniqueEmail = `integ-${Date.now()}@darshjdb.test`;
-    const password = 'TestPassword123!';
-
-    // Attempt signup
-    const signupResp = await fetch(`${DDB_URL}/api/auth/signup`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email: uniqueEmail, password }),
-    });
-
-    if (signupResp.status === 501 || signupResp.status === 404) {
-      console.warn(
-        `  [SKIP] POST /api/auth/signup returned ${signupResp.status} ` +
-          '(auth may not be fully implemented yet)',
-      );
-      return;
-    }
-
-    if (!signupResp.ok) {
-      // Auth may require DB tables not yet migrated -- skip gracefully
-      const errText = await signupResp.text();
-      console.warn(
-        `  [SKIP] Signup failed (${signupResp.status}): ${errText.slice(0, 200)}`,
-      );
-      return;
-    }
-
-    const signupData = (await signupResp.json()) as {
-      user_id?: string;
-      access_token?: string;
-    };
-
-    expect(signupData.user_id).toBeTruthy();
-    expect(signupData.access_token).toBeTruthy();
-
-    // Attempt signin with same credentials
-    const signinResp = await fetch(`${DDB_URL}/api/auth/signin`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email: uniqueEmail, password }),
-    });
-
-    if (!signinResp.ok) {
-      const errText = await signinResp.text();
-      console.warn(
-        `  [SKIP] Signin failed (${signinResp.status}): ${errText.slice(0, 200)}`,
-      );
-      return;
-    }
-
-    const signinData = (await signinResp.json()) as {
-      user_id?: string;
-      access_token?: string;
-    };
-
-    expect(signinData.user_id).toBe(signupData.user_id);
-    expect(signinData.access_token).toBeTruthy();
-  });
-
-  /* ====================================================================== */
-  /*  Test 10: AuthClient SDK class works end-to-end                       */
-  /* ====================================================================== */
-
-  it('AuthClient SDK signUp method works', async () => {
-    const auth = new AuthClient(db, new MemoryTokenStorage());
-    const uniqueEmail = `sdk-${Date.now()}@darshjdb.test`;
-
-    try {
-      const user = await auth.signUp({
-        email: uniqueEmail,
-        password: 'SdkTestPass123!',
-        displayName: 'SDK Test',
-      });
-
-      expect(user).toBeDefined();
-      expect(user.id).toBeTruthy();
-      expect(auth.getUser()).toEqual(user);
-      expect(auth.getTokens()).toBeTruthy();
-      expect(db.getAuthToken()).toBeTruthy();
-
-      // Clean up
-      await auth.signOut();
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      // Graceful skip if auth endpoints are stubbed or DB not ready
-      if (
-        msg.includes('501') ||
-        msg.includes('404') ||
-        msg.includes('500') ||
-        msg.includes('not implemented')
-      ) {
-        console.warn(`  [SKIP] AuthClient signUp: ${msg.slice(0, 200)}`);
-        return;
-      }
-      throw err;
-    }
-  });
-
-  /* ====================================================================== */
-  /*  Test 11: Admin schema endpoint is accessible                         */
-  /* ====================================================================== */
-
-  it('admin schema endpoint responds', async () => {
-    const resp = await fetch(`${DDB_URL}/api/admin/schema`, {
-      method: 'GET',
-      headers: { Accept: 'application/json' },
-    });
-
-    if (resp.status === 501 || resp.status === 404) {
-      console.warn(
-        `  [SKIP] GET /api/admin/schema returned ${resp.status}`,
-      );
-      return;
-    }
-
-    // May return 401/403 if auth is required -- that's still a valid response
-    expect([200, 401, 403]).toContain(resp.status);
-  });
-
-  /* ====================================================================== */
-  /*  Test 12: TransactionBuilder generates valid ops structure             */
-  /* ====================================================================== */
-
-  it('TransactionBuilder produces ops compatible with /api/mutate', () => {
-    const builder = new TransactionBuilder();
-    const id = generateId();
-
-    builder.proxy.integration_tests[id].set({
-      title: 'SDK round-trip',
-      verified: true,
-    });
-    builder.proxy.integration_tests[id].merge({ verified: false });
-
-    expect(builder.ops).toHaveLength(2);
-    expect(builder.ops[0]!.kind).toBe('set');
-    expect(builder.ops[0]!.entity).toBe('integration_tests');
-    expect(builder.ops[0]!.id).toBe(id);
-    expect(builder.ops[1]!.kind).toBe('merge');
-
-    // Verify ops are JSON-serializable (required for REST transport)
-    const serialized = JSON.stringify({ ops: builder.ops });
-    const parsed = JSON.parse(serialized) as { ops: unknown[] };
-    expect(parsed.ops).toHaveLength(2);
-  });
-
-  /* ====================================================================== */
-  /*  Test 13: SSE subscribe endpoint exists (connection-level check)       */
-  /* ====================================================================== */
-
-  it('subscribe SSE endpoint is reachable', async () => {
-    const query = encodeURIComponent(JSON.stringify({ type: 'test_entities' }));
-
-    // We just check the endpoint responds (even if it's 400 for missing params)
-    const resp = await fetch(`${DDB_URL}/api/subscribe?q=${query}`, {
-      method: 'GET',
-      headers: { Accept: 'text/event-stream' },
-      // Abort quickly since SSE is long-lived
-      signal: AbortSignal.timeout(2000),
-    }).catch((err: unknown) => {
-      // Timeout or abort is expected for SSE
-      const msg = err instanceof Error ? err.message : String(err);
-      if (msg.includes('abort') || msg.includes('timeout')) {
-        return null;
-      }
-      throw err;
-    });
-
-    if (resp === null) {
-      // Connection was established but timed out (SSE working correctly)
-      return;
-    }
-
-    if (resp.status === 501 || resp.status === 404) {
-      console.warn(
-        `  [SKIP] GET /api/subscribe returned ${resp.status}`,
-      );
-      return;
-    }
-
-    // SSE should return 200 with text/event-stream content type
-    expect([200, 400]).toContain(resp.status);
-  });
-
-  /* ====================================================================== */
-  /*  Test 14: MessagePack content negotiation                              */
-  /* ====================================================================== */
-
-  it('server responds to Accept: application/msgpack', async () => {
-    const resp = await fetch(`${DDB_URL}/api/query`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Accept: 'application/msgpack',
-      },
-      body: JSON.stringify({ query: { type: 'test_entities', $limit: 1 } }),
-    });
-
-    if (resp.status === 501 || resp.status === 404) {
-      console.warn(
-        `  [SKIP] Msgpack negotiation: query endpoint returned ${resp.status}`,
-      );
-      return;
-    }
-
-    // Server should either return msgpack or fall back to JSON
-    expect(resp.ok).toBe(true);
-  });
-
-  /* ====================================================================== */
-  /*  Test 15: Full create-read round trip                                  */
-  /* ====================================================================== */
-
-  it('full create-then-read round trip via REST', async () => {
-    const entityId = generateId();
-    const entityData = {
-      id: entityId,
-      name: `roundtrip-${entityId.slice(0, 8)}`,
-      value: 42,
-      tags: ['integration', 'test'],
-    };
-
-    // Create via mutate
-    const createResp = await fetch(`${DDB_URL}/api/mutate`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        mutations: [
-          {
-            op: 'insert',
-            entity: 'roundtrip_test',
-            id: entityId,
-            data: entityData,
-          },
-        ],
-      }),
-    });
-
-    if (createResp.status === 501 || createResp.status === 404) {
-      console.warn(
-        `  [SKIP] Create-read round trip: mutate returned ${createResp.status}`,
-      );
-      return;
-    }
-
-    expect(createResp.ok).toBe(true);
-
-    // Read back via query
-    const queryResp = await fetch(`${DDB_URL}/api/query`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        query: {
-          type: 'roundtrip_test',
-          $where: [{ attribute: 'id', op: 'Eq', value: entityId }],
-          $limit: 1,
-        },
-      }),
-    });
-
-    if (!queryResp.ok) {
-      console.warn(
-        `  [SKIP] Read-back query failed: ${queryResp.status}`,
-      );
-      return;
-    }
-
-    const result = (await queryResp.json()) as { data?: unknown[] };
+  }, 20000);
+  afterAll(() => clients.forEach(client => client.disconnect()));
+  it('health endpoint returns ok', async () => expect(await json(await request('/health'))).toMatchObject({ status: 'ok', version: expect.any(String) }));
+  it('REST client connects', () => expect(db.state).toBe('connected'));
+  it('builds API URLs', () => expect(db.getRestUrl('/query')).toBe(`${URL}/api/query`));
+  it('serves OpenAPI', async () => expect(await json(await request('/api/openapi.json'))).toMatchObject({ openapi: expect.any(String), paths: expect.any(Object) }));
+  it('creates an owned entity through data API', async () => {
+    const result = await json(await request(`/api/data/${collection}`, { label: 'data-api', owner_id: a.user_id }));
     expect(result).toBeDefined();
-
-    // If the server returned data, verify the round trip
-    if (result.data && result.data.length > 0) {
-      const record = result.data[0] as Record<string, unknown>;
-      expect(record.name).toBe(entityData.name);
-      expect(record.value).toBe(42);
-    }
   });
+  it('lists only owned entities through data API', async () => {
+    const result = await json(await request(`/api/data/${collection}`));
+    expect(JSON.stringify(result)).toContain('alice'); expect(JSON.stringify(result)).not.toContain('bob');
+  });
+  it('queries exact owned data', async () => {
+    const result = await db.rest.query({ collection, where: [{ field: 'id', op: '=', value: idA }] });
+    expect(result.data).toEqual([expect.objectContaining({ id: idA, label: 'alice' })]);
+  });
+  it('submits SDK transactions and reads their values', async () => {
+    const id = generateId();
+    await db.rest.transact([{ kind: 'set', entity: collection, id, data: { label: 'sdk-write', owner_id: a.user_id } }]);
+    expect((await db.rest.query({ collection, where: [{ field: 'id', op: '=', value: id }] })).data).toEqual([expect.objectContaining({ label: 'sdk-write' })]);
+  });
+  it('signs in the same registered user', async () => {
+    const result = await json(await request('/api/auth/signin', { email, password }, ''));
+    expect(result.user_id).toBe(a.user_id); expect(result.access_token).toBeTruthy();
+    a = result; db.setAuthToken(a.access_token); await db.connect();
+  }, 10000);
+  it('AuthClient signup and signout work', async () => {
+    const client = await makeClient(a.access_token);
+    const auth = new AuthClient(client, new MemoryTokenStorage());
+    const user = await auth.signUp({ email: `sdk-${Date.now()}@darshjdb.test`, password });
+    expect(user.id).toBeTruthy(); expect(auth.getTokens()).toBeTruthy();
+    await auth.signOut(); expect(client.getAuthToken()).toBeNull();
+  }, 10000);
+  it('rejects unauthenticated admin access and nonadmin raw event feeds', async () => {
+    expect((await request('/api/admin/schema', undefined, '')).status).toBe(401);
+    expect((await request('/api/events?channel=*')).status).toBe(403);
+    expect((await request('/api/events/publish', { channel: 'live-test', data: {} })).status).toBe(403);
+  });
+  it('transaction builder retains both operations', () => {
+    const builder = new TransactionBuilder(); const id = generateId();
+    builder.proxy[collection]![id]!.set({ label: 'x' }); builder.proxy[collection]![id]!.merge({ label: 'y' });
+    expect(builder.ops.map(op => op.kind)).toEqual(['set', 'merge']);
+  });
+  it('opens an authenticated SSE stream', async () => {
+    const controller = new AbortController();
+    try {
+      const response = await fetch(`${URL}/api/subscribe?q=${encodeURIComponent(JSON.stringify({ type: collection }))}`, { headers: { Authorization: `Bearer ${a.access_token}` }, signal: controller.signal });
+      expect(response.status).toBe(200); expect(response.headers.get('content-type')).toContain('text/event-stream');
+    } finally { controller.abort(); }
+  });
+  it('accepts MessagePack negotiation', async () => {
+    const response = await fetch(`${URL}/api/query`, { method: 'POST', headers: { Authorization: `Bearer ${a.access_token}`, 'Content-Type': 'application/json', Accept: 'application/msgpack' }, body: JSON.stringify({ query: { type: collection } }) });
+    expect(response.status).toBe(200); expect((await response.arrayBuffer()).byteLength).toBeGreaterThan(0);
+  });
+  it('denies cross-owner reads and unauthenticated queries', async () => {
+    expect((await db.rest.query({ collection, where: [{ field: 'id', op: '=', value: idB }] })).data).toEqual([]);
+    expect((await request('/api/query', { query: { type: collection } }, '')).status).toBe(401);
+  });
+  it('rejects invalid WebSocket credentials without decode errors', async () => {
+    const client = new DarshJDB({ serverUrl: URL!, appId: 'live-test', transport: 'ws' });
+    clients.push(client); client.setAuthToken('invalid-test-token');
+    await expect(client.connect()).rejects.toThrow();
+    expect(client.state).toBe('disconnected');
+  });
+  for (const transport of ['rest', 'ws'] as const) {
+    it(`${transport}: separate principals and credential retirement isolate real subscriptions`, async () => {
+      const first = await makeClient(a.access_token, transport), second = await makeClient(b.access_token, transport);
+      const left: QueryResult[] = [], right: QueryResult[] = [];
+      const offLeft = subscribe(first, { collection }, value => left.push(value));
+      const offRight = subscribe(second, { collection }, value => right.push(value));
+      try {
+        await until(() => left.some(value => value.data.length > 0) && right.some(value => value.data.length > 0));
+        expect(JSON.stringify(left)).not.toContain('bob'); expect(JSON.stringify(right)).not.toContain('alice');
+        await expect(submitOps(first, [{ kind: 'merge', entity: collection, id: idB, data: { label: 'unauthorized' } }])).rejects.toThrow();
+        await expect(submitOps(first, [{ kind: 'merge', entity: collection, id: idA, data: { owner_id: b.user_id } }])).rejects.toThrow();
+        expect((await queryOnce(first, { collection, where: [{ field: 'id', op: '=', value: idA }] })).data).toEqual([expect.objectContaining({ owner_id: a.user_id, label: 'alice' })]);
+        first.setAuthToken(b.access_token);
+        expect(left.at(-1)?.data).toEqual([]); expect(left.at(-1)?.error).toBeInstanceOf(SubscriptionEndedError);
+        const retiredCount = left.length;
+        await first.connect();
+        expect((await queryOnce(first, { collection })).data).toEqual([expect.objectContaining({ id: idB, label: 'bob' })]);
+        await submitOps(second, [{ kind: 'merge', entity: collection, id: idB, data: { label: 'bob-updated' } }]);
+        await until(() => right.some(value => value.data.some(row => row.label === 'bob-updated')));
+        expect(left).toHaveLength(retiredCount);
+        second.disconnect(); expect(right.at(-1)?.data).toEqual([]); expect(right.at(-1)?.error).toBeInstanceOf(SubscriptionEndedError);
+      } finally { offLeft(); offRight(); first.disconnect(); second.disconnect(); }
+      await json(await request('/api/mutate', { mutations: [{ op: 'update', entity: collection, id: idB, data: { label: 'bob' } }] }, b.access_token));
+    }, 20000);
+  }
+  for (const transport of ['rest', 'ws'] as const) {
+  it(`${transport}: retires an already-open subscription after server-side session revocation`, async () => {
+    const client = await makeClient(a.access_token, transport);
+    const received: QueryResult[] = [];
+    const stop = subscribe(client, { collection }, result => received.push(result));
+    try {
+      await until(() => received.some(result => result.data.length > 0));
+      a = await json(await request('/api/auth/signin', { email, password }, ''));
+      await json(await request('/api/mutate', { mutations: [{ op: 'update', entity: collection, id: idB, data: { label: 'bob' } }] }, b.access_token));
+      if (transport === 'ws') await expect(queryOnce(client, { collection })).rejects.toThrow();
+      await until(() => received.at(-1)?.error instanceof SubscriptionEndedError);
+      expect(received.at(-1)?.data).toEqual([]);
+    } finally { stop(); client.disconnect(); }
+  }, 20000);
+  }
+
 });

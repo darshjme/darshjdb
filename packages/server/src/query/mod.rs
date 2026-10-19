@@ -420,6 +420,9 @@ pub fn plan_query_with_dialect_and_permission(
 
     // Joins for where-clause attributes
     for (i, wc) in ast.where_clauses.iter().enumerate() {
+        if wc.attribute == "id" {
+            continue; // The virtual id is a column, not a stored attribute.
+        }
         let alias = format!("tw{i}");
         sql.push_str(&format!(
             "INNER JOIN triples {alias} ON {alias}.entity_id = t0.entity_id\n"
@@ -535,6 +538,31 @@ pub fn plan_query_with_dialect_and_permission(
     }
 
     sql.push_str("WHERE NOT t0.retracted\n");
+
+    for wc in ast.where_clauses.iter().filter(|wc| wc.attribute == "id") {
+        let op = match wc.op {
+            WhereOp::Eq => "=",
+            WhereOp::Neq => "!=",
+            WhereOp::Gt => ">",
+            WhereOp::Gte => ">=",
+            WhereOp::Lt => "<",
+            WhereOp::Lte => "<=",
+            _ => {
+                return Err(DarshJError::InvalidQuery(
+                    "id supports UUID comparisons only".into(),
+                ));
+            }
+        };
+        let id = wc
+            .value
+            .as_str()
+            .and_then(|s| uuid::Uuid::parse_str(s).ok())
+            .ok_or_else(|| DarshJError::InvalidQuery("id filter requires a UUID string".into()))?;
+        let bound = dialect.uuid_cast(&dialect.placeholder(param_idx));
+        sql.push_str(&format!("  AND t0.entity_id {op} {bound}\n"));
+        params.push(serde_json::Value::String(id.to_string()));
+        param_idx += 1;
+    }
 
     // Row-level security. The subject id is always a bind parameter.
     for (i, pf) in permission.iter().enumerate() {
@@ -1249,6 +1277,23 @@ mod tests {
             hybrid: None,
             nested: vec![],
         }
+    }
+
+    #[test]
+    fn virtual_id_filter_uses_uuid_column_and_rejects_invalid_values() {
+        let id = uuid::Uuid::new_v4();
+        let mut ast = bare_ast("Task");
+        ast.where_clauses.push(WhereClause {
+            attribute: "id".into(),
+            op: WhereOp::Eq,
+            value: serde_json::json!(id),
+        });
+        let plan = plan_query(&ast).unwrap();
+        assert!(plan.sql.contains("t0.entity_id = $2::uuid"));
+        assert!(!plan.sql.contains("tw0"));
+        assert_eq!(plan.params[1], serde_json::json!(id));
+        ast.where_clauses[0].value = serde_json::json!("not-a-uuid");
+        assert!(plan_query(&ast).is_err());
     }
 
     // ── Parsing: every DarshJQL operator ───────────────────────────

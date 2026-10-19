@@ -10,7 +10,7 @@
 //!
 //! | Tier      | Storage        | Recency           | Purpose                              |
 //! |-----------|----------------|-------------------|--------------------------------------|
-//! | `working` | DashMap (RAM)  | last N turns      | Hot scratch context for current chat |
+//! | `working` | Postgres rows | last N turns      | Hot scratch context for current chat |
 //! | `episodic`| Postgres rows  | days–weeks        | Replayable conversation log          |
 //! | `semantic`| Postgres + emb | summarised facts  | Long-term distilled knowledge        |
 //!

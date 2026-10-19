@@ -155,6 +155,77 @@ impl AgentMemoryRepo {
         Ok(row_to_entry(&row))
     }
 
+    /// Append and promote overflow atomically. The parent row lock serializes
+    /// writers across processes; promotion preserves message identity and time.
+    pub async fn append_working(
+        &self,
+        session_id: Uuid,
+        role: MemoryRole,
+        content: &str,
+        token_count: i32,
+        metadata: Value,
+        capacity: usize,
+    ) -> Result<(MemoryEntry, Vec<MemoryEntry>), sqlx::Error> {
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("SELECT id FROM agent_sessions WHERE id = $1 FOR UPDATE")
+            .bind(session_id)
+            .fetch_one(&mut *tx)
+            .await?;
+        // clock_timestamp() is evaluated after the lock, unlike now(), which
+        // is fixed when a competing transaction first started waiting.
+        let row = sqlx::query(
+            "INSERT INTO memory_entries (id, session_id, tier, role, content, token_count, metadata, created_at)
+             VALUES ($1, $2, 'working', $3, $4, $5, $6, clock_timestamp())
+             RETURNING id, session_id, tier, role, content, token_count, metadata, created_at"
+        ).bind(Uuid::new_v4()).bind(session_id).bind(role.as_str()).bind(content)
+            .bind(token_count).bind(SqlxJson(metadata)).fetch_one(&mut *tx).await?;
+        let promoted = sqlx::query(
+            "UPDATE memory_entries SET tier = 'episodic'
+             WHERE id IN (SELECT id FROM memory_entries WHERE session_id = $1 AND tier = 'working'
+                          ORDER BY created_at DESC, id DESC OFFSET $2)
+             RETURNING id, session_id, tier, role, content, token_count, metadata, created_at",
+        )
+        .bind(session_id)
+        .bind(capacity.max(1) as i64)
+        .fetch_all(&mut *tx)
+        .await?;
+        sqlx::query("UPDATE agent_sessions SET updated_at = clock_timestamp() WHERE id = $1")
+            .bind(session_id)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok((
+            row_to_entry(&row),
+            promoted.iter().map(row_to_entry).collect(),
+        ))
+    }
+
+    /// One statement snapshot prevents a concurrent promotion from causing
+    /// a row to appear twice (or disappear) between separate tier reads.
+    /// Legacy oversized working tiers remain readable until the next append
+    /// promotes overflow in place; no historical rows are dropped on rollout.
+    /// ContextBuilder still applies its token budget to the resulting messages.
+    pub async fn context_entries(
+        &self,
+        session_id: Uuid,
+        episodic_limit: i64,
+    ) -> Result<Vec<MemoryEntry>, sqlx::Error> {
+        let rows = sqlx::query(
+            "SELECT id, session_id, tier, role, content, token_count, metadata, created_at
+             FROM memory_entries WHERE session_id = $1 AND tier = 'working'
+             UNION ALL
+             (SELECT id, session_id, tier, role, content, token_count, metadata, created_at
+              FROM memory_entries WHERE session_id = $1 AND tier = 'episodic'
+              ORDER BY created_at DESC, id DESC LIMIT $2)
+             ORDER BY created_at DESC, id DESC",
+        )
+        .bind(session_id)
+        .bind(episodic_limit.max(0))
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.iter().map(row_to_entry).collect())
+    }
+
     /// Fetch the most recent N entries from a tier (reverse-chron).
     pub async fn recent_in_tier(
         &self,
@@ -167,7 +238,7 @@ impl AgentMemoryRepo {
             SELECT id, session_id, tier, role, content, token_count, metadata, created_at
             FROM memory_entries
             WHERE session_id = $1 AND tier = $2
-            ORDER BY created_at DESC
+            ORDER BY created_at DESC, id DESC
             LIMIT $3
             "#,
         )
@@ -199,7 +270,7 @@ impl AgentMemoryRepo {
               AND ($2::timestamptz IS NULL OR created_at >= $2)
               AND ($3::timestamptz IS NULL OR created_at <= $3)
               AND ($4::text IS NULL OR tier = $4)
-            ORDER BY created_at ASC
+            ORDER BY created_at ASC, id ASC
             LIMIT $5
             "#,
         )
@@ -285,6 +356,7 @@ impl AgentMemoryRepo {
         .fetch_all(&self.pool)
         .await?;
 
+        let mut working = 0usize;
         let mut episodic = 0usize;
         let mut semantic = 0usize;
         let mut total_tokens: i64 = 0;
@@ -294,6 +366,7 @@ impl AgentMemoryRepo {
             let toks: i64 = row.try_get("toks").unwrap_or(0);
             total_tokens += toks;
             match tier.as_str() {
+                "working" => working = cnt as usize,
                 "episodic" => episodic = cnt as usize,
                 "semantic" => semantic = cnt as usize,
                 _ => {}
@@ -302,7 +375,7 @@ impl AgentMemoryRepo {
 
         Ok(Some(SessionStats {
             session_id,
-            working_messages: 0, // patched in by handler from the WorkingMemory snapshot
+            working_messages: working,
             episodic_messages: episodic,
             semantic_messages: semantic,
             total_tokens,

@@ -98,6 +98,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "20260725010000_embedding_worker_columns.sql",
         include_str!("../migrations/20260725010000_embedding_worker_columns.sql"),
     ),
+    (
+        "20261020000000_retraction_time.sql",
+        include_str!("../migrations/20261020000000_retraction_time.sql"),
+    ),
 ];
 
 /// Outcome of a single [`run`] pass.

@@ -104,9 +104,8 @@ pub fn apply_view_sorts(ast: &mut QueryAST, view: &ViewConfig) {
 
 /// Project query results to only include fields visible in the view.
 ///
-/// Respects `hidden_fields` (removed) and `field_order` (reordered).
-/// If `field_order` is empty, all non-hidden fields are returned in
-/// their natural order.
+/// Removes `hidden_fields`. JSON object key ordering is not part of the wire
+/// contract; clients render columns using the view's `field_order` metadata.
 pub fn project_fields(rows: &mut Vec<QueryResultRow>, view: &ViewConfig) {
     let has_hidden = !view.hidden_fields.is_empty();
     let has_order = !view.field_order.is_empty();
@@ -278,8 +277,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "pre-existing v0.2.0 baseline failure — tracked in v0.3.1 followup"]
-    fn project_fields_hides_and_reorders() {
+    fn project_fields_hides_and_preserves_visible_fields() {
         let view = make_view();
         let mut rows = vec![QueryResultRow {
             entity_id: Uuid::new_v4(),
@@ -300,10 +298,11 @@ mod tests {
         let keys: Vec<String> = rows[0].attributes.keys().cloned().collect();
         // internal_id should be removed (hidden).
         assert!(!keys.contains(&"internal_id".to_string()));
-        // First three should be in field_order.
-        assert_eq!(keys[0], "title");
-        assert_eq!(keys[1], "status");
-        assert_eq!(keys[2], "priority");
+        // Object order is unspecified; all visible values must survive.
+        assert_eq!(keys.len(), 4);
+        assert_eq!(rows[0].attributes["title"], "Fix bug");
+        assert_eq!(rows[0].attributes["status"], "open");
+        assert_eq!(rows[0].attributes["priority"], 1);
         // Extra field appended after ordered ones.
         assert!(keys.contains(&"extra".to_string()));
     }

@@ -517,7 +517,9 @@ export class AuthClient {
       tokens.expiresAt.toString(),
     );
 
+    const reconnect = this._privateClient.state === 'connected';
     this._privateClient.setAuthToken(tokens.accessToken);
+    if (reconnect) await this._privateClient.connect();
     this._privateScheduleRefresh(tokens.expiresAt);
   }
 

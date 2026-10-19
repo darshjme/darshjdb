@@ -517,7 +517,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "pre-existing v0.2.0 baseline failure — tracked in v0.3.1 followup"]
     async fn create_and_get_automation() {
         let state = AutomationState::new();
         let app = automation_routes(state);
@@ -569,10 +568,7 @@ mod tests {
             .await
             .unwrap();
         let json: Value = serde_json::from_slice(&body).unwrap();
-        let automation_id = json["data"]["id"].as_array().unwrap()[1]
-            .as_str()
-            .unwrap()
-            .to_string();
+        let automation_id = json["data"]["id"].as_str().unwrap().to_string();
 
         // Get.
         let get_resp = app

@@ -33,12 +33,14 @@ import { queryServer } from '@darshjdb/nextjs/server';
 
 export default async function Page() {
   const data = await queryServer({
-    todos: { $where: { done: false }, $order: { createdAt: 'desc' } }
+    type: 'todos',
+    $where: [{ attribute: 'done', op: 'Eq', value: false }],
+    $order: [{ attribute: 'createdAt', direction: 'Desc' }]
   });
 
   return (
     <ul>
-      {data.todos.map(todo => (
+      {data.data.map(todo => (
         <li key={todo.id}>{todo.title}</li>
       ))}
     </ul>
@@ -102,11 +104,11 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
 import { mutateServer } from '@darshjdb/nextjs/server';
 
 export async function createTodo(title: string) {
-  return mutateServer('createTodo', { title, listId: 'default' });
+  return mutateServer([{ entity: 'todos', op: 'set', data: { title, listId: 'default' } }]);
 }
 
 export async function toggleTodo(id: string, done: boolean) {
-  return mutateServer('updateTodo', { id, done });
+  return mutateServer([{ entity: 'todos', op: 'merge', id, data: { done } }]);
 }
 ```
 
@@ -145,19 +147,11 @@ export const config = {
 
 ### Server-Side Auth
 
-```tsx
-// app/dashboard/page.tsx
-import { getAuth } from '@darshjdb/nextjs/server';
-import { redirect } from 'next/navigation';
-
-export default async function Dashboard() {
-  const auth = await getAuth();
-  if (!auth.userId) redirect('/sign-in');
-
-  const data = await queryServer({ todos: { $where: { userId: auth.userId } } });
-  return <TodoList items={data.todos} />;
-}
-```
+`queryServer` and `mutateServer` use `DDB_ADMIN_TOKEN`. Authorize the current user
+in your application before calling them from a Server Action or route. Queries use
+DarshJQL's `{ type, $where, $order, $limit }` shape and return the REST response
+`{ data, meta }`. Mutations use `set` (insert), `merge` (update), and `delete`; update
+and delete require an entity UUID. For server functions use `callFunction(name, args)`.
 
 ## Pages Router
 

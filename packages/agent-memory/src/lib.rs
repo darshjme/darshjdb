@@ -27,6 +27,9 @@
 /// importance scoring and promotion/demotion.
 pub mod tiers;
 
+/// Deterministic rank fusion; not yet wired into memory retrieval.
+pub mod hybrid_recall;
+
 /// Pluggable embedding providers (OpenAI, Ollama, Anthropic, None).
 pub mod embedder;
 

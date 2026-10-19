@@ -4,7 +4,7 @@
 //! [`ContextBuilder`] walks the tier hierarchy in priority order:
 //!
 //! 1. The session's system prompt (from `agent_sessions.metadata.system`).
-//! 2. The hot working window (RAM, reverse-chron).
+//! 2. The durable working window (Postgres, reverse-chron).
 //! 3. The episodic Postgres tier (reverse-chron).
 //! 4. (optional) Semantic recall — top-K rows from `memory_entries` whose
 //!    content matches the current query, injected as a synthetic
@@ -73,7 +73,6 @@ pub struct ContextBuilder {
     session_id: Uuid,
     counter: TiktokenCounter,
     repo: AgentMemoryRepo,
-    working: WorkingMemory,
     /// Resolved owning user — populated from the session row.
     user_id: Option<Uuid>,
     /// Resolved agent identifier — populated from the session row.
@@ -86,13 +85,12 @@ impl ContextBuilder {
         session_id: Uuid,
         counter: TiktokenCounter,
         repo: AgentMemoryRepo,
-        working: WorkingMemory,
+        _working: WorkingMemory,
     ) -> Self {
         Self {
             session_id,
             counter,
             repo,
-            working,
             user_id: None,
             agent_id: None,
         }
@@ -131,11 +129,17 @@ impl ContextBuilder {
             }
         }
 
-        // Step B — working tier (RAM, reverse-chron) ---------------------
+        // Step B — durable working tier (reverse-chron) ---------------------
         let mut working_msgs: Vec<ContextMessage> = Vec::new();
-        let mut working = self.working.snapshot(self.session_id);
-        working.reverse(); // newest first
-        for entry in working {
+        let entries = self
+            .repo
+            .context_entries(self.session_id, options.episodic_limit)
+            .await?;
+        for entry in entries
+            .iter()
+            .filter(|e| e.tier == super::types::MemoryTier::Working)
+            .cloned()
+        {
             let toks = entry_token_count(&entry, &self.counter);
             if toks > budget {
                 break;
@@ -149,15 +153,10 @@ impl ContextBuilder {
         // Step C — episodic tier (Postgres, reverse-chron) ---------------
         let mut episodic_msgs: Vec<ContextMessage> = Vec::new();
         if budget > 0 {
-            let episodic = self
-                .repo
-                .recent_in_tier(
-                    self.session_id,
-                    super::types::MemoryTier::Episodic,
-                    options.episodic_limit,
-                )
-                .await?;
-            for entry in episodic {
+            for entry in entries
+                .into_iter()
+                .filter(|e| e.tier == super::types::MemoryTier::Episodic)
+            {
                 let toks = entry_token_count(&entry, &self.counter);
                 if toks > budget {
                     break;

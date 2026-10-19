@@ -21,13 +21,17 @@ use uuid::Uuid;
 // ---------------------------------------------------------------------------
 
 async fn setup() -> Option<(PgPool, PgTripleStore)> {
-    let url = std::env::var("DATABASE_URL").ok()?;
-    let pool = PgPool::connect(&url).await.ok()?;
-    let store = PgTripleStore::new(pool.clone()).await.ok()?;
+    let url = std::env::var("DATABASE_URL").expect("snapshot schema");
+    let pool = PgPool::connect(&url)
+        .await
+        .expect("configured history database must connect");
+    let store = PgTripleStore::new(pool.clone())
+        .await
+        .expect("history schema");
     // Ensure the snapshots table exists.
     ddb_server::history::ensure_history_schema(&pool)
         .await
-        .ok()?;
+        .expect("snapshot schema");
     Some((pool, store))
 }
 
@@ -58,7 +62,6 @@ async fn cleanup_snapshots(pool: &PgPool, ids: &[Uuid]) {
 // ===========================================================================
 
 #[tokio::test]
-#[ignore = "GENUINE FAILURE: history reconstruction (versions.rs build_versions) still folds a retracted row into its original insert tx_id and ignores retracted_tx_id, so v1 loses the later-retracted attribute. The retracted_tx_id fix landed in schema/get_entity/snapshots but not the version-history path; needs a src fix outside this test scope."]
 async fn test_history_three_versions() {
     let Some((pool, store)) = setup().await else {
         return;
@@ -161,7 +164,6 @@ async fn test_history_three_versions() {
 // ===========================================================================
 
 #[tokio::test]
-#[ignore = "GENUINE FAILURE: versions.rs get_version/build_versions ignores retracted_tx_id, so requesting v1 after a retract+re-set returns None instead of the original value. Needs a src fix in the version-history path outside this test scope."]
 async fn test_history_get_version() {
     let Some((pool, store)) = setup().await else {
         return;
@@ -222,7 +224,6 @@ async fn test_history_get_version() {
 // ===========================================================================
 
 #[tokio::test]
-#[ignore = "GENUINE FAILURE: restore.rs restore_version relies on the version reconstruction that ignores retracted_tx_id, so restoring to v1 restores empty state (name comes back None). Needs a src fix in the restore/version-history path outside this test scope."]
 async fn test_history_restore_version() {
     let Some((pool, store)) = setup().await else {
         return;
@@ -312,7 +313,6 @@ async fn test_history_restore_version() {
 // ===========================================================================
 
 #[tokio::test]
-#[ignore = "GENUINE FAILURE: restore.rs undo_last relies on the version reconstruction that ignores retracted_tx_id, so undo restores empty state instead of the previous value. Needs a src fix in the restore/version-history path outside this test scope."]
 async fn test_history_undo_last() {
     let Some((pool, store)) = setup().await else {
         return;
@@ -332,18 +332,25 @@ async fn test_history_undo_last() {
         .await
         .expect("v1");
 
-    // v2.
-    store.retract(eid, "thing/value").await.expect("retract");
-    store
-        .set_triples(&[TripleInput {
+    // v2: an atomic update has one history transaction id.
+    let mut tx = store.begin_tx().await.unwrap();
+    let tx_id = PgTripleStore::next_tx_id_in_tx(&mut tx).await.unwrap();
+    sqlx::query("UPDATE triples SET retracted = true, retracted_tx_id = $2 WHERE entity_id = $1 AND NOT retracted")
+        .bind(eid).bind(tx_id).execute(&mut *tx).await.unwrap();
+    PgTripleStore::set_triples_in_tx(
+        &mut tx,
+        &[TripleInput {
             entity_id: eid,
             attribute: "thing/value".into(),
             value: json!("second"),
             value_type: 0,
             ttl_seconds: None,
-        }])
-        .await
-        .expect("v2");
+        }],
+        tx_id,
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
 
     // Undo -> should revert to "first".
     let undo_tx = restore::undo_last(&pool, eid).await.expect("undo");
@@ -393,7 +400,6 @@ async fn test_history_undo_single_version_errors() {
 // ===========================================================================
 
 #[tokio::test]
-#[ignore = "GENUINE FAILURE: versions.rs get_at_time selects only the mutable `retracted` flag and ignores retracted_tx_id, so a point-in-time read before a retraction returns None instead of the value live at that time. Needs a src fix in the version-history path outside this test scope."]
 async fn test_history_at_time() {
     let Some((pool, store)) = setup().await else {
         return;
@@ -459,7 +465,6 @@ async fn test_history_at_time() {
 // ===========================================================================
 
 #[tokio::test]
-#[ignore = "GENUINE FAILURE (unrelated to retracted_tx_id): snapshots.rs create_snapshot counts records by attribute-name prefix (\"Widget/%\") but the data marks type via the :db/type attribute with lowercase names (widget/name), so the prefix never matches and record_count is 0. Pre-existing snapshots.rs defect; needs a src fix outside this test scope."]
 async fn test_snapshot_create_and_list() {
     let Some((pool, store)) = setup().await else {
         return;
@@ -515,7 +520,6 @@ async fn test_snapshot_create_and_list() {
 }
 
 #[tokio::test]
-#[ignore = "GENUINE FAILURE (unrelated to retracted_tx_id): snapshots.rs diff_snapshot counts changes by attribute-name prefix (\"Order/%\") but the data marks type via the :db/type attribute with lowercase names (order/total), so no changes are detected. Pre-existing snapshots.rs defect; needs a src fix outside this test scope."]
 async fn test_snapshot_diff() {
     let Some((pool, store)) = setup().await else {
         return;
@@ -591,9 +595,28 @@ async fn test_snapshot_diff() {
     assert_eq!(diff.entity_type, "Order");
     assert!(diff.current_tx_id > diff.snapshot_tx_id);
     // At least 1 entity modified (eid1) and 1 created (eid2).
+    assert_eq!(diff.entities_modified, 1);
+    assert_eq!(diff.entities_created, 1);
+    assert_eq!(diff.triples_retracted, 1);
+    assert_eq!(diff.triples_added, 3);
+    // Restore also includes the type marker, removes new records, and records
+    // retractions under the restore transaction.
+    let restore_tx = snapshots::restore_snapshot(&pool, snapshot.id)
+        .await
+        .unwrap();
+    assert!(restore_tx > diff.current_tx_id);
+    let original = store.get_entity(eid1).await.unwrap();
     assert!(
-        diff.entities_modified >= 1 || diff.triples_added >= 1,
-        "should detect changes since snapshot"
+        original
+            .iter()
+            .any(|t| t.attribute == "order/total" && t.value == json!(100))
+    );
+    assert!(store.get_entity(eid2).await.unwrap().is_empty());
+    let restored_history = versions::get_history(&pool, eid1, 0).await.unwrap();
+    assert_eq!(restored_history.last().unwrap().tx_id, restore_tx);
+    assert_eq!(
+        restored_history.last().unwrap().snapshot["order/total"],
+        json!(100)
     );
 
     cleanup_entities(&pool, &[eid1, eid2]).await;
@@ -605,7 +628,6 @@ async fn test_snapshot_diff() {
 // ===========================================================================
 
 #[tokio::test]
-#[ignore = "GENUINE FAILURE: restore.rs restore_deleted cannot find recoverable state because the version reconstruction it depends on ignores retracted_tx_id and sees the entity as never-having-had state. Errors with 'no recoverable state found'. Needs a src fix in the restore/version-history path outside this test scope."]
 async fn test_restore_deleted_record() {
     let Some((pool, store)) = setup().await else {
         return;
@@ -638,15 +660,12 @@ async fn test_restore_deleted_record() {
     let before = store.get_entity(eid).await.expect("before");
     assert!(!before.is_empty());
 
-    // Soft-delete: retract all triples.
-    store
-        .retract(eid, "deleted/name")
-        .await
-        .expect("retract name");
-    store
-        .retract(eid, "deleted/value")
-        .await
-        .expect("retract value");
+    // Soft-delete the complete record in a single history transaction.
+    let mut tx = store.begin_tx().await.unwrap();
+    let tx_id = PgTripleStore::next_tx_id_in_tx(&mut tx).await.unwrap();
+    sqlx::query("UPDATE triples SET retracted = true, retracted_tx_id = $2 WHERE entity_id = $1 AND NOT retracted")
+        .bind(eid).bind(tx_id).execute(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
 
     // Verify it's "deleted".
     let after_delete = store.get_entity(eid).await.expect("after delete");
@@ -696,4 +715,34 @@ async fn test_history_nonexistent_entity() {
     let fake_id = Uuid::new_v4();
     let err = versions::get_history(&pool, fake_id, 0).await;
     assert!(err.is_err(), "history of nonexistent entity should error");
+}
+
+#[tokio::test]
+async fn test_standalone_retraction_is_a_version_and_undo_restores_it() {
+    let Some((pool, store)) = setup().await else {
+        return;
+    };
+    let eid = Uuid::new_v4();
+    store
+        .set_triples(&[TripleInput {
+            entity_id: eid,
+            attribute: "item/name".into(),
+            value: json!("original"),
+            value_type: 0,
+            ttl_seconds: None,
+        }])
+        .await
+        .unwrap();
+    store.retract(eid, "item/name").await.unwrap();
+    let history = versions::get_history(&pool, eid, 0).await.unwrap();
+    assert_eq!(history.len(), 2);
+    assert!(history[1].snapshot.is_empty());
+    assert_eq!(history[1].changes[0].change_type, ChangeType::Removed);
+    assert!(history[1].changed_at >= history[0].changed_at);
+    restore::undo_last(&pool, eid).await.unwrap();
+    assert_eq!(
+        store.get_entity(eid).await.unwrap()[0].value,
+        json!("original")
+    );
+    cleanup_entities(&pool, &[eid]).await;
 }

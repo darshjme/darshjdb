@@ -113,3 +113,25 @@ npm run clean      # Remove dist/
 - [Presence](../../docs/presence.md)
 - [Storage](../../docs/storage.md)
 - [API Reference](../../docs/api-reference.md)
+
+### Credential changes and subscriptions
+
+Subscriptions are shared only within one client instance and identical query. Changing
+the token with `setAuthToken` (including sign-out or token refresh) closes the previous
+connection and retires its subscriptions and cached rows. Callbacks receive empty data
+and `result.error` explaining that resubscription is required. Call `connect()` and subscribe
+again after changing credentials. The auth module reconnects after automatic token refresh,
+but subscriptions still require resubscription after their retirement error. Explicit `disconnect()` also retires subscriptions;
+automatic network reconnects preserve and re-register them.
+
+### Query document fields
+
+REST and WebSocket query results expose the entity UUID as `id` (with `_id` retained
+for wire compatibility). Namespaced attributes such as `todos/title` also get a
+`title` alias when that suffix is unambiguous. Original attribute keys remain available;
+an existing unqualified field or two namespaces with the same suffix are never overwritten.
+REST nested query payloads remain under `nested` without flattening their fields.
+
+Run the authenticated integration suite against a disposable server with
+`DDB_URL=http://127.0.0.1:7700 npm test`. It creates unique users and data and exercises
+real HTTP, SSE, and WebSocket sessions. With `DDB_URL` set, endpoint errors fail tests.

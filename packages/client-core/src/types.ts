@@ -93,6 +93,8 @@ export interface QueryResult<T = Record<string, unknown>> {
   data: T[];
   /** Server-reported transaction id at the time the result was generated. */
   txId: string;
+  /** Subscription ended; reconnect and subscribe again after resolving the cause. */
+  error?: Error;
 }
 
 /** Subscription callback. */
