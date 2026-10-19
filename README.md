@@ -105,6 +105,7 @@ See [operating notes](docs/OPERATING-NOTES.md) for source references and deploym
 - **Understand the model:** [triple store](docs/triple-store.md), [queries](docs/query-language.md), [relations](docs/relations.md).
 - **Build an app:** [core client](packages/client-core/README.md), [React](packages/react/README.md), [Next.js](packages/nextjs/README.md), [Angular](packages/angular/README.md).
 - **Use another language:** [Python](sdks/python/README.md), [PHP](sdks/php/README.md), [TypeScript SDK](sdks/typescript/README.md).
+- **Understand hybrid recall:** [current behavior and proposed memory integration](docs/hybrid-recall.md).
 - **Operate a deployment:** [security](docs/security.md), [subscriptions](docs/subscriptions.md), [storage backends](docs/STORAGE_BACKENDS.md).
 
 Created and maintained by **[Darshankumar Joshi](https://github.com/darshjme)**. Licensed under [MIT](LICENSE).

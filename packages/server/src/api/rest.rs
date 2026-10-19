@@ -5069,7 +5069,7 @@ async fn run_semantic_search(
                      AND t_type.value = $1::jsonb \
                      AND NOT t_type.retracted \
                    WHERE e.attribute = $2 \
-                   ORDER BY e.embedding <=> $4::vector \
+                   ORDER BY e.embedding <=> $4::vector, e.entity_id ASC, e.attribute ASC \
                    LIMIT $3";
         sqlx::query_as::<_, (Uuid, String, f64)>(sql)
             .bind(serde_json::Value::String(entity_type.to_string()))
@@ -5086,7 +5086,7 @@ async fn run_semantic_search(
                      AND t_type.attribute = ':db/type' \
                      AND t_type.value = $1::jsonb \
                      AND NOT t_type.retracted \
-                   ORDER BY e.embedding <=> $3::vector \
+                   ORDER BY e.embedding <=> $3::vector, e.entity_id ASC, e.attribute ASC \
                    LIMIT $2";
         sqlx::query_as::<_, (Uuid, String, f64)>(sql)
             .bind(serde_json::Value::String(entity_type.to_string()))
@@ -5174,7 +5174,7 @@ async fn run_text_search(
                  AND t.value IS NOT NULL \
                  AND to_tsvector('english', t.value::text) @@ plainto_tsquery('english', $1) \
                GROUP BY t.entity_id \
-               ORDER BY rank DESC \
+               ORDER BY rank DESC, t.entity_id ASC \
                LIMIT $3";
     sqlx::query_as::<_, (Uuid, f64)>(sql)
         .bind(q)
@@ -5185,7 +5185,7 @@ async fn run_text_search(
 }
 
 /// Optional weight overrides for the hybrid RRF endpoint.
-#[derive(Deserialize, Default)]
+#[derive(Deserialize)]
 struct HybridWeights {
     #[serde(default = "default_weight")]
     semantic: f64,
@@ -5193,8 +5193,38 @@ struct HybridWeights {
     text: f64,
 }
 
+impl Default for HybridWeights {
+    fn default() -> Self {
+        Self {
+            semantic: default_weight(),
+            text: default_weight(),
+        }
+    }
+}
+
 fn default_weight() -> f64 {
     1.0
+}
+
+/// Bound both SQL candidate windows and the final result set. Matches the
+/// existing 1,000-result cap used by other REST list endpoints.
+const MAX_HYBRID_LIMIT: u32 = 1_000;
+
+fn validate_hybrid_options(limit: u32, weights: &HybridWeights) -> Result<(), ApiError> {
+    if limit > MAX_HYBRID_LIMIT {
+        return Err(ApiError::bad_request("hybrid limit must be at most 1000"));
+    }
+    if !weights.semantic.is_finite()
+        || !weights.text.is_finite()
+        || weights.semantic < 0.0
+        || weights.text < 0.0
+        || (weights.semantic == 0.0 && weights.text == 0.0)
+    {
+        return Err(ApiError::bad_request(
+            "hybrid weights must be finite and nonnegative, with at least one positive weight",
+        ));
+    }
+    Ok(())
 }
 
 /// Request body for `POST /api/search/hybrid`.
@@ -5244,6 +5274,8 @@ async fn search_hybrid(
     if body.entity_type.is_empty() {
         return Err(ApiError::bad_request("entity_type must not be empty"));
     }
+
+    validate_hybrid_options(body.limit, &body.weights)?;
 
     // Pull more candidates per side than the requested limit so the fusion
     // step has room to reorder. A 4× window is a common heuristic.
@@ -5354,8 +5386,12 @@ fn reciprocal_rank_fuse(
         entry.rrf_score += contribution;
     }
 
+    let mut seen_text: HashSet<Uuid> = HashSet::new();
     let mut text_rank = 0usize;
     for (entity_id, rank) in text_rows {
+        if !seen_text.insert(*entity_id) {
+            continue;
+        }
         text_rank += 1;
         let contribution = w_text / (RRF_K + text_rank as f64);
         let entry = hits.entry(*entity_id).or_insert_with(|| FusedHit {
@@ -5371,8 +5407,8 @@ fn reciprocal_rank_fuse(
     let mut out: Vec<FusedHit> = hits.into_values().collect();
     out.sort_by(|a, b| {
         b.rrf_score
-            .partial_cmp(&a.rrf_score)
-            .unwrap_or(std::cmp::Ordering::Equal)
+            .total_cmp(&a.rrf_score)
+            .then_with(|| a.entity_id.cmp(&b.entity_id))
     });
     out
 }
@@ -5468,6 +5504,104 @@ mod search_unit_tests {
         // Heavy text weighting should put B first.
         let fused_text = reciprocal_rank_fuse(&semantic, &text, 1.0, 5.0);
         assert_eq!(fused_text[0].entity_id, b);
+    }
+
+    #[test]
+    fn rrf_deduplicates_both_lists_and_keeps_first_raw_scores() {
+        let a = Uuid::from_u128(1);
+        let b = Uuid::from_u128(2);
+        let semantic = vec![
+            (a, "first".into(), 0.1),
+            (a, "later".into(), 0.9),
+            (b, "".into(), 0.2),
+        ];
+        let text = vec![(b, 0.7), (b, 0.1), (a, 0.4)];
+        let fused = reciprocal_rank_fuse(&semantic, &text, 1.0, 1.0);
+        assert_eq!(fused.len(), 2);
+        // Symmetric compact ranks tie exactly; ascending UUID breaks the tie.
+        assert_eq!(fused[0].entity_id, a);
+        assert_eq!(fused[1].entity_id, b);
+        assert_eq!(fused[0].rrf_score, 1.0 / 61.0 + 1.0 / 62.0);
+        assert_eq!(fused[0].rrf_score, fused[1].rrf_score);
+        assert_eq!(fused[0].semantic_score, Some(0.9));
+        assert_eq!(fused[1].text_score, Some(0.7));
+    }
+
+    #[test]
+    fn rrf_handles_empty_branches_and_zero_weight() {
+        let a = Uuid::from_u128(1);
+        assert!(reciprocal_rank_fuse(&[], &[], 1.0, 1.0).is_empty());
+        let text = reciprocal_rank_fuse(&[], &[(a, 0.2)], 0.0, 1.0);
+        assert_eq!(text[0].rrf_score, 1.0 / 61.0);
+        assert_eq!(text[0].semantic_score, None);
+        let semantic = reciprocal_rank_fuse(&[(a, "".into(), 0.2)], &[], 1.0, 0.0);
+        assert_eq!(semantic[0].rrf_score, 1.0 / 61.0);
+        assert_eq!(semantic[0].text_score, None);
+    }
+
+    #[test]
+    fn hybrid_options_bound_candidates_and_reject_invalid_weights() {
+        let request: HybridSearchRequest = serde_json::from_value(serde_json::json!({
+            "query_text": "test", "vector": [1.0], "entity_type": "Document"
+        }))
+        .unwrap();
+        assert_eq!(request.weights.semantic, 1.0);
+        assert_eq!(request.weights.text, 1.0);
+        assert!(validate_hybrid_options(request.limit, &request.weights).is_ok());
+        for limit in [0, 1, MAX_HYBRID_LIMIT] {
+            assert!(
+                validate_hybrid_options(
+                    limit,
+                    &HybridWeights {
+                        semantic: 1.0,
+                        text: 0.0
+                    }
+                )
+                .is_ok()
+            );
+        }
+        assert!(
+            validate_hybrid_options(
+                u32::MAX,
+                &HybridWeights {
+                    semantic: 1.0,
+                    text: 1.0
+                }
+            )
+            .is_err()
+        );
+        for invalid in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -1.0] {
+            assert!(
+                validate_hybrid_options(
+                    10,
+                    &HybridWeights {
+                        semantic: invalid,
+                        text: 1.0
+                    }
+                )
+                .is_err()
+            );
+            assert!(
+                validate_hybrid_options(
+                    10,
+                    &HybridWeights {
+                        semantic: 1.0,
+                        text: invalid
+                    }
+                )
+                .is_err()
+            );
+        }
+        assert!(
+            validate_hybrid_options(
+                10,
+                &HybridWeights {
+                    semantic: 0.0,
+                    text: 0.0
+                }
+            )
+            .is_err()
+        );
     }
 
     #[test]

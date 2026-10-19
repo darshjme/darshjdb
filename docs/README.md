@@ -23,6 +23,7 @@
 - [Troubleshooting](troubleshooting.md)
 
 ### Core Concepts
+- [Hybrid Recall](hybrid-recall.md) -- Current entity fusion, memory foundation and evaluation plan
 - [Architecture](architecture.md) -- System design, triple store, EAV model
 - [Triple Store & EAV](triple-store.md) -- How data is stored (Entity-Attribute-Value)
 - [DarshJQL Query Language](DARSHQL.md) -- Complete reference (1000+ lines)
