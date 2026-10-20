@@ -239,6 +239,12 @@ async fn search_and_embedding_routes_enforce_owner_and_fields() {
         .0,
         StatusCode::CREATED
     );
+    sqlx::query("UPDATE users SET roles = $1 WHERE id = $2")
+        .bind(json!(["admin"]))
+        .bind(alice)
+        .execute(&pool)
+        .await
+        .unwrap();
     let admin = issue_token(&sm, alice, vec!["admin"]).await;
     for path in ["/api/darshql", "/api/sql/darshql"] {
         assert_eq!(

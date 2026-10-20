@@ -49,6 +49,7 @@ export class RestTransport {
   private _privateClient: DarshJDB;
   private _privateStreams = new Map<string, AbortController>();
   private _privateSubCounter = 0;
+  private _privateSession = 0;
   private _privateRetireCallbacks = new Map<string, (error: Error) => void>();
 
   constructor(client: DarshJDB) {
@@ -67,12 +68,16 @@ export class RestTransport {
   async query<T = Record<string, unknown>>(
     descriptor: QueryDescriptor,
   ): Promise<QueryResult<T>> {
+    const session = this._privateSession;
     const resp = await this._privateFetch('/query', {
       method: 'POST',
       body: JSON.stringify({ query: toDarshJQL(descriptor) }),
     });
 
     const data = (await resp.json()) as { data: T[] };
+    if (session !== this._privateSession) {
+      throw new SubscriptionEndedError('Client session ended before query completed');
+    }
     return { data: data.data.map(row => normalizeQueryRow(row as Record<string, unknown>)) as T[], txId: '' };
   }
 
@@ -125,12 +130,14 @@ export class RestTransport {
       callback({ data: [], txId: '', error: new SubscriptionEndedError('Live query authorization or connection ended; subscribe again') });
     };
 
+    let refresh = 0;
     const emit = (): void => {
+      const current = ++refresh;
       this.query<T>(descriptor)
         .then((result) => {
-          if (!controller.signal.aborted) callback(result);
+          if (!controller.signal.aborted && current === refresh) callback(result);
         })
-        .catch(retire);
+        .catch(() => { if (current === refresh) retire(); });
     };
 
     // Deliver the current result set, then follow the change stream.
@@ -147,7 +154,7 @@ export class RestTransport {
         if (event === 'update') emit();
         else if (event === 'auth-error') retire();
       },
-    ).catch(retire);
+    ).then(retire, retire);
 
     let closed = false;
 
@@ -166,6 +173,7 @@ export class RestTransport {
    * Close all active SSE connections.
    */
   closeAll(error = new SubscriptionEndedError('Client disconnected; reconnect and subscribe again')): void {
+    this._privateSession++;
     for (const [id, controller] of this._privateStreams) {
       controller.abort();
       this._privateStreams.delete(id);
@@ -237,12 +245,18 @@ export class RestTransport {
     const reader = resp.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
+    let previousCR = false;
 
     while (!signal.aborted) {
       const { done, value } = await reader.read();
       if (done) break;
 
-      buffer += decoder.decode(value, { stream: true });
+      // SSE permits CRLF, CR and LF, including line endings split across chunks.
+      for (const char of decoder.decode(value, { stream: true })) {
+        if (char === '\n' && previousCR) { previousCR = false; continue; }
+        buffer += char === '\r' ? '\n' : char;
+        previousCR = char === '\r';
+      }
 
       let boundary = buffer.indexOf('\n\n');
       while (boundary !== -1) {

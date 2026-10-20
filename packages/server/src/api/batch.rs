@@ -273,7 +273,7 @@ async fn execute_batch_query(
         }
     };
 
-    let permission =
+    let _permission =
         match check_permission(auth, &ast.entity_type, Operation::Read, &state.permissions)
             .and_then(|p| {
                 query::PermissionFilter::from_clauses(&p.where_clauses, auth.user_id)
@@ -289,7 +289,7 @@ async fn execute_batch_query(
                 };
             }
         };
-    let plan = match query::plan_query_with_permission(&ast, &permission) {
+    let plan = match query::plan_authorized_query(&ast, auth, &state.permissions, Operation::Read) {
         Ok(plan) => plan,
         Err(e) => {
             return BatchOpResult {

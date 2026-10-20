@@ -182,11 +182,17 @@ impl PermissionResult {
             (true, false) => other.allowed_fields,
             (false, true) => self.allowed_fields,
             (false, false) => {
-                // Intersection.
-                self.allowed_fields
+                // Empty means unrestricted in PermissionResult, so a disjoint
+                // intersection must deny rather than accidentally grant all fields.
+                let intersection: Vec<String> = self
+                    .allowed_fields
                     .into_iter()
                     .filter(|f| other.allowed_fields.contains(f))
-                    .collect()
+                    .collect();
+                if intersection.is_empty() {
+                    return Self::deny("field allowlists have no common fields");
+                }
+                intersection
             }
         };
 
@@ -789,6 +795,20 @@ mod tests {
         };
         let merged = r1.and(r2);
         assert_eq!(merged.allowed_fields, vec!["b", "c"]);
+    }
+
+    #[test]
+    fn and_disjoint_field_allowlists_deny_instead_of_granting_all_fields() {
+        let mut left = PermissionResult::allow();
+        left.allowed_fields = vec!["public_name".into()];
+        let mut right = PermissionResult::allow();
+        right.allowed_fields = vec!["private_email".into()];
+        let merged = left.and(right).and(PermissionResult::allow());
+        assert!(!merged.allowed);
+        assert_eq!(
+            merged.denial_reason.as_deref(),
+            Some("field allowlists have no common fields")
+        );
     }
 
     #[test]

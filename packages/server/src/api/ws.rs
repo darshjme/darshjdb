@@ -376,6 +376,8 @@ async fn handle_connection(
     // Phase 2: Main message loop with keepalive and change notification.
     let mut keepalive = tokio::time::interval(KEEPALIVE_INTERVAL);
     keepalive.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut auth_tick = tokio::time::interval(Duration::from_secs(15));
+    auth_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut change_rx = state.change_tx.subscribe();
 
     loop {
@@ -435,6 +437,16 @@ async fn handle_connection(
                         debug!(session_id = %session_id, "change broadcast closed");
                         break;
                     }
+                }
+            }
+            _ = auth_tick.tick() => {
+                let Ok(auth) = state.auth_sessions.validate_token(&access_token, &peer_ip, "websocket", "").await else { break; };
+                let roles_changed = get_auth_ctx(&state, session_id)
+                    .is_none_or(|old| old.roles != auth.roles);
+                if roles_changed { break; }
+                state.sessions.with_session_mut(&session_id, |s| s.authenticate(auth));
+                if refresh_query_subscriptions(&mut socket, &state, session_id, codec).await {
+                    break;
                 }
             }
             _ = keepalive.tick() => {
@@ -1332,9 +1344,8 @@ fn authorized_plan(
     if !result.allowed {
         return Err("subscription permission denied".into());
     }
-    let filters = query::PermissionFilter::from_clauses(&result.where_clauses, auth.user_id)
-        .map_err(|e| e.to_string())?;
-    query::plan_query_with_permission(ast, &filters).map_err(|e| e.to_string())
+    query::plan_authorized_query(ast, &auth, &state.permissions, Operation::Subscribe)
+        .map_err(|e| e.to_string())
 }
 
 fn authorize(
@@ -1375,6 +1386,16 @@ async fn handle_change_event(
     session_id: SessionId,
     codec: Codec,
 ) -> bool {
+    refresh_query_subscriptions(socket, state, session_id, codec).await
+}
+
+/// Refresh quiet subscriptions after policy changes as well as data changes.
+async fn refresh_query_subscriptions(
+    socket: &mut WebSocket,
+    state: &WsState,
+    session_id: SessionId,
+    codec: Codec,
+) -> bool {
     // Get all subscriptions for this session.
     let subs: Vec<(SubId, Value, u64)> = state
         .sessions
@@ -1408,9 +1429,9 @@ async fn handle_change_event(
                             Value::Object(obj)
                         })
                         .collect(),
-                    Err(_) => continue,
+                    Err(_) => return true,
                 },
-                Err(_) => continue,
+                Err(_) => return true,
             },
             Err(_) => continue,
         };
@@ -1705,6 +1726,11 @@ async fn handle_live_query_change(
         return false;
     }
 
+    if !get_auth_ctx(state, session_id).is_some_and(|auth| auth.roles.iter().any(|r| r == "admin"))
+    {
+        return true;
+    }
+
     // Fetch post-mutation entity data for filter evaluation.
     // Uses a fresh transaction per entity to read committed state.
     let mut entity_data = std::collections::HashMap::new();
@@ -1884,6 +1910,12 @@ async fn handle_pubsub_change(
     codec: Codec,
 ) -> bool {
     let subscriber = session_id.to_string();
+    if !state.pubsub.list_subscriptions(&subscriber).is_empty()
+        && !get_auth_ctx(state, session_id)
+            .is_some_and(|auth| auth.roles.iter().any(|r| r == "admin"))
+    {
+        return true;
+    }
     let matches = state.pubsub.process_change_event(event);
 
     for (sub, sub_id, pub_event) in matches {

@@ -62,6 +62,54 @@ async fn setup_pool() -> Option<PgPool> {
     Some(pool)
 }
 
+// Whole-chain assertions need an intact history, independent of tests that
+// deliberately remove their own audit rows from the shared scratch database.
+async fn setup_audit_pool() -> Option<(PgPool, PgPool, String)> {
+    let Ok(url) = std::env::var("DATABASE_URL") else {
+        eprintln!("SKIP: DATABASE_URL not set — skipping audit integration test");
+        return None;
+    };
+    let admin = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .connect(&url)
+        .await
+        .expect("connect audit fixture admin");
+    let schema = format!("audit_test_{}", Uuid::new_v4().simple());
+    sqlx::query(&format!("CREATE SCHEMA {schema}"))
+        .execute(&admin)
+        .await
+        .expect("create isolated audit schema");
+    let search_path = schema.clone();
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(2)
+        .after_connect(move |conn, _| {
+            let search_path = search_path.clone();
+            Box::pin(async move {
+                sqlx::query("SELECT set_config('search_path', $1, false)")
+                    .bind(search_path)
+                    .execute(conn)
+                    .await?;
+                Ok(())
+            })
+        })
+        .connect(&url)
+        .await
+        .expect("connect isolated audit fixture");
+    ddb_server::triple_store::PgTripleStore::new(pool.clone())
+        .await
+        .expect("initialize isolated audit schema");
+    Some((pool, admin, schema))
+}
+
+async fn cleanup_audit_pool(pool: PgPool, admin: PgPool, schema: String) {
+    pool.close().await;
+    sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
+        .execute(&admin)
+        .await
+        .expect("remove only this audit fixture schema");
+    admin.close().await;
+}
+
 async fn cleanup_entities(pool: &PgPool, ids: &[Uuid]) {
     if ids.is_empty() {
         return;
@@ -1880,7 +1928,7 @@ async fn test_audit_single_tx() {
 
 #[tokio::test]
 async fn test_audit_chain() {
-    let Some(pool) = setup_pool().await else {
+    let Some((pool, admin, schema)) = setup_audit_pool().await else {
         return;
     };
     let store = ddb_server::triple_store::PgTripleStore::new_lazy(pool.clone());
@@ -1907,11 +1955,12 @@ async fn test_audit_chain() {
     assert!(chain.total_transactions >= 3);
     cleanup_entities(&pool, &eids).await;
     cleanup_audit(&pool, &txs).await;
+    cleanup_audit_pool(pool, admin, schema).await;
 }
 
 #[tokio::test]
 async fn test_audit_5_sequential() {
-    let Some(pool) = setup_pool().await else {
+    let Some((pool, admin, schema)) = setup_audit_pool().await else {
         return;
     };
     let store = ddb_server::triple_store::PgTripleStore::new_lazy(pool.clone());
@@ -1934,6 +1983,7 @@ async fn test_audit_5_sequential() {
     for tx in &txs {
         cleanup_audit(&pool, &[*tx]).await;
     }
+    cleanup_audit_pool(pool, admin, schema).await;
 }
 
 #[tokio::test]
