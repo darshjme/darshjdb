@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { DarshJDB } from '../client.js';
-import { subscribe } from '../query.js';
+import { subscribe, queryOnce } from '../query.js';
 import type { ServerMessage } from '../types.js';
 
 function client(owner: string) {
@@ -133,4 +133,105 @@ describe('subscription isolation', () => {
     expect(callback).not.toHaveBeenCalled();
     expect(send).toHaveBeenLastCalledWith({ type: 'unsub', sub_id: 'late' });
   });
+  function restStream() {
+    const db = new DarshJDB({ serverUrl: 'https://db.example.com', appId: 'stream', transport: 'rest' });
+    db.setAuthToken('alice');
+    let stream!: ReadableStreamDefaultController<Uint8Array>;
+    const pending: Array<(value: Response) => void> = [];
+    vi.stubGlobal('fetch', vi.fn((url: string) => url.endsWith('/query')
+      ? new Promise<Response>(resolve => pending.push(resolve))
+      : Promise.resolve(new Response(new ReadableStream<Uint8Array>({ start(controller) { stream = controller; } })))));
+    const answer = (index: number, id: string) => pending[index]!(new Response(JSON.stringify({ data: [{ id }] })));
+    return { db, pending, answer, close: () => stream.close(), frame: (text: string) => stream.enqueue(new TextEncoder().encode(text)) };
+  }
+
+  it('retires cached REST rows on clean SSE EOF and suppresses pending results', async () => {
+    const h = restStream(), callback = vi.fn();
+    const stop = subscribe(h.db, { collection: 'notes' }, callback);
+    h.answer(0, 'alice');
+    await vi.waitFor(() => expect(callback.mock.lastCall?.[0].data).toEqual([{ id: 'alice' }]));
+    h.frame('event: update\ndata: {}\n\n');
+    await vi.waitFor(() => expect(h.pending).toHaveLength(2));
+    h.close();
+    await vi.waitFor(() => expect(callback.mock.lastCall?.[0].error?.name).toBe('SubscriptionEndedError'));
+    expect(callback.mock.lastCall?.[0].data).toEqual([]);
+    const count = callback.mock.calls.length;
+    h.answer(1, 'late-alice');
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(callback).toHaveBeenCalledTimes(count);
+    stop();
+  });
+
+  it('recognizes chunk-split CRLF SSE revocation and suppresses old query responses', async () => {
+    const h = restStream(), callback = vi.fn();
+    const stop = subscribe(h.db, { collection: 'notes' }, callback);
+    h.frame('event: auth-error\r');
+    h.frame('\ndata: {}\r\n\r');
+    h.frame('\n');
+    await vi.waitFor(() => expect(callback.mock.lastCall?.[0].error?.name).toBe('SubscriptionEndedError'));
+    h.answer(0, 'late-alice');
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(callback).toHaveBeenCalledOnce();
+    expect(callback.mock.lastCall?.[0].data).toEqual([]);
+    stop(); h.close();
+  });
+
+  it('rejects a pending one-shot REST query across an Alice/Bob/Alice session change', async () => {
+    const h = restStream();
+    const result = h.db.rest.query({ collection: 'notes' });
+    const rejected = expect(result).rejects.toThrow('session');
+    h.db.setAuthToken('bob'); h.db.setAuthToken('alice');
+    h.answer(0, 'old-session');
+    await rejected;
+  });
+
+  it('does not overwrite a newer REST refresh with an older in-flight response', async () => {
+    const h = restStream(), callback = vi.fn();
+    const stop = subscribe(h.db, { collection: 'notes' }, callback);
+    h.frame('event: update\ndata: {}\n\n');
+    await vi.waitFor(() => expect(h.pending).toHaveLength(2));
+    h.answer(1, 'new');
+    await vi.waitFor(() => expect(callback.mock.lastCall?.[0].data).toEqual([{ id: 'new' }]));
+    h.answer(0, 'old');
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(callback).toHaveBeenCalledOnce();
+    stop(); h.close();
+  });
+
+  it('does not retire a newer REST snapshot when an older refresh fails', async () => {
+    const h = restStream(), callback = vi.fn();
+    const stop = subscribe(h.db, { collection: 'notes' }, callback);
+    h.frame('event: update\ndata: {}\n\n');
+    await vi.waitFor(() => expect(h.pending).toHaveLength(2));
+    h.answer(1, 'new');
+    await vi.waitFor(() => expect(callback.mock.lastCall?.[0].data).toEqual([{ id: 'new' }]));
+    h.pending[0]!(new Response('temporary upstream failure', { status: 503 }));
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(callback).toHaveBeenCalledOnce();
+    expect(callback.mock.lastCall?.[0].data).toEqual([{ id: 'new' }]);
+    stop(); h.close();
+  });
+
+  it('rejects a resolved WebSocket query when credentials change before its continuation', async () => {
+    const { db } = client('ws-session');
+    db.setAuthToken('alice');
+    const result = queryOnce(db, { collection: 'notes' });
+    const rejected = expect(result).rejects.toThrow('session');
+    db.setAuthToken('bob'); db.setAuthToken('alice');
+    await rejected;
+  });
+
+  it('replaces a WS row snapshot when field policy removes a previously visible field', async () => {
+    const { db, send } = client('policy');
+    send.mockResolvedValueOnce({ type: 'sub-ok', id: 'request', sub_id: 'policy-1', initial: [{ id: 'note', public: 'visible', secret: 'old-secret' }] } as ServerMessage);
+    const handlers = vi.spyOn(db, 'registerSubscriptionHandler');
+    const callback = vi.fn();
+    const stop = subscribe(db, { collection: 'notes' }, callback);
+    await flush();
+    expect(callback.mock.lastCall?.[0].data[0].secret).toBe('old-secret');
+    handlers.mock.calls[0]![1]({ type: 'sub', sub_id: 'policy-1', updated: [{ id: 'note', public: 'visible' }] } as ServerMessage);
+    expect(callback.mock.lastCall?.[0].data).toEqual([{ id: 'note', public: 'visible' }]);
+    stop();
+  });
+
 });

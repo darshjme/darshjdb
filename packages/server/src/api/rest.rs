@@ -34,7 +34,7 @@ use serde_json::Value;
 use sqlx::PgPool;
 use tokio::sync::broadcast;
 use tokio_stream::StreamExt;
-use tokio_stream::wrappers::BroadcastStream;
+use tokio_stream::wrappers::{BroadcastStream, IntervalStream};
 use uuid::Uuid;
 
 use super::error::{ApiError, ErrorCode};
@@ -2511,9 +2511,10 @@ async fn query(
 
     // Row-level security: restrict the plan to the rows this subject may read.
     let permission_where = perm_result.build_where_clause(auth_ctx.user_id);
-    let permission =
-        query::PermissionFilter::from_clauses(&perm_result.where_clauses, auth_ctx.user_id)
-            .map_err(|e| ApiError::bad_request(format!("Query planning failed: {e}")))?;
+
+    // Plan the query.
+    let plan = query::plan_authorized_query(&ast, &auth_ctx, &state.permissions, Operation::Read)
+        .map_err(|e| ApiError::bad_request(format!("Query planning failed: {e}")))?;
 
     // Build a cache key that includes the full query + permission context
     // so different users never see each other's cached results.
@@ -2521,12 +2522,17 @@ async fn query(
         "q": body.query,
         "uid": auth_ctx.user_id,
         "perm": permission_where,
+        "allowed_fields": perm_result.allowed_fields,
+        "restricted_fields": perm_result.restricted_fields,
+        "authorized_plan": format!("{plan:?}"),
     });
     let query_hash = cache::hash_query(&cache_key_input);
     let entity_type = ast.entity_type.clone();
 
     // Check the hot cache first — sub-millisecond on hit.
-    if let Some(cached_response) = state.query_cache.get(query_hash) {
+    if ast.nested.is_empty()
+        && let Some(cached_response) = state.query_cache.get(query_hash)
+    {
         let response = serde_json::json!({
             "data": cached_response,
             "meta": {
@@ -2538,10 +2544,6 @@ async fn query(
         });
         return Ok(negotiate_response(&headers, &response));
     }
-
-    // Plan the query.
-    let plan = query::plan_query_with_permission(&ast, &permission)
-        .map_err(|e| ApiError::bad_request(format!("Query planning failed: {e}")))?;
 
     // Execute against Postgres.
     let results: Vec<QueryResultRow> = query::execute_query(&state.pool, &plan)
@@ -2555,9 +2557,13 @@ async fn query(
 
     // Cache the result set for future reads.
     let results_value = serde_json::to_value(&results).unwrap_or_default();
-    state
-        .query_cache
-        .set(query_hash, results_value, 0, entity_type);
+    // Nested results depend on other entity types whose mutations do not
+    // invalidate this root cache entry. Recompute until dependency tracking exists.
+    if ast.nested.is_empty() {
+        state
+            .query_cache
+            .set(query_hash, results_value, 0, entity_type);
+    }
 
     let response = serde_json::json!({
         "data": results,
@@ -2874,7 +2880,7 @@ async fn data_list(
     validate_entity_name(&entity)?;
 
     // Evaluate read permission — may inject WHERE clauses for row-level security.
-    let perm_result = check_permission(&auth_ctx, &entity, Operation::Read, &state.permissions)?;
+    check_permission(&auth_ctx, &entity, Operation::Read, &state.permissions)?;
 
     // Use the query engine to list entities of this type.
     let query_json = serde_json::json!({
@@ -2885,11 +2891,8 @@ async fn data_list(
         .map_err(|e| ApiError::internal(format!("Failed to build list query: {e}")))?;
 
     // Row-level security: restrict the plan to the rows this subject may read.
-    let permission =
-        query::PermissionFilter::from_clauses(&perm_result.where_clauses, auth_ctx.user_id)
-            .map_err(|e| ApiError::internal(format!("Failed to build list query: {e}")))?;
 
-    let plan = query::plan_query_with_permission(&ast, &permission)
+    let plan = query::plan_authorized_query(&ast, &auth_ctx, &state.permissions, Operation::Read)
         .map_err(|e| ApiError::internal(format!("Failed to plan list query: {e}")))?;
     let results = query::execute_query(&state.pool, &plan)
         .await
@@ -3044,11 +3047,39 @@ async fn data_create(
         ttl_seconds,
     });
 
-    let tx_id = state
+    let mut db_tx = state
         .triple_store
-        .set_triples(&triples)
+        .begin_tx()
         .await
-        .map_err(|e| ApiError::internal(format!("Failed to create entity: {e}")))?;
+        .map_err(|e| ApiError::internal(e.to_string()))?;
+    let mutation_data = Value::Object(
+        obj.iter()
+            .filter(|(k, _)| !k.starts_with('$') && k.as_str() != "owner_id")
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect(),
+    );
+    authorize_mutation_inner(
+        &state.permissions,
+        &state.schema_registry,
+        &auth_ctx,
+        &mut db_tx,
+        &entity,
+        "insert",
+        id,
+        Some(&mutation_data),
+        true,
+    )
+    .await?;
+    let tx_id = PgTripleStore::next_tx_id_in_tx(&mut db_tx)
+        .await
+        .map_err(|e| ApiError::internal(e.to_string()))?;
+    PgTripleStore::set_triples_in_tx(&mut db_tx, &triples, tx_id)
+        .await
+        .map_err(|e| ApiError::internal(e.to_string()))?;
+    db_tx
+        .commit()
+        .await
+        .map_err(|e| ApiError::internal(e.to_string()))?;
 
     // Evaluate forward-chaining rules and write implied triples.
     if let Some(ref rule_engine) = state.rule_engine {
@@ -3112,7 +3143,7 @@ async fn data_get(
     validate_entity_name(&entity)?;
 
     // Evaluate read permission.
-    let perm_result = check_permission(&auth_ctx, &entity, Operation::Read, &state.permissions)?;
+    check_permission(&auth_ctx, &entity, Operation::Read, &state.permissions)?;
 
     let triples = state
         .triple_store
@@ -3126,59 +3157,33 @@ async fn data_get(
         )));
     }
 
-    // Build attribute map from triples.
-    let mut attrs = serde_json::Map::new();
-    for t in &triples {
-        // Use the short attribute name (strip "entity/" prefix if present).
-        let key = t
-            .attribute
-            .strip_prefix(&format!("{entity}/"))
-            .unwrap_or(&t.attribute)
-            .to_string();
-        attrs.entry(key).or_insert_with(|| t.value.clone());
-    }
-
-    // Enforce row-level security: if the permission has WHERE clauses
-    // (e.g., owner_id = $user_id), verify this entity satisfies them.
-    // For single-entity fetches we check the owner_id attribute directly.
-    if !perm_result.where_clauses.is_empty() {
-        let owner_id = attrs
-            .get("owner_id")
-            .or_else(|| attrs.get("id"))
-            .and_then(|v| v.as_str())
-            .and_then(|s| Uuid::parse_str(s).ok());
-
-        // For "users" entity, the entity's own id IS the access key.
-        let entity_owner = if entity == "users" {
-            Some(id)
-        } else {
-            owner_id
-        };
-
-        match entity_owner {
-            Some(owner) if owner == auth_ctx.user_id => {}
-            _ => {
-                return Err(ApiError::permission_denied(format!(
-                    "Access denied: you do not own this {entity}"
-                )));
-            }
-        }
-    }
-
-    // Apply field restrictions from permissions.
-    if !perm_result.restricted_fields.is_empty() {
-        for field in &perm_result.restricted_fields {
-            attrs.remove(field);
-        }
-    }
-    if !perm_result.allowed_fields.is_empty() {
-        let allowed: std::collections::HashSet<&str> = perm_result
-            .allowed_fields
-            .iter()
-            .map(|s| s.as_str())
-            .collect();
-        attrs.retain(|k, _| allowed.contains(k.as_str()) || k.starts_with(":db/"));
-    }
+    // Resolve the requested type and id through the same row/field planner
+    // as list/query. A caller cannot relabel another type to borrow its policy.
+    let ast = query::parse_darshan_ql(&serde_json::json!({
+        "type": entity, "$where": [{"attribute":"id", "op":"Eq", "value":id}]
+    }))
+    .map_err(|e| ApiError::bad_request(e.to_string()))?;
+    let plan = query::plan_authorized_query(&ast, &auth_ctx, &state.permissions, Operation::Read)
+        .map_err(|e| ApiError::permission_denied(e.to_string()))?;
+    let rows = query::execute_query(&state.pool, &plan)
+        .await
+        .map_err(|e| ApiError::internal(e.to_string()))?;
+    let row = rows
+        .into_iter()
+        .next()
+        .ok_or_else(|| ApiError::permission_denied("Entity read denied"))?;
+    let attrs: serde_json::Map<String, Value> = row
+        .attributes
+        .into_iter()
+        .map(|(key, value)| {
+            (
+                key.strip_prefix(&format!("{entity}/"))
+                    .unwrap_or(&key)
+                    .to_owned(),
+                value,
+            )
+        })
+        .collect();
 
     // Include TTL virtual fields if the entity has an expiry set.
     let mut response = serde_json::json!({
@@ -3209,37 +3214,7 @@ async fn data_patch(
     validate_entity_name(&entity)?;
 
     // Check update permission.
-    let perm_result = check_permission(&auth_ctx, &entity, Operation::Update, &state.permissions)?;
-
-    // Enforce row-level security for updates: verify ownership.
-    if !perm_result.where_clauses.is_empty() {
-        let existing = state
-            .triple_store
-            .get_entity(id)
-            .await
-            .map_err(|e| ApiError::internal(format!("Failed to fetch entity: {e}")))?;
-
-        let owner_id = existing
-            .iter()
-            .find(|t| t.attribute.ends_with("/owner_id"))
-            .and_then(|t| t.value.as_str())
-            .and_then(|s| Uuid::parse_str(s).ok());
-
-        let entity_owner = if entity == "users" {
-            Some(id)
-        } else {
-            owner_id
-        };
-
-        match entity_owner {
-            Some(owner) if owner == auth_ctx.user_id => {}
-            _ => {
-                return Err(ApiError::permission_denied(format!(
-                    "Access denied: you do not own this {entity}"
-                )));
-            }
-        }
-    }
+    check_permission(&auth_ctx, &entity, Operation::Update, &state.permissions)?;
 
     if !body.is_object() {
         return Err(ApiError::bad_request("Request body must be a JSON object"));
@@ -3330,6 +3305,23 @@ async fn data_patch(
         .begin_tx()
         .await
         .map_err(|e| ApiError::internal(format!("Failed to begin transaction: {e}")))?;
+
+    let mutation_data = Value::Object(
+        obj.iter()
+            .filter(|(k, _)| !k.starts_with('$'))
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect(),
+    );
+    authorize_mutation(
+        &state,
+        &auth_ctx,
+        &mut db_tx,
+        &entity,
+        "update",
+        id,
+        Some(&mutation_data),
+    )
+    .await?;
 
     for (key, _) in obj {
         let attr = format!("{entity}/{key}");
@@ -3424,7 +3416,7 @@ async fn data_delete(
     validate_entity_name(&entity)?;
 
     // Check delete permission.
-    let perm_result = check_permission(&auth_ctx, &entity, Operation::Delete, &state.permissions)?;
+    check_permission(&auth_ctx, &entity, Operation::Delete, &state.permissions)?;
 
     // Retract all triples for this entity.
     let existing = state
@@ -3439,36 +3431,17 @@ async fn data_delete(
         )));
     }
 
-    // Enforce row-level security for deletes: verify ownership.
-    if !perm_result.where_clauses.is_empty() {
-        let owner_id = existing
-            .iter()
-            .find(|t| t.attribute.ends_with("/owner_id"))
-            .and_then(|t| t.value.as_str())
-            .and_then(|s| Uuid::parse_str(s).ok());
-
-        let entity_owner = if entity == "users" {
-            Some(id)
-        } else {
-            owner_id
-        };
-
-        match entity_owner {
-            Some(owner) if owner == auth_ctx.user_id => {}
-            _ => {
-                return Err(ApiError::permission_denied(format!(
-                    "Access denied: you do not own this {entity}"
-                )));
-            }
-        }
-    }
-
     // Retract all triples in a single transaction so the delete is atomic.
     let mut db_tx = state
         .triple_store
         .begin_tx()
         .await
         .map_err(|e| ApiError::internal(format!("Failed to begin transaction: {e}")))?;
+
+    authorize_mutation(&state, &auth_ctx, &mut db_tx, &entity, "delete", id, None).await?;
+    let existing = PgTripleStore::get_entity_in_tx(&mut db_tx, id)
+        .await
+        .map_err(|e| ApiError::internal(e.to_string()))?;
 
     let del_tx_id = PgTripleStore::next_tx_id_in_tx(&mut db_tx)
         .await
@@ -3976,19 +3949,10 @@ fn ilike_inner(hs: &[char], pt: &[char]) -> bool {
 
 /// `GET /api/subscribe?q=...` — Server-Sent Events for live query updates.
 ///
-/// Authenticates via Bearer token, parses the DarshJQL query to extract
-/// the target entity type and any `$where` predicates, then streams
-/// change events from the pub/sub engine with server-side filtering:
-///
-/// 1. Entity-type filter: only events whose `entity_type` matches the
-///    query's target type are considered.
-/// 2. WHERE re-evaluation: for events that carry an `entity_id`, the
-///    handler fetches the current triples for that entity and checks
-///    the parsed `WhereClause` list in memory. Non-matching events are
-///    dropped before they reach the client.
-///
-/// A heartbeat comment is sent every 15 seconds to keep the connection
-/// alive through idle intermediaries.
+/// Revalidates the session and the complete authorized query on data changes
+/// and every 15 seconds. Only changed authorized results trigger invalidation;
+/// revoked sessions or denied policies emit an auth-error for client retirement.
+/// A heartbeat comment keeps the connection alive through idle intermediaries.
 async fn subscribe(
     State(state): State<AppState>,
     Query(params): Query<SubscribeParams>,
@@ -4002,11 +3966,7 @@ async fn subscribe(
         .map_err(|e| ApiError::bad_request(format!("Query 'q' must be JSON: {e}")))?;
     let ast = query::parse_darshan_ql(&q_json)
         .map_err(|e| ApiError::bad_request(format!("Invalid DarshJQL: {e}")))?;
-    let permission =
-        check_permission(&auth, &ast.entity_type, Operation::Read, &state.permissions)?;
-    let filters = query::PermissionFilter::from_clauses(&permission.where_clauses, auth.user_id)
-        .map_err(|e| ApiError::bad_request(e.to_string()))?;
-    let plan = query::plan_query_with_permission(&ast, &filters)
+    let plan = query::plan_authorized_query(&ast, &auth, &state.permissions, Operation::Subscribe)
         .map_err(|e| ApiError::bad_request(e.to_string()))?;
     // Listen before the initial read to avoid losing a concurrent mutation.
     let rx = state.change_tx.subscribe();
@@ -4016,7 +3976,11 @@ async fn subscribe(
     let previous = Arc::new(tokio::sync::Mutex::new(
         serde_json::to_value(initial).unwrap_or_default(),
     ));
+    // Policy and session changes need to retire quiet streams too.
+    let ticks = IntervalStream::new(tokio::time::interval(Duration::from_secs(15))).map(|_| ());
     let stream = BroadcastStream::new(rx)
+        .map(|_| ())
+        .merge(ticks)
         .then(move |_msg| {
             let state = state.clone();
             let headers = headers.clone();
@@ -4030,19 +3994,15 @@ async fn subscribe(
                     Ok(auth) => auth,
                     Err(_) => return Some(Ok(Event::default().event("auth-error").data("{}"))),
                 };
-                let permission = match check_permission(
+                let plan = match query::plan_authorized_query(
+                    &ast,
                     &auth,
-                    &ast.entity_type,
-                    Operation::Read,
                     &state.permissions,
+                    Operation::Subscribe,
                 ) {
-                    Ok(permission) => permission,
+                    Ok(plan) => plan,
                     Err(_) => return Some(Ok(Event::default().event("auth-error").data("{}"))),
                 };
-                let filters =
-                    query::PermissionFilter::from_clauses(&permission.where_clauses, auth.user_id)
-                        .ok()?;
-                let plan = query::plan_query_with_permission(&ast, &filters).ok()?;
                 let rows = query::execute_query(&state.pool, &plan).await.ok()?;
                 let current = serde_json::to_value(rows).ok()?;
                 let mut previous = previous.lock().await;
@@ -4094,15 +4054,20 @@ async fn events_sse(
     let pattern = crate::sync::pubsub::ChannelPattern::parse(&params.channel);
     let rx = state.pubsub.subscribe_events();
 
+    let ticks = IntervalStream::new(tokio::time::interval(Duration::from_secs(15))).map(|_| None);
     let stream = BroadcastStream::new(rx)
+        .map(Some)
+        .merge(ticks)
         .then(move |msg| {
             let state = state.clone();
             let headers = headers.clone();
             let pattern = pattern.clone();
             async move {
-                require_admin_auth(&headers, &state).await.ok()?;
+                if require_admin_auth(&headers, &state).await.is_err() {
+                    return Some(Ok(Event::default().event("auth-error").data("{}")));
+                }
                 match msg {
-                    Ok(event) => {
+                    Some(Ok(event)) => {
                         if pattern.matches(&event.channel) {
                             let data = serde_json::to_string(&event).unwrap_or_default();
                             Some(Ok(Event::default()
@@ -4113,7 +4078,7 @@ async fn events_sse(
                             None
                         }
                     }
-                    Err(_) => None,
+                    _ => None,
                 }
             }
         })
@@ -4577,6 +4542,31 @@ pub(super) async fn authorize_mutation_with_permissions(
     id: Uuid,
     data: Option<&Value>,
 ) -> Result<bool, ApiError> {
+    authorize_mutation_inner(
+        permissions,
+        schema_registry,
+        auth,
+        tx,
+        entity,
+        op,
+        id,
+        data,
+        false,
+    )
+    .await
+}
+
+async fn authorize_mutation_inner(
+    permissions: &PermissionEngine,
+    schema_registry: &Option<Arc<crate::schema::SchemaRegistry>>,
+    auth: &AuthContext,
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    entity: &str,
+    op: &str,
+    id: Uuid,
+    data: Option<&Value>,
+    stamp_owner: bool,
+) -> Result<bool, ApiError> {
     validate_entity_name(entity)?;
     if !matches!(op, "insert" | "set" | "update" | "upsert" | "delete") {
         return Err(ApiError::bad_request("Unknown mutation operation"));
@@ -4584,6 +4574,13 @@ pub(super) async fn authorize_mutation_with_permissions(
     if op != "delete" && !data.is_some_and(Value::is_object) {
         return Err(ApiError::bad_request("Mutation data must be an object"));
     }
+    // Serialize authorized mutations of one entity, including absent entities,
+    // so ownership cannot change between the policy read and the write.
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+        .bind(id.to_string())
+        .execute(&mut **tx)
+        .await
+        .map_err(|e| ApiError::internal(e.to_string()))?;
     let existing = PgTripleStore::get_entity_in_tx(tx, id)
         .await
         .map_err(|e| ApiError::internal(format!("Failed to read mutation target: {e}")))?;
@@ -4623,6 +4620,9 @@ pub(super) async fn authorize_mutation_with_permissions(
         }
     }
     let mut after = before.clone();
+    if creating && stamp_owner {
+        after.insert("owner_id".into(), Value::String(auth.user_id.to_string()));
+    }
     if let Some(obj) = data.and_then(Value::as_object) {
         for (key, value) in obj {
             if key.starts_with('$') || key.contains('/') || key.starts_with(':') {
@@ -6780,9 +6780,10 @@ mod tests {
             KeyManager::from_secret(b"require-admin-auth-test-secret-32!!"),
         ));
         let uid = uuid::Uuid::new_v4();
-        sqlx::query("INSERT INTO users (id, email, password_hash) VALUES ($1, $2, 'test-unused')")
+        sqlx::query("INSERT INTO users (id, email, password_hash, roles) VALUES ($1, $2, 'test-unused', $3)")
             .bind(uid)
             .bind(format!("admin-live-{uid}@example.test"))
+            .bind(serde_json::json!(roles))
             .execute(&pool)
             .await
             .expect("seed user");

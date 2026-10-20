@@ -75,6 +75,7 @@ export class DarshJDB {
   /* -- Internal state ----------------------------------------------------- */
 
   private _privateState: ConnectionState = 'disconnected';
+  private _privateSessionGeneration = 0;
   private _privateSocket: WebSocket | null = null;
   private _privateListeners = new Set<ConnectionStateListener>();
   private _privatePendingRequests = new Map<
@@ -204,6 +205,7 @@ export class DarshJDB {
    * Gracefully close the connection.
    */
   disconnect(reason = new SubscriptionEndedError('Client disconnected; reconnect and subscribe again')): void {
+    this._privateSessionGeneration++;
     this._privateIntentionalClose = true;
     this._privateClearTimers();
     if (this._privateSocket) {
@@ -327,6 +329,11 @@ export class DarshJDB {
    */
   getAuthToken(): string | null {
     return this._privateAuthToken;
+  }
+
+  /** @internal Identifies the session owning an asynchronous query result. */
+  getSessionGeneration(): number {
+    return this._privateSessionGeneration;
   }
 
   /* -- WebSocket internals ------------------------------------------------ */

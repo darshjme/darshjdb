@@ -304,10 +304,15 @@ export async function queryOnce<T = Record<string, unknown>>(
     return client.rest.query<T>(descriptor);
   }
 
+  const session = client.getSessionGeneration();
   const resp = await client.send({
     type: 'sub',
     query: toDarshJQL(descriptor),
   });
+
+  if (session !== client.getSessionGeneration()) {
+    throw new SubscriptionEndedError('Client session ended before query completed');
+  }
 
   if (resp.type === 'sub-err') {
     throw new Error(`Query failed: ${resp.error}`);

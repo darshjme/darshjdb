@@ -324,6 +324,8 @@ pub struct QueryPlan {
 /// Plan for resolving a nested reference.
 #[derive(Debug, Clone)]
 pub struct NestedPlan {
+    /// Permission-scoped target plan for API reference expansion.
+    pub authorized_plan: Option<Box<QueryPlan>>,
     /// The attribute on the parent whose value is a UUID reference.
     pub via_attribute: String,
     /// SQL to fetch the nested entity's triples.
@@ -374,6 +376,122 @@ pub fn plan_query_with_permission(
     permission: &[PermissionFilter],
 ) -> Result<QueryPlan> {
     plan_query_with_dialect_and_permission(ast, &PgDialect, permission)
+}
+
+/// Plan every API read with row and field permissions, including each typed
+/// reference target. Untyped references cannot establish a target policy.
+pub fn plan_authorized_query(
+    ast: &QueryAST,
+    auth: &crate::auth::AuthContext,
+    engine: &crate::auth::PermissionEngine,
+    operation: crate::auth::Operation,
+) -> Result<QueryPlan> {
+    fn build(
+        ast: &QueryAST,
+        auth: &crate::auth::AuthContext,
+        engine: &crate::auth::PermissionEngine,
+        operation: crate::auth::Operation,
+        depth: usize,
+    ) -> Result<QueryPlan> {
+        use crate::auth::{
+            default_permissions::get_rule_with_fallback, permissions::evaluate_rule_public,
+        };
+        let denied = || DarshJError::InvalidQuery("query permission denied".into());
+        if depth > MAX_NESTING_DEPTH {
+            return Err(denied());
+        }
+        let rule =
+            get_rule_with_fallback(engine, &ast.entity_type, operation).ok_or_else(denied)?;
+        let permission = evaluate_rule_public(auth, rule);
+        if !permission.allowed {
+            return Err(denied());
+        }
+        let qualify = |field: &str| {
+            if field.contains('/') || field.starts_with(':') {
+                field.to_owned()
+            } else {
+                format!("{}/{}", ast.entity_type, field)
+            }
+        };
+        let visible = |field: &str| {
+            field == "id"
+                || field == ":db/type"
+                || (!permission
+                    .restricted_fields
+                    .iter()
+                    .any(|f| qualify(f) == qualify(field))
+                    && (permission.allowed_fields.is_empty()
+                        || permission
+                            .allowed_fields
+                            .iter()
+                            .any(|f| qualify(f) == qualify(field))))
+        };
+        if ast.where_clauses.iter().any(|w| !visible(&w.attribute))
+            || ast.order.iter().any(|o| !visible(&o.attribute))
+            || ast.nested.iter().any(|n| !visible(&n.via_attribute))
+        {
+            return Err(denied());
+        }
+        // These modes inspect multiple attributes without a field-scoped plan.
+        if (!permission.allowed_fields.is_empty() || !permission.restricted_fields.is_empty())
+            && (ast.search.is_some() || ast.semantic.is_some() || ast.hybrid.is_some())
+        {
+            return Err(denied());
+        }
+        let filters = PermissionFilter::from_clauses(&permission.where_clauses, auth.user_id)?;
+        let mut root = ast.clone();
+        root.nested.clear();
+        let mut plan = plan_query_with_permission(&root, &filters)?;
+        let expand = |fields: &[String]| -> serde_json::Value {
+            serde_json::json!(
+                fields
+                    .iter()
+                    .flat_map(|f| [
+                        f.clone(),
+                        qualify(f),
+                        f.strip_prefix(&format!("{}/", ast.entity_type))
+                            .unwrap_or(f)
+                            .to_owned()
+                    ])
+                    .collect::<Vec<_>>()
+            )
+        };
+        let mut predicates = Vec::new();
+        if !permission.allowed_fields.is_empty() {
+            plan.params.push(expand(&permission.allowed_fields));
+            predicates.push(format!(
+                "attribute IN (SELECT jsonb_array_elements_text(${}::jsonb))",
+                plan.params.len()
+            ));
+        }
+        if !permission.restricted_fields.is_empty() {
+            plan.params.push(expand(&permission.restricted_fields));
+            predicates.push(format!(
+                "attribute NOT IN (SELECT jsonb_array_elements_text(${}::jsonb))",
+                plan.params.len()
+            ));
+        }
+        if !predicates.is_empty() {
+            plan.sql = format!(
+                "SELECT * FROM ({}) AS field_scoped WHERE attribute = ':db/type' OR ({})",
+                plan.sql,
+                predicates.join(" AND ")
+            );
+        }
+        for nested in &ast.nested {
+            let target = nested.sub_query.as_ref().ok_or_else(denied)?;
+            let target_plan = build(target, auth, engine, operation, depth + 1)?;
+            plan.nested_plans.push(NestedPlan {
+                authorized_plan: Some(Box::new(target_plan)),
+                via_attribute: nested.via_attribute.clone(),
+                sql: String::new(),
+                sql_template: None,
+                sub_nested: Vec::new(),
+            });
+        }
+        Ok(plan)
+    }
+    build(ast, auth, engine, operation, 0)
 }
 
 /// Convert a [`QueryAST`] into an executable [`QueryPlan`] using the
@@ -727,6 +845,7 @@ fn build_nested_plans(
             };
 
             NestedPlan {
+                authorized_plan: None,
                 via_attribute: n.via_attribute.clone(),
                 sql,
                 sql_template,
@@ -1027,6 +1146,25 @@ fn batch_resolve_nested<'a>(
 
             if ref_uuids.is_empty() {
                 all_nested_maps.push(std::collections::HashMap::new());
+                continue;
+            }
+
+            if let Some(target_plan) = &np.authorized_plan {
+                let mut target = (**target_plan).clone();
+                target.params.push(serde_json::json!(ref_uuids));
+                target.sql = target.sql.replace("WHERE NOT t0.retracted", &format!("WHERE NOT t0.retracted AND t0.entity_id::text IN (SELECT jsonb_array_elements_text(${}::jsonb))", target.params.len()));
+                let rows = execute_query_on(connection, &target).await?;
+                let grouped = rows
+                    .into_iter()
+                    .map(|row| {
+                        let mut attrs = row.attributes;
+                        for (key, value) in row.nested {
+                            attrs.insert(format!("_nested:{key}"), value);
+                        }
+                        (row.entity_id, attrs)
+                    })
+                    .collect();
+                all_nested_maps.push(grouped);
                 continue;
             }
 

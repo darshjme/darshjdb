@@ -1,8 +1,10 @@
 /** Live authenticated HTTP, SSE and WebSocket regression tests.
  * Run against a disposable normal-auth server: DDB_URL=http://127.0.0.1:7700 npm test.
+ * Idle revocation cases also require DDB_TEST_DATABASE_URL and psql (disposable DB only).
  * No endpoint/auth failure is treated as a passing test. Fixtures use unique users.
  */
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
+import { execFileSync } from 'node:child_process';
 import { DarshJDB } from '../client.js';
 import { AuthClient } from '../auth.js';
 import { TransactionBuilder, generateId, submitOps } from '../transaction.js';
@@ -20,12 +22,13 @@ async function json(response: Response) {
   expect(response.ok, `HTTP ${response.status}: ${await response.clone().text()}`).toBe(true);
   return response.json();
 }
-async function until(predicate: () => boolean) {
-  const end = Date.now() + 7000;
+async function until(predicate: () => boolean, timeoutMs = 7000) {
+  const end = Date.now() + timeoutMs;
   while (!predicate() && Date.now() < end) await new Promise(r => setTimeout(r, 20));
   expect(predicate()).toBe(true);
 }
-live('DarshJDB Client Integration', () => {
+// HTTP-to-database round trips may cross an SSH tunnel in release validation.
+live('DarshJDB Client Integration', { timeout: 15000 }, () => {
   let db: DarshJDB;
   let a: { user_id: string; access_token: string };
   let b: typeof a;
@@ -139,7 +142,7 @@ live('DarshJDB Client Integration', () => {
         second.disconnect(); expect(right.at(-1)?.data).toEqual([]); expect(right.at(-1)?.error).toBeInstanceOf(SubscriptionEndedError);
       } finally { offLeft(); offRight(); first.disconnect(); second.disconnect(); }
       await json(await request('/api/mutate', { mutations: [{ op: 'update', entity: collection, id: idB, data: { label: 'bob' } }] }, b.access_token));
-    }, 20000);
+    }, 35000);
   }
   for (const transport of ['rest', 'ws'] as const) {
   it(`${transport}: retires an already-open subscription after server-side session revocation`, async () => {
@@ -155,6 +158,41 @@ live('DarshJDB Client Integration', () => {
       expect(received.at(-1)?.data).toEqual([]);
     } finally { stop(); client.disconnect(); }
   }, 20000);
+  }
+
+  for (const transport of ['rest', 'ws'] as const) {
+    it.skipIf(!process.env.DDB_TEST_DATABASE_URL)(`${transport}: retires an idle subscription after revocation without a data mutation or client query`, async () => {
+      const client = await makeClient(a.access_token, transport);
+      const received: QueryResult[] = [];
+      let completedRefreshes = 0;
+      const realQuery = client.rest.query.bind(client.rest);
+      const spy = vi.spyOn(client.rest, 'query').mockImplementation(async (...args) => {
+        const result = await realQuery(...args);
+        completedRefreshes++;
+        return result;
+      });
+      const stop = subscribe(client, { collection }, result => received.push(result));
+      try {
+        await until(() => received.some(result => result.data.length > 0));
+        // Drain the SSE initial invalidation before revocation. Direct SQL avoids
+        // any API event that could accidentally wake a non-polling old server.
+        if (transport === 'rest') await until(() => completedRefreshes >= 2);
+        expect(a.user_id).toMatch(/^[0-9a-f-]{36}$/i);
+        try {
+          const updated = execFileSync('psql', ['-X', '-d', process.env.DDB_TEST_DATABASE_URL!, '-v', 'ON_ERROR_STOP=1', '-c',
+          `UPDATE sessions SET revoked = true, revoked_at = now() WHERE user_id = '${a.user_id}'::uuid`],
+          { stdio: 'pipe' }).toString();
+          expect(updated).toMatch(/UPDATE [1-9][0-9]*/);
+        } catch {
+          throw new Error('Direct session revocation failed; check isolated DDB_TEST_DATABASE_URL and psql');
+        }
+        await until(() => received.at(-1)?.error instanceof SubscriptionEndedError, 20000);
+        expect(received.at(-1)?.data).toEqual([]);
+      } finally {
+        stop(); client.disconnect(); spy.mockRestore();
+        a = await json(await request('/api/auth/signin', { email, password }, ''));
+      }
+    }, 35000);
   }
 
 });

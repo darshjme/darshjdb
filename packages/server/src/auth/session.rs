@@ -636,16 +636,18 @@ impl SessionManager {
             .map_err(|e| AuthError::TokenInvalid(format!("bad session id: {e}")))?;
 
         // Stateful session check: revoked / absolute timeout.
-        let row: Option<(Option<DateTime<Utc>>, DateTime<Utc>)> = sqlx::query_as(
-            "SELECT revoked_at, absolute_expires_at
-               FROM sessions
-              WHERE session_id = $1",
-        )
-        .bind(session_id)
-        .fetch_optional(&self.pool)
-        .await?;
+        let row: Option<(Option<DateTime<Utc>>, DateTime<Utc>, serde_json::Value)> =
+            sqlx::query_as(
+                "SELECT s.revoked_at, s.absolute_expires_at, u.roles
+               FROM sessions s JOIN users u ON u.id = s.user_id
+              WHERE s.session_id = $1 AND s.user_id = $2",
+            )
+            .bind(session_id)
+            .bind(user_id)
+            .fetch_optional(&self.pool)
+            .await?;
 
-        let (revoked_at, absolute_expires_at) =
+        let (revoked_at, absolute_expires_at, current_roles) =
             row.ok_or_else(|| AuthError::TokenInvalid("session not found".into()))?;
 
         if revoked_at.is_some() {
@@ -666,6 +668,21 @@ impl SessionManager {
             .execute(&self.pool)
             .await;
             return Err(AuthError::SessionExpired);
+        }
+
+        // Role-set changes may add either grants or restrictions. Require a
+        // new login instead of trying to infer policy meaning from role names.
+        let mut stored_roles: Vec<String> = serde_json::from_value(current_roles)
+            .map_err(|_| AuthError::TokenInvalid("invalid stored roles".into()))?;
+        let mut token_roles = claims.roles.clone();
+        stored_roles.sort();
+        stored_roles.dedup();
+        token_roles.sort();
+        token_roles.dedup();
+        if stored_roles != token_roles {
+            return Err(AuthError::TokenInvalid(
+                "account roles changed; sign in again".into(),
+            ));
         }
 
         // Touch last_active_at. A failure here is a hard DB error and must
