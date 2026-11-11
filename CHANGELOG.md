@@ -12,6 +12,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > released** — the newest published GitHub release is `v0.3.3`. Everything under
 > `[Unreleased]` will therefore ship as part of `v0.4.0` when it is actually cut.
 
+### Fixed
+
+- Reject malformed Base64 hash payloads using the shared `base64` crate; valid binary and empty values keep their existing encoding.
+- Remove the obsolete README Compose override: the base configuration already passes `DDB_STORAGE_KEY` to the server.
+
+### Changed
+
+- Document a database-free cache test command and related projects.
+- Align the Cargo workspace description with the PostgreSQL-backed alpha architecture.
+
 ### Security
 
 Dependency-advisory cleanup, so that `cargo audit` passes on its own merits

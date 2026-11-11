@@ -12,6 +12,7 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering as AtomicOrdering};
 use std::time::{Duration, Instant};
 
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use bytes::Bytes;
 use dashmap::DashMap;
 use probabilistic_collections::bloom::BloomFilter;
@@ -770,71 +771,13 @@ impl std::error::Error for CacheError {}
 // ---------------------------------------------------------------------------
 
 fn base64_encode(bytes: &[u8]) -> String {
-    // Tiny, dependency-free base64 encode (standard alphabet).
-    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
-    let mut i = 0;
-    while i + 3 <= bytes.len() {
-        let n = ((bytes[i] as u32) << 16) | ((bytes[i + 1] as u32) << 8) | (bytes[i + 2] as u32);
-        out.push(ALPHABET[((n >> 18) & 0x3F) as usize] as char);
-        out.push(ALPHABET[((n >> 12) & 0x3F) as usize] as char);
-        out.push(ALPHABET[((n >> 6) & 0x3F) as usize] as char);
-        out.push(ALPHABET[(n & 0x3F) as usize] as char);
-        i += 3;
-    }
-    let rem = bytes.len() - i;
-    if rem == 1 {
-        let n = (bytes[i] as u32) << 16;
-        out.push(ALPHABET[((n >> 18) & 0x3F) as usize] as char);
-        out.push(ALPHABET[((n >> 12) & 0x3F) as usize] as char);
-        out.push('=');
-        out.push('=');
-    } else if rem == 2 {
-        let n = ((bytes[i] as u32) << 16) | ((bytes[i + 1] as u32) << 8);
-        out.push(ALPHABET[((n >> 18) & 0x3F) as usize] as char);
-        out.push(ALPHABET[((n >> 12) & 0x3F) as usize] as char);
-        out.push(ALPHABET[((n >> 6) & 0x3F) as usize] as char);
-        out.push('=');
-    }
-    out
+    STANDARD.encode(bytes)
 }
 
 fn base64_decode(s: &str) -> Result<Vec<u8>, CacheError> {
-    fn val(c: u8) -> Result<u8, CacheError> {
-        match c {
-            b'A'..=b'Z' => Ok(c - b'A'),
-            b'a'..=b'z' => Ok(c - b'a' + 26),
-            b'0'..=b'9' => Ok(c - b'0' + 52),
-            b'+' => Ok(62),
-            b'/' => Ok(63),
-            _ => Err(CacheError::Codec("invalid base64".into())),
-        }
-    }
-    let bytes = s.as_bytes();
-    if !bytes.len().is_multiple_of(4) {
-        return Err(CacheError::Codec("invalid base64 length".into()));
-    }
-    let mut out = Vec::with_capacity(bytes.len() / 4 * 3);
-    let mut i = 0;
-    while i < bytes.len() {
-        let c0 = bytes[i];
-        let c1 = bytes[i + 1];
-        let c2 = bytes[i + 2];
-        let c3 = bytes[i + 3];
-        let v0 = val(c0)?;
-        let v1 = val(c1)?;
-        out.push((v0 << 2) | (v1 >> 4));
-        if c2 != b'=' {
-            let v2 = val(c2)?;
-            out.push(((v1 & 0x0F) << 4) | (v2 >> 2));
-            if c3 != b'=' {
-                let v3 = val(c3)?;
-                out.push(((v2 & 0x03) << 6) | v3);
-            }
-        }
-        i += 4;
-    }
-    Ok(out)
+    STANDARD
+        .decode(s)
+        .map_err(|error| CacheError::Codec(format!("invalid base64: {error}")))
 }
 
 /// Tiny glob matcher supporting `*` and `?`.
@@ -1066,6 +1009,27 @@ mod tests {
             let dec = base64_decode(&enc).unwrap();
             assert_eq!(&dec, sample);
         }
+    }
+
+    #[test]
+    fn base64_rejects_malformed_encodings() {
+        for invalid in ["YQ=A", "YQ==Yg==", "YQ=", "YR==", "YWJ=", "@@@@", "YQ==\n"] {
+            assert!(base64_decode(invalid).is_err(), "accepted {invalid:?}");
+        }
+    }
+
+    #[test]
+    fn hash_binary_values_roundtrip() {
+        let cache = L1Cache::new(0);
+        let binary: Vec<u8> = (0..=255).collect();
+        cache.hset("hash", "binary", &binary).unwrap();
+        cache.hset("hash", "empty", &[]).unwrap();
+        assert_eq!(cache.hget("hash", "binary").unwrap(), Some(binary.clone()));
+        assert_eq!(cache.hget("hash", "empty").unwrap(), Some(Vec::new()));
+        assert_eq!(
+            cache.hgetall("hash").unwrap(),
+            vec![("binary".into(), binary), ("empty".into(), Vec::new())]
+        );
     }
 
     #[test]

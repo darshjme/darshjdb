@@ -56,14 +56,6 @@ DDB_HOST_PORT=127.0.0.1:7700
 DDB_CACHE_HOST_PORT=127.0.0.1:7701
 EOF
 
-# The base Compose file does not pass the storage key into the server.
-cat > docker-compose.override.yml <<'EOF'
-services:
-  darshjdb:
-    environment:
-      DDB_STORAGE_KEY: ${DDB_STORAGE_KEY:?Set DDB_STORAGE_KEY}
-EOF
-
 docker compose up --build -d
 docker compose ps
 docker compose logs --tail=50 darshjdb
@@ -89,7 +81,13 @@ cargo run --locked --bin ddb-server
 
 Build the dashboard before compiling a server intended to serve it: its assets are embedded at compile time. Configuration comes from defaults, TOML files and environment variables; the server also reads `.env`. See [configuration and startup](docs/OPERATING-NOTES.md#configuration-and-startup).
 
-Run checks locally with `cargo test --locked --workspace` and `npm test`. Some checks need services or package-specific setup; consult the relevant package before running them. GitHub Actions is disabled.
+Start with the cache library checks, which do not require a running PostgreSQL instance:
+
+```sh
+cargo test --locked -p ddb-cache --lib
+```
+
+For broader verification, run `cargo test --locked --workspace` and `npm test`. Database integration tests need PostgreSQL, and JavaScript packages may require their build step first; consult each package before running them. GitHub Actions is disabled.
 
 ## Important boundaries
 
@@ -107,5 +105,9 @@ See [operating notes](docs/OPERATING-NOTES.md) for source references and deploym
 - **Use another language:** [Python](sdks/python/README.md), [PHP](sdks/php/README.md), [TypeScript SDK](sdks/typescript/README.md).
 - **Understand hybrid recall:** [current behavior and proposed memory integration](docs/hybrid-recall.md).
 - **Operate a deployment:** [security](docs/security.md), [subscriptions](docs/subscriptions.md), [storage backends](docs/STORAGE_BACKENDS.md).
+
+## Related projects
+
+[DAF](https://github.com/darshjme/daf) supplies Rust agent orchestration primitives, [daf-python](https://github.com/darshjme/daf-python) provides portable Python process adapters, and [DJcode](https://github.com/darshjme/djcode) is an interactive coding CLI. These are separate projects; the local DarshJDB stack does not require them.
 
 Created and maintained by **[Darshankumar Joshi](https://github.com/darshjme)**. Licensed under [MIT](LICENSE).

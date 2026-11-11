@@ -17,7 +17,7 @@ homepage = "https://db.darshj.me"
 repository = "https://github.com/darshjme/darshjdb"
 keywords = ["database", "baas", "agent-memory", "redis", "vector-search"]
 categories = ["database", "web-programming", "asynchronous"]
-description = "Self-hosted BaaS: replaces PostgreSQL+Redis+Pinecone+MCP memory. Agent LLM unlimited context. Single Rust binary. Created by Darshankumar Joshi."
+description = "Self-hosted Rust backend on PostgreSQL with triple storage, realtime APIs, search, agent memory and a separate RESP3 cache. Alpha."
 
 [workspace.dependencies]
 tokio = { version = "1", features = ["full"] }
