@@ -1,11 +1,59 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 250" role="img" aria-labelledby="title desc">
-<title id="title">DarshJDB</title><desc id="desc">Application data, realtime and agent memory.</desc>
-<rect width="960" height="250" rx="16" fill="#17191d"/>
-<path d="M720 0v250M800 0v250M880 0v250M680 60h280M680 140h280M680 220h280" stroke="#303337" stroke-width="1"/>
-<path d="M724 190h64v-64h64V62h64" fill="none" stroke="#c79b7a" stroke-width="2"/>
-<g fill="#17191d" stroke="#c79b7a" stroke-width="2"><circle cx="724" cy="190" r="6"/><circle cx="788" cy="126" r="6"/><circle cx="852" cy="62" r="6"/></g>
-<text x="42" y="49" fill="#c79b7a" font-family="monospace" font-size="13" letter-spacing="2">SELF-HOSTED BACKEND / RUST + POSTGRESQL</text>
-<text x="40" y="135" fill="#eeeae3" font-family="system-ui, sans-serif" font-size="68" font-weight="650">DarshJDB</text>
-<text x="42" y="189" fill="#b5b3ae" font-family="system-ui, sans-serif" font-size="18">Application data, realtime and agent memory.</text>
-<path d="M42 218h62" stroke="#c79b7a" stroke-width="3"/>
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="480" viewBox="0 0 1280 480" role="img" aria-labelledby="title desc">
+  <title id="title">DarshJDB — application data, realtime and agent memory</title>
+  <desc id="desc">A PostgreSQL database stack with entity, attribute and value triples. Query and memory paths connect to the store. A Rust backend in alpha. Decorative motion stops when reduced motion is requested.</desc>
+  <defs>
+    <linearGradient id="bg" x2="1" y2="1"><stop stop-color="#100b23"/><stop offset=".5" stop-color="#080b19"/><stop offset="1" stop-color="#170b29"/></linearGradient>
+    <linearGradient id="neon"><stop stop-color="#00f5ff"/><stop offset=".52" stop-color="#9874ff"/><stop offset="1" stop-color="#ff46ce"/></linearGradient>
+    <radialGradient id="aura"><stop stop-color="#933bcb" stop-opacity=".24"/><stop offset="1" stop-color="#933bcb" stop-opacity="0"/></radialGradient>
+    <pattern id="grid" width="32" height="32" patternUnits="userSpaceOnUse"><path d="M32 0H0V32" fill="none" stroke="#9b78db" stroke-opacity=".075"/></pattern>
+    <clipPath id="frame"><path d="M22 1H1258L1279 22V458L1258 479H22L1 458V22Z"/></clipPath>
+  </defs>
+  <style>
+    .signal { stroke-dasharray: 8 22; animation: signal 9s linear infinite; }
+    .breathe { animation: breathe 6s ease-in-out infinite; }
+    .orbit { transform-origin: 1010px 240px; animation: orbit 36s linear infinite; }
+    @keyframes signal { to { stroke-dashoffset: -180; } }
+    @keyframes breathe { 0%,100% { opacity: .5; } 50% { opacity: 1; } }
+    @keyframes orbit { to { transform: rotate(360deg); } }
+    @media (prefers-reduced-motion: reduce) { .signal,.breathe,.orbit { animation: none !important; } }
+  </style>
+  <g clip-path="url(#frame)">
+    <rect width="1280" height="480" fill="url(#bg)"/>
+    <rect width="1280" height="480" fill="url(#grid)"/>
+    <ellipse cx="1020" cy="240" rx="330" ry="300" fill="url(#aura)"/>
+    <path d="M0 402H700L733 369V99L768 64H1280" stroke="#2e264b" fill="none"/>
+    <path d="M0 408H708L741 375V105L776 72H1280" stroke="url(#neon)" stroke-opacity=".23" fill="none"/>
+    <g font-family="system-ui, -apple-system, sans-serif">
+      <path d="M50 49h26l8 8h-26Z" fill="#00f5ff"/>
+      <text x="100" y="60" fill="#b8b5cf" font-family="monospace" font-size="15" letter-spacing="2">SELF-HOSTED BACKEND // RUST + POSTGRESQL</text>
+      <text x="49" y="206" fill="#ff46ce" opacity=".16" font-weight="800" font-size="86" letter-spacing="-3">DarshJDB</text>
+      <text x="52" y="203" fill="#f5efff" font-weight="800" font-size="86" letter-spacing="-3">DarshJDB</text>
+      <text x="53" y="267" fill="#8cfbff" font-weight="600" font-size="29">Your data. Your backend.</text>
+      <path d="M53 300H310L321 289H411" stroke="url(#neon)" stroke-width="2" fill="none"/>
+      <text x="53" y="343" fill="#b8b5cf" font-size="20">Application data, realtime and agent memory.</text>
+      <g font-family="monospace" font-size="13" letter-spacing="1.3"><path d="M53 420H145L153 428V454H53Z" fill="#65f8ff" fill-opacity=".055" stroke="#65f8ff" stroke-opacity=".4"/><text x="71" y="443" fill="#65f8ff">RUST</text><path d="M169 420H321L329 428V454H169Z" fill="#c9a9ff" fill-opacity=".055" stroke="#c9a9ff" stroke-opacity=".4"/><text x="187" y="443" fill="#c9a9ff">POSTGRESQL</text><path d="M345 420H447L455 428V454H345Z" fill="#ff88de" fill-opacity=".055" stroke="#ff88de" stroke-opacity=".4"/><text x="363" y="443" fill="#ff88de">ALPHA</text></g>
+    </g>
+    <g fill="none">
+      <circle class="orbit" cx="1010" cy="240" r="157" stroke="#9874ff" stroke-opacity=".3" stroke-dasharray="50 27 3 27"/>
+      <path d="M821 152H873V240H906M1199 152H1147V240H1114M1010 332V382" stroke="#55466f" stroke-width="2"/>
+      <path class="signal" d="M821 152H873V240H906M1199 152H1147V240H1114M1010 332V382" stroke="url(#neon)" stroke-width="3"/>
+      <path d="M906 176V302C906 340 1114 340 1114 302V176" fill="#0e1026" stroke="url(#neon)" stroke-width="2"/>
+      <ellipse cx="1010" cy="176" rx="104" ry="29" fill="#161330" stroke="#00f5ff" stroke-width="2"/>
+      <path d="M906 219C906 257 1114 257 1114 219M906 260C906 298 1114 298 1114 260" stroke="#9874ff" stroke-opacity=".6"/>
+      <path class="breathe" d="M924 305C951 324 1069 324 1096 305" stroke="#ff46ce" stroke-width="2"/>
+      <path d="M771 126H859L871 138V165H771Z" fill="#0c1225" stroke="#00f5ff" stroke-opacity=".7"/>
+      <path d="M1149 126H1237L1249 138V165H1149Z" fill="#0c1225" stroke="#ff46ce" stroke-opacity=".7"/>
+    </g>
+    <g font-family="monospace" text-anchor="middle">
+      <text x="821" y="151" fill="#8cfbff" font-size="14" letter-spacing="1.5">QUERY</text>
+      <text x="1199" y="151" fill="#ff9ee5" font-size="14" letter-spacing="1.5">MEMORY</text>
+      <text x="1010" y="181" fill="#8cfbff" font-size="15" letter-spacing="2">POSTGRESQL</text>
+      <text x="1010" y="226" fill="#e5d7fa" font-size="12" letter-spacing="1.3">ENTITY · ATTRIBUTE · VALUE</text>
+      <text x="1010" y="390" fill="#d4bbff" font-size="13" letter-spacing="2">TRIPLE STORE</text>
+      <text x="1010" y="437" fill="#b8b5cf" font-size="11" letter-spacing="2">APPLICATION DATA / REALTIME / FILES</text>
+    </g>
+  </g>
+  <path d="M22 1H1258L1279 22V458L1258 479H22L1 458V22Z" stroke="url(#neon)" stroke-opacity=".55" fill="none"/>
+  <path d="M1 85V22L22 1H91M1189 479H1258L1279 458V395" stroke="#00f5ff" stroke-width="3" fill="none"/>
+  <path d="M1190 1H1258L1279 22V69M1 411V458L22 479H91" stroke="#ff46ce" stroke-width="3" fill="none"/>
 </svg>
